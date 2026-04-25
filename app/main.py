@@ -133,7 +133,7 @@ def main(page: ft.Page):
                     ]
                 ),
                 padding=8,
-                border=ft.border.all(1, "grey"),
+                border=ft.Border.all(1, "grey"),
             )
         )
 
@@ -159,7 +159,7 @@ def main(page: ft.Page):
                         ]
                     ),
                     padding=8,
-                    border=ft.border.all(1, "grey"),
+                    border=ft.Border.all(1, "grey"),
                     border_radius=4,
                 )
             )
