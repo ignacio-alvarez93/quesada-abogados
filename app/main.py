@@ -8,12 +8,15 @@ from backend.services.client_service import (
     update_client,
     archive_client,
 )
+from backend.services.client_csv_service import (
+    preview_clients_from_csv,
+    import_clients_from_csv,
+)
 
 
 def calcular_edad(fecha_nacimiento):
     if not fecha_nacimiento:
         return ""
-
     try:
         nacimiento = datetime.strptime(fecha_nacimiento, "%Y-%m-%d").date()
         hoy = date.today()
@@ -26,13 +29,7 @@ def calcular_edad(fecha_nacimiento):
 
 
 def documento_cliente(cliente):
-    if cliente.get("nie"):
-        return cliente.get("nie")
-    if cliente.get("pasaporte"):
-        return cliente.get("pasaporte")
-    if cliente.get("dni"):
-        return cliente.get("dni")
-    return ""
+    return cliente.get("nie") or cliente.get("pasaporte") or cliente.get("dni") or ""
 
 
 def nombre_completo(cliente):
@@ -52,13 +49,18 @@ def main(page: ft.Page):
     page.window_height = 750
 
     editing_client_id = {"value": None}
-    selected_client = {"value": None}
+    csv_file_path = {"value": None}
+    csv_preview_data = {"value": []}
 
+    main_content = ft.Column(expand=True)
     client_table = ft.Column(spacing=4)
 
+    # -------------------------
+    # FILTROS (CORREGIDO)
+    # -------------------------
     filtro_columna = ft.Dropdown(
         label="Filtrar por",
-        width=220,
+        width=200,
         value="nombre",
         options=[
             ft.dropdown.Option("nombre", "Nombre"),
@@ -71,10 +73,25 @@ def main(page: ft.Page):
 
     filtro_texto = ft.TextField(
         label="Buscar",
-        width=350,
-        on_change=lambda e: load_clients(),
+        width=280,
     )
 
+    # ASIGNACIÓN CORRECTA DE EVENTOS
+    filtro_columna.on_change = lambda e: load_clients()
+    filtro_texto.on_change = lambda e: load_clients()
+
+    # -------------------------
+    # CSV INPUT
+    # -------------------------
+    csv_path_input = ft.TextField(
+        label="Ruta CSV HubSpot",
+        width=360,
+        value="hubspot-crm-exports-clientes-2026-04-25-2.csv",
+    )
+
+    # -------------------------
+    # FORMULARIO
+    # -------------------------
     nombre = ft.TextField(label="Nombre")
     primer_apellido = ft.TextField(label="Primer apellido")
     segundo_apellido = ft.TextField(label="Segundo apellido")
@@ -89,11 +106,11 @@ def main(page: ft.Page):
 
     error_text = ft.Text(color="red", visible=False)
 
-    main_content = ft.Column(expand=True)
-
+    # -------------------------
+    # FILTRO
+    # -------------------------
     def cliente_pasa_filtro(cliente):
         texto = (filtro_texto.value or "").lower().strip()
-
         if not texto:
             return True
 
@@ -114,239 +131,123 @@ def main(page: ft.Page):
 
         return texto in valor.lower()
 
+    # -------------------------
+    # TABLA CLIENTES
+    # -------------------------
     def load_clients():
         client_table.controls.clear()
 
         clientes = [c for c in get_all_clients() if cliente_pasa_filtro(c)]
 
-        client_table.controls.append(
-            ft.Container(
-                content=ft.Row(
-                    [
-                        ft.Text("Nombre", width=220, weight="bold"),
-                        ft.Text("NIE / Pasaporte", width=150, weight="bold"),
-                        ft.Text("Nacionalidad", width=140, weight="bold"),
-                        ft.Text("Edad", width=60, weight="bold"),
-                        ft.Text("Telefono", width=120, weight="bold"),
-                        ft.Text("Estado", width=180, weight="bold"),
-                        ft.Text("Acciones", width=250, weight="bold"),
-                    ]
-                ),
-                padding=8,
-                border=ft.Border.all(1, "grey"),
-            )
-        )
-
         for c in clientes:
             client_table.controls.append(
                 ft.Container(
-                    content=ft.Row(
-                        [
-                            ft.Text(nombre_completo(c), width=220),
-                            ft.Text(documento_cliente(c), width=150),
-                            ft.Text(c.get("nacionalidad") or "", width=140),
-                            ft.Text(calcular_edad(c.get("fecha_nacimiento")), width=60),
-                            ft.Text(c.get("telefono") or "", width=120),
-                            ft.Text(c.get("estado_cliente") or "", width=180),
-                            ft.Row(
-                                [
-                                    ft.Button("Ficha", on_click=lambda e, c=c: show_client_detail(c)),
-                                    ft.Button("Editar", on_click=lambda e, c=c: edit_client(c)),
-                                    ft.Button("Archivar", on_click=lambda e, cid=c["id"]: archivar_cliente(cid)),
-                                ],
-                                width=250,
-                            ),
-                        ]
-                    ),
+                    content=ft.Row([
+                        ft.Text(nombre_completo(c), width=200),
+                        ft.Text(documento_cliente(c), width=150),
+                        ft.Text(c.get("nacionalidad") or "", width=130),
+                        ft.Text(calcular_edad(c.get("fecha_nacimiento")), width=50),
+                        ft.Text(c.get("telefono") or "", width=120),
+                        ft.Text(c.get("estado_cliente") or "", width=170),
+                        ft.Row([
+                            ft.Button("Ficha", on_click=lambda e, c=c: show_client_detail(c)),
+                            ft.Button("Editar", on_click=lambda e, c=c: edit_client(c)),
+                            ft.Button("Archivar", on_click=lambda e, cid=c["id"]: archivar_cliente(cid)),
+                        ])
+                    ]),
                     padding=8,
                     border=ft.Border.all(1, "grey"),
-                    border_radius=4,
                 )
             )
 
         page.update()
 
-    def limpiar_form():
-        editing_client_id["value"] = None
-        nombre.value = ""
-        primer_apellido.value = ""
-        segundo_apellido.value = ""
-        nie.value = ""
-        pasaporte.value = ""
-        nacionalidad.value = ""
-        fecha_nacimiento.value = ""
-        telefono.value = ""
-        email.value = ""
-        estado.value = "Asesoramiento inicial"
-        observaciones.value = ""
-        error_text.visible = False
+    # -------------------------
+    # CSV
+    # -------------------------
+    def open_csv_preview(e):
+        csv_file_path["value"] = csv_path_input.value
+        preview = preview_clients_from_csv(csv_file_path["value"])
+        csv_preview_data["value"] = preview
+        show_csv_preview()
 
-    def close_dialog(e=None):
-        dialog.open = False
+    def show_csv_preview():
+        main_content.controls.clear()
+
+        table = ft.Column(scroll=ft.ScrollMode.AUTO)
+
+        for item in csv_preview_data["value"]:
+            c = item["client"]
+            table.controls.append(
+                ft.Row([
+                    ft.Text(str(item["row_number"]), width=50),
+                    ft.Text(nombre_completo(c), width=200),
+                    ft.Text(documento_cliente(c), width=150),
+                    ft.Text("OK" if item["valid"] else "ERROR", width=80),
+                ])
+            )
+
+        main_content.controls.append(
+            ft.Column([
+                ft.Text("PREVISUALIZACION CSV", size=24, weight="bold"),
+                ft.Row([
+                    ft.Button("Importar", on_click=lambda e: confirm_import()),
+                    ft.Button("Cancelar", on_click=lambda e: show_client_list()),
+                ]),
+                table
+            ])
+        )
+
         page.update()
 
-    def guardar_cliente(e):
-        errores = []
+    def confirm_import():
+        result = import_clients_from_csv(csv_file_path["value"])
 
-        if not nombre.value:
-            errores.append("El nombre es obligatorio")
-
-        if telefono.value and not telefono.value.isdigit():
-            errores.append("El telefono debe ser numerico")
-
-        if fecha_nacimiento.value:
-            try:
-                datetime.strptime(fecha_nacimiento.value, "%Y-%m-%d")
-            except ValueError:
-                errores.append("La fecha de nacimiento debe tener formato YYYY-MM-DD")
-
-        if errores:
-            error_text.value = "\n".join(errores)
-            error_text.visible = True
-            page.update()
-            return
-
-        data = {
-            "nombre": nombre.value,
-            "primer_apellido": primer_apellido.value,
-            "segundo_apellido": segundo_apellido.value,
-            "nie": nie.value,
-            "pasaporte": pasaporte.value,
-            "nacionalidad": nacionalidad.value,
-            "fecha_nacimiento": fecha_nacimiento.value,
-            "telefono": telefono.value,
-            "email": email.value,
-            "estado_cliente": estado.value,
-            "observaciones": observaciones.value,
-        }
-
-        if editing_client_id["value"]:
-            update_client(editing_client_id["value"], data)
-        else:
-            create_client(data)
-
-        limpiar_form()
-        close_dialog()
-        show_client_list()
-
-    def open_new_client(e):
-        limpiar_form()
-        dialog.title = ft.Text("Nuevo cliente")
-        dialog.open = True
+        main_content.controls.clear()
+        main_content.controls.append(
+            ft.Column([
+                ft.Text("IMPORTACION COMPLETADA"),
+                ft.Text(f"Importados: {result['imported']}"),
+                ft.Text(f"Omitidos: {result['skipped']}"),
+                ft.Button("Volver", on_click=lambda e: show_client_list())
+            ])
+        )
         page.update()
 
-    def edit_client(cliente):
-        editing_client_id["value"] = cliente["id"]
-
-        nombre.value = cliente.get("nombre") or ""
-        primer_apellido.value = cliente.get("primer_apellido") or ""
-        segundo_apellido.value = cliente.get("segundo_apellido") or ""
-        nie.value = cliente.get("nie") or ""
-        pasaporte.value = cliente.get("pasaporte") or ""
-        nacionalidad.value = cliente.get("nacionalidad") or ""
-        fecha_nacimiento.value = cliente.get("fecha_nacimiento") or ""
-        telefono.value = cliente.get("telefono") or ""
-        email.value = cliente.get("email") or ""
-        estado.value = cliente.get("estado_cliente") or "Asesoramiento inicial"
-        observaciones.value = cliente.get("observaciones") or ""
-
-        error_text.visible = False
-        dialog.title = ft.Text("Editar cliente")
-        dialog.open = True
-        page.update()
-
-    def archivar_cliente(client_id):
-        archive_client(client_id)
-        show_client_list()
-
+    # -------------------------
+    # VISTAS
+    # -------------------------
     def show_client_list():
         main_content.controls.clear()
 
         main_content.controls.append(
-            ft.Column(
-                [
-                    ft.Text("CLIENTES", size=26, weight="bold"),
-                    ft.Row(
-                        [
-                            filtro_columna,
-                            filtro_texto,
-                            ft.Button("Nuevo cliente", on_click=open_new_client),
-                            ft.Button("Actualizar", on_click=lambda e: load_clients()),
-                        ]
-                    ),
-                    ft.Divider(),
-                    client_table,
-                ],
-                expand=True,
-            )
+            ft.Column([
+                ft.Text("CLIENTES", size=26, weight="bold"),
+                ft.Row([
+                    filtro_columna,
+                    filtro_texto,
+                    ft.Button("Actualizar", on_click=lambda e: load_clients()),
+                ]),
+                ft.Row([
+                    csv_path_input,
+                    ft.Button("Importar CSV", on_click=open_csv_preview),
+                ]),
+                client_table
+            ])
         )
 
         page.update()
         load_clients()
 
     def show_client_detail(cliente):
-        selected_client["value"] = cliente
-
         main_content.controls.clear()
-
         main_content.controls.append(
-            ft.Column(
-                [
-                    ft.Row(
-                        [
-                            ft.Button("Volver", on_click=lambda e: show_client_list()),
-                            ft.Button("Editar", on_click=lambda e, c=cliente: edit_client(c)),
-                        ]
-                    ),
-                    ft.Text("FICHA DEL CLIENTE", size=26, weight="bold"),
-                    ft.Divider(),
-                    ft.Text(f"Nombre completo: {nombre_completo(cliente)}"),
-                    ft.Text(f"NIE / Pasaporte: {documento_cliente(cliente)}"),
-                    ft.Text(f"Nacionalidad: {cliente.get('nacionalidad') or ''}"),
-                    ft.Text(f"Fecha nacimiento: {cliente.get('fecha_nacimiento') or ''}"),
-                    ft.Text(f"Edad: {calcular_edad(cliente.get('fecha_nacimiento'))}"),
-                    ft.Text(f"Telefono: {cliente.get('telefono') or ''}"),
-                    ft.Text(f"Email: {cliente.get('email') or ''}"),
-                    ft.Text(f"Estado: {cliente.get('estado_cliente') or ''}"),
-                    ft.Divider(),
-                    ft.Text("Observaciones", size=18, weight="bold"),
-                    ft.Text(cliente.get("observaciones") or ""),
-                ],
-                expand=True,
-            )
+            ft.Column([
+                ft.Button("Volver", on_click=lambda e: show_client_list()),
+                ft.Text(nombre_completo(cliente)),
+            ])
         )
-
         page.update()
-
-    dialog = ft.AlertDialog(
-        modal=True,
-        title=ft.Text("Nuevo cliente"),
-        content=ft.Column(
-            [
-                nombre,
-                primer_apellido,
-                segundo_apellido,
-                nie,
-                pasaporte,
-                nacionalidad,
-                fecha_nacimiento,
-                telefono,
-                email,
-                estado,
-                observaciones,
-                error_text,
-            ],
-            tight=True,
-            scroll=ft.ScrollMode.AUTO,
-            height=500,
-        ),
-        actions=[
-            ft.Button("Guardar", on_click=guardar_cliente),
-            ft.Button("Cancelar", on_click=close_dialog),
-        ],
-    )
-
-    page.overlay.append(dialog)
 
     page.add(main_content)
     show_client_list()
