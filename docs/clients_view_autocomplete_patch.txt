@@ -1,0 +1,80 @@
+"""
+PARCHE PARA frontend/views/clients_view.py
+
+SUSTITUIR:
+
+nacionalidad = select_input(...)
+
+POR:
+
+nacionalidad_autocomplete = AppAutocomplete(
+    page=page,
+    label="Nacionalidad",
+    options=nacionalidad_options,
+    width=260,
+    max_results=8,
+)
+
+Y en el layout:
+
+nacionalidad_autocomplete.control
+
+
+---------------------------------------------------
+
+SUSTITUIR:
+
+pais_nacimiento = select_input(...)
+
+POR:
+
+pais_nacimiento_autocomplete = AppAutocomplete(
+    page=page,
+    label="País nacimiento",
+    options=pais_options,
+    width=260,
+    max_results=8,
+)
+
+Y en el layout:
+
+pais_nacimiento_autocomplete.control
+
+
+---------------------------------------------------
+
+EN EL SAVE / UPDATE:
+
+REEMPLAZAR:
+
+"nacionalidad": nacionalidad.value,
+"pais_nacimiento": pais_nacimiento.value,
+
+POR:
+
+"nacionalidad": nacionalidad_autocomplete.get_value(),
+"pais_nacimiento": pais_nacimiento_autocomplete.get_value(),
+
+
+---------------------------------------------------
+
+EN CARGAR CLIENTE:
+
+nacionalidad_autocomplete.set_value(
+    cliente.get("nacionalidad") or "",
+    update=False,
+)
+
+pais_nacimiento_autocomplete.set_value(
+    cliente.get("pais_nacimiento") or "",
+    update=False,
+)
+
+
+---------------------------------------------------
+
+EN LIMPIAR FORMULARIO:
+
+nacionalidad_autocomplete.set_value("", update=False)
+pais_nacimiento_autocomplete.set_value("", update=False)
+"""

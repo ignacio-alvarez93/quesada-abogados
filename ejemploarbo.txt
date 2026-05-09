@@ -1,0 +1,4999 @@
+Microsoft Windows [Versión 10.0.19045.6466]
+(c) Microsoft Corporation. Todos los derechos reservados.
+
+C:\Users\Nacho>cd C:\Users\Nacho\Box\NACIONALIDADES\2023
+
+C:\Users\Nacho\Box\NACIONALIDADES\2023>tree/f
+Listado de rutas de carpetas
+El número de serie del volumen es 9EBD-B7D4
+C:.
+│   Captura.PNG
+│   CCF_004731.pdf
+│   DOC_NACIONALIDAD.docx
+│   faqs-area-nacionalidad-01-09-2023.pdf
+│   FAQs-area-Nacionalidad-enero-2023.pdf
+│   formulario_pago_tasas - 2023-06-28T110348.689.pdf
+│   WhatsApp Image 2023-03-24 at 10.33.34.jpeg
+│
+├───ABDOU KANE
+│       DISPENSA.pdf
+│
+├───AHMED EL ABDLAOUI
+│       DISPENSA PARCIAL.pdf
+│       NIE.pdf
+│
+├───AILYN CRUZ PINO
+│   │   DESIGNACION.pdf
+│   │   justificante (20).pdf
+│   │   justificante (22).pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   resumen_expediente (97).pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_MAT.pdf
+│           ACTA_NAC.pdf
+│           ACTA_NAC_CONYUGE.pdf
+│           CCSE.pdf
+│           CONCESION_RESIDENCIA.pdf
+│           CONTRATO_TRABAJO.pdf
+│           DNI_CONYUGE.pdf
+│           LIBRO_FAMILIA.pdf
+│           NIE.pdf
+│           PADRON.pdf
+│           PASAPORTE.pdf
+│           PASAPORTE_ANTERIOR.pdf
+│           TASA.pdf
+│
+├───ALBA VIVIANA
+│       201118724024030020.pdf
+│       CORREO.docx
+│
+├───ALEXIS ORTEGA HERNANDEZ
+│       DNI_CONYUGE.pdf
+│       DNI_HIJO.pdf
+│       HOJA DE ENCARGO.pdf
+│       PASAPORTE.pdf
+│
+├───ANA LUCIA BARRIOS
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   PASAP.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (37).pdf
+│   │   TASA_PAGADA.pdf
+│   │
+│   ├───PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       HOJA_ENCARGO.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee2b968-9757-6264-8f8c-3f82c320d44f.pdf
+│
+├───ANA MERCEDES LABORDE INTRIAGO
+│   │   Captura.PNG
+│   │   CCF_000113(1).pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   formulario_pago_tasas - 2023-06-08T120252.925.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (70).pdf
+│   │   WhatsApp Image 2023-05-23 at 11.51.11 (1).jpeg
+│   │
+│   ├───APORTAR
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       Justificante_Anexo - 2024-04-11T111910.347.pdf
+│   │
+│   ├───CONCESION
+│   │       is+GKfwkTL7hEYLwP4w4HAgBvZMbVt9ilO9xfCN7EhI=.pdf
+│   │       Resguardo_1ef28149-4178-68a8-aa3e-f13716b1c7d2.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NAC.pdf
+│           ACTA_NAC_HIJO.pdf
+│           CCSE.pdf
+│           NIE.pdf
+│           PADRON.pdf
+│           PASAPORTE.pdf
+│           PODER.pdf
+│           TASA_PAGADA.pdf
+│
+├───ANA ROSA MARTINEZ OGANDO
+│   │   ACTA NAC.pdf
+│   │   Captura.PNG
+│   │   D1086114H173543.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas (3).pdf
+│   │   formulario_pago_tasas - 2023-05-24T121636.858.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   Notas carpeta.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (61).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DNI.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESION.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee8d50a-ff89-6850-a7c9-45687e494cb9.pdf
+│
+├───ANA YURLEY AMADOR
+│   │   Captura.PNG
+│   │   formulario_pago_tasas - 2023-12-18T175529.808.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PADRON ACTUALIZADO.PDF
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   RES DE CONCESION.pdf
+│   │   resumen_expediente (96).pdf
+│   │   RES_8937569.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJO_JAIDER.pdf
+│   │       ACTA_NAC_HIJO_NICOLAS.pdf
+│   │       CONCESION_RESIDENCIAS.pdf
+│   │       CSSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee6156-05f8-6cf4-87c0-89a98f11be31.pdf
+│
+├───ANDY YOSELI ARANDA MARECO
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-11-08T131247.696.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (75).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef07117-ea9e-6070-a3f3-63f07f1f9008 (1).pdf
+│
+├───ANGIE CATALINA RINCON
+│   │   (OVI-Volante Hist_363rico Con Convivencia).pdf
+│   │   A2WLJ1555497501.PDF
+│   │   AAPP NOVIEMBRE.pdf
+│   │   AAPP SEPTIEMBRE.pdf
+│   │   ACTA DE NACIMIENTO.pdf
+│   │   ACTA RECEPCION PASAPORTE.pdf
+│   │   APOSTILLA AAPP.pdf
+│   │   APOSTILLE AAPP NOVIEMBRE.pdf
+│   │   Captura de pantalla 2023-02-07 174747.png
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION DE REPRESENTANTE.pdf
+│   │   firma.png
+│   │   formulario-790-026_es_ES (27).pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   Soporte_A2WLJ1555497501.PDF
+│   │
+│   ├───APORTAR
+│   │       EMPADRONAMIENTO.PDF
+│   │       Justificante_Solicitud (19).pdf
+│   │       PODER.pdf
+│   │
+│   ├───JUSTIF PRESENTAC
+│   │       230216_COL 6734_ANA BELÉN QUESADA SOLER_ANGIE CATALINA RINCÓN PÉREZ.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       AAPP_ESPAÑA.pdf
+│   │       ACTA_NAC.pdf
+│   │       ANTECEDENTE_PENAL.pdf
+│   │       CCSE.pdf
+│   │       CERTIFICADO MATRIMONIO.pdf
+│   │       NIE.pdf
+│   │       PADRON _HCO.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE1.pdf
+│   │       PASAPORTE2.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee2b963-0772-69e6-9970-e114ee9c7135.pdf
+│
+├───ANIJAIRA GUERRERO RAMIREZ
+│   │   DESIGNACION.pdf
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-07-21T134122.880.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (53).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC_ANIJAIRA.pdf
+│   │       ACTA_NAC_STEVEN.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeaf141-873a-6282-9421-a7e0f9e7c959.pdf
+│
+├───ARIEL VALIDO
+│   │   Acta matrimonio.pdf
+│   │   ACTA_MAT.pdf
+│   │   ACTA_MATRIM.pdf
+│   │   ACTA_NAC_CONYUGE.pdf
+│   │   Captura.PNG
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION_DE_REPRESENTANTE (5).PDF
+│   │   formulario_pago_tasas - 2023-03-23T174417.362.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PADRON COLECTIVO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (37).pdf
+│   │   SOLICITUD ACTA DE MATRIMONIO.pdf
+│   │   SOLICITUD ACTA NACIMIENTO YOSLEIVIS.pdf
+│   │   WhatsApp Image 2022-05-13 at 14.16.22 (1).jpeg
+│   │   WhatsApp Image 2022-05-13 at 14.16.22.jpeg
+│   │   WhatsApp Image 2023-03-24 at 10.33.34.jpeg
+│   │   WhatsApp Image 2023-03-24 at 10.33.58.jpeg
+│   │   WhatsApp Image 2023-03-24 at 13.48.12 (1).jpeg
+│   │   WhatsApp Image 2023-03-24 at 13.48.12.jpeg
+│   │
+│   ├───ADJUNTAR ACTA MATRIMONIO
+│   │       ACTA_MAT.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       Justificante_Anexo (9).pdf
+│   │
+│   ├───ADJUNTAR NUEVO PAS
+│   │       Justificante_Anexo(1).pdf
+│   │       PASAPORTENUEVO.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DNI.pdf
+│   │       DNI_HIJA_MENOR.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PADRON_CONJUNTO.PDF
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESION.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee6dc2e-a76c-6b80-95da-41c498dce507.pdf
+│
+├───AYLIN CRUZ PINO
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-09-28T191631.455.pdf
+│   │   justificante (20) (1).pdf
+│   │   NOTS.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │
+│   ├───APORTAR
+│   │       CERTIF_NACIMIENTO_CONYUGE.pdf
+│   │       Justificante_Anexo - 2024-01-10T161800.482.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_CONYUG.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       CONTRATO_TRABAJO.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       EMPADRONAMIENTO_CONJUNTO.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eed0074-ff88-6632-a361-fdc08e89026c.pdf
+│
+├───BENJAMIN BERNARD UCHE
+│   │   CCF_001399.pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-12-27T131044.502.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PASAPORTE_ANTIGUO.pdf
+│   │   PDF Scanner 080424 7.04.31 (2).pdf
+│   │   PDF Scanner 080424 7.06.44 (3).pdf
+│   │   PODER.docx
+│   │   WhatsApp Image 2023-12-20 at 12.16.09 (1).jpeg
+│   │   WhatsApp Image 2023-12-20 at 12.16.09.jpeg
+│   │   WhatsApp Image 2023-12-20 at 12.16.33.jpeg
+│   │   WhatsApp Image 2023-12-20 at 12.16.34.jpeg
+│   │
+│   ├───APORTAR
+│   │       EMPADRONAMIENTO_HISTORICO.PDF
+│   │       Justificante_Anexo - 2023-12-28T093352.544.pdf
+│   │
+│   ├───APORTAR 2
+│   │       ACTA_NACIMIENTO.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJA_MENOR.pdf
+│   │       CCSE.pdf
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       DELE_A2.pdf
+│   │       NIE.pdf
+│   │       NIE_CONYUGE.pdf
+│   │       NIE_HIJA_MENOR.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_2010.pdf
+│   │       PASAPORTE_2015.pdf
+│   │       PODER.pdf
+│   │       resumen_expediente (98).pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           CONCESION.pdf
+│           Resguardo_1ef089cf-79e2-6d38-a4c1-c36194edca85.pdf
+│
+├───BERNARD UCHE BENJAMIN
+│       PASAPORTE.pdf
+│
+├───BERTA ROSA GONZALEZ PEREIRA
+│   │   ACTA NAC ORIGINAL.pdf
+│   │   ACTA_NAC_COPIA.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (17).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (66).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESION.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeafce4-7c2a-66cc-8866-d17c810a9a51.pdf
+│
+├───BOUBACAR FADIGA
+│   │   Captura.PNG
+│   │   copi literal.pdf
+│   │   formulario_pago_tasas - 2023-12-21T191751.728.pdf
+│   │   penal.pdf
+│   │   PODER PADRE.pdf
+│   │   PODER.docx
+│   │
+│   ├───CONCESION
+│   │       CONCESION.pdf
+│   │       Resguardo_1f02a391-05b4-6c0c-9b15-015b5e3cd24e.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NAC.pdf
+│           ACTA_NAC_HICA_SITPA.pdf
+│           ACTA_NAC_HIJO_MAMADOU.pdf
+│           ACTA_NAC_MOUSTAFA.pdf
+│           DIPLOMA_FP.pdf
+│           EMPADRONAMIENTO_HCO.pdf
+│           NIE.pdf
+│           PASAPORTE.pdf
+│           PASAPORTE_2013.pdf
+│           PASAPORTE_2018.pdf
+│           PODER.pdf
+│           RESOLUCION_DISPENSA.pdf
+│           TASA_PAGADA.pdf
+│           VIDA_LABORAL.pdf
+│
+├───BRAULIO BENITEZ AGUILERA
+│   │   Captura.PNG
+│   │   CCF_000227(1).pdf
+│   │   CERTIFICADO MATRICULA.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-06-26T124922.318.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   Notas carpeta.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (77).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       NIE.pdf
+│   │       NOTAS_ESO.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee8fae7-400e-62b6-a0cf-fbf5cd443e06.pdf
+│
+├───BRIAN RAFAEL MOLINA CEBALLOS
+│   │   Captura1.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-09-11T105232.705.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   HOJA_ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (97).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_HIJA.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       NIE_BRIANNA.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       RESIDENCIAS.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESIOB.pdf
+│           Resguardo_1eec7709-b425-69dc-a069-99f805fc7d5b.pdf
+│
+├───BRUNO GABRIEL GIMENEZ
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-06-02T124059.054.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (69).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       NIE.pdf
+│   │       NOTAS.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeaa608-96c1-61a8-950e-05c20138613c.pdf
+│
+├───CALLETANO MORA ZAMBRANO
+│       PASAPORTE.pdf
+│
+├───CARLOS DARIO SOTO VELEZ
+│   │   Captura.PNG
+│   │   DESIGNACION (7).pdf
+│   │   DESIGNACION.pdf
+│   │   FIRM.PNG
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-12-07T133239.713.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (90).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE_APTO.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RESOLUCIONES_RESIDENCIA.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           GweeSIfQVS6vqhZrlBePkWy7GMv7D56VrhbMxuUTpsg=.pdf
+│           Resguardo_1ef070eb-7189-61fc-a02d-8991e03b0b92.pdf
+│
+├───CARLOS ENRIQUE
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   HOJA ENCARGO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   resumen_expediente (20).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NACIMIENTO_HIJA.pdf
+│   │       ACTA_NACIMIENTO_HIJO.pdf
+│   │       CCSE.pdf
+│   │       DNI_HIJA.pdf
+│   │       DNI_HIJO.pdf
+│   │       formulario_pago_tasas.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           C1XCzJHpNBxwC6jFc8erD37uspDUt+q3VfjhogqgqTA= (1).pdf
+│           RES CONCESION.pdf
+│           Resguardo_1ee16706-7429-6f5e-8437-2fc6dc37ece0.pdf
+│
+├───CARMEN EDILSA RIVAS CUBILLAN
+│   │   Captura.PNG
+│   │   DESIGN.pdf
+│   │   formulario_pago_tasas - 2023-03-10T134524.268.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (32).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │   │   HOJA_ENCARGO.pdf
+│   │   │   Scan2023-03-09_110635.pdf
+│   │   │
+│   │   └───PARA PRESENTAR
+│   │           AAPP.pdf
+│   │           ACTA_NAC.pdf
+│   │           CCSE.pdf
+│   │           EMPADRONAMIENTO_HISTORICO.pdf
+│   │           NIE.pdf
+│   │           PASAPORTE.pdf
+│   │           PODER.pdf
+│   │           TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee4af57-4d41-692c-a1b7-b7d4b0be5547 (1).pdf
+│
+├───CESAR ALFONSO YUNDA ZAMBRANO
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   3c0948aa-d605-46f0-b196-7fea5d728f22.pdf
+│   │   ACTA_MATIMONIO.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-09-19T100402.758.pdf
+│   │   JUSTF ACTA MAT.pdf
+│   │   JUSTF ACTA NAC CONYUGE.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (97).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       AAPP_ESP.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DNI_AYELEN.pdf
+│   │       DNI_AYNARA.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       EMPADRONAMIENTO_HISTORICO.PDF
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eec0507-d0d5-65ba-b66e-e54d689c5eb8.pdf
+│
+├───CESAR AUGUSTO
+│   │   2023_0000105_ORD_20231056502220920230331130959_01.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   DOC_20230412090118 (1).pdf
+│   │   formulario_pago_tasas - 2023-04-27T113622.539.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   PASAP.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (53).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RENOV_NIE.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee5bb51-c142-643c-a487-89b0212f9cbb.pdf
+│
+├───CINDY MITCHELLE MAGANA GUERRA
+│   │   AAPP.pdf
+│   │   Captura.PNG
+│   │   Captura2.PNG
+│   │   Captura3.PNG
+│   │   Captura4.PNG
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-06-27T115120.631.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES (5).pdf
+│   │   PADRON.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (78).pdf
+│   │   WhatsApp Image 2023-06-27 at 11.25.00 (1).jpeg
+│   │   WhatsApp Image 2023-06-27 at 11.25.00.jpeg
+│   │
+│   ├───APORTAR
+│   │       Justificante_Anexo (93).pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJO.pdf
+│   │       ACTA_NAC_HIJOMENOR.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON_HCO.PDF
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeae06c-82cb-66d2-8cb5-db149f524e83.pdf
+│
+├───CLAUDIA LORENA HERNANDEZ MOLINA
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   Captura2.PNG
+│   │   Captura3.PNG
+│   │   formulario_pago_tasas - 2023-10-06T100532.294.pdf
+│   │   HOJA DE ENCARGO (quesada@abogados-extranjeria.com).docx
+│   │   IMG_20231005_225417 (1).jpg
+│   │   Pasaporte Angel.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (98).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJO.pdf
+│   │       CCSE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       PRIMER_NIE.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee613b-2d4f-6188-9387-1fc3874a58c8.pdf
+│
+├───CLAUDIA MABEL
+│   │   AAPP.pdf
+│   │   ACTA NACIMIENTO.pdf
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   Captura2.PNG
+│   │   CCF_004657.pdf
+│   │   DESIGNACION.pdf
+│   │   PODER.docx
+│   │   resumen_expediente.pdf
+│   │   Scan2023-02-09_171923.pdf
+│   │   WhatsApp Image 2023-02-23 at 12.07.32.jpeg
+│   │
+│   ├───APORTAR
+│   │       EMPADRONAMIENTO.pdf
+│   │       Justificante_Anexo (62).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTANACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_CLAUDIA_MABEL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee2b96c-6104-6118-a4d6-e5eefd28336e.pdf
+│
+├───CRISTHIAN DAVID GIMENEZ GIMENEZ
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-06-02T125658.762.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (99).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CERTIF_ACADEMICO.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       TITULO_ESO.pdf
+│   │
+│   └───RES CONCESION
+│           CONCESION.pdf
+│           Resguardo_1ef0c82e-1a0c-63b2-ad08-2facc1a2a9fe.pdf
+│
+├───CRISTIAN CAMILO
+│   │   A2XGB1814498021.pdf
+│   │   AAPP.pdf
+│   │   DESIGNACION.pdf
+│   │   documentoFuente.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-06-14T172809.305.pdf
+│   │   HOJA ENCARGO.pdf
+│   │   Notas carpeta.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (72).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       EMPADRONAMIENTO_HCO.PDF
+│   │       NIE.pdf
+│   │       PADRON_HCO.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeaa60c-1921-650a-b184-195aa25c779a.pdf
+│
+├───DANIEL
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   Captura2.PNG
+│   │   CapturaEstadoEXPT.PNG
+│   │   DESIGANCION.pdf
+│   │   Doc abogado autorizacio 1 (1).jpg
+│   │   formulario_pago_tasas - 2023-06-01T114943.199.pdf
+│   │   HOJA DE ENCARGO (3).pdf
+│   │   HOJA DE ENCARGO.docx
+│   │   PASAP.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (64).pdf
+│   │
+│   ├───APORTAR
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       Justificante_Anexo (100).pdf
+│   │       Justificante_Anexo - 2023-09-22T134751.574.pdf
+│   │       NIE.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee824fb-18fd-67f2-8800-312f9b0c318f.pdf
+│
+├───DANIEL ARSHBA
+│   │   19-01-2022Solicitud de Nacionalidad por Residencia.pdf
+│   │   ACTA_MAT.pdf
+│   │   CCF_001331(1).pdf
+│   │   CCF_001332(1).pdf
+│   │   CCF_001333(1).pdf
+│   │   DESIGNACION ABUELA.pdf
+│   │   DESIGNACION ABUELO.pdf
+│   │   FIRMA_MADRE-removebg-preview.png
+│   │   FIRMA_MADRE.PNG
+│   │   formulario_pago_tasas - 2023-12-01T131401.465.pdf
+│   │   formulario_pago_tasas - 2023-12-01T131627.568.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PADRON_VALENCIA.pdf
+│   │   PASAPORTE MADRE.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (88).pdf
+│   │
+│   ├───CONCESION
+│   │       CONCESION NA.pdf
+│   │       Resguardo_1f003db9-8020-6bc0-b42e-8b219875bc02.pdf
+│   │
+│   └───PRESENTAR
+│           ACTA_NAC.pdf
+│           CERTIF_MEDICO.pdf
+│           EMPADRONAMIENTOS.pdf
+│           HOJA_SOLICITUD_NAC.pdf
+│           MATRICULA_ESCOLAR.pdf
+│           NIE.pdf
+│           NIE_ABUELA.pdf
+│           NIE_ABUELO.pdf
+│           PASAPORTE.pdf
+│           PASAPORTE_ABUELA.pdf
+│           PASAPORTE_ABUELO.pdf
+│           PASAPORTE_MADRE.pdf
+│           PODER_MADRE.pdf
+│           TASA.pdf
+│
+├───DARIEL VALIDO CRUZ
+│   │   ACTA MAT VENCIDA.pdf
+│   │   Captura.PNG
+│   │   Cita Previa.pdf
+│   │   formulario-790-006_es_es (20).pdf
+│   │   formulario_pago_tasas - 2023-09-14T125952.770.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   JUSTF SOL ACTA MATRIMONIO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (97).pdf
+│   │
+│   ├───APORTAR
+│   │       Justificante_Anexo - 2024-10-11T135249.997.pdf
+│   │       PENADOS_ESP.pdf
+│   │
+│   ├───ESCRITO
+│   │       ESCRITO AGILIZACION PROCESAL.docx
+│   │       ESCRITO_AGILIZ.pdf
+│   │       Justificante_Anexo - 2024-10-09T095947.231.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJO.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RES_PRIMERA_CONCESION.pdf
+│   │       TASA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   ├───POLICIALES
+│   │       acceso_cnp.pdf
+│   │       DESIGNACION.pdf
+│   │       Justificante de Presentación REG (57).pdf
+│   │       NIE.pdf
+│   │       report_A-136019.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef8fbc7-e290-6cdc-8ac8-8bdd7934070b.pdf
+│
+├───DEAN PEREZ MARTIN
+│   │   31_DESIGNACION_DE_REPRESENTANTE (1) (2).pdf
+│   │   ACTA_MATRIM.pdf
+│   │   Captura.PNG
+│   │   formulario_pago_tasas - 2023-05-11T171247.162.pdf
+│   │   HOJA DE ENCARGO.docx
+│   │   HOJA DE ENCARGO.pdf
+│   │   IMG-20230315-WA0002.jpg
+│   │   IMG-20230315-WA0003.jpg
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente.pdf
+│   │   Solicitud_de_nacionalidad_por_residencia.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       PADRON.pdf
+│   │       PADRON_CONJUNTO.pdf
+│   │       PASAPORTE.pdf
+│   │       PENALES.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESION.pdf
+│   │       TASA_PAGADA.pdf
+│   │       TIE.pdf
+│   │
+│   └───RES CONCESION
+│           RES DE CONCESIOMN.pdf
+│           Resguardo_1ee7958e-eeaf-6f46-8c99-9f9195489535.pdf
+│
+├───DIANA MARIA ROMERO BELTRAN
+│   │   CEDULA.pdf
+│   │   DESIGNACION.pdf
+│   │   ENTREGA_DOC.pdf
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-07-10T183012.705.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTEANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (88).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DNI_HIJA.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eea94d8-675d-6cb8-88da-b7dfcfb05baf.pdf
+│
+├───DIEGO EDUARDO OLIVO AGUILAR
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-07-03T200346.233.pdf
+│   │   Hoja de encargo.pdf
+│   │   Notas carpeta.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   resumen_expediente (82).pdf
+│   │   TITULO_MEDICO.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MAT.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       ACTA_NAC_HIJA.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       DNI_HIJA.pdf
+│   │       INFORME_VIDA_LABORAL.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       PRIMERA_RESIDENCIA.pdf
+│   │       RESGUARDO_TOMA_HUELLA.pdf
+│   │       TASA.pdf
+│   │       TITULO_MASTER.pdf
+│   │       TITULO_MEDICO.pdf
+│   │       TITULO_MEDICO_MASTER.pdf
+│   │
+│   └───RES CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1eea90e1-afb6-682a-be11-87bb23912318 (1).pdf
+│
+├───DOMINGA ALFONSO ROMERO
+│   │   20231220_103122.jpg
+│   │   20231220_103350.jpg
+│   │   20231220_103436.jpg
+│   │   20231220_103553.jpg
+│   │   20231220_103731.jpg
+│   │   Captura.PNG
+│   │   CCF_001396(1).pdf
+│   │   CCF_001397(1).pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-12-26T193847.277.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PODER.docx
+│   │   resumen_expediente - 2024-01-04T122345.823.pdf
+│   │
+│   ├───APORTAR
+│   │       EMPADRONAMIENTO_HISTORICO.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       CONCESIONES_RESIDENCIAS.pdf
+│   │       DNI_HIJO_MENOR.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef1e559-daed-675e-9166-15559cadb1f1.pdf
+│
+├───DULCE MARIA ARTEAGA COLLADO
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   HOJA DE ENCARGO.pdf
+│   │   Notas carpeta.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (81).pdf
+│   │   TASA.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MAT.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PADRON_COLECTIVO.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeb0a71-a4aa-6a08-aaac-cd6d48d63f56.pdf
+│
+├───ELENA ANDREA GONZALEZ SOSA
+│       ResguardoInscripcionCCSE_2023.pdf
+│
+├───ELIANNY
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION REPRESENTANTE.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-03-17T123923.364.pdf
+│   │   HOJA ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (36).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       DNI.pdf
+│   │       EMPADRONAMIENTO_COLECT.PDF
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee613b4-5914-666a-b400-7fca779bf42f.pdf
+│
+├───ELVA MARINA ULLAGUARI POGO
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (21).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (73).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTIGUO.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef217ac-a37c-672c-8dc3-87ece8d38996.pdf
+│
+├───ENRIQUE DANIEL NEGRI
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   firma.png
+│   │   formulario-790-006_es_es (1).pdf
+│   │   formulario_pago_tasas (26).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE ITALIA.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (95).pdf
+│   │
+│   ├───Nueva carpeta
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       CEDULA.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE_ANTERIOR_ITALIA.pdf
+│   │       PASAPORTE_ARGENTINA.pdf
+│   │       PASAPORTE_ITALIA.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   ├───REQ DOC
+│   │       AAPP.pdf
+│   │       CCF_001811.pdf
+│   │       Justificante_Anexo - 2024-02-22T182031.446.pdf
+│   │       PASAPORTE_ARGENTINA.pdf
+│   │       REQU DOC_ENRIQUE.pdf
+│   │       Resguardo_1eec9816-c87a-6d5a-bf63-258e5b194363_.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESISON.pdf
+│           Resguardo_1ef00b77-df7a-6da2-8efd-d5bc1e997b03.pdf
+│
+├───EVELIA ROSA RAMIREZ ACEVEDO
+│   │   Captura1.PNG
+│   │   D1118977H163536.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-11-08T124013.035.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   Justf Sol Acta Nac Hija.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (76).pdf
+│   │   WhatsApp Image 2023-10-24 at 17.00.12.jpeg
+│   │   WhatsApp Image 2023-10-24 at 17.00.22.jpeg
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MAT.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJA.pdf
+│   │       CCSE.pdf
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       DNI_HIJAMENOR.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│
+├───FADOUA DJEBILI
+│       ACTA_MAT.pdf
+│       CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│       DESIGNACION.pdf
+│       FIRMA.png
+│       HOJA DE ENCARGO.pdf
+│       NIE.pdf
+│       NOTAS CARPETA.pdf
+│       OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│       PASAPORTE.pdf
+│
+├───GEORDANIS LOPEZ AGUILAR
+│   │   Captura.PNG
+│   │   CCSE.JPG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-10-04T094815.880.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (98).pdf
+│   │
+│   ├───ADJUNTAR
+│   │       report_A-133875 (1).pdf
+│   │       Resguardo_1ef54ca3-639a-6bd4-9f56-a9a4b1528565.pdf
+│   │
+│   ├───ADJUNTAR 2
+│   │       NIE CONYUGUE.pdf
+│   │       NIE GEORDANIS.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NAC.pdf
+│           CCSE.pdf
+│           NIE.pdf
+│           PADRON.pdf
+│           PASAPORTE.pdf
+│           PODER.pdf
+│           TASA.pdf
+│
+├───GERARDO JORDÁ CACERES
+│   │   ACTA_MATRIM.pdf
+│   │   ACTA_NAC_CONYUGE.pdf
+│   │   Captura.PNG
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   formulario_pago_tasas - 2023-03-23T184049.201.pdf
+│   │   Hoja de encargo.pdf
+│   │   Notas carpeta.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   Pasaporte.pdf
+│   │   PasaporteAntiguo.pdf
+│   │   PODER.docx
+│   │   Poder.pdf
+│   │   resumen_expediente (44).pdf
+│   │   Solicitud Acta Matrimonio.pdf
+│   │   Solicitud Acta Nacimiento Conyuge.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRI.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DNI.pdf
+│   │       LIBRO_FAM.pdf
+│   │       NIE.pdf
+│   │       PADRON_COLECTIVO.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   ├───REQ NACIONALIDAD
+│   │       ACTA_NAC.pdf
+│   │       Justificante_Anexo - 2023-10-26T195234.213.pdf
+│   │       REQ NAC.pdf
+│   │       Resguardo_1ee6bf3f-6e05-6e52-ae8b-93b66db7c3c4 (1).pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eef57b4-4922-6354-905c-b37fe3172619.pdf
+│
+├───GERTRUDIS
+│   │   AAPP.pdf
+│   │   ACTAMATRIMONIOVENCIDA.pdf
+│   │   ACTAMATRIMONIOVENCIDO.pdf
+│   │   ACTANACIMIENTO.pdf
+│   │   ACTANACIMIENTOCONYUGEVENCIDA.pdf
+│   │   AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   DESIGNACION.pdf
+│   │   DNICONYUGE.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (85).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   JUSTIFICANTESOLICITUDACTADEMATRIMONIO.pdf
+│   │   JUSTIFICANTESOLICITUDACTANACIMIENTOCONYUGE.pdf
+│   │   NACONYUGE.pdf
+│   │   NIE.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PADRON.PDF
+│   │   PASAPORTE.pdf
+│   │   PASAPORTEcompressed.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   SOLICITUD EMPADRONAMIENTO COLECTIVO.pdf
+│   │   TASA_GERTRUDIS.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       ACTANAC_CONYUGE.pdf
+│   │       ACTA_MATRIM.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee14f5b-f126-629a-a2c6-0d5d1d05ac60.pdf
+│
+├───GILDA RAMONA MARECO DE LOPEZ
+│   │   ACTA_NAC.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-05-31T124231.213.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (63).pdf
+│   │
+│   ├───PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       DNI_HIJA_MENOR.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee82500-9e69-61d4-b4c5-2d5a5d445392.pdf
+│
+├───GINA
+│       1292428832730-Solicitud_de_nacionalidad_por_residencia.pdf
+│       A2WMU938599320.PDF
+│       ANTECEDENTES PENALES (1).pdf
+│       antecedentes penales colombia.PDF
+│       apostilla antecedentes penales.PDF
+│       apostilla registro.PDF
+│       justificanteAP_14825477 (1).pdf
+│       nie javi.pdf
+│       pago apostilla.pdf
+│       pasaporte de entrada.pdf
+│       pasaporte vigente.pdf
+│       registro civil.PDF
+│
+├───GLADIS YANET MALDONADO
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   3c0948aa-d605-46f0-b196-7fea5d728f22.pdf
+│   │   Captura.PNG
+│   │   Captura2.PNG
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   EstadoExpte.PNG
+│   │   formulario_pago_tasas - 2023-06-05T130419.024.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NAC_HIJA_MENOR.pdf
+│   │       NIE.pdf
+│   │       PADRON_HISTORICO.PDF
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eea5a87-1b5d-67e0-aebb-d9f60856dbd3.pdf
+│
+├───GLORIA ISABEL MACAS ROBLES
+│   │   Captura.PNG
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAP.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (73).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON_HCO.PDF
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eea5a84-52cf-6b54-81b1-3d04271e8825.pdf
+│
+├───GRIGORE VALENTYN VOICILA
+│   │   Captura.PNG
+│   │   designacion de representante 1.pdf
+│   │   formulario_pago_tasas - 2023-05-03T175327.598.pdf
+│   │   HOJA DE ENCARGO GRIGORE VALENTYN.docx
+│   │   PODER.docx
+│   │   resumen_expediente (41).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   ├───REQ DOC
+│   │       ACTA_NACIMIENTO.pdf
+│   │       Justificante_Anexo - 2024-01-09T193306.899.pdf
+│   │       Nacimiento voicila firmado (1).pdf
+│   │       REQ_DOC.pdf
+│   │       Resguardo_1ee9348d-3641-683e-9f52-939f37e76c1e.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1f029e3e-79b0-60d2-8ab8-793efa1d352d.pdf
+│
+├───GUILLERMINA RODRIGUEZ MARTINEZ
+│   │   Captura.PNG
+│   │   cceseguill.jpeg
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-09-26T174356.935.pdf
+│   │   Guill.jpeg
+│   │   NIE ANTIGUO.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (98).pdf
+│   │   WhatsApp Image 2023-09-25 at 11.25.05.jpeg
+│   │   WhatsApp Image 2023-09-25 at 11.42.19.jpeg
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DNI_HIJA_MENOR.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eef57ba-d0f7-6986-84ce-b9252af2b3ad.pdf
+│
+├───GUSTAVO DANIEL AQUINO ARANA
+│       CCSE.pdf
+│
+├───GUSTAVO DANIEL PORTILLO MOREL
+│   │   DESIGNACION.pdf
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-07-18T191730.715.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (91).pdf
+│   │
+│   ├───APORTAR
+│   │       Justificante_Anexo - 2024-06-04T122430.651.pdf
+│   │       PENALES.pdf
+│   │       POLICIALES.pdf
+│   │       Resguardo_1ef225b0-9350-6de6-a566-77aca3504576.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NAC.pdf
+│           NIE.pdf
+│           PADRON.pdf
+│           PASAPORTE.pdf
+│           PASAPORTE_ANTERIOR.pdf
+│           PODER.pdf
+│           RESGUARDO_RENOVACION_NIE.pdf
+│           TASA.pdf
+│           TITULO_ESO.pdf
+│           VIDA_LABORAL.pdf
+│
+├───HAZEL YASMIN MORA PERNIA
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (13).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NIE.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (65).pdf
+│   │   SOLICITUD PASAPORTE.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJA.pdf
+│   │       CCSE.pdf
+│   │       JUSTIFICANTE_RENOVACION_NIE.pdf
+│   │       JUSTIFICANTE_RENOVACION_PASAPORTE.pdf
+│   │       NIE.pdf
+│   │       NIE_HIJA.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPYJUSTIF.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eec04d9-22fb-6bd4-aca2-8bab7e226cd6.pdf
+│
+├───HILDA PEÑA
+│   │   AAPP.pdf
+│   │   ACTADENACIMIENTO.pdf
+│   │   Captura.PNG
+│   │   Captura2.PNG
+│   │   DESIGNACION REPRESENTANTE.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas.pdf
+│   │   JUSTRENOVPASAP.pdf
+│   │   NIE.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PADRON.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTEC.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   resumen_expediente (31).pdf
+│   │   TASA_PAGADA.pdf
+│   │
+│   ├───APORTAR
+│   │       Justificante_Anexo.pdf
+│   │       PASAPORTE.pdf
+│   │       Scan2023-03-09_184256.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee1b1d2-cc28-60f4-86a3-c57fdf36cf47.pdf
+│
+├───IBRAHIM ATMANI
+│   │   19-01-2022Solicitud de Nacionalidad por Residencia.pdf
+│   │   Acta NAC VENCIDA.pdf
+│   │   DESIGNACION MADRE.pdf
+│   │   DESIGNACION PADRE.pdf
+│   │   firma madr.png
+│   │   firma madre padre.png
+│   │   firma padre.png
+│   │   formulario_pago_tasas - 2023-06-30T123524.965.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   LIBRO_FAM.pdf
+│   │   MATRICULA_ESCOLAR.pdf
+│   │   Notas carpeta.pdf
+│   │   PADRON COLECTIVO.pdf
+│   │   PADRON INDIVIDUAL.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   Trámites - Sede Electrónica.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       ACTA_NAC.pdf
+│   │       Justificante_Anexo (95).pdf
+│   │       LIBRO_FAM.pdf
+│   │       MATRICULA_ESCOLAR.pdf
+│   │       NIE.pdf
+│   │       NIE_MADRE.pdf
+│   │       NIE_PADRE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       resumen_expediente (59).pdf
+│   │       SOLICITUD_NACIONALIDAD.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eea99b0-15e9-653a-a51b-efa1b4df8250.pdf
+│
+├───IDELYS BRAVO TORRES
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-10-25T165511.628.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente - 2023-11-02T190758.674.pdf
+│   │   TASA.pdf
+│   │
+│   ├───APORTAR
+│   │       WhatsApp Image 2024-03-11 at 17.02.22.jpeg
+│   │
+│   ├───PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       DNI_HIJO_MENOR.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee21b4-410d-672c-8a21-bfc9bc0b336a.pdf
+│
+├───IGOR KURBANOV
+│   │   AAPP.pdf
+│   │   ACTA NAC TRADUCCION.pdf
+│   │   ACTA_NACIMIENTO.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-12-28T130959.451.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   nie_primera resolución.jpeg
+│   │   nie_segunda resolución.jpeg
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PASAPORTE_ANTIGUO.pdf
+│   │   PODER.docx
+│   │   resumen_expediente.pdf
+│   │
+│   ├───APORTAR
+│   │       CERTIF_EMPADRONAMIENTO.pdf
+│   │       Justificante_Anexo - 2024-02-06T124346.290.pdf
+│   │
+│   ├───APORTAR 2
+│   │       Justificante_Anexo - 2024-07-22T123935.143.pdf
+│   │       NIE_RENOVADO.pdf
+│   │
+│   ├───APORTAR 3
+│   │       PASAPORTE.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ABONO_TASA.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CONCESIONES_RESIDENCIA.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       DNI_HIJO.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NACIONALIDAD_RUSA.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE RENOVADO COMPLETO.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_2010.pdf
+│   │       PASAPORTE_2015.pdf
+│   │       PODER.pdf
+│   │       TITULOS_UNIVERSITARIOS.pdf
+│   │       TITULO_UNIVERSITARIO_INGLES.pdf
+│   │       TIUTLO_UNIVERSITARIO_MAGISTERIO.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1f0f1694-62d7-61d2-b19a-37490b8fcca0.pdf
+│
+├───IRMA ALVARENGA
+├───ISMAIL HAMDAM
+│   │   Captura.PNG
+│   │   CapturaFirma.PNG
+│   │   DELE CCSE.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-03-21T164946.122.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PASAPORTE_ANTERIOR2.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (34).pdf
+│   │
+│   ├───ISMAIL HAMDAN
+│   │       PASAPORTE ANTIGUO.pdf
+│   │       PASAPORTE EN VIGOR.pdf
+│   │       PASAPORTE.pdf
+│   │
+│   ├───PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PASAPORTE_ANTERIOR2.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee4af61-5ad2-6424-8a9e-fbd0d87f375a (1).pdf
+│
+├───JAHFAR ALEJANDRO CRUZ
+│   │   31_DESIGNACION_DE_REPRESENTANTE (9).pdf
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   Captura2.PNG
+│   │   Captura3.PNG
+│   │   EMPADRONAMIENTO (2).pdf
+│   │   formulario_pago_tasas - 2023-05-02T121256.134.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER - 2023-04-28T124214.279.pdf
+│   │   PODER.docx
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       resumen_expediente (48).pdf
+│   │       TASA_PAGADA.pdf
+│   │       vidalaboral.pdf
+│   │
+│   └───RES CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee795a9-e8ad-6722-a245-1343099f8d52.pdf
+│
+├───JAVIER FRANCISCO ARIZA TOMERO
+│   │   1292428832730-Solicitud_de_nacionalidad_por_residencia (1).pdf
+│   │   A2WMU938599320 (1).PDF
+│   │   AAPP.PDF
+│   │   antecedentes penales colombia (1).PDF
+│   │   apostilla antecedentes penales (1).PDF
+│   │   apostilla registro (1).PDF
+│   │   Designacion.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-05-02T122107.665.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   justificanteAP_14825477 (1) (1).pdf
+│   │   nie javi (1).pdf
+│   │   pago apostilla (1).pdf
+│   │   pasaporte de entrada (2).pdf
+│   │   pasaporte vigente (2).pdf
+│   │   PODER.docx
+│   │   registro civil (1).PDF
+│   │   resumen_expediente (49).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CERTIFICADO_ACADEMICO.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PENALES_ESP.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       TITULO_BACHILLER.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee795a4-6e6d-6b4c-b362-979dd1db6dee.pdf
+│
+├───JINESKA LEYMAR BERNAL SANCHEZ
+│   │   ACTA_NAC.pdf
+│   │   ACTA_NAC_HIJA.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-09-11T104124.743.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (97).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJA.pdf
+│   │       CCSE.pdf
+│   │       CERTIF_RESIDENCIAS.pdf
+│   │       NIE.pdf
+│   │       NIE_BRIANNA.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eec6a07-2b82-67b0-b874-cd0bc02e1abd.pdf
+│
+├───JOHAN MARGARITA MORILLO BOSQUE
+│   │   Captura.PNG
+│   │   CERTIFICADO MATRIMONIO.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-05-16T171119.985.pdf
+│   │   Hoja de encargo.pdf
+│   │   Notas carpeta.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (56).pdf
+│   │   Trámites - Sede ElectrónicaMatrik.pdf
+│   │   Trámites - Sede ElectrónicaNAC.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       LIBRO_FAM.pdf
+│   │       NIE.pdf
+│   │       PADRON_COLECT.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESION.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee7c800-45e8-68b4-b937-e912b42390ff.pdf
+│
+├───JOHN HENRY SALAS OROZCO
+│   │   A2XKL1050375451 (2).pdf
+│   │   Captura.PNG
+│   │   Certificado_230518724033020064 (2).pdf
+│   │   documentoFuente (13).pdf
+│   │   documentoFuente (14).pdf
+│   │   formulario_pago_tasas - 2023-11-27T121211.621.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (82).pdf
+│   │   TASA.pdf
+│   │
+│   ├───APORTAR
+│   │       RESOLUCION_RESIDENCIA.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_ANDRU_FELIPE.pdf
+│   │       ACTA_NAC_SAMUEL_DAVID.pdf
+│   │       CCSE.pdf
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       EMPADRONAMIENTO_COLECT.pdf
+│   │       EMPADRONAMIENTO_HCO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       REGISTRO_CENTRAL_PENADOS.pdf
+│   │       TASA_PAGADA.pdf
+│   │       TITULO.pdf
+│   │
+│   ├───POLICIALES
+│   │       acceso_cnp.pdf
+│   │       DESIGNACION.pdf
+│   │       Justificante de Presentación REG (65).pdf
+│   │       report_A-138711.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef986b0-253f-6dee-b5a2-fbfb6d234fdb (1).pdf
+│
+├───JORGE ANTONIO
+│   │   230316_COL 6734_ANA BELÉN QUESADA SOLER_JORGEN ANTONIO JESUS ILANJIAN HADDAD.pdf
+│   │   ACTA NACIMIENTO.pdf
+│   │   Apostilla Jorge Ilanjian(1).pdf
+│   │   Captura1.PNG
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   FIRMA.png
+│   │   NOTAS CARPETA.pdf
+│   │   OTIwMmRiMjAwYTBlMGI0N2ZhYmY0NDRiZTA1MTM0YjYxZTRjZjRjZmYzOTAyMDlhODU2M2E1OWRkNmNmODEyYw==.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE VENCIDO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER - 2023-02-23T110216.085.pdf
+│   │   PODER.pdf
+│   │
+│   ├───DENEGACION
+│   │       DENEGAICIOB.pdf
+│   │       Resguardo_1ef35225-f58d-6de0-97ae-598be7c130e0.pdf
+│   │
+│   ├───ESCRITO AGILIZACION
+│   │       ESCRITO AGILIZACION PROCESAL.docx
+│   │       ESCRITO AGILIZACION PROCESAL.pdf
+│   │       Justificante_Solicitud (37).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA NACIMIENTO.pdf
+│   │       EMPADRONAMIENTO.PDF
+│   │       NIE.pdf
+│   │       PASAPORTE VENCIDO.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   ├───PENALES
+│   │       Justificante de registro (16).pdf
+│   │       NIE_ACTUAL.pdf
+│   │       PODER.pdf
+│   │       Solicitud (15).pdf
+│   │
+│   ├───POLICIALES
+│   │       acceso_cnp.pdf
+│   │       Justificante de Presentación REG (30).pdf
+│   │       report_A-130533.pdf
+│   │
+│   └───REQ DOC
+│           AAPP.pdf
+│           Justificante_Solicitud (25).pdf
+│           NIE_ACTUAL.pdf
+│           PODER.pdf
+│           REQ DOC.pdf
+│           Resguardo_1ee3a82a-0f6a-691c-b0f3-391d9f3f7aec.pdf
+│
+├───JOSE ANGEL VOICILA
+│   │   31_DESIGNACION_DE_REPRESENTANTE_COMPLETADO_FIRMADO.pdf
+│   │   3CertificadodeAntecedentespenales.pdf
+│   │   4PartidaNacimientoRumana.pdf
+│   │   ACTA_NAC.pdf
+│   │   CapturaMadre.PNG
+│   │   CapturaPadre.PNG
+│   │   designacion de representante 1.pdf
+│   │   designacion de representante.pdf
+│   │   formulario_pago_tasas - 2023-03-17T113545.149.pdf
+│   │   HOJA DE ENCARGO (quesada@abogados-extranjeria.com 2).docx
+│   │   nie mihaela1.pdf
+│   │   nie mihaela2.pdf
+│   │   nie valentin 1.pdf
+│   │   nie valentin 2.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (39).pdf
+│   │   sentencia_incapacidad_jose_angel.pdf
+│   │   sentencia_incapacidad_jose_angel_compressed.pdf
+│   │   Trámites - Sede Electrónica.pdf
+│   │
+│   ├───CONCESION
+│   │       CONCESION.pdf
+│   │       Resguardo_1efb0d9c-6813-64ee-80df-df273a889805.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       ACTA_NACIMIENTO.pdf
+│   │       NIE.pdf
+│   │       NIE_MADRE.pdf
+│   │       NIE_PADRE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       RESMOVREDUC.pdf
+│   │       RES_DISCAPACIDAD.pdf
+│   │       sentencia_incapacidad_jose_angel.pdf
+│   │       Solicitud_de_nacionalidad_por_residencia.PDF
+│   │       TARJETA_DISCAPACIDAD.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───REQ DOC
+│           Justificante_Anexo - 2023-11-20T100216.861.pdf
+│           PASAPORTE_MADRE.pdf
+│           PASAPORTE_PADRE.pdf
+│           REQ_DOC.pdf
+│           Resguardo_1ee7c7bd-aa3d-6456-971e-d1983ce0e948.pdf
+│
+├───JOSE ERNESTO TORRES
+│   │   Captura.PNG
+│   │   CCF_000097(1).pdf
+│   │   Cita Previa.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   Notas carpeta.pdf
+│   │   PODER.docx
+│   │   resumen_expediente.pdf
+│   │   WhatsApp Image 2023-05-23 at 15.20.06 (1).jpeg
+│   │   WhatsApp Image 2023-05-23 at 15.20.06.jpeg
+│   │
+│   ├───APORTAR
+│   │       CENTRAL_PENADOS.pdf
+│   │       Justificante_Anexo - 2024-05-20T175941.217.pdf
+│   │
+│   ├───APORTAR_2
+│   │       CANCELACION_POLICIALES.pdf
+│   │       Justificante_Anexo - 2025-07-10T122726.084.pdf
+│   │
+│   ├───CERTIFICADO DIGITAL
+│   │       CITA.pdf
+│   │
+│   ├───ESCRITO AGILIZACION
+│   │       ESCRITO AGILIZACION PROCESAL.docx
+│   │       ESCRITO_AGILIZACION.pdf
+│   │       Justificante_Anexo - 2024-10-03T190936.112.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJO.pdf
+│   │       CCSE.pdf
+│   │       DNI_HIJO_MENOR.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   ├───POLICIALES
+│   │       report_C-209489.pdf
+│   │
+│   └───RES DENEGACION
+│           RES DENEGACION.pdf
+│
+├───JOSE GUILLERMO
+│   │   ACTA_NACIMIENTO.pdf
+│   │   Captura.PNG
+│   │   CCF_003672.pdf
+│   │   DESIGNACIO.pdf
+│   │   NIE.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_compressed (66).pdf
+│   │   PODER.docx
+│   │   resumen_expediente (32).pdf
+│   │
+│   ├───APORTAR
+│   │       Justificante_Anexo (68).pdf
+│   │       NIE.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE_ANTIGUO.pdf
+│   │       PASAPORTE_COMPLETO.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       WhatsApp Image 2023-01-13 at 11.47.05.jpeg
+│   │       WhatsApp Image 2023-01-13 at 11.47.05.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee2b95c-8346-6a2e-b33c-715d9447bfc3.pdf
+│
+├───JOSE RAMON BARRIOS
+│   │   ACTA NACIMIENTO.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   NIE.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE EN VIGOR.pdf
+│   │   PASAPORTE VENCIDO.pdf
+│   │   PODER.docx
+│   │   PROTECCION DE DATOS.pdf
+│   │   resumen_expediente (23).pdf
+│   │   WhatsApp Image 2023-02-13 at 18.28.38.jpeg
+│   │
+│   ├───PARA ADJUNTAR
+│   │       Justificante_Anexo (72).pdf
+│   │       NIE_ACTUAL.pdf
+│   │       PASAPORTE_ACTUAL.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RENOV_NIE.pdf
+│   │       RENOV_PASAPORTE.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee4af51-6cde-6e34-8b91-1dd574d98bc1 (1).pdf
+│
+├───JOSEFINA BERIGUETE DE LA CRUZ
+│   │   DESIGNACION.pdf
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-07-20T192504.223.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (54).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MAT.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       ACTA_NAC_DERECK_MANUEL.pdf
+│   │       ACTA_NAC_SARAI_ESTHER.pdf
+│   │       ACTA_NAC_STAYNER.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │       Trámites - Sede Electrónica.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeaf069-2432-63ca-b633-d1d5370063cc.pdf
+│
+├───JUANA ANTONIA GRACIANO ALMONTE
+│   │   Captura.PNG
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-04-27T113456.261.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   justificante (6).pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAP.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (46).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │   │   AAPP.pdf
+│   │   │   ACTA_MATRIM.pdf
+│   │   │   ACTA_MATRIMONIO.pdf
+│   │   │   ACTA_NACIMIENTO.pdf
+│   │   │   CCSE.pdf
+│   │   │   DNI_CONYUGE.pdf
+│   │   │   JUSTIFICANTE_MEDICO.pdf
+│   │   │   NIE.pdf
+│   │   │   PASAPORTE.pdf
+│   │   │   PODER.pdf
+│   │   │   TASA_PAGADA.pdf
+│   │   │
+│   │   └───APORTAR
+│   │           ACTA_MATRIMONIO.pdf
+│   │           Justificante_Anexo (89).pdf
+│   │
+│   └───RES DE CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee7d858-5bdf-65ce-8a3e-872151f47190.pdf
+│
+├───JUDIT NFUMU BIBANG
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   3c0948aa-d605-46f0-b196-7fea5d728f22.pdf
+│   │   AAPP.pdf
+│   │   ACTA NACIMIENTO LIAM.pdf
+│   │   ACTA_NAC.pdf
+│   │   ACTA_NAC_GORETTI_ALENE.pdf
+│   │   ACTA_NAC_LIAM.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (15).pdf
+│   │   formulario_pago_tasas - 2023-11-08T175624.752.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   JUSTF SOL ACTA NAC LIAM.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE PRORROGADO.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (78).pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NACIMIENTO.pdf
+│           ACTA_NAC_GORETII.pdf
+│           ACTA_NAC_HIJA_MARIA_ANTONIA.pdf
+│           ACTA_NAC_LIAM.pdf
+│           ACTA_NAC_TATIANA_ADA.pdf
+│           EMPADRONAMIENTO_HCO.PDF
+│           LIBRO_FAMILIA.pdf
+│           NIE.pdf
+│           PASAPORTE.pdf
+│           PODER.pdf
+│           TASA.pdf
+│           TITULO_FP.pdf
+│
+├───JUSTINA URZULINA
+│   │   AAPP.pdf
+│   │   Captura.JPG
+│   │   Captura2.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas (4).pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (68).pdf
+│   │
+│   ├───CONCESION NACIONALIDAD
+│   │       CONCESION.pdf
+│   │       Resguardo_1eeeabc4-fe42-6848-b9d4-f72b1a8db3a5.pdf
+│   │
+│   └───PARA PRESENTAR
+│           ACTANACIMIENTO.pdf
+│           CCSE.pdf
+│           CERTIF_MATRIMONIO.pdf
+│           DNICONYUGE.pdf
+│           EMPADRONAMIENTOHCO.pdf
+│           NIE.pdf
+│           PASAPORTE.pdf
+│           PASAPORTE_ANTERIOR_compressed.pdf
+│           PODER.pdf
+│           TASA_PAGADA.pdf
+│
+├───KENNEDY BLENDEO GOMES FERREIRA
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-11-28T125217.968.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (90).pdf
+│   │   TASA.pdf
+│   │
+│   ├───APORTAR
+│   │       RESOLUCION_PAREJA_HECHO.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CERTIFICADO_NOTAS.pdf
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │       VIDA_LAB.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee540d-95de-650e-b99d-935535d7ddf2.pdf
+│
+├───KERIM OLKAN
+│   │   70da3d69-5189-4c78-8b12-b9c8d587046a.JPG
+│   │   9eeb18e6-4149-4306-a410-217bb6e99341.JPG
+│   │   AAPP_ESP.pdf
+│   │   ACTA_MAT.pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION REPRESENTANTE.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-11-07T130420.468.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (76).pdf
+│   │   Trámites - Sede Electrónica.pdf
+│   │   Trámites - Sede ElectrónicaNac.pdf
+│   │   VH KERIM OZKAN_EXTRA.PDF
+│   │
+│   ├───CONCESION
+│   │       CONCESION.pdf
+│   │       Resguardo_1eedf7fa-af8c-647a-abf7-b7975efe2148.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NAC.pdf
+│           ACTA_NAC_CONYUG.pdf
+│           CCSE.pdf
+│           CERTIF_MATRIMONIO.pdf
+│           DELE.pdf
+│           DNI_CONYUG.pdf
+│           DOCUMENTO_VIAJE.pdf
+│           LIBRO_FAMILIA.pdf
+│           NIE.pdf
+│           PADRON_HCO_COLECTIVO.PDF
+│           PASAPORTE_ANTERIOR.pdf
+│           PODER.pdf
+│           REG_PENADOS.pdf
+│           RES_ASILO.pdf
+│           TASA_PAGADA.pdf
+│
+├───KHADY DIAW
+│   │   ACTA NAC_.pdf
+│   │   Captura_MAD.PNG
+│   │   Captura_PAD.PNG
+│   │   DESIGNACION PADRE.pdf
+│   │   formulario_pago_tasas - 2023-11-21T104616.658.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   JUSTF SOL ACTA NAC.pdf
+│   │   Justificante_Anexo - 2023-11-30T190555.305.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE MADRE.pdf
+│   │   PASAPORTE PADRE.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER - 2023-11-21T095830.913.pdf
+│   │   PODER MADRE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (85).pdf
+│   │   WhatsApp Image 2023-11-22 at 11.05.32.jpeg
+│   │
+│   ├───PARA PRESENTAR
+│   │       CERTIFICADO_MATRICULA.pdf
+│   │       CERTIFICADO_NACIMIENTO.pdf
+│   │       EMPADRONAMIENTO_COLECTIVO.pdf
+│   │       NIE.pdf
+│   │       NIE_MADRE.pdf
+│   │       NIE_PADRE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_MADRE.pdf
+│   │       PASAPORTE_PADRE.pdf
+│   │       PODER.pdf
+│   │       SOLICITUD_NACIONALIDAD.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eedf802-8307-63de-b94c-179269fdabc9.pdf
+│
+├───LEANDRO SALAS REYES
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-09-11T184923.279.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (97).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   ├───REQ DOC
+│   │       AAPP_ACTUALIZADOS.pdf
+│   │       Justificante_Anexo - 2024-02-19T093218.082.pdf
+│   │       REQ_DOC.pdf
+│   │       Resguardo_1eecf002-4403-67f4-ab40-676f7f60f80c.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef1d098-a55d-62b8-bb60-7b074af4152d.pdf
+│
+├───LEYDI JHOHANA CAMPAÑA GARCIA
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-11-21T125113.774.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PHOTO-2023-10-18-18-51-54.jpg
+│   │   PODER.docx
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJA.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       NIE_HIJA.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       resumen_expediente (80).pdf
+│   │       TASA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee14e5-5162-6f68-9baf-afa8c633565a.pdf
+│
+├───LIZ RAMONA GOMEZ ARANDA
+│   │   CCF_000211(1).pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (5).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   resumen_expediente (50).pdf
+│   │
+│   ├───CONCESION
+│   │       CONCESION.pdf
+│   │       Resguardo_1efd1c7c-08be-6232-ad3e-7b3cac64fa0a.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTAnAC.pdf
+│           CCSE.pdf
+│           LIZ RAMONA GOMEZ ARANDA_EXTRA (1).PDF
+│           NIE.pdf
+│           PADRON.PDF
+│           PASAPORTE.pdf
+│           PASAPORTEANTERIOR.pdf
+│           PODER.pdf
+│           TASA.pdf
+│
+├───LIZBETH YESENIA ALVAREZ
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   Captura2.PNG
+│   │   Captura3.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-05-08T163006.862.pdf
+│   │   PASAPORTE VENCIDO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │
+│   ├───CONCESION
+│   │       CONCESION.pdf
+│   │       Resguardo_1efe88db-eaa5-62dc-abe7-75ef19a1a20d.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJA.pdf
+│   │       CCSE.pdf
+│   │       LIBRO_FAM.pdf
+│   │       NIE.pdf
+│   │       NIE_CONYUGE.pdf
+│   │       NIE_HIJA.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAP_VENCIDO.pdf
+│   │       PODER.pdf
+│   │       resumen_expediente (52).pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───POLICIALES
+│           acceso_cnp.pdf
+│
+├───LIZETTE GARCIA
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-11-30T115928.529.pdf
+│   │   KnODD6leOqSPKqpjfZJXaXvs9soOeILEROu51OtalH0=.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTEACTUAL.pdf
+│   │   PASAPORTEANTIGUO.pdf
+│   │   PODER.docx
+│   │   RES CONCESION.pdf
+│   │   RESOLUCION CONCESION.pdf
+│   │   resumen_expediente - 2023-12-01T134035.473.pdf
+│   │   RES_8853213.pdf
+│   │
+│   ├───ADJUNTAR
+│   │       SEMINARIO_UNIR.pdf
+│   │
+│   ├───ADJUNTAR 2
+│   │       ACCESO_ABOGACIA.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTANACIMIENTO.pdf
+│           CONCESIONES_RESIDENCIA.pdf
+│           NIE.pdf
+│           PADRON.PDF
+│           PASAPORTEACTUAL.pdf
+│           PASAPORTEANTIGUO.pdf
+│           PODER.pdf
+│           REG_PENADOS.pdf
+│           TASA.pdf
+│           TITULOUNIVERSIDAD.pdf
+│           VIDA_LABORAL.pdf
+│
+├───LORENA JIMENEZ SOLARTE
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   3c0948aa-d605-46f0-b196-7fea5d728f22.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-09-28T110657.461.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente.pdf
+│   │   TASA.pdf
+│   │
+│   ├───CONCESION NACIONALIDAD
+│   │       CONCESION NACIONALIDAD.pdf
+│   │       Resguardo_1eec9824-e70b-63ec-ae38-3d8e032c6a32.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_MATRIMONIO.pdf
+│           ACTA_NAC.pdf
+│           ACTA_NAC_CONYUGE.pdf
+│           CCSE.pdf
+│           DNI_CONYUGE.pdf
+│           EMPADRONAMIENTO_HCO.PDF
+│           NIE.pdf
+│           PADRON_CONJUNTO.pdf
+│           PADRON_INDIVIDUAL.pdf
+│           PASAPORTE.pdf
+│           PODER.pdf
+│           RESOLUCION_CONCESION.pdf
+│           TASA.pdf
+│           VIDA_LABORAL.pdf
+│
+├───LUIS ENRIQUE OSTAIZA LABORDE
+│   │   Captura.PNG
+│   │   DESIGNACION REP.pdf
+│   │   formulario_pago_tasas - 2023-10-31T121603.219.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente - 2023-11-02T192003.954.pdf
+│   │   TASA.pdf
+│   │   WhatsApp Image 2023-10-31 at 12.34.16.jpeg
+│   │   WhatsApp Image 2023-10-31 at 12.34.29 (1).jpeg
+│   │   WhatsApp Image 2023-10-31 at 12.34.29 (2).jpeg
+│   │   WhatsApp Image 2023-10-31 at 12.34.29 (3).jpeg
+│   │   WhatsApp Image 2023-10-31 at 12.34.29 (4).jpeg
+│   │   WhatsApp Image 2023-10-31 at 12.34.29.jpeg
+│   │
+│   ├───CANCELACION AAPP
+│   │       CANCELADOS.pdf
+│   │       Justificante_Anexo - 2024-11-27T184646.275.pdf
+│   │
+│   ├───ESCRITO AGILIZACION
+│   │       ESCRITO AGILIZACION PROCESAL.docx
+│   │       ESCRITO_AGILIZACION.pdf
+│   │       Justificante_Anexo - 2024-11-27T184646.275.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       NIE_HIJO_MENOR.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASAS_PAGADAS.pdf
+│   │
+│   └───RES CONCESION
+│           CONCESION ENTREGADA.docx
+│           RES CONCESION.pdf
+│           Resguardo_1f0f1689-486c-6e4c-b4b0-f177f2fbde7b.pdf
+│
+├───LUIS MOISE ACOSTA
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   3c0948aa-d605-46f0-b196-7fea5d728f22.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-12-13T181630.275.pdf
+│   │   HOJA_ENCARGO.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (93).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DNI.pdf
+│   │       EMPADRONAMIENTO_COLECT.PDF
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORT_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESION.pdf
+│   │       TASA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef0bbfe-dc6a-6f1c-bbdc-9984dcc9e474.pdf
+│
+├───LUIS RENE
+├───LUIS RENE ALVAREZ CEDILLO
+│   │   Captura de pantalla 2024-10-02 170531.png
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-12-16T182406.969.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (97).pdf
+│   │
+│   ├───ACCESO POLICIALES
+│   │       acceso_cnp.pdf
+│   │       Justificante de Presentación REG (64).pdf
+│   │       report_A-137870.pdf
+│   │
+│   ├───CANCELACION POLICALES
+│   │       Justificante de Presentación REG (64).pdf
+│   │
+│   ├───CONCESION
+│   │       CONCESION.pdf
+│   │       Resguardo_1f0195dd-be4f-69fa-abdd-1fd1e54d48fc.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RESGUARDO_NIE.pdf
+│   │       TASA.pdf
+│   │
+│   └───PENALES
+│           CERTF_PENADOS.pdf
+│           Justificante_Anexo - 2025-01-09T165503.591.pdf
+│
+├───LUISA CAROLINA YANEZ SANCHEZ
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-11-14T120039.369.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (77).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NACIMIENTO_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       NIE.pdf
+│   │       PADRON_CONJUNTO.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESION.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eef70bb-ad70-6bce-8712-3702eb5d8cda.pdf
+│
+├───LUZ ADRIANA NARANJO ARVELAEZ
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-12-11T114518.879.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (92).pdf
+│   │   vida_laboral (86).pdf
+│   │   WhatsApp Image 2023-12-01 at 07.52.11.jpeg
+│   │   WhatsApp Image 2023-12-01 at 07.52.35.jpeg
+│   │   WhatsApp Image 2023-12-01 at 07.54.23 (1).pdf
+│   │   WhatsApp Image 2023-12-01 at 07.54.23.jpeg
+│   │
+│   ├───CONCESION
+│   │       RES CONCESION.pdf
+│   │       Resguardo_1ef00795-66a7-69f6-8641-75c87daddb9c.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NAC.pdf
+│           CCSE.pdf
+│           CONCESIONES_RESIDENCIA.pdf
+│           NIE.pdf
+│           PADRON.pdf
+│           PASAPORTE.pdf
+│           PODER.pdf
+│           TASA.pdf
+│           VIDA_LABORAL.pdf
+│
+├───LUZ JAZMIN MENDOZA ORTIZ
+│   │   Captura.JPG
+│   │   Captura2.JPG
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   firma.png
+│   │   HOJA ENCARGO.pdf
+│   │   Notas carpeta.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (74).pdf
+│   │   TASA.pdf
+│   │   VC LUZ JAZMIN MENDOZA ORTIZ_13487651_EXTRA.PDF
+│   │
+│   ├───CONCESION
+│   │       RES CONCESION.pdf
+│   │       Resguardo_1eeb37f0-3a5b-64f2-876f-0721712003c2.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NAC.pdf
+│           Captura.JPG
+│           EMPADRONAMIENTO.PDF
+│           NIE.pdf
+│           PASAPORTE.pdf
+│           PODER.pdf
+│           TASA.pdf
+│           TITULO_ESO.pdf
+│
+├───LUZ MARINA SALAZAR SANDOVAL
+│   │   A2XGH1132592141.PDF
+│   │   Captura de pantalla 2023-09-25 161313.png
+│   │   Captura de pantalla 2023-09-25 180615.png
+│   │   CEDULA.pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-06-09T125755.016.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PADRON.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   payment_8afadd56-3562-74f5-9824-73460c4aaaee.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (65).pdf
+│   │   resumen_expediente (67).pdf
+│   │   Soporte_A2XGH1132592141.PDF
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON_HISTORICO.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESION.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eea94d1-45d2-600a-9580-318e3b39edcb.pdf
+│
+├───LUZ NOELIA PEREIRA CABALLERO
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (18).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   Proceso automático para la solicitud de cita previa.pdf
+│   │   resumen_expediente (69).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef23178-8e2a-6c12-8192-2f3b44360e16.pdf
+│
+├───LUZ PIEDAD GALARZA
+│   │   A2XMS552523871.pdf
+│   │   Captura.PNG
+│   │   CEDULA.pdf
+│   │   CITA JURA.pdf
+│   │   DESIGNACION.pdf
+│   │   Formulario de Pago - Credibanco.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   payment_646edfec-96ab-7a61-b0c8-68d00c4aaaee.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (95).pdf
+│   │   Soporte_A2XMS552523871.pdf
+│   │
+│   ├───PATA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef29551-79f1-602e-bf07-0d8a5fd10cad.pdf
+│
+├───MABEL BEATRIZ RIQUELME DE BRITEZ
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   3c0948aa-d605-46f0-b196-7fea5d728f22.pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-12-07T132130.264.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (94).pdf
+│   │   RES_CONCESION_HIJO.pdf
+│   │
+│   ├───Nueva carpeta
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJO.pdf
+│   │       CCSE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       NIE_HIJO.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       SENTENCIA.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef08901-feaa-68fa-bfaa-553869cb812c.pdf
+│
+├───MADELIN HERRERA PEREZ
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas (23).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE HIJA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (92).pdf
+│   │
+│   ├───APORTAR
+│   │       Justificante_Anexo - 2023-11-20T101606.617.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_HIJA.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJA.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       LIBRO_FAM.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RENOVACION_PASAPORTE.pdf
+│   │       TASA.pdf
+│   │       VIDA_LAB.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeb0a66-8dfb-6966-ac5e-453c434624f5.pdf
+│
+├───MAIRA ALEJANDRA REYES IBARRA
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   CCSE.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-05-09T124229.667.pdf
+│   │   Hoja encargo.pdf
+│   │   Notas carpeta.pdf
+│   │   PASAPORTE V.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │
+│   ├───APORTAR
+│   │       EMPADRONAMIENTO.pdf
+│   │       Justificante_Anexo (98).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       CONCESION_RENOV.pdf
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTES.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee795b0-73a3-63ee-90a1-5d66c682c665.pdf
+│
+├───MANUEL ANTONIO AMOROCHO
+│   │   A2XMH1322536861.PDF
+│   │   ACTA_NAC.pdf
+│   │   Captura.PNG
+│   │   CEDULA.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-12-07T133738.290.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   payment_6baa2520-cf82-7ecc-8461-4f420c4aaaee.pdf
+│   │   PODER.docx
+│   │   RES.pdf
+│   │   RES_8610306.pdf
+│   │   Soporte_A2XMH1322536861.PDF
+│   │   WhatsApp Image 2023-11-27 at 11.19.59 (1).jpeg
+│   │   WhatsApp Image 2023-11-27 at 11.20.28 (1).jpeg
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NACHIJO.pdf
+│   │       CCSE_APTO.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESIONES.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef08570-1843-6bd0-88bd-3b8f59e059e4.pdf
+│
+├───MARCIANA VILLALBA GONZALEZ
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (22).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (70).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DNI_HIJA_MENOR.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eecfc9c-8089-6240-a697-c339f10ce42a.pdf
+│
+├───MARCO VINICIO ROMAN
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   Captura.PNG
+│   │   cbe3480c-54a0-4bff-a8da-bb95143a65d8.pdf
+│   │   DESIGNACION DE REPRESENTANTE.pdf
+│   │   HOJA ENCARGO.pdf
+│   │   PASAPORTE VENCIDO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   Trámites - Sede Electrónica.pdf
+│   │
+│   ├───APORTAR
+│   │       ACTA_NAC_HIJO.pdf
+│   │       EMPADRONAMIENTO_HCO.PDF
+│   │       Justificante_Anexo (63).pdf
+│   │       Justificante_Anexo (65).pdf
+│   │
+│   ├───JUSTIFICANTE PRESENTACION
+│   │       resumen_expediente (27).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJA.pdf
+│   │       CCSE.pdf
+│   │       DNI_HIJO.pdf
+│   │       NIE.pdf
+│   │       NIE_HIJA.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_VENCIDO.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───POLICIALES
+│           acceso_cnp.pdf
+│
+├───MARIA ELENA GAVILAN CARDOZO
+│   │   Captura.PNG
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   EMPADRONAMIENTO HISTORICO.PDF
+│   │   formulario_pago_tasas - 2023-03-20T175206.896.pdf
+│   │   HOJA ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE ANTIGUO.pdf
+│   │   PASAPORTE VENCIDO.pdf
+│   │   PASAPORTO.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (35).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_VENCIDO.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee8ee45-ed36-6bf4-bb4f-cfffba842dc0.pdf
+│
+├───MARIA JOSE DE NAZARETH HERNANDEZ MORA
+│   │   ACTA_NAC.pdf
+│   │   Captura.PNG
+│   │   D1122852H193128.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-06-06T120835.642.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │
+│   ├───APORTAR
+│   │       Justificante_Anexo - 2023-11-20T105051.928.pdf
+│   │       NIE.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │       TITULO.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee6153-1a1b-65f4-a805-1f6d3385849c.pdf
+│
+├───MARIA MARCELA CAÑAS
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-11-28T123438.970.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   TASA.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       resumen_expediente (83).pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee53e4-61ca-6c82-af00-571c1f9b4569.pdf
+│
+├───MARIA NILDA OZORIO
+│   │   DESIGNACION.pdf
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-07-10T192418.444.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTEANTERIOR.pdf
+│   │   PASAPORTEcompressed.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (87).pdf
+│   │
+│   ├───CONCESION NACIONALIDAD
+│   │       CONCESION NACIONALIDAD.pdf
+│   │       Resguardo_1eeb37f3-fc38-6c66-ab26-4363aba4c8c7.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_MAT.pdf
+│           ACTA_NAC.pdf
+│           ACTA_NAC_CONYUGE.pdf
+│           CCSE.pdf
+│           DNI_CONYUGE.pdf
+│           NIE.pdf
+│           PADRON.pdf
+│           PASAPORTE.pdf
+│           PODER.pdf
+│           TASA.pdf
+│
+├───MARIA PAULA GUIMARAES REZENDE
+│       HOJA DE ENCARGO.docx
+│
+├───MARIAM ATMANI
+│   │   19-01-2022Solicitud de Nacionalidad por Residencia.pdf
+│   │   Acta NAC VENCIDA.pdf
+│   │   ACTA_NAC.pdf
+│   │   formulario_pago_tasas - 2023-06-30T123417.263.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   Notas carpeta.pdf
+│   │   PADRON COLECTIVO.pdf
+│   │   PADRON INDIVIDUAL.pdf
+│   │   PASAP.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   Solicitud_de_nacionalidad_española_por_residencia.pdf
+│   │   SOLICITUD_NACIONALIDAD.pdf
+│   │   Trámites - Sede Electrónica.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       ACTA_NAC.pdf
+│   │       Justificante_Anexo (96).pdf
+│   │       LIBRO_FAM.pdf
+│   │       MATRICULA_ESCOLAR.pdf
+│   │       NIE.pdf
+│   │       NIE_MADRE.pdf
+│   │       NIE_PADRE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       resumen_expediente (60).pdf
+│   │       SOLICITUD_NACIONALIDAD.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eea94d5-25ec-6fe8-b4b7-3ff77919a352.pdf
+│
+├───MARIANA CAROLINA TORRES DIAZ
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-07-20T183111.319.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PADRON.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   resumen_expediente (52).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       RESGUARDO_RENOVACION_NIE.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eecfca1-e5cf-6f6e-9b24-c77fddb61f91.pdf
+│
+├───MARIETOU DIONE
+│   │   Captura_MADRE.PNG
+│   │   Captura_PADRE.PNG
+│   │   Hoja encargo.pdf
+│   │   Just Solicitud Acta nacimiento.pdf
+│   │   Notas carpeta.pdf
+│   │   Poder Mamadou.pdf
+│   │   Poder Marietou.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (60).pdf
+│   │   resumen_expediente.pdf
+│   │   Scan2023-05-08_191600.pdf
+│   │   Solicitud_de_nacionalidad_por_residencia.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       ACTA_NAC.pdf
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       NIE_MADRE.pdf
+│   │       NIE_PADRE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_MARIETOU.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VACUNAS.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeeb48a-76d5-6c92-b802-cf487b7b9be0.pdf
+│
+├───MARLENE DEL CARMEN VILLARREAL PAEZ
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   Impreso solicitud nacionalidad.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (97).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       AAPP_ESP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESIONES.pdf
+│   │       TASA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eec9828-ea83-634a-a8b7-97577c5fe034 (1).pdf
+│
+├───MARTHA PAULINA ECOS MACHACA
+│   │   ACTA_NAC.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (14).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (63).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1f0f2b5a-28bc-6a9e-94ab-737d58a5c43d.pdf
+│
+├───MARYAM TATIANA
+│   │   20221229135534397.pdf
+│   │   A2WMN1327102751.PDF
+│   │   ActaNAc.docx
+│   │   apostilla.PDF
+│   │   APOSTITL.PDF
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   Captura2.PNG
+│   │   Captura3.PNG
+│   │   Captura4.PNG
+│   │   CapturaRechazo.PNG
+│   │   CCF_004006.pdf
+│   │   CCF_004007.pdf
+│   │   CCF_004430.pdf
+│   │   CEDULA.pdf
+│   │   DESIGNACION.pdf
+│   │   Firma.PNG
+│   │   Formulario de Pago - Credibanco.pdf
+│   │   PASAP.pdf
+│   │   payment_152adb42-0339-76cc-9e13-5bcb0c4aaaee.pdf
+│   │   PODER.docx
+│   │   Soporte_A2WMN1327102751.PDF
+│   │   Soporte_A2XBD35137982.PDF
+│   │   Soporte_A2XBD35137982111.PDF
+│   │
+│   ├───JUSTIFICANTE PRESENTACION
+│   │       resumen_expediente (21).pdf
+│   │
+│   ├───presentar
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       TITULACION_ACADEMICA.pdf
+│   │       TITULO_BACHILLER.pdf
+│   │       TITULO_FP.pdf
+│   │       TITULO_UNIVERSITARIO.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee30777-ae22-6c70-9abd-655eee5f654a.pdf
+│
+├───MARYAN ADRIANA
+│   │   Captura.PNG
+│   │   Captura_estado.PNG
+│   │   DESIGNACION.pdf
+│   │   Estado_Expediente.PNG
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-07-31T112743.821.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   resumen_expediente (55).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MAT.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       DNI_HIJA.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   ├───POLICIALES
+│   │       acceso_cnp.pdf
+│   │       Justificante de Presentación REG (67).pdf
+│   │       PODER_POLICIALES.docx
+│   │       PODER_POLICIALES.pdf
+│   │       report_A-139727.pdf
+│   │
+│   └───RES CONCESION
+│           CONCESION.pdf
+│           Resguardo_1f0416c8-b75b-60e0-b765-1f877df1c1e1.pdf
+│
+├───MAURO GUTIERREZ SARDIÑA
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   3c0948aa-d605-46f0-b196-7fea5d728f22.pdf
+│   │   firma Mauro.JPG
+│   │   formulario_pago_tasas - 2023-12-12T111434.150.pdf
+│   │   HOJA ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (94).pdf
+│   │   Scan2023-12-05_130919.pdf
+│   │   Trámites - Sede Electrónica.pdf
+│   │
+│   ├───CONCESION
+│   │       CONCESIONB.pdf
+│   │       Resguardo_1ef217b0-baad-6ea6-a587-d7ed535388e0.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_MAT.pdf
+│           ACTA_NAC.pdf
+│           ACTA_NAC_HIJA.pdf
+│           CCSE.pdf
+│           CONCESION_RESIDENCIA.pdf
+│           DNI_HIJAMENOR.pdf
+│           EMPADRONAMIENTO.PDF
+│           LIBRO_FAMILIA.pdf
+│           NIE.pdf
+│           PASAPORTE.pdf
+│           PODER.pdf
+│           TASA.pdf
+│
+├───MAXIMINA PERNIA
+│   │   AAPP.pdf
+│   │   ACTANAC.pdf
+│   │   Captura.PNG
+│   │   CCSE.pdf
+│   │   DESIGNACION.pdf
+│   │   HOJA ENCARGO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   RENOV_NIE.pdf
+│   │   RENOV_PASAP.pdf
+│   │   resumen_expediente (19).pdf
+│   │   TASA_PAGADA.pdf
+│   │   WhatsApp Image 2023-01-12 at 13.45.40.jpeg
+│   │
+│   ├───ADJUNTAR
+│   │       Justificante_Anexo (88).pdf
+│   │       PASAPORTE_ACTUAL.pdf
+│   │
+│   ├───ADJUNTAR2
+│   │       Justificante_Anexo - 2023-12-05T095144.708.pdf
+│   │       NIE_ACTUAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1eea404f-7317-680c-92c3-395b61fb23d3.pdf
+│
+├───MEKUY OBAMA
+│       230518724033020024 (1).pdf
+│
+├───MELVIN AQUILES GOMEZ CARABALLO
+│       DNI CONYUGE.pdf
+│       HOJA ENCARGO.pdf
+│       LIBRO FAMILIA.pdf
+│       NIE.pdf
+│       PASAPORTE.pdf
+│       TITULO AUXILIAR ENFERMERIA.pdf
+│
+├───MERCEDES ALARCON DIAZ
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   3c0948aa-d605-46f0-b196-7fea5d728f22.pdf
+│   │   ACTA NAC HIJO.pdf
+│   │   Captura1.PNG
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-12-11T112623.472.pdf
+│   │   JUSTF SOL ACTA MAT.pdf
+│   │   JUSTF SOL ACTA NAC CONYUGE.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (92).pdf
+│   │   TASA.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_CONYUG.pdf
+│   │       CCSE.pdf
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       DINI_CONYUGE.pdf
+│   │       EMPADRONAMIENTO_COLECT.PDF
+│   │       LIBRO_FAM.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef00b7b-ef20-60f0-b6cf-15a2e56dd3d0.pdf
+│
+├───MILENA NATALY LOPEZ
+│       AAPP.pdf
+│       ACTADENACIMIENTO.pdf
+│       ACTA_NAC.pdf
+│       CamScanner 01-09-2023 19.22.pdf
+│       DESIGNACION.pdf
+│       FIRMA.png
+│       formulario_pago_tasas (84).pdf
+│       HOJA DE ENCARGO.pdf
+│       NIE.pdf
+│       NOTAS CARPETA.pdf
+│       PASAPORANTERIOR.pdf
+│       PASAPORTE.pdf
+│       PASAPORTEcomp.pdf
+│       PASAP_ANTERIOR.pdf
+│       PODER.docx
+│       PODER.pdf
+│       resumen_expediente (30).pdf
+│       TASAPAGADA.pdf
+│       TITULOBACHILLER.pdf
+│
+├───MIRIAN MARITZA CAMINERO CUELLO
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-03-31T125909.197.pdf
+│   │   Hoja de encargo.pdf
+│   │   Notas carpeta.pdf
+│   │   Pasaporte Vencido.pdf
+│   │   Pasaporte.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (45).pdf
+│   │
+│   ├───APORTAR
+│   │       ACTA_NAC_HIJO_MENOR.pdf
+│   │       CCSE.pdf
+│   │       Justificante_Anexo - 2023-10-23T102523.805.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJOMENOR.pdf
+│   │       CCSE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       NIE_HIJOMENOR.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeb3d1f-6dda-6a74-b3ce-a3a8f8b7a13f.pdf
+│
+├───MIRYAM BARON CELY
+│   │   A2WLS10301544.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   Notas carpeta.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   R.Nacimiento.pdf
+│   │   resumen_expediente (55).pdf
+│   │   Scan2023-04-24_171928.pdf
+│   │   Scan2023-04-24_172356.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP_VENEZUELA.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee544d-33f7-613e-8325-dbe6023e63a5.pdf
+│
+├───MOHAMED ATMANI
+│   │   19-01-2022Solicitud de Nacionalidad por Residencia.pdf
+│   │   Acta NAC VENCIDA.pdf
+│   │   formulario_pago_tasas - 2023-06-30T123237.263.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   Notas carpeta.pdf
+│   │   PADRON COLECTIVO.pdf
+│   │   PADRON INDIVIDUAL.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   Solicitud_de_nacionalidad_española_por_residencia.pdf
+│   │   Trámites - Sede Electrónica.pdf
+│   │
+│   ├───ADJUNTAR
+│   │       ACTA_NACIMIENTO.pdf
+│   │       Justificante_Anexo (13).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       LIBRO_FAM.pdf
+│   │       MATRICULA_ESCOLAR.pdf
+│   │       NIE.pdf
+│   │       NIE_MADRE.pdf
+│   │       NIE_PADRE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       resumen_expediente (61).pdf
+│   │       SOLICITUD_NACIONALIDAD.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eea563b-c165-699e-970c-bd15e60b62c0.pdf
+│
+├───MOHAMED STITOU
+│   │   CCF_001159(1).pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-07-31T165516.898.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NIE_CONYUGE.pdf
+│   │   NIE_HIJA_MARIAM.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PADRON.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (62).pdf
+│   │   RES_DISCAPACIDAD_AMJAD.pdf
+│   │   RES_DISCAPACIDAD_IMRAM.pdf
+│   │   RES_FAMILIA_NUMEROSA.pdf
+│   │   TRADUCCION ACTA NAC.pdf
+│   │
+│   ├───APORTAR
+│   │       Justificante_Anexo - 2023-09-18T183301.096.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   ├───APORTAR2
+│   │       CANCELACION_POLICIALES.pdf
+│   │       Justificante_Anexo - 2024-12-20T110146.812.pdf
+│   │
+│   ├───CONCESION
+│   │       CONCESION.pdf
+│   │       Resguardo_1efd1c34-2309-6602-a1a6-dfbfbfda83c5.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE_CONYUGE.pdf
+│   │       NIE_HIJA_MARIAM.pdf
+│   │       NIE_HIJO_AMJAD.pdf
+│   │       NIE_HIJO_IMRAN.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       RES_DISCAPACIDAD_AMJAD.pdf
+│   │       RES_DISCAPACIDAD_IMRAN.pdf
+│   │       RES_FAMILIA_NUMEROSA.pdf
+│   │       TASA.pdf
+│   │
+│   └───POLICIALES
+│           acceso_cnp.pdf
+│           cancela_cnp.pdf
+│           Justificante de Presentación REG (67).pdf
+│           Justificante de Presentación REG (68).pdf
+│           PODER_POLICIALES.docx
+│           PODER_POLICIALES.pdf
+│           report_A-139736.pdf
+│
+├───MOHAMMED ABDU AHMED
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   3c0948aa-d605-46f0-b196-7fea5d728f22.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-11-17T131154.678.pdf
+│   │   PODER.docx
+│   │   resumen_expediente - 2023-11-20T193303.402.pdf
+│   │   WhatsApp Image 2023-11-13 at 18.26.15 (1).jpeg
+│   │
+│   ├───PARA PRESENTAR
+│   │       CCSE.pdf
+│   │       CERTIFICADO_PROTECCION.pdf
+│   │       CONCESION_PROTECCION.pdf
+│   │       DELE.pdf
+│   │       DOC_VIAJE.pdf
+│   │       EMPADRONAMIENTO.PDF
+│   │       NIE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee21c1-aa75-61bc-bda7-f5714928801a.pdf
+│
+├───MOMAR FAYE
+│   │   31_DESIGNACION_DE_REPRESENTANTE-1.pdf
+│   │   Captura.JPG
+│   │   Captura.PNG
+│   │   comprobante-1.pdf
+│   │   CORRECCION DE ERRORES.docx
+│   │   FAYE Momar acta de nacimiento Senegal_000183_signed.pdf
+│   │   FAYE Momar Penales Senegal_000185_signed.pdf
+│   │   Justificante_Anexo (8) (1).pdf
+│   │   PODER.docx
+│   │   resumen_expediente (43).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_AWA.pdf
+│   │       ACTA_NAC_MARIAMA.pdf
+│   │       ACTA_NAC_YACINE.pdf
+│   │       CamScanner 03-14-2023 23.02.pdf
+│   │       CCSE.pdf
+│   │       CORRECCION.pdf
+│   │       DELEA2.pdf
+│   │       NIE.pdf
+│   │       NIE_AWA.pdf
+│   │       PADRON_HISTORIC.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeda456-f448-6afc-a5a5-1ff924eef128.pdf
+│
+├───NADEZDA
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   Captura2.PNG
+│   │   Captura3.PNG
+│   │   CERT. NACIM. ORIGINAL NADEZDA.pdf
+│   │   CERT. NACIM. TRADUCCION NADEZDA.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas.pdf
+│   │   HOJA ENCARGO FIRMADA.pdf
+│   │   HOJA ENCARGO.docx
+│   │   MAMA A2.pdf
+│   │   PADRON HIST MAMA.pdf
+│   │   PASAPORTE ACTUAL NADEZDA.pdf
+│   │   PASAPORTE ANTERIOR NADEZDA.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (22).pdf
+│   │
+│   ├───PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       NIE.pdf
+│   │       PADRON_HISTORICO.pdf
+│   │       PASAPORTE_ACTUAL.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee2fafb-df8f-6d2c-971a-77131a01c364.pdf
+│
+├───NANCY JESUS RUIZ DIAZ ALCARAZ
+│   │   CERTIFICADO_RESOLUCION_CONCESION.pdf
+│   │   CONCESION_NACIONALIDAD.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-09-04T130722.423.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (96).pdf
+│   │   TASA COMPLEMENTARIA.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       CONCESION_NACIONALIDAD.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_Y_COMPLEMNT.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eec9cd9-bb84-6df4-ae42-9beaf23e68c4.pdf
+│
+├───NAYAT HAMUDI
+│   │   ACTA_NACIMIENTO_CONYUGE.pdf
+│   │   Captura.PNG
+│   │   CCF_003731.pdf
+│   │   CCSE.pdf
+│   │   DELE.pdf
+│   │   DESIGNACION.pdf
+│   │   ESTATUTO_APATRIDA.pdf
+│   │   HOJA_ENCARGO.pdf
+│   │   justificante (48).pdf
+│   │   PODER.docx
+│   │   resumen_expediente (34).pdf
+│   │   Trámites - Sede Electrónica.pdf
+│   │
+│   ├───APORTAR
+│   │       ACTA_CONYUGE.pdf
+│   │       Justificante_Anexo (57).pdf
+│   │
+│   ├───APORTAR 2
+│   │       Justificante_Anexo - 2024-02-07T180518.205.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       RESOLUCION_APATRIDA.pdf
+│   │       TITULO_VIAJE.pdf
+│   │
+│   ├───APORTAR 3
+│   │       ACTA_NACIMIENTO.pdf
+│   │       Justificante_Anexo - 2024-05-29T102335.948.pdf
+│   │
+│   ├───CONCESION
+│   │       CONCESION NACIONALIDAD.pdf
+│   │       Resguardo_1efbbd22-01ed-6256-92d1-037f252d758f.pdf
+│   │
+│   └───PRESENTAR
+│           AAPP.pdf
+│           ACTA_MATRIM.pdf
+│           ACTA_NACIMIENTO.pdf
+│           ACTA_NACIMIENTO_CONYUGE.pdf
+│           CERTIF_PATERNIDAD.pdf
+│           DNI_AHMED.pdf
+│           DNI_CONYUGE.pdf
+│           DNI_JALED.pdf
+│           DNI_YUSEF.pdf
+│           ESTATUTO_APATRIDA.pdf
+│           LIBRO_FAMILIA.pdf
+│           NIE.pdf
+│           PADRON.pdf
+│           PASAPORTE.pdf
+│           PODER.pdf
+│           TASA_NAYAT.pdf
+│
+├───NEYSI QUESADA DOMINGUEZ
+│   │   ACTA_MAT_VENCIDA.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-07-31T182559.275.pdf
+│   │   HOJA DE ENCARGO.docx
+│   │   HOJA DE ENCARGO.pdf
+│   │   mohices@mohices.com_20230728_124544_0004.pdf
+│   │   mohices@mohices.com_20230807_162251.pdf
+│   │   mohicesmohices.com_20230807_162251_removed.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (64).pdf
+│   │
+│   ├───CONCESION NACIONALIDAD
+│   │       CONCESION NACIONALIDAD.pdf
+│   │       Resguardo_1eeb48e5-e182-6b3a-aad2-af2594225242 (1).pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NAC.pdf
+│           CCSE.pdf
+│           DNI_CONYUGE.pdf
+│           NIE.pdf
+│           NIE_ANTERIOR.pdf
+│           PADRON.pdf
+│           PASAPORTE.pdf
+│           PASAPORTE_ANTERIOR.pdf
+│           PODER.pdf
+│           TASA.pdf
+│
+├───NICOLETA BALCAN
+│   │   ACTA_NAC.pdf
+│   │   Captura.PNG
+│   │   CEDULA.pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-06-28T110348.689.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   Notas carpeta.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PASAPORTE_ANTIGUO.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (84).pdf
+│   │   TASA.pdf
+│   │
+│   ├───APORTAR
+│   │       CCSE_APTO.pdf
+│   │       DELEA2_APTO.pdf
+│   │
+│   ├───CONCESIO
+│   │       CONCEISON.pdf
+│   │       Resguardo_1f00e4c7-f4a7-65b0-a0b1-0f9a07b1d6dd.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NAC.pdf
+│           CERTIFICADO_COMPETENCIAS_CLAVE.pdf
+│           CERTIFICADO_CURSO.pdf
+│           NIE.pdf
+│           PADRON.PDF
+│           PASAPORTE.pdf
+│           PASAPORTE_ANTERIOR.pdf
+│           PASAPORTE_ANTIGUO.pdf
+│           PODER.pdf
+│           ResguardoInscripcionCCSE_2023.pdf
+│           ResguardoInscripcionDELE_2023.pdf
+│
+├───NIURKA CESPEDES
+│   │   ACTA MATRIM.pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   DNI.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas - 2023-06-28T122010.263.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (83).pdf
+│   │   Trámites - Sede Electrónca.pdf
+│   │   Trámites - Sede Electrónica.pdf
+│   │
+│   ├───ACTA NACIMIENTO MADRE
+│   │       ACTA NACIMIENTO MADRE.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       LIBROFAM.pdf
+│   │       NIE.pdf
+│   │       PADRON_COLECTIVO.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RES_CONESION.pdf
+│   │       TASA.pdf
+│   │
+│   └───RESOLUCION CONCESION
+│           9iKRJ2U7T2QcRCljgdyGWZ446l87OAvIJuZJ8ge_8lI=.pdf
+│           Resguardo_1eea40ca-418e-64f4-9d66-95cfa0454029.pdf
+│
+├───NORMA NOGUERA RODRIGUEZ
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-11-17T101135.704.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (79).pdf
+│   │   Screenshot_20231102-092255_WhatsApp (1).png
+│   │   Screenshot_20231102-092336_WhatsApp.png
+│   │   TASA.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DNI_HIJO.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef0c80c-8b6c-6024-964c-e1ca20097526.pdf
+│
+├───Nueva carpeta (2)
+├───Nueva carpeta (3)
+├───Nueva carpeta (4)
+├───PATRICIA RITA LAMTENZAN RAMIREZ
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (16).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PADRON_ANTERIOR_LEGANES.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PASAPORTE_ANTERIOR_.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (68).pdf
+│   │   Scan2023-08-14_155852.pdf
+│   │   Scan2023-08-14_155913.pdf
+│   │
+│   ├───CONCESION
+│   │       RES CONCESION.pdf
+│   │       Resguardo_1eeb0a2b-2d3c-6c8c-8d3e-1743e1d183aa.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_MAT.pdf
+│           ACTA_NAC.pdf
+│           CCSE.pdf
+│           DNI_CONYUGE.pdf
+│           NIE.pdf
+│           PADRON.pdf
+│           PASAPORTE.pdf
+│           PASAPORTE_ANTERIOR.pdf
+│           PODER.pdf
+│           RES_LARGA_DURACION.pdf
+│           TASA.pdf
+│
+├───PAUL SPENCER
+│   │   050123QUESADA ABOGADOS.pdf
+│   │   334d2d0c-4736-44a6-85ba-957fb53afdf3.pdf
+│   │   3c0948aa-d605-46f0-b196-7fea5d728f22.pdf
+│   │   Apostille.jpg
+│   │   Captura.PNG
+│   │   CCF_004193.pdf
+│   │   DESIGNACION.pdf
+│   │   HOJA ENCARGO.pdf
+│   │   IMG_20230103_192816.jpg
+│   │   IMG_20230103_192828.jpg
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   Police certificate.jpg
+│   │   Police certificate.pdf
+│   │   resumen_expediente (35).pdf
+│   │   TRADUCCIONAAPP.pdf
+│   │
+│   ├───PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       DNI_HIJAMENOR.pdf
+│   │       EMPADRONAMIENTO.PDF
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeba0c7-82bb-60a4-ad97-516e66540ab4.pdf
+│
+├───PEDRO JOSE PRADA HERNANDEZ
+│   │   ACTA_MAT.pdf
+│   │   ACTA_NACIMIENTO.pdf
+│   │   ACTA_NAC_CONYUGE.pdf
+│   │   Captura.PNG
+│   │   CapturaErrorCervantes.PNG
+│   │   DESIGNACION.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   JUSTF SOL ACTA MAT.pdf
+│   │   justificante (22).pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PODER.docx
+│   │   resumen_expediente.pdf
+│   │   TASA.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       AAPP_ES.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       ACTA_NAC_HIJA.pdf
+│   │       ACTA_NAC_HIJO.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       DNI_HIJA_MENOR.pdf
+│   │       DNI_HIJO_MENOR.pdf
+│   │       EMPADRONAMIENTO_CONJUNTO.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef00790-7e22-6900-9002-1dadf64a85ab.pdf
+│
+├───PLINIO TOVAR ORE
+│       ResguardoInscripcionCCSE_2023.pdf
+│
+├───RACHIDA LOUDIY
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (42).pdf
+│   │   Scan2023-06-01_190320.pdf
+│   │   Scan2023-06-01_190927.pdf
+│   │   Scan2023-06-02_092527.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       DNI_HIJO.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_2011_2016.pdf
+│   │       PASAPORTE_2016_2021.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee8e042-ff86-66f8-a1d5-d1d033f3aba4.pdf
+│
+├───RAMON ANTONIO GRANCISCO DILONE
+│   │   AP-2023-11-22-303.pdf
+│   │   AP-2023-11-22-304.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-12-05T131603.804.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   Imagen de WhatsApp 2023-11-27 a las 09.20.46_e352c81e.jpg
+│   │   Imagen de WhatsApp 2023-11-27 a las 09.20.47_6dd07097.jpg
+│   │   Imagen de WhatsApp 2023-11-27 a las 09.20.47_fc7b7c29.jpg
+│   │   Imagen de WhatsApp 2023-11-27 a las 09.20.48_fb9dea3e.jpg
+│   │   IMG_0037.jpeg
+│   │   IMG_0038.jpeg
+│   │   IMG_0039.jpeg
+│   │   IMG_0040.jpeg
+│   │   IMG_0041.jpeg
+│   │   IMG_0042.jpeg
+│   │   NOTAS CARPETA.pdf
+│   │   PADRON_COL.jpg
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   PODRON_HCO_COL.jpg
+│   │   Proceso automático para la solicitud de cita previa.pdf
+│   │   resumen_expediente.pdf
+│   │
+│   ├───APORTRA
+│   │       Justificante_Anexo - 2024-03-08T094712.223.pdf
+│   │       JUST_RENOV_PASAPORTE.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NACIMIENTO_HIJA.pdf
+│   │       CCSE.pdf
+│   │       EMPADRONAMIENTO_COLECTIVO.pdf
+│   │       EMPADRONAMIENTO_INDIVIDUAL.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       PODRON_HCO_COL.pdf
+│   │       RESOLUCION_RESIDENCIA.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee156d-4cb8-6ad4-ba2a-4bcb64961878.pdf
+│
+├───RAMSES ENRIQUE
+│       ACTA NACIMIENTO.pdf
+│       CERTIFICADO ACADEMICO.pdf
+│       CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│       FIRMA.png
+│       OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│       PODER.pdf
+│       PROTECCION DE DATOS 2.pdf
+│       PROTECCION DE DATOS.pdf
+│       RAMSES ENRIQUE VARGAS GONZALEZ (HTHHB94AE9Y 2023-01-09 20_38_16).pdf
+│
+├───RAQUEL SILVIA CADOCHE
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   firma.png
+│   │   formulario-790-006_es_es (2).pdf
+│   │   formulario_pago_tasas (25).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE ARGENTINA.pdf
+│   │   PASAPORTE ITALIA.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (94).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       CEDULA.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE_ARGENTINA.pdf
+│   │       PASAPORTE_ITALIA.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   ├───REQ DOC
+│   │       AAPP.pdf
+│   │       Justificante_Anexo - 2024-02-22T182748.400.pdf
+│   │       REQ_DOC.pdf
+│   │       Resguardo_1eec9809-c9d1-635a-8935-cdb743a76ad5.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef02483-b25f-68a2-9f70-611171bd3cfe.pdf
+│
+├───RAUL ALEJANDRO CASTILLO CALDERON
+│       CCSE.pdf
+│
+├───RAYDA FRANCISCA
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   DESIGNACION.pdf
+│   │   HOJA_ENCARGO.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_VENCIDO.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (42).pdf
+│   │
+│   ├───CONCESION
+│   │       Resguardo_1eedca41-f237-6644-9008-172028580f03.pdf
+│   │       xiPthnUG3j1fCpl75gd0dHk9cKMVhLdecsRRK9FJ3Vc=.pdf
+│   │
+│   └───PARA PRESENTAR
+│           AAPP.pdf
+│           ACTA_NACIMIENTO.pdf
+│           CCSE.pdf
+│           EMPADRONAMIENTO.pdf
+│           NIE.pdf
+│           PASAPORTE.pdf
+│           PASAPORTE_VENCIDO.pdf
+│           PODER.pdf
+│           TASA_PAGADA.pdf
+│
+├───RICHARD
+│       CCF_004524.pdf
+│       CCF_004525.pdf
+│
+├───RKIA HACHHOUCH
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-11-23T131102.703.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (82).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       EXTRACTO_ACTA_NAC.pdf
+│   │       NIE.pdf
+│   │       NIE_CONYUGE.pdf
+│   │       PADRON.pdf
+│   │       PADRON_COLECTIVO.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eee53b4-c8df-6088-82e2-9744aab00a4f.pdf
+│
+├───SAHADOU HABIB DIOP
+│   │   20230525134712.pdf
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   Captura2.PNG
+│   │   Captura3.PNG
+│   │   CapturaFecha.PNG
+│   │   CapturaFecha2.PNG
+│   │   CCSE.pdf
+│   │   formulario_pago_tasas - 2023-05-17T114541.247.pdf
+│   │   Hoja de encargo.pdf
+│   │   Notas carpeta.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   resumen_expediente (59).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NACIMIENTO_BABACAR.pdf
+│   │       ACTA_NACIMIENTO_CHEIKH.pdf
+│   │       ACTA_NACIMIENTO_NDEYE.pdf
+│   │       ACTA_NACIMIENTO_THIORO.pdf
+│   │       CANCELACION_PENALES.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       RESGUARDO_DELE.PDF
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES DENEGACION
+│           RES DENEGACION.pdf
+│           Resguardo_1f126943-af5d-6416-b5a0-31318acf5e27.pdf
+│
+├───SANDRA YANES VALERO
+│   │   ACTA MATRIM.pdf
+│   │   ACTA NACIMIENTO.pdf
+│   │   ACTA_NAC_CONYUGE.pdf
+│   │   Adobe Scan abr. 26, 2023.pdf
+│   │   Captura.PNG
+│   │   CEDUOLA.pdf
+│   │   certificacionAP.php (1).pdf
+│   │   CERTIFICADO MATRIMONIO.pdf
+│   │   HOJA ENCARGO.pdf
+│   │   PADRON.pdf
+│   │   PASAP ANTERIIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (54).pdf
+│   │   Trámites - Sede Electrónica.pdf
+│   │   Trámites - Sede Electrónicaactanac.pdf
+│   │   WhatsApp Image 2023-04-17 at 13.28.28.jpeg
+│   │
+│   ├───ADJUNTAR ACTA MAT Y NAC
+│   │       ACTA_MAT.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       Justificante_Anexo.pdf
+│   │
+│   ├───ADJUNTAR PADRON
+│   │       Justificante_Anexo (12).pdf
+│   │       PADRON.pdf
+│   │
+│   ├───PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       DNI_HIJOMENOR.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       RES_CONCESION.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee7741b-e2d8-6c8e-804c-e572e65dff6a.pdf
+│
+├───SERGIO ANDRES GASPRARINI FERNANDEZ
+│   │   Captura.PNG
+│   │   Documentacion Designacion Representante.pdf
+│   │   formulario_pago_tasas (1).pdf
+│   │   PODER.docx
+│   │   resumen_expediente (24).pdf
+│   │
+│   ├───CONCESION
+│   │       CONCESION.pdf
+│   │       Resguardo_1ef910ec-a4a3-6296-b3ea-c990747a4a53.pdf
+│   │
+│   └───PRESENTAR
+│           AAPP.pdf
+│           ACTA_NAC.pdf
+│           CCSE.pdf
+│           NIE.pdf
+│           PADRON.pdf
+│           PADRON_HCO.pdf
+│           PASAPORTE.pdf
+│           PASAPORTE_ANTERIOR.pdf
+│           PODER.pdf
+│           TASA_PAGADA.pdf
+│
+├───SILVANA
+│   │   CamScanner 03-20-2023 20.50.pdf
+│   │   Cap TELF.JPG
+│   │   Captura.JPG
+│   │   firma.png
+│   │   formulario_pago_tasas (7).pdf
+│   │   PODER N.docx
+│   │   PODER N.pdf
+│   │   resumen_expediente (67).pdf
+│   │   WhatsApp Image 2023-03-21 at 19.25.31 (1).jpeg
+│   │   WhatsApp Image 2023-03-21 at 19.25.31 (2).jpeg
+│   │   WhatsApp Image 2023-03-21 at 19.25.31 (3).jpeg
+│   │   WhatsApp Image 2023-03-21 at 19.25.31.jpeg
+│   │   WhatsApp Image 2023-03-21 at 19.25.32 (1).jpeg
+│   │   WhatsApp Image 2023-03-21 at 19.25.32.jpeg
+│   │
+│   ├───AAPP
+│   │       CamScanner 09-06-2023 19.27.pdf
+│   │
+│   ├───ESCRITO
+│   │       Captura.pdf
+│   │       ESCRITO.docx
+│   │       Justificante_Solicitud (1).pdf
+│   │       Justificante_Solicitud (2).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CSSE.pdf
+│   │       DNI_HIJO_MENOR.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   ├───REQ DOC
+│   │       AAPP.pdf
+│   │       Justificante_Anexo - 2024-03-08T173553.602.pdf
+│   │       REQUERIMIENTO.pdf
+│   │       Resguardo_1eeb6a44-30d0-6352-89b3-1b82ceb67538.pdf
+│   │
+│   ├───RES CONCESION
+│   │       RES CONCESION.pdf
+│   │       Resguardo_1f066f3d-d735-68aa-99d3-911e3b2cb87c.pdf
+│   │
+│   └───SILVANA URUGUAY
+│       │   antecedentes.pdf
+│       │   csse.pdf
+│       │   dnihijo.pdf
+│       │   nie.pdf
+│       │   partidanacimiento.pdf
+│       │   pasaporte antuguo.pdf
+│       │   pasaporteantiguo.pdf
+│       │   pasaprtcomprimido.pdf
+│       │   poder.pdf
+│       │   resumen_expediente (7).pdf
+│       │   tasa.pdf
+│       │
+│       └───RES DENEGACION
+│               RES CONCESION.pdf
+│               RES DENEGACION.pdf
+│               Resguardo_63ff7d2deab9363ff7d2deab94 (1).pdf
+│
+├───SONIA LLUSCO CASTILLO
+│   │   APOSTILL.pdf
+│   │   Apostilla penales.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   DNI_HIJA_ADRIANA_VALENTINA.pdf
+│   │   DNI_HIJA_DANIELA_ROCIO.pdf
+│   │   DNI_HIJO_LUIS_GABRIEL.pdf
+│   │   DNI_HIJO_MANUEL_ALEJANDRO.pdf
+│   │   DNI_JHON_MAURICIO.pdf
+│   │   formulario_pago_tasas - 2023-06-28T100808.833.pdf
+│   │   Notas carpeta.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (85).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_LIT_NAC.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_CONYUG.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUG.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeafd68-1b60-6a6a-afc6-f9cc4809de17.pdf
+│
+├───SULAY YIRANISA
+│   │   AP-2023-7-12-526.pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   formulario_pago_tasas (19).pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PASAPORTE ANTERIOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       ACTA_NAC_HIJO_WILLIE.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeb3d1a-ee99-6a84-8b30-810f9018c16e.pdf
+│
+├───THAIS BERNARDES DA SILVA
+│   │   Captura.PNG
+│   │   Cita Previa.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario-790-006_es_es.pdf
+│   │   formulario_pago_tasas - 2023-06-28T130826.425.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PADRON_GIJON.pdf
+│   │   PADRON_OVIEDO.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (80).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       AAPP_ESP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       NIE.pdf
+│   │       PADRON_HCO.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       tasa.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee8e8fd-04a0-659a-b2b9-d16b1fd6a801.pdf
+│
+├───THOMAS HELM
+│       CCF_001231(1).pdf
+│       CCF_001232(1).pdf
+│       CCF_001234(1).pdf
+│       verDocumentacion.action.pdf
+│
+├───VALERIA REBECA GIMENEZ SOTO
+│   │   AAPP.pdf
+│   │   ACTA_NAC.pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.PNG
+│   │   formulario_pago_tasas - 2023-07-31T123734.255.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PADRON.pdf
+│   │   PASAPORTEACTUAL.pdf
+│   │   PASAPORTEANTIGUO.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (72).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP_ARGENTINA.pdf
+│   │       AAPP_PARAGUAY.pdf
+│   │       ACTA_NAC.pdf
+│   │       CERTIFICADO_ACADEMICO.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │       TITULO_BACHILLER.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eeb0a6b-3c74-682c-af59-2320d3fd1930.pdf
+│
+├───VERONICA ESTEFANIA
+│   │   Captura.PNG
+│   │   DESIG.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   matri.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   pasaporte (16).pdf
+│   │   PASAPORTE EN VIGOR.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (31).pdf
+│   │
+│   ├───Nueva carpeta
+│   │       formulario_pago_tasas - 2023-03-08T132458.541.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       DNI_HIJA.pdf
+│   │       DNI_HIJO.pdf
+│   │       LIBRO_FAM.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee5bb91-6bc2-6d82-a0fa-cdd956de4ecf.pdf
+│
+├───VIORICA MIHAELA VOICILA
+│   │   Captura.PNG
+│   │   designacion de representante.pdf
+│   │   formulario_pago_tasas - 2023-05-03T183754.276.pdf
+│   │   HOJA DE ENCARGO VIORICA MIHAELA.docx
+│   │   PODER.docx
+│   │   resumen_expediente.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PASAPORTE_MADRE.pdf
+│   │       PODER.pdf
+│   │       resumen_expediente - 2025-11-27T101959.585.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   ├───REQ DOC
+│   │       ACTA_NACIMIENTO.pdf
+│   │       Nacimiento apostillado Pandelea firmado.pdf
+│   │       REQ_DOC.pdf
+│   │       Resguardo_1ee93470-12f4-64fc-8450-d1b0c00860ce.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef0635e-9cf7-61da-b802-3f0e405dada6.pdf
+│
+├───WILFREN OSPINA TRUJILLO
+│   │   apostilla AAPP.pdf
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   FIRMA.png
+│   │   HOJA DE ENCARGO.pdf
+│   │   JUSTF SOL ACTA MAT.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PADRON_.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (99).pdf
+│   │
+│   ├───CONCESION
+│   │       CONCESION.pdf
+│   │       Resguardo_1f037315-24ae-6672-9a4f-4baee70d7eca.pdf
+│   │
+│   ├───ESCRITO
+│   │       ESCRITO AGILIZACION.docx
+│   │       ESCRITO_AGILIZ.pdf
+│   │       Justificante_Anexo - 2025-01-08T190405.704.pdf
+│   │
+│   ├───GUARIDA CIVI
+│   │       SOLICITUD_ACCESO_2021 (1).pdf
+│   │       SOLICITUD_ACCESO_2021.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       EMPADRONAMIENTO_HISTORICO.PDF
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       RESG_PENADOS.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───POLICIALES
+│           acceso_cnp.pdf
+│           CANCELADOS.pdf
+│           DESIGNACION.pdf
+│           Justificante de Presentación REG (32).pdf
+│           Justificante_Anexo - 2024-09-16T091328.182.pdf
+│           Justificante_Anexo - 2024-11-04T092740.078.pdf
+│           NIE.pdf
+│           report_A-131229.pdf
+│           SUPRESION_POLICIALES.pdf
+│
+├───WILMA LILIANA
+│   │   Captura.PNG
+│   │   CERTIFICADO DE EMPADRONAMIENTO-v2.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-03-15T121211.430.pdf
+│   │   HOJA ENCARGO.pdf
+│   │   HOJAENCARG.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PADRON 2018.jpeg
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   PODER.pdf
+│   │   resumen_expediente (33).pdf
+│   │   WhatsApp Image 2023-03-14 at 17.02.35.jpeg
+│   │   WhatsApp Image 2023-03-14 at 17.02.49.jpeg
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       EMPADRONAMIENTO.pdf
+│   │       NIE.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee3ffcc-4d08-6310-bdc3-ad1bedffb3be.pdf
+│
+├───XIOMARA ANTONELLA
+│   │   DESIGNACION_MADRE.pdf
+│   │   DESIGNACION_PADRE.pdf
+│   │   FIRMA_PADRE.PNG
+│   │   formulario_pago_tasas - 2023-11-10T090539.074.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente - 2023-11-13T184747.162.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CONCESION_RESI.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       NIE_MADRE.pdf
+│   │       NIE_PADRE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       Solicitud.pdf
+│   │       TASA.pdf
+│   │       VACUNAS.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1eedfc03-26d9-640e-8782-dbfe0a343270.pdf
+│
+├───YAGNERY DE JESUS SANTIESTEBAN
+│   │   Captura.PNG
+│   │   Certificado matrimonio.pdf
+│   │   DENEGACION VISADO.pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-05-03T095111.130.pdf
+│   │   Hoja encargo.pdf
+│   │   Just Sol Acta matrimonio.pdf
+│   │   Notas carpeta.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (50).pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIMONIO.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       DNI_CONYUGE.pdf
+│   │       DNI_HIJO.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee82500-9e69-61d4-b4c5-2d5a5d445392.pdf
+│
+├───YENNY DEL JESUS AGUILERA
+│   │   Captura.PNG
+│   │   Captura1.PNG
+│   │   DESIGNACION.pdf
+│   │   HOJA_ENCARGO.pdf
+│   │   PASAPORTE.pdf
+│   │   PASAPORTE_ANTERIOR.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (36).pdf
+│   │
+│   ├───PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PASAPORTE_ANTERIOR.pdf
+│   │       PODER.pdf
+│   │       TASA_YENNY.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee2a312-c61e-67a8-8cd1-bb2f5440c1a2.pdf
+│
+├───YNOCENCIA PORTILLO DE LUGO
+│   │   ACTA NAC.pdf
+│   │   ACTA_NAC1.pdf
+│   │   Captura.PNG
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-12-21T124459.876.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   NOTAS CARPETA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente - 2024-01-03T190828.556.pdf
+│   │   TASA.pdf
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_NAC.pdf
+│   │       CCSE.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA.pdf
+│   │       VIDA_LABORAL.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ef23531-26ea-63d8-bf97-c170ca1956dd.pdf
+│
+├───YORDANY SERRANO HERNANDEZ
+│   │   Captura de pantalla 2023-05-17 162639.png
+│   │   DESIGNACION (6).pdf
+│   │   DESIGNACION.pdf
+│   │   formulario_pago_tasas - 2023-05-18T123521.325.pdf
+│   │   HOJA DE ENCARGO.pdf
+│   │   OVD 55-006 MODELO AUTORIZACION GESTIONES PADRONALES.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (58).pdf
+│   │   Scan2023-05-09_171028.pdf
+│   │   WhatsApp Image 2023-05-09 at 17.08.17.jpeg
+│   │   WhatsApp Image 2023-05-09 at 17.12.10.jpeg
+│   │   WhatsApp Image 2023-05-09 at 17.12.10.pdf
+│   │   WhatsApp Image 2023-05-09 at 17.12.17.jpeg
+│   │   WhatsApp Image 2023-05-22 at 22.15.26 (2).jpeg
+│   │   WhatsApp Image 2023-05-22 at 22.15.26 (3).jpeg
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_HIJO.pdf
+│   │       CCSE.pdf
+│   │       CONCESION_RESIDENCIA.pdf
+│   │       NIE.pdf
+│   │       PADRON.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES DE CONCESION
+│           RES DE CONCESION.pdf
+│           Resguardo_1ee8d510-b08f-673a-bbbc-d55f578dc1e9.pdf
+│
+├───YOUSSOUPHA NIASS
+│   │   AAPP.pdf
+│   │   ACTA_NAC.pdf
+│   │   Captura.PNG
+│   │   Captura2.PNG
+│   │   Captura3.PNG
+│   │   CapturaDATO.PNG
+│   │   CapturaFIRMA.PNG
+│   │   CERTIFICADO NACIMIENTO TRADUCIDO (YOUSSOUPHA NIASS).pdf
+│   │   CERTIFICADO PENALES TRADUCIDO (YOYSSOUPHA NIASS).pdf
+│   │   DESIGNACIONM.pdf
+│   │   HOJA_ENCARGO.pdf
+│   │   LIBRO_FAMILIA.pdf
+│   │   PASAPORTE.pdf
+│   │   PODER.docx
+│   │   resumen_expediente (39).pdf
+│   │   WhatsApp Image 2023-01-03 at 12.42.59.jpeg
+│   │   WhatsApp Image 2023-01-03 at 12.43.35.jpeg
+│   │   WhatsApp Image 2023-01-03 at 12.43.59.jpeg
+│   │
+│   ├───PARA PRESENTAR
+│   │       AAPP.pdf
+│   │       ACTA_MATRIM.pdf
+│   │       ACTA_NACIMIENTO.pdf
+│   │       ACTA_NAC_CONYUGE.pdf
+│   │       CCSE.pdf
+│   │       DELE.pdf
+│   │       DNICONYUGE.pdf
+│   │       LIBRO_FAMILIA.pdf
+│   │       NIE.pdf
+│   │       PADRON_CONJUNTO.pdf
+│   │       PASAPORTE.pdf
+│   │       PODER.pdf
+│   │       TASA_PAGADA.pdf
+│   │
+│   └───RES CONCESION
+│           RES CONCESION.pdf
+│           Resguardo_1ee2a31a-2b0b-607e-9dc2-d5166ce3254a.pdf
+│
+└───ZENAHIR
+    │   Captura.PNG
+    │   DESIGNACION.pdf
+    │   HOJA ENCARGO.pdf
+    │   PASAP.pdf
+    │   PASAP_VENCIDO.pdf
+    │   PODER.docx
+    │
+    ├───PARA PRESENTAR
+    │       AAPP.pdf
+    │       ACTA_NAC.pdf
+    │       NIE.pdf
+    │       PADRON.pdf
+    │       PASAPORTE.pdf
+    │       PASAPORTE_ANTERIOR.pdf
+    │       PODER.pdf
+    │       TASA_PAGADA.pdf
+    │       TITULO_BACHILLER.pdf
+    │
+    └───RES CONCESION
+            RES CONCESION.pdf
+            Resguardo_1ee2a326-3a05-6d20-a9f0-3fab9f0b70ff.pdf
+

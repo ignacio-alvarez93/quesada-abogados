@@ -1,0 +1,1 @@
+ALTER TABLE config_tipos_expediente ADD COLUMN url_presentacion TEXT;
