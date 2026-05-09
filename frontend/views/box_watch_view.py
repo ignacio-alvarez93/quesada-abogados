@@ -275,7 +275,7 @@ def box_watch_view(page: ft.Page):
         value=str(BOX_WATCH_VIEW_CACHE.get("root_page_size", ROOT_PAGE_SIZE_DEFAULT) or ROOT_PAGE_SIZE_DEFAULT),
     )
 
-    inspection_dialog_content = ft.Container(width=920, height=540)
+    inspection_dialog_content = ft.Container(width=1080, height=720)
     inspection_dialog = ft.AlertDialog(
         modal=True,
         title=ft.Text("Inspección documental Box", color=Q_PRIMARY_DARK, weight=ft.FontWeight.BOLD),
@@ -979,7 +979,7 @@ def box_watch_view(page: ft.Page):
 
             state["selected_folder_path"] = folder_path or ""
             state["inspection"] = box_watch_service.get_box_folder_inspection(folder_path)
-            state["dialog_tab"] = "Resumen"
+            state["dialog_tab"] = "Documentación"
             open_inspection_dialog()
         except Exception as exc:
             notify_error(f"No se pudo inspeccionar la carpeta: {exc}")
@@ -994,7 +994,7 @@ def box_watch_view(page: ft.Page):
         try:
             state["selected_folder_path"] = previous
             state["inspection"] = box_watch_service.get_box_folder_inspection(previous)
-            state["dialog_tab"] = "Resumen"
+            state["dialog_tab"] = "Documentación"
             refresh_inspection_dialog_content()
             inspection_dialog.open = True
             page.update()
@@ -1511,52 +1511,281 @@ def box_watch_view(page: ft.Page):
 
         return app_table(headers=headers, rows=rows, height=380)
 
-    def refresh_inspection_dialog_content():
-        load_link_expediente_options()
-        tab = state.get("dialog_tab") or "Resumen"
 
-        if tab == "Subcarpetas":
-            body = build_dialog_subfolders()
-        elif tab == "Archivos":
-            body = build_dialog_files()
-        else:
-            body = build_dialog_summary()
+    def build_dialog_documentacion():
+        inspection = state.get("inspection") or {}
+        folder = inspection.get("folder") or {}
+        subfolders = inspection.get("subfolders") or []
+        files = inspection.get("files") or []
 
-        nav = ft.Row(
+        current_path = folder.get("ruta") or state.get("selected_folder_path") or "—"
+
+        folder_controls = []
+        for child in subfolders:
+            is_para = str(child.get("nombre_carpeta") or "").strip().upper() == "PARA PRESENTAR"
+            folder_controls.append(
+                ft.Container(
+                    padding=10,
+                    border_radius=10,
+                    border=ft.border.all(1, "#B9D7FF" if is_para else "#E4E7EC"),
+                    bgcolor="#EAF3FF" if is_para else "#F8FAFC",
+                    ink=True,
+                    on_click=lambda e, path=child.get("ruta"): inspect_folder(path, push_history=True),
+                    content=ft.Row(
+                        controls=[
+                            ft.Text("📁", size=20),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(child.get("nombre_carpeta") or "—", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(child.get("ruta") or "", size=11, color=Q_MUTED, selectable=True),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Text("PARA PRESENTAR", size=11, color=Q_PRIMARY, weight=ft.FontWeight.BOLD, visible=is_para),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                )
+            )
+
+        file_controls = []
+        for item in files:
+            file_controls.append(
+                ft.Container(
+                    padding=10,
+                    border_radius=10,
+                    border=ft.border.all(1, "#E4E7EC"),
+                    bgcolor="#FFFFFF",
+                    content=ft.Row(
+                        controls=[
+                            ft.Text("📄", size=18),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(item.get("nombre_archivo") or "—", weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
+                                    ft.Text(item.get("ruta") or item.get("ruta_relativa") or "", size=11, color=Q_MUTED, selectable=True),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Text(_size_label(item.get("tamano_bytes")), color=Q_MUTED, size=12),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                )
+            )
+
+        return ft.Column(
+            width=920,
+            height=620,
+            scroll=ft.ScrollMode.AUTO,
+            spacing=10,
             controls=[
-                primary_button("Resumen", lambda e: set_dialog_tab("Resumen")),
-                secondary_button("Subcarpetas", lambda e: set_dialog_tab("Subcarpetas")),
-                secondary_button("Archivos", lambda e: set_dialog_tab("Archivos")),
+                ft.Text("Documentación Box", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text(
+                    "Explorador readonly de la carpeta inspeccionada. No crea, mueve, borra ni renombra documentos.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, "#E4E7EC"),
+                    border_radius=12,
+                    padding=10,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Ruta actual", size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(current_path, selectable=True, size=12, color=Q_MUTED),
+                        ],
+                        spacing=4,
+                    ),
+                ),
+                ft.Row(
+                    controls=[
+                        secondary_button("Volver atrás", go_back_inspection),
+                        primary_button("Abrir carpeta Windows", open_selected_folder),
+                        secondary_button("Exportar árbol TXT", export_selected_tree),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Divider(),
+                ft.Text(f"Carpetas ({len(folder_controls)})", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                *(folder_controls or [ft.Text("No hay subcarpetas directas inventariadas.", color=Q_MUTED, size=13)]),
+                ft.Text(f"Archivos ({len(file_controls)})", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                *(file_controls or [ft.Text("No hay archivos directos inventariados en esta carpeta.", color=Q_MUTED, size=13)]),
             ],
-            spacing=8,
-            wrap=True,
         )
 
+    def _inspection_nav_button(label, tab):
+        is_active = state.get("dialog_tab") == tab
+        return ft.Container(
+            content=ft.Text(
+                label,
+                size=13,
+                weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.W_500,
+                color=Q_PRIMARY_DARK if is_active else Q_MUTED,
+            ),
+            bgcolor="#EAF3FF" if is_active else "#FFFFFF",
+            border=ft.border.all(1, "#B9D7FF" if is_active else "#E4E7EC"),
+            border_radius=10,
+            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+            ink=True,
+            on_click=lambda e, t=tab: set_dialog_tab(t),
+        )
+
+    def build_dialog_vinculacion():
+        controls = [
+            ft.Text(
+                "Vinculación con expediente" if selected_folder_is_root_folder() else "Vinculación con expediente no disponible",
+                size=16,
+                weight=ft.FontWeight.BOLD,
+                color=Q_PRIMARY_DARK,
+            ),
+            ft.Text(
+                "Solo se pueden vincular carpetas principales. Las subcarpetas heredan la vinculación de la carpeta principal.",
+                size=12,
+                color=Q_MUTED,
+            ),
+            ft.Row(
+                controls=[
+                    link_expediente_dd,
+                    primary_button("Vincular expediente", link_selected_folder_to_expediente),
+                ],
+                spacing=10,
+                wrap=True,
+                visible=selected_folder_is_root_folder(),
+            ),
+            ft.Text(
+                "Esta acción solo actualiza SQLite. No modifica Box.",
+                size=12,
+                color=Q_MUTED,
+                visible=selected_folder_is_root_folder(),
+            ),
+        ]
+        return ft.Column(controls=controls, spacing=12)
+
+    def build_dialog_acciones():
         action_controls = []
         if state.get("inspection_stack"):
             action_controls.append(secondary_button("← Volver atrás", go_back_inspection))
 
         action_controls.extend([
-            secondary_button("Abrir carpeta", open_selected_folder),
+            secondary_button("Abrir carpeta Windows", open_selected_folder),
             primary_button("Exportar árbol TXT", export_selected_tree),
             secondary_button("Cerrar", close_dialog),
         ])
 
-        actions = ft.Row(
-            controls=action_controls,
-            spacing=8,
-            wrap=True,
-        )
-
-        inspection_dialog_content.content = ft.Column(
+        return ft.Column(
             controls=[
-                nav,
-                body,
-                actions,
+                ft.Text("Acciones sobre la carpeta", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text("Acciones readonly. No crean, mueven, borran ni renombran documentos en Box.", size=12, color=Q_MUTED),
+                ft.Row(controls=action_controls, spacing=8, wrap=True),
             ],
             spacing=12,
-            scroll=ft.ScrollMode.AUTO,
         )
+
+    def refresh_inspection_dialog_content():
+        load_link_expediente_options()
+
+        inspection = state.get("inspection") or {}
+        folder = inspection.get("folder") or {}
+        summary = inspection.get("summary") or {}
+
+        current_path = folder.get("ruta") or state.get("selected_folder_path") or "—"
+        current_name = folder.get("nombre_carpeta") or state.get("selected_folder_path") or "Carpeta seleccionada"
+
+        tab = state.get("dialog_tab") or "Resumen"
+        if tab == "Documentación":
+            body = build_dialog_documentacion()
+        elif tab == "Vinculación":
+            body = build_dialog_vinculacion()
+        elif tab == "Acciones":
+            body = build_dialog_acciones()
+        else:
+            body = build_dialog_summary()
+
+        menu_items = [
+            ("Resumen", "Resumen"),
+            ("Documentación", "Documentación"),
+            ("Vinculación", "Vinculación"),
+            ("Acciones", "Acciones"),
+        ]
+
+        inspection_dialog_content.content = ft.Row(
+            controls=[
+                ft.Container(
+                    width=240,
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, "#E4E7EC"),
+                    border_radius=14,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Menú documentación", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text("Navega por cada zona sin deslizar todo el diálogo.", size=12, color=Q_MUTED),
+                            ft.Divider(),
+                            *[_inspection_nav_button(label, tab_name) for label, tab_name in menu_items],
+                            ft.Divider(),
+                            secondary_button("Abrir carpeta", open_selected_folder),
+                            secondary_button("Cerrar", close_dialog),
+                        ],
+                        spacing=8,
+                    ),
+                ),
+                ft.Container(
+                    expand=True,
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, "#E4E7EC"),
+                    border_radius=14,
+                    padding=16,
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text("Documentación Box", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(current_name, size=13, color=Q_MUTED),
+                                ],
+                                spacing=12,
+                                wrap=True,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                            ft.Text(
+                                "Explorador readonly de la carpeta inspeccionada. No crea, mueve, borra ni renombra documentos.",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, "#E4E7EC"),
+                                border_radius=12,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text("Ruta actual", size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(current_path, selectable=True, size=12, color=Q_MUTED),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=ft.Column(
+                                    controls=[body],
+                                    spacing=10,
+                                    scroll=ft.ScrollMode.AUTO,
+                                ),
+                            ),
+                        ],
+                        spacing=12,
+                    ),
+                ),
+            ],
+            spacing=14,
+        )
+
 
     def open_inspection_dialog():
         if not state.get("inspection"):
