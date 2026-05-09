@@ -15,6 +15,7 @@ MENU_ITEMS = [
     ("Trazabilidad Expedientes", "🧾"),
     ("Cobros", "💶"),
     ("Documentos / Box", "☁️"),
+    ("Reporting", "📊"),
     ("Fiscal", "⚖️"),
     ("Legacy", "🕘"),
     ("Configuración", "⚙️"),

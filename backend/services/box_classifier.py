@@ -201,8 +201,8 @@ def classify_file(filename):
         return {"tipo_documento": DOC_SIN_CLASIFICAR, "confianza": 0.0, "motivo": "Nombre vacío"}
 
     # Reglas reales Quesada: se aplican antes de patterns para evitar falsos negativos.
-    if re.search(r"\bJUSTIFICANTE\s+23010047L\s+\d+", text):
-        return {"tipo_documento": "JUSTIFICANTE_PRESENTACION", "confianza": 0.98, "motivo": "Patrón real justificante_23010047L_fecha"}
+    if re.search(r"\bJUSTIFICANTE\s+23010047L(?:\s+\d+)?\b", text):
+        return {"tipo_documento": "JUSTIFICANTE_PRESENTACION", "confianza": 0.98, "motivo": "Patrón real justificante_23010047L"}
 
     if re.search(r"\bFORMULARIO\s+EX\d+", text):
         return {"tipo_documento": "FORMULARIO_EXTRANJERIA", "confianza": 0.95, "motivo": "Formulario oficial EX detectado"}
