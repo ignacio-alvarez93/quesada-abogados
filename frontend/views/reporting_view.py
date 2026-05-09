@@ -82,6 +82,9 @@ def _section(title, content, subtitle=None):
 
 
 def _table(headers, rows, height=260):
+    total_width = sum(int(width or 0) for _, width in headers) + (len(headers) - 1) * 8 + 24
+    body_height = max(120, int(height or 260) - 52)
+
     header_row = ft.Row(
         controls=[
             ft.Container(
@@ -113,24 +116,145 @@ def _table(headers, rows, height=260):
             )
         )
 
-    return ft.Container(
-        height=height,
-        content=ft.Column(
-            controls=[
-                ft.Container(
-                    bgcolor="#F8FAFC",
-                    border_radius=10,
-                    padding=8,
-                    content=header_row,
-                ),
-                ft.Column(
+    table_inner = ft.Column(
+        width=total_width,
+        controls=[
+            ft.Container(
+                bgcolor="#F8FAFC",
+                border_radius=10,
+                padding=8,
+                content=header_row,
+            ),
+            ft.Container(
+                height=body_height,
+                content=ft.Column(
                     controls=body_rows or [ft.Text("Sin datos disponibles.", size=13, color=Q_MUTED)],
                     spacing=0,
                     scroll=ft.ScrollMode.AUTO,
                 ),
-            ],
-            spacing=6,
+            ),
+        ],
+        spacing=6,
+    )
+
+    return ft.Container(
+        height=height,
+        content=ft.Row(
+            controls=[table_inner],
+            scroll=ft.ScrollMode.AUTO,
         ),
+    )
+
+
+def _nav_button(label, active, on_click):
+    return ft.Container(
+        width=180,
+        padding=ft.padding.symmetric(horizontal=12, vertical=11),
+        border_radius=12,
+        border=ft.border.all(1, "#B9D7FF" if active else Q_BORDER),
+        bgcolor="#EAF3FF" if active else Q_WHITE,
+        ink=True,
+        on_click=on_click,
+        content=ft.Text(
+            label,
+            size=13,
+            color=Q_PRIMARY_DARK if active else Q_MUTED,
+            weight=ft.FontWeight.BOLD if active else ft.FontWeight.W_500,
+        ),
+    )
+
+
+def _horizontal_bar_chart(title, items, label_key, value_key, height=300, limit=8):
+    data = list(items or [])[:limit]
+    max_value = max([int(item.get(value_key) or 0) for item in data] or [1])
+
+    rows = []
+    for item in data:
+        label = str(item.get(label_key) or "—")
+        value = int(item.get(value_key) or 0)
+        width = 210 if max_value <= 0 else max(12, int((value / max_value) * 210))
+
+        rows.append(
+            ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(label[:32], size=11, color="#101828", expand=True),
+                            ft.Text(_number(value), size=11, color=Q_MUTED),
+                        ],
+                        spacing=8,
+                    ),
+                    ft.Container(
+                        height=9,
+                        border_radius=8,
+                        bgcolor="#EAF3FF",
+                        content=ft.Container(
+                            width=width,
+                            height=9,
+                            border_radius=8,
+                            bgcolor=Q_PRIMARY,
+                        ),
+                    ),
+                ],
+                spacing=3,
+            )
+        )
+
+    return _section(
+        title,
+        ft.Container(
+            height=height,
+            content=ft.Column(
+                controls=rows or [ft.Text("Sin datos disponibles.", size=13, color=Q_MUTED)],
+                spacing=9,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        ),
+    )
+
+
+def _timeline_chart(title, runs, height=170):
+    data = list(reversed(runs or []))[-12:]
+    max_value = max([int(item.get("total_archivos") or 0) for item in data] or [1])
+
+    bars = []
+    for item in data:
+        value = int(item.get("total_archivos") or 0)
+        bar_height = 20 if max_value <= 0 else max(8, int((value / max_value) * 100))
+        label = str(item.get("id") or "—")
+
+        bars.append(
+            ft.Column(
+                controls=[
+                    ft.Container(
+                        width=28,
+                        height=bar_height,
+                        margin=ft.margin.only(top=6),
+                        border_radius=6,
+                        bgcolor=Q_PRIMARY,
+                    ),
+                    ft.Text(label, size=10, color=Q_MUTED),
+                ],
+                width=42,
+                height=185,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=4,
+            )
+        )
+
+    return _section(
+        title,
+        ft.Container(
+            expand=True,
+            height=height,
+            content=ft.Row(
+                controls=bars or [ft.Text("Sin datos disponibles.", size=13, color=Q_MUTED)],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.END,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        ),
+        subtitle="Evolución por últimos escaneos registrados en Box Watch.",
     )
 
 
@@ -211,11 +335,14 @@ def reporting_view(page: ft.Page):
             )
         )
 
-    controls.extend([
-        kpis,
-        _section(
-            "Resumen por rutas Box",
-            _table(
+    table_container = ft.Container(expand=True)
+    active_section = {"value": "Rutas"}
+
+    table_sections = {
+        "Rutas": {
+            "title": "Resumen por rutas Box",
+            "subtitle": "Conteo por cada ruta configurada. Solo lectura.",
+            "table": _table(
                 headers=[
                     ("Tipo", 180),
                     ("Ruta", 260),
@@ -227,51 +354,116 @@ def reporting_view(page: ft.Page):
                     ("Último escaneo", 180),
                 ],
                 rows=routes_rows,
-                height=300,
+                height=460,
             ),
-            subtitle="Conteo por cada ruta configurada. Solo lectura.",
-        ),
+        },
+        "Tipos": {
+            "title": "Tipos documentales detectados",
+            "subtitle": "Distribución de documentos según clasificación actual.",
+            "table": _table(
+                headers=[
+                    ("Tipo documental", 320),
+                    ("Total", 90),
+                    ("Tamaño", 130),
+                ],
+                rows=document_rows,
+                height=460,
+            ),
+        },
+        "Escaneos": {
+            "title": "Últimos escaneos",
+            "subtitle": "Histórico reciente de escaneos registrados por Box Watch.",
+            "table": _table(
+                headers=[
+                    ("ID", 55),
+                    ("Estado", 90),
+                    ("Fecha", 170),
+                    ("Carp.", 70),
+                    ("Arch.", 70),
+                    ("Nuevos", 80),
+                    ("Mod.", 70),
+                    ("Alertas", 75),
+                ],
+                rows=run_rows,
+                height=460,
+            ),
+        },
+        "Evolución": {
+            "title": "Evolución temporal de archivos Box",
+            "subtitle": "Evolución por últimos escaneos registrados en Box Watch.",
+            "table": _timeline_chart(
+                "Evolución temporal de archivos Box",
+                recent_runs,
+                height=460,
+            ),
+        },
+    }
+
+    def render_active_table():
+        section = table_sections.get(active_section["value"], table_sections["Rutas"])
+        table_container.content = _section(
+            section["title"],
+            section["table"],
+            subtitle=section["subtitle"],
+        )
+
+    def set_active_table(name):
+        active_section["value"] = name
+        render_active_table()
+        nav_container.content = build_nav()
+        page.update()
+
+    def build_nav():
+        return ft.Container(
+            width=210,
+            bgcolor=Q_WHITE,
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Tablas", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text("Selecciona el bloque de datos.", size=12, color=Q_MUTED),
+                    ft.Divider(),
+                    _nav_button("Resumen rutas Box", active_section["value"] == "Rutas", lambda e: set_active_table("Rutas")),
+                    _nav_button("Tipos detectados", active_section["value"] == "Tipos", lambda e: set_active_table("Tipos")),
+                    _nav_button("Últimos escaneos", active_section["value"] == "Escaneos", lambda e: set_active_table("Escaneos")),
+                    _nav_button("Evolución temporal", active_section["value"] == "Evolución", lambda e: set_active_table("Evolución")),
+                ],
+                spacing=9,
+            ),
+        )
+
+    nav_container = ft.Container()
+    nav_container.content = build_nav()
+    render_active_table()
+
+    controls.extend([
+        kpis,
         ft.Row(
             controls=[
+                nav_container,
                 ft.Container(
-                    expand=True,
-                    content=_section(
-                        "Tipos documentales detectados",
-                        _table(
-                            headers=[
-                                ("Tipo documental", 250),
-                                ("Total", 80),
-                                ("Tamaño", 100),
-                            ],
-                            rows=document_rows,
-                            height=280,
-                        ),
-                    ),
+                    width=920,
+                    content=table_container,
                 ),
                 ft.Container(
                     expand=True,
-                    content=_section(
-                        "Últimos escaneos",
-                        _table(
-                            headers=[
-                                ("ID", 55),
-                                ("Estado", 90),
-                                ("Fecha", 160),
-                                ("Carp.", 65),
-                                ("Arch.", 65),
-                                ("Nuevos", 70),
-                                ("Mod.", 60),
-                                ("Alertas", 65),
-                            ],
-                            rows=run_rows,
-                            height=280,
-                        ),
+                    content=_horizontal_bar_chart(
+                        "Distribución documental",
+                        document_types,
+                        "tipo_documento",
+                        "total",
+                        height=460,
+                        limit=10,
                     ),
                 ),
             ],
             spacing=14,
+            vertical_alignment=ft.CrossAxisAlignment.START,
         ),
     ])
+
 
     return ft.Container(
         expand=True,
@@ -281,6 +473,5 @@ def reporting_view(page: ft.Page):
             controls=controls,
             spacing=16,
             expand=True,
-            scroll=ft.ScrollMode.AUTO,
         ),
     )
