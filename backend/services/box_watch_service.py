@@ -3493,4 +3493,38 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
     # Era otro N+1 masivo al finalizar el escaneo.
     return results
 
+
+
+def refresh_box_folder_before_inspection(folder_path, calculate_hash=False):
+    """
+    Refresca una carpeta concreta antes de inspeccionarla.
+
+    Uso previsto:
+    - Inspeccionar carpeta en Box Watch.
+    - Actualizar archivos/directorios de esa ruta concreta.
+    - Detectar renombrados/eliminados sin escanear todo Box.
+
+    Seguridad:
+    - No modifica Box.
+    - No mueve, borra ni renombra archivos.
+    - Solo actualiza SQLite.
+    - La autolimpieza existente marca como FALTANTE lo que ya no existe físicamente.
+    """
+    ensure_box_watch_runtime_columns()
+
+    ruta = str(folder_path or "").strip()
+    if not ruta:
+        raise ValueError("No hay carpeta seleccionada para refrescar.")
+
+    path = Path(ruta)
+    if not path.exists() or not path.is_dir():
+        raise FileNotFoundError(f"No existe la carpeta: {ruta}")
+
+    return scan_local_box_path(
+        ruta,
+        progress_callback=None,
+        calculate_hash=calculate_hash,
+    )
+
+
 # === QUESADA BOX INCREMENTAL SCAN OVERRIDE END ===

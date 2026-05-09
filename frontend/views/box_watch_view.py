@@ -978,6 +978,12 @@ def box_watch_view(page: ft.Page):
                 state["inspection_stack"] = stack
 
             state["selected_folder_path"] = folder_path or ""
+
+            # Refresco quirúrgico: al inspeccionar, se reescanea solo esta carpeta.
+            # Evita que archivos renombrados/modificados en Box queden obsoletos en SQLite.
+            # No toca Box; solo actualiza inventario local y marca FALTANTE lo que ya no existe.
+            box_watch_service.refresh_box_folder_before_inspection(folder_path, calculate_hash=False)
+
             state["inspection"] = box_watch_service.get_box_folder_inspection(folder_path)
             state["dialog_tab"] = "Documentación"
             open_inspection_dialog()
@@ -993,6 +999,10 @@ def box_watch_view(page: ft.Page):
         state["inspection_stack"] = stack
         try:
             state["selected_folder_path"] = previous
+
+            # Refresco quirúrgico también al volver: se actualiza la ruta principal antes de mostrarla.
+            box_watch_service.refresh_box_folder_before_inspection(previous, calculate_hash=False)
+
             state["inspection"] = box_watch_service.get_box_folder_inspection(previous)
             state["dialog_tab"] = "Documentación"
             refresh_inspection_dialog_content()
