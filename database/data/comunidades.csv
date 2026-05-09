@@ -1,0 +1,72 @@
+id,nombre,tipo_subdivision,nivel,pais_id,parent_id,codigo_subdivision,source_name,created_at,updated_at
+subdivision__es__1__pais_vasco,Pais Vasco,comunidad_autonoma,1,country__es,,16,Pais Vasco,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__castilla_la_mancha,Castilla - La Mancha,comunidad_autonoma,1,country__es,,08,Castilla - La Mancha,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__comunitat_valenciana,Comunitat Valenciana,comunidad_autonoma,1,country__es,,10,Comunitat Valenciana,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__andalucia,Andalucia,comunidad_autonoma,1,country__es,,01,Andalucia,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__castilla_y_leon,Castilla y Leon,comunidad_autonoma,1,country__es,,07,Castilla y Leon,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__extremadura,Extremadura,comunidad_autonoma,1,country__es,,11,Extremadura,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__illes_balears,Illes Balears,comunidad_autonoma,1,country__es,,04,Illes Balears,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__cataluna,Cataluña,comunidad_autonoma,1,country__es,,09,Cataluña,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__galicia,Galicia,comunidad_autonoma,1,country__es,,12,Galicia,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__aragon,Aragon,comunidad_autonoma,1,country__es,,02,Aragon,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__rioja_la,"Rioja, La",comunidad_autonoma,1,country__es,,17,"Rioja, La",2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__comunidad_de_madrid,Comunidad de Madrid,comunidad_autonoma,1,country__es,,13,Comunidad de Madrid,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__region_de_murcia,Region de Murcia,comunidad_autonoma,1,country__es,,14,Region de Murcia,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__comunidad_foral_de_navarra,Comunidad Foral de Navarra,comunidad_autonoma,1,country__es,,15,Comunidad Foral de Navarra,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__asturias_principado_de,"Asturias, Principado de",comunidad_autonoma,1,country__es,,03,"Asturias, Principado de",2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__canarias,Canarias,comunidad_autonoma,1,country__es,,05,Canarias,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__cantabria,Cantabria,comunidad_autonoma,1,country__es,,06,Cantabria,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__ceuta,Ceuta,comunidad_autonoma,1,country__es,,18,Ceuta,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__1__melilla,Melilla,comunidad_autonoma,1,country__es,,19,Melilla,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__araba__subdivision_es_1_pais_vasco,Araba,provincia,2,country__es,subdivision__es__1__pais_vasco,01,Araba,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__albacete__subdivision_es_1_castilla_la_mancha,Albacete,provincia,2,country__es,subdivision__es__1__castilla_la_mancha,02,Albacete,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__alacant__subdivision_es_1_comunitat_valenciana,Alacant,provincia,2,country__es,subdivision__es__1__comunitat_valenciana,03,Alacant,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__almeria__subdivision_es_1_andalucia,Almeria,provincia,2,country__es,subdivision__es__1__andalucia,04,Almeria,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__avila__subdivision_es_1_castilla_y_leon,Avila,provincia,2,country__es,subdivision__es__1__castilla_y_leon,05,Avila,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__badajoz__subdivision_es_1_extremadura,Badajoz,provincia,2,country__es,subdivision__es__1__extremadura,06,Badajoz,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__illes_balears__subdivision_es_1_illes_balears,Illes Balears,provincia,2,country__es,subdivision__es__1__illes_balears,07,Illes Balears,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__barcelona__subdivision_es_1_cataluna,Barcelona,provincia,2,country__es,subdivision__es__1__cataluna,08,Barcelona,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__burgos__subdivision_es_1_castilla_y_leon,Burgos,provincia,2,country__es,subdivision__es__1__castilla_y_leon,09,Burgos,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__caceres__subdivision_es_1_extremadura,Caceres,provincia,2,country__es,subdivision__es__1__extremadura,10,Caceres,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__cadiz__subdivision_es_1_andalucia,Cadiz,provincia,2,country__es,subdivision__es__1__andalucia,11,Cadiz,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__castello__subdivision_es_1_comunitat_valenciana,Castello,provincia,2,country__es,subdivision__es__1__comunitat_valenciana,12,Castello,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__ciudad_real__subdivision_es_1_castilla_la_mancha,Ciudad Real,provincia,2,country__es,subdivision__es__1__castilla_la_mancha,13,Ciudad Real,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__cordoba__subdivision_es_1_andalucia,Cordoba,provincia,2,country__es,subdivision__es__1__andalucia,14,Cordoba,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__a_coruna__subdivision_es_1_galicia,A Coruña,provincia,2,country__es,subdivision__es__1__galicia,15,A Coruña,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__cuenca__subdivision_es_1_castilla_la_mancha,Cuenca,provincia,2,country__es,subdivision__es__1__castilla_la_mancha,16,Cuenca,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__girona__subdivision_es_1_cataluna,Girona,provincia,2,country__es,subdivision__es__1__cataluna,17,Girona,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__granada__subdivision_es_1_andalucia,Granada,provincia,2,country__es,subdivision__es__1__andalucia,18,Granada,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__guadalajara__subdivision_es_1_castilla_la_mancha,Guadalajara,provincia,2,country__es,subdivision__es__1__castilla_la_mancha,19,Guadalajara,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__gipuzcoa__subdivision_es_1_pais_vasco,Gipuzcoa,provincia,2,country__es,subdivision__es__1__pais_vasco,20,Gipuzcoa,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__huelva__subdivision_es_1_andalucia,Huelva,provincia,2,country__es,subdivision__es__1__andalucia,21,Huelva,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__huesca__subdivision_es_1_aragon,Huesca,provincia,2,country__es,subdivision__es__1__aragon,22,Huesca,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__jaen__subdivision_es_1_andalucia,Jaen,provincia,2,country__es,subdivision__es__1__andalucia,23,Jaen,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__leon__subdivision_es_1_castilla_y_leon,Leon,provincia,2,country__es,subdivision__es__1__castilla_y_leon,24,Leon,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__lleida__subdivision_es_1_cataluna,Lleida,provincia,2,country__es,subdivision__es__1__cataluna,25,Lleida,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__la_rioja__subdivision_es_1_rioja_la,La Rioja,provincia,2,country__es,subdivision__es__1__rioja_la,26,La Rioja,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__lugo__subdivision_es_1_galicia,Lugo,provincia,2,country__es,subdivision__es__1__galicia,27,Lugo,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__madrid__subdivision_es_1_comunidad_de_madrid,Madrid,provincia,2,country__es,subdivision__es__1__comunidad_de_madrid,28,Madrid,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__malaga__subdivision_es_1_andalucia,Malaga,provincia,2,country__es,subdivision__es__1__andalucia,29,Malaga,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__murcia__subdivision_es_1_region_de_murcia,Murcia,provincia,2,country__es,subdivision__es__1__region_de_murcia,30,Murcia,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__navarra__subdivision_es_1_comunidad_foral_de_navarra,Navarra,provincia,2,country__es,subdivision__es__1__comunidad_foral_de_navarra,31,Navarra,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__ourense__subdivision_es_1_galicia,Ourense,provincia,2,country__es,subdivision__es__1__galicia,32,Ourense,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__asturias__subdivision_es_1_asturias_principado_de,Asturias,provincia,2,country__es,subdivision__es__1__asturias_principado_de,33,Asturias,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__palencia__subdivision_es_1_castilla_y_leon,Palencia,provincia,2,country__es,subdivision__es__1__castilla_y_leon,34,Palencia,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__las_palmas__subdivision_es_1_canarias,Las Palmas,provincia,2,country__es,subdivision__es__1__canarias,35,Las Palmas,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__pontevedra__subdivision_es_1_galicia,Pontevedra,provincia,2,country__es,subdivision__es__1__galicia,36,Pontevedra,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__salamanca__subdivision_es_1_castilla_y_leon,Salamanca,provincia,2,country__es,subdivision__es__1__castilla_y_leon,37,Salamanca,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__santa_cruz_de_tenerife__subdivision_es_1_canarias,Santa Cruz de Tenerife,provincia,2,country__es,subdivision__es__1__canarias,38,Santa Cruz de Tenerife,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__cantabria__subdivision_es_1_cantabria,Cantabria,provincia,2,country__es,subdivision__es__1__cantabria,39,Cantabria,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__segovia__subdivision_es_1_castilla_y_leon,Segovia,provincia,2,country__es,subdivision__es__1__castilla_y_leon,40,Segovia,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__sevilla__subdivision_es_1_andalucia,Sevilla,provincia,2,country__es,subdivision__es__1__andalucia,41,Sevilla,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__soria__subdivision_es_1_castilla_y_leon,Soria,provincia,2,country__es,subdivision__es__1__castilla_y_leon,42,Soria,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__tarragona__subdivision_es_1_cataluna,Tarragona,provincia,2,country__es,subdivision__es__1__cataluna,43,Tarragona,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__teruel__subdivision_es_1_aragon,Teruel,provincia,2,country__es,subdivision__es__1__aragon,44,Teruel,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__toledo__subdivision_es_1_castilla_la_mancha,Toledo,provincia,2,country__es,subdivision__es__1__castilla_la_mancha,45,Toledo,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__valencia__subdivision_es_1_comunitat_valenciana,València,provincia,2,country__es,subdivision__es__1__comunitat_valenciana,46,València,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__valladolid__subdivision_es_1_castilla_y_leon,Valladolid,provincia,2,country__es,subdivision__es__1__castilla_y_leon,47,Valladolid,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__bizkaia__subdivision_es_1_pais_vasco,Bizkaia,provincia,2,country__es,subdivision__es__1__pais_vasco,48,Bizkaia,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__zamora__subdivision_es_1_castilla_y_leon,Zamora,provincia,2,country__es,subdivision__es__1__castilla_y_leon,49,Zamora,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__zaragoza__subdivision_es_1_aragon,Zaragoza,provincia,2,country__es,subdivision__es__1__aragon,50,Zaragoza,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__ceuta__subdivision_es_1_ceuta,Ceuta,provincia,2,country__es,subdivision__es__1__ceuta,51,Ceuta,2026-04-16 18:57:00,2026-04-16 18:57:00
+subdivision__es__2__melilla__subdivision_es_1_melilla,Melilla,provincia,2,country__es,subdivision__es__1__melilla,52,Melilla,2026-04-16 18:57:00,2026-04-16 18:57:00

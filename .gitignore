@@ -5,3 +5,12 @@ __pycache__/
 venv/
 .idea/
 .vscode/hubspot-crm-exports-clientes-2026-04-25-2.csv
+__pycache__/
+*.pyc
+*.db
+*.bak
+*.lock
+Captura.PNG
+
+downloaded_files/
+exports/

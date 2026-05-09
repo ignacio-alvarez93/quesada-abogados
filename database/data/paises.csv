@@ -1,0 +1,247 @@
+id,nombre,codigo_iso,codigo_iso3,region_global,created_at,updated_at
+country__af,Afganistán,AF,AFG,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__al,Albania,AL,ALB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__de,Alemania,DE,DEU,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__dz,Algeria,DZ,DZA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ad,Andorra,AD,AND,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ao,Angola,AO,AGO,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ai,Anguila,AI,AIA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__aq,Antártida,AQ,ATA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ag,Antigua y Barbuda,AG,ATG,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sa,Arabia Saudita,SA,SAU,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ar,Argentina,AR,ARG,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__am,Armenia,AM,ARM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__aw,Aruba,AW,ABW,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__au,Australia,AU,AUS,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__at,Austria,AT,AUT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__az,Azerbayán,AZ,AZE,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__be,Bélgica,BE,BEL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bs,Bahamas,BS,BHS,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bh,Bahrein,BH,BHR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bd,Bangladesh,BD,BGD,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bb,Barbados,BB,BRB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bz,Belice,BZ,BLZ,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bj,Benín,BJ,BEN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bt,Bhután,BT,BTN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__by,Bielorrusia,BY,BLR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mm,Birmania,MM,MMR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bo,Bolivia,BO,BOL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ba,Bosnia y Herzegovina,BA,BIH,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bw,Botsuana,BW,BWA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__br,Brasil,BR,BRA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bn,Brunéi,BN,BRN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bg,Bulgaria,BG,BGR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bf,Burkina Faso,BF,BFA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bi,Burundi,BI,BDI,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cv,Cabo Verde,CV,CPV,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__kh,Camboya,KH,KHM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cm,Camerún,CM,CMR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ca,Canadá,CA,CAN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__td,Chad,TD,TCD,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cl,Chile,CL,CHL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cn,China,CN,CHN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cy,Chipre,CY,CYP,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__va,Ciudad del Vaticano,VA,VAT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__co,Colombia,CO,COL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__km,Comoras,KM,COM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cg,Congo,CG,COG,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cd,Congo,CD,COD,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__kp,Corea del Norte,KP,PRK,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__kr,Corea del Sur,KR,KOR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ci,Costa de Marfil,CI,CIV,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cr,Costa Rica,CR,CRI,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__hr,Croacia,HR,HRV,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cu,Cuba,CU,CUB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cw,Curazao,CW,CUW,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__dk,Dinamarca,DK,DNK,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__dm,Dominica,DM,DMA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ec,Ecuador,EC,ECU,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__eg,Egipto,EG,EGY,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sv,El Salvador,SV,SLV,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ae,Emiratos Árabes Unidos,AE,ARE,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__er,Eritrea,ER,ERI,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sk,Eslovaquia,SK,SVK,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__si,Eslovenia,SI,SVN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__es,España,ES,ESP,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__us,Estados Unidos de América,US,USA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ee,Estonia,EE,EST,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__et,Etiopía,ET,ETH,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ph,Filipinas,PH,PHL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__fi,Finlandia,FI,FIN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__fj,Fiyi,FJ,FJI,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__fr,Francia,FR,FRA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ga,Gabón,GA,GAB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gm,Gambia,GM,GMB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ge,Georgia,GE,GEO,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gh,Ghana,GH,GHA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gi,Gibraltar,GI,GIB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gd,Granada,GD,GRD,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gr,Grecia,GR,GRC,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gl,Groenlandia,GL,GRL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gp,Guadalupe,GP,GLP,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gu,Guam,GU,GUM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gt,Guatemala,GT,GTM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gf,Guayana Francesa,GF,GUF,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gg,Guernsey,GG,GGY,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gn,Guinea,GN,GIN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gq,Guinea Ecuatorial,GQ,GNQ,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gw,Guinea-Bissau,GW,GNB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gy,Guyana,GY,GUY,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ht,Haití,HT,HTI,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__hn,Honduras,HN,HND,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__hk,Hong kong,HK,HKG,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__hu,Hungría,HU,HUN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__in,India,IN,IND,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__id,Indonesia,ID,IDN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ir,Irán,IR,IRN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__iq,Irak,IQ,IRQ,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ie,Irlanda,IE,IRL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bv,Isla Bouvet,BV,BVT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__im,Isla de Man,IM,IMN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cx,Isla de Navidad,CX,CXR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__nf,Isla Norfolk,NF,NFK,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__is,Islandia,IS,ISL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bm,Islas Bermudas,BM,BMU,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ky,Islas Caimán,KY,CYM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cc,Islas Cocos (Keeling),CC,CCK,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ck,Islas Cook,CK,COK,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ax,Islas de Åland,AX,ALA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__fo,Islas Feroe,FO,FRO,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gs,Islas Georgias del Sur y Sandwich del Sur,GS,SGS,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__hm,Islas Heard y McDonald,HM,HMD,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mv,Islas Maldivas,MV,MDV,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__fk,Islas Malvinas,FK,FLK,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mp,Islas Marianas del Norte,MP,MNP,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mh,Islas Marshall,MH,MHL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pn,Islas Pitcairn,PN,PCN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sb,Islas Salomón,SB,SLB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tc,Islas Turcas y Caicos,TC,TCA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__um,Islas Ultramarinas Menores de Estados Unidos,UM,UMI,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__vg,Islas Vírgenes Británicas,VG,VGB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__vi,Islas Vírgenes de los Estados Unidos,VI,VIR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__il,Israel,IL,ISR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__it,Italia,IT,ITA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__jm,Jamaica,JM,JAM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__jp,Japón,JP,JPN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__je,Jersey,JE,JEY,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__jo,Jordania,JO,JOR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__kz,Kazajistán,KZ,KAZ,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ke,Kenia,KE,KEN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__kg,Kirgizstán,KG,KGZ,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ki,Kiribati,KI,KIR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__kw,Kuwait,KW,KWT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__lb,Líbano,LB,LBN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__la,Laos,LA,LAO,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ls,Lesoto,LS,LSO,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__lv,Letonia,LV,LVA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__lr,Liberia,LR,LBR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ly,Libia,LY,LBY,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__li,Liechtenstein,LI,LIE,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__lt,Lituania,LT,LTU,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__lu,Luxemburgo,LU,LUX,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mx,México,MX,MEX,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mc,Mónaco,MC,MCO,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mo,Macao,MO,MAC,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mk,Macedônia,MK,MKD,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mg,Madagascar,MG,MDG,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__my,Malasia,MY,MYS,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mw,Malawi,MW,MWI,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ml,Mali,ML,MLI,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mt,Malta,MT,MLT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ma,Marruecos,MA,MAR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mq,Martinica,MQ,MTQ,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mu,Mauricio,MU,MUS,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mr,Mauritania,MR,MRT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__yt,Mayotte,YT,MYT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__fm,Micronesia,FM,FSM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__md,Moldavia,MD,MDA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mn,Mongolia,MN,MNG,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__me,Montenegro,ME,MNE,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ms,Montserrat,MS,MSR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mz,Mozambique,MZ,MOZ,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__na,Namibia,NA,NAM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__nr,Nauru,NR,NRU,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__np,Nepal,NP,NPL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ni,Nicaragua,NI,NIC,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ne,Niger,NE,NER,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ng,Nigeria,NG,NGA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__nu,Niue,NU,NIU,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__no,Noruega,NO,NOR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__nc,Nueva Caledonia,NC,NCL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__nz,Nueva Zelanda,NZ,NZL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__om,Omán,OM,OMN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__nl,Países Bajos,NL,NLD,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pk,Pakistán,PK,PAK,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pw,Palau,PW,PLW,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ps,Palestina,PS,PSE,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pa,Panamá,PA,PAN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pg,Papúa Nueva Guinea,PG,PNG,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__py,Paraguay,PY,PRY,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pe,Perú,PE,PER,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pf,Polinesia Francesa,PF,PYF,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pl,Polonia,PL,POL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pt,Portugal,PT,PRT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pr,Puerto Rico,PR,PRI,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__qa,Qatar,QA,QAT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__gb,Reino Unido,GB,GBR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cf,República Centroafricana,CF,CAF,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__cz,República Checa,CZ,CZE,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__do,República Dominicana,DO,DOM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__re,Reunión,RE,REU,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__rw,Ruanda,RW,RWA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ro,Rumanía,RO,ROU,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ru,Rusia,RU,RUS,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__eh,Sahara Occidental,EH,ESH,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ws,Samoa,WS,WSM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__as,Samoa Americana,AS,ASM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__bl,San Bartolomé,BL,BLM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__kn,San Cristóbal y Nieves,KN,KNA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sm,San Marino,SM,SMR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__mf,San Martín (Francia),MF,MAF,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__pm,San Pedro y Miquelón,PM,SPM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__vc,San Vicente y las Granadinas,VC,VCT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sh,Santa Elena,SH,SHN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__lc,Santa Lucía,LC,LCA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__st,Santo Tomé y Príncipe,ST,STP,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sn,Senegal,SN,SEN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__rs,Serbia,RS,SRB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sc,Seychelles,SC,SYC,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sl,Sierra Leona,SL,SLE,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sg,Singapur,SG,SGP,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sy,Siria,SY,SYR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__so,Somalia,SO,SOM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__lk,Sri lanka,LK,LKA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__za,Sudáfrica,ZA,ZAF,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sd,Sudán,SD,SDN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__se,Suecia,SE,SWE,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ch,Suiza,CH,CHE,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sr,Surinám,SR,SUR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sj,Svalbard y Jan Mayen,SJ,SJM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__sz,Swazilandia,SZ,SWZ,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tj,Tadjikistán,TJ,TJK,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__th,Tailandia,TH,THA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tw,Taiwán,TW,TWN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tz,Tanzania,TZ,TZA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__io,Territorio Británico del Océano Índico,IO,IOT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tf,Territorios Australes y Antárticas Franceses,TF,ATF,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tl,Timor Oriental,TL,TLS,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tg,Togo,TG,TGO,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tk,Tokelau,TK,TKL,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__to,Tonga,TO,TON,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tt,Trinidad y Tobago,TT,TTO,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tn,Tunez,TN,TUN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tm,Turkmenistán,TM,TKM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tr,Turquía,TR,TUR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__tv,Tuvalu,TV,TUV,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ua,Ucrania,UA,UKR,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ug,Uganda,UG,UGA,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__uy,Uruguay,UY,URY,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__uz,Uzbekistán,UZ,UZB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__vu,Vanuatu,VU,VUT,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ve,Venezuela,VE,VEN,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__vn,Vietnam,VN,VNM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__wf,Wallis y Futuna,WF,WLF,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__ye,Yemen,YE,YEM,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__dj,Yibuti,DJ,DJI,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__zm,Zambia,ZM,ZMB,,2026-04-14 06:30:37,2026-04-14 06:30:37
+country__zw,Zimbabue,ZW,ZWE,,2026-04-14 06:30:37,2026-04-14 06:30:37

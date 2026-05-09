@@ -1,0 +1,1594 @@
+import threading
+import unicodedata
+from datetime import datetime
+
+import flet as ft
+
+from backend.services import box_watch_service
+from frontend.components.app_alert import error_alert, success_alert
+from frontend.components.app_button import primary_button, secondary_button
+from frontend.components.app_card import metric_card, info_card
+from frontend.components.app_empty_state import empty_state
+from frontend.components.app_table import app_table
+from frontend.components.app_text_field import text_input
+
+Q_PRIMARY_DARK = "#003B7A"
+Q_PRIMARY = "#0057B8"
+Q_BG = "#F5F9FF"
+Q_MUTED = "#64748B"
+Q_DANGER = "#B42318"
+Q_WARNING = "#B54708"
+
+BOX_WATCH_VIEW_CACHE = {
+    "loaded": False,
+    "selected_route": "TODAS",
+    "root_filter": "",
+    "root_limit": 999999999,
+    "root_page": 1,
+    "root_page_size": 100,
+    "sort_by": "Última actividad",
+    "sort_dir": "Descendente",
+    "root_rows": [],
+    "root_total_rows": 0,
+    "all_root_rows": [],
+    "selected_paths": set(),
+}
+
+
+
+ROOT_PAGE_SIZE_DEFAULT = 100
+ROOT_PAGE_SIZE_OPTIONS = [50, 100, 150, 200]
+
+BOX_WATCH_PROGRESS_STATE = {
+    "scanning": False,
+    "loading_folders": False,
+    "loading_label": "",
+    "progress_percent": 0,
+    "progress_processed": 0,
+    "progress_folders": 0,
+    "progress_total": 0,
+    "progress_total_folders": 0,
+    "progress_file": "",
+    "progress_route": "",
+}
+
+def _filter_norm(value):
+    raw = str(value or "").strip().lower()
+    raw = unicodedata.normalize("NFD", raw)
+    raw = "".join(ch for ch in raw if unicodedata.category(ch) != "Mn")
+    return raw
+
+
+def _size_label(value):
+    try:
+        size = int(value or 0)
+    except Exception:
+        return "—"
+    if size >= 1024 * 1024 * 1024:
+        return f"{size / (1024 * 1024 * 1024):.2f} GB"
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.2f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.2f} KB"
+    return f"{size} B"
+
+
+def _datetime_label(value):
+    if not value:
+        return "—"
+    raw = str(value).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            pass
+    try:
+        return datetime.fromisoformat(raw).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return raw
+
+
+def _status_text(value):
+    color = Q_PRIMARY
+    if value in ("CRITICA", "ERROR", "DUPLICADO", "RESUELTO_DENEGADO"):
+        color = Q_DANGER
+    if value in ("ALTA", "SIN CLASIFICAR", "PENDIENTE REVISION", "REQUERIDO"):
+        color = Q_WARNING
+    return ft.Text(str(value or "—"), size=13, weight=ft.FontWeight.W_600, color=color)
+
+
+
+
+def _document_route_label(folder):
+    ruta_relativa = str(folder.get("ruta_relativa") or "").replace("\\", "/").strip("/")
+    if ruta_relativa:
+        parts = [p.strip() for p in ruta_relativa.split("/") if p.strip()]
+        if parts and parts[0].upper() == "BOX":
+            parts = parts[1:]
+        return " > ".join(parts)
+
+    config_relative = str(folder.get("config_route_relative") or "").replace("\\", "/").strip("/")
+    if config_relative:
+        parts = [p.strip() for p in config_relative.split("/") if p.strip()]
+        if parts and parts[0].upper() == "BOX":
+            parts = parts[1:]
+        return " > ".join(parts)
+
+    label = str(folder.get("config_route_label") or "").strip()
+    if "·" in label:
+        label = label.split("·", 1)[1].strip()
+    if label:
+        parts = [p.strip() for p in label.replace("\\", "/").split("/") if p.strip()]
+        if parts and parts[0].upper() == "BOX":
+            parts = parts[1:]
+        return " > ".join(parts)
+
+    return ""
+
+
+def _client_root_folder(folder):
+    nombre = str(folder.get("nombre_carpeta") or "").strip()
+    if nombre:
+        return nombre
+
+    ruta = str(folder.get("ruta") or "").replace("\\", "/").strip("/")
+    return ruta.split("/")[-1] if ruta else ""
+
+
+def _document_year(folder):
+    route_label = _document_route_label(folder)
+    parts = [p.strip() for p in route_label.replace(">", "/").split("/") if p.strip()]
+
+    for part in reversed(parts):
+        if part.isdigit() and len(part) == 4:
+            return part
+
+    return "—"
+
+
+def _document_case_label(folder):
+    route_label = _document_route_label(folder)
+    year = _document_year(folder)
+
+    if year != "—":
+        parts = [p.strip() for p in route_label.split(">") if p.strip()]
+        parts = [p for p in parts if p != year]
+        return " > ".join(parts) or route_label
+
+    return route_label or "—"
+
+
+def _box_link_label(folder):
+    expediente_id = folder.get("expediente_id")
+    display = str(folder.get("expediente_display") or "").strip()
+    numero = str(folder.get("numero_expediente") or "").strip()
+
+    if display:
+        return display
+    if numero:
+        return numero
+    if expediente_id:
+        return f"EXPEDIENTE ID {expediente_id}"
+    return "Sin vincular"
+
+
+def _box_link_color(folder):
+    return Q_PRIMARY if folder.get("expediente_id") else Q_MUTED
+
+
+def _sort_key_for_folder(row, sort_by):
+    client_folder = row.get("_client_folder") if isinstance(row, dict) else None
+    year = row.get("_document_year") if isinstance(row, dict) else None
+    case_label = row.get("_case_label") if isinstance(row, dict) else None
+
+    if client_folder is None:
+        client_folder = _client_root_folder(row)
+    if year is None:
+        year = _document_year(row)
+    if case_label is None:
+        case_label = _document_case_label(row)
+
+    if sort_by == "Cliente":
+        return (client_folder, year, case_label)
+    if sort_by == "Año":
+        return (year, case_label, client_folder)
+    if sort_by == "Trámite":
+        return (case_label, year, client_folder)
+    if sort_by == "Última actividad":
+        return (row.get("fecha_ultima_actividad") or "", client_folder)
+    if sort_by == "Último escaneo":
+        return (row.get("last_scan") or row.get("ultimo_escaneo") or "", client_folder)
+    if sort_by == "Archivos":
+        return (int(row.get("total_archivos_recursivos") or row.get("total_archivos") or 0), client_folder)
+    if sort_by == "Subcarpetas":
+        return (int(row.get("total_subcarpetas_recursivas") or row.get("total_subcarpetas") or 0), client_folder)
+
+    return (client_folder, year, case_label)
+
+
+def box_watch_view(page: ft.Page):
+    state = {
+        "message": None,
+        "routes": [],
+        "selected_route": BOX_WATCH_VIEW_CACHE.get("selected_route", "TODAS"),
+        "root_loaded": bool(BOX_WATCH_VIEW_CACHE.get("loaded")),
+        "root_filter": BOX_WATCH_VIEW_CACHE.get("root_filter", ""),
+        "root_limit": BOX_WATCH_VIEW_CACHE.get("root_limit", 999999999),
+        "root_page": int(BOX_WATCH_VIEW_CACHE.get("root_page", 1) or 1),
+        "root_page_size": int(BOX_WATCH_VIEW_CACHE.get("root_page_size", ROOT_PAGE_SIZE_DEFAULT) or ROOT_PAGE_SIZE_DEFAULT),
+        "root_rows": list(BOX_WATCH_VIEW_CACHE.get("root_rows") or []),
+        "root_total_rows": int(BOX_WATCH_VIEW_CACHE.get("root_total_rows", len(BOX_WATCH_VIEW_CACHE.get("root_rows") or [])) or 0),
+        "all_root_rows": list(BOX_WATCH_VIEW_CACHE.get("all_root_rows") or BOX_WATCH_VIEW_CACHE.get("root_rows") or []),
+        "selected_paths": set(BOX_WATCH_VIEW_CACHE.get("selected_paths") or set()),
+        "sort_by": BOX_WATCH_VIEW_CACHE.get("sort_by", "Última actividad"),
+        "sort_dir": BOX_WATCH_VIEW_CACHE.get("sort_dir", "Descendente"),
+        "selected_folder_path": "",
+        "inspection": None,
+        "inspection_stack": [],
+        "dialog_tab": "Resumen",
+        "scanning": bool(BOX_WATCH_PROGRESS_STATE.get("scanning")),
+        "loading_folders": bool(BOX_WATCH_PROGRESS_STATE.get("loading_folders")),
+        "loading_label": BOX_WATCH_PROGRESS_STATE.get("loading_label", ""),
+        "progress_percent": BOX_WATCH_PROGRESS_STATE.get("progress_percent", 0),
+        "progress_processed": BOX_WATCH_PROGRESS_STATE.get("progress_processed", 0),
+        "progress_folders": BOX_WATCH_PROGRESS_STATE.get("progress_folders", 0),
+        "progress_total": BOX_WATCH_PROGRESS_STATE.get("progress_total", 0),
+        "progress_total_folders": BOX_WATCH_PROGRESS_STATE.get("progress_total_folders", 0),
+        "progress_file": BOX_WATCH_PROGRESS_STATE.get("progress_file", ""),
+        "progress_route": BOX_WATCH_PROGRESS_STATE.get("progress_route", ""),
+    }
+
+    content_area = ft.Container(expand=True)
+    root_table_container = ft.Container(expand=True)
+    root_toolbar_container = ft.Container()
+    filter_timer = {"timer": None}
+    filter_job = {"seq": 0, "last_applied": None}
+    root_filter_input = text_input("Buscar cliente / expediente", value=BOX_WATCH_VIEW_CACHE.get("root_filter", ""), width=300)
+    route_dd = ft.Dropdown(label="Ruta Box configurada", width=420, options=[])
+    sort_by_dd = ft.Dropdown(
+        label="Ordenar por",
+        width=190,
+        options=[
+            ft.dropdown.Option("Última actividad"),
+            ft.dropdown.Option("Cliente"),
+            ft.dropdown.Option("Año"),
+            ft.dropdown.Option("Trámite"),
+            ft.dropdown.Option("Último escaneo"),
+            ft.dropdown.Option("Archivos"),
+            ft.dropdown.Option("Subcarpetas"),
+        ],
+        value=BOX_WATCH_VIEW_CACHE.get("sort_by", "Última actividad"),
+    )
+    sort_dir_dd = ft.Dropdown(
+        label="Dirección",
+        width=145,
+        options=[
+            ft.dropdown.Option("Ascendente"),
+            ft.dropdown.Option("Descendente"),
+        ],
+        value=BOX_WATCH_VIEW_CACHE.get("sort_dir", "Descendente"),
+    )
+    page_size_dd = ft.Dropdown(
+        label="Filas/página",
+        width=135,
+        options=[ft.dropdown.Option(str(v)) for v in ROOT_PAGE_SIZE_OPTIONS],
+        value=str(BOX_WATCH_VIEW_CACHE.get("root_page_size", ROOT_PAGE_SIZE_DEFAULT) or ROOT_PAGE_SIZE_DEFAULT),
+    )
+
+    inspection_dialog_content = ft.Container(width=920, height=540)
+    inspection_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Inspección documental Box", color=Q_PRIMARY_DARK, weight=ft.FontWeight.BOLD),
+        content=inspection_dialog_content,
+        actions=[],
+    )
+    page.overlay.append(inspection_dialog)
+
+    link_expediente_dd = ft.Dropdown(
+        label="Vincular a expediente",
+        width=760,
+        options=[],
+    )
+
+    try:
+        box_watch_service.initialize_box_watch_schema()
+        box_watch_service.ensure_box_watch_runtime_columns()
+        try:
+            box_watch_service.ensure_box_watch_indexes()
+        except Exception:
+            pass
+    except Exception as exc:
+        state["message"] = error_alert(f"No se pudo inicializar Vigilancia Box: {exc}")
+
+    def safe_update():
+        root_toolbar_container.content = build_root_toolbar()
+        root_table_container.content = build_root_folders_table()
+        content_area.content = build_layout()
+        page.update()
+
+    def notify_ok(text):
+        state["message"] = success_alert(text)
+
+    def notify_error(text):
+        state["message"] = error_alert(text)
+
+    def save_cache():
+        BOX_WATCH_VIEW_CACHE["loaded"] = bool(state.get("root_loaded"))
+        BOX_WATCH_VIEW_CACHE["selected_route"] = state.get("selected_route") or "TODAS"
+        BOX_WATCH_VIEW_CACHE["root_filter"] = state.get("root_filter") or ""
+        BOX_WATCH_VIEW_CACHE["root_limit"] = state.get("root_limit") or 999999999
+        BOX_WATCH_VIEW_CACHE["root_page"] = int(state.get("root_page") or 1)
+        BOX_WATCH_VIEW_CACHE["root_page_size"] = int(state.get("root_page_size") or ROOT_PAGE_SIZE_DEFAULT)
+        BOX_WATCH_VIEW_CACHE["sort_by"] = state.get("sort_by") or "Última actividad"
+        BOX_WATCH_VIEW_CACHE["sort_dir"] = state.get("sort_dir") or "Descendente"
+        BOX_WATCH_VIEW_CACHE["root_rows"] = list(state.get("root_rows") or [])
+        BOX_WATCH_VIEW_CACHE["root_total_rows"] = int(state.get("root_total_rows") or len(state.get("root_rows") or []))
+        BOX_WATCH_VIEW_CACHE["all_root_rows"] = []
+        BOX_WATCH_VIEW_CACHE["selected_paths"] = set(state.get("selected_paths") or set())
+
+    def clear_cache():
+        BOX_WATCH_VIEW_CACHE["loaded"] = False
+        BOX_WATCH_VIEW_CACHE["root_rows"] = []
+        BOX_WATCH_VIEW_CACHE["root_total_rows"] = 0
+        BOX_WATCH_VIEW_CACHE["all_root_rows"] = []
+        BOX_WATCH_VIEW_CACHE["root_page"] = 1
+        BOX_WATCH_VIEW_CACHE["root_page_size"] = ROOT_PAGE_SIZE_DEFAULT
+        BOX_WATCH_VIEW_CACHE["selected_paths"] = set()
+
+    def save_progress_state():
+        for key in [
+            "scanning",
+            "loading_folders",
+            "loading_label",
+            "progress_percent",
+            "progress_processed",
+            "progress_folders",
+            "progress_total",
+            "progress_total_folders",
+            "progress_file",
+            "progress_route",
+        ]:
+            BOX_WATCH_PROGRESS_STATE[key] = state.get(key)
+
+    def sync_progress_from_global():
+        for key, value in BOX_WATCH_PROGRESS_STATE.items():
+            state[key] = value
+
+    def refresh_routes(preserve_current=True):
+        current_value = route_dd.value or state.get("selected_route") or "TODAS"
+
+        try:
+            routes = box_watch_service.get_configured_box_routes(active_only=True)
+        except Exception:
+            routes = []
+
+        state["routes"] = routes
+        options = [ft.dropdown.Option("TODAS", "Todas las rutas")]
+        for route in routes:
+            exists = "OK" if route.get("ruta_existe") else "NO ENCONTRADA"
+            label = f"{route['id']} · {route['tipo_expediente_nombre']} · {route['ruta_box']} · {exists}"
+            options.append(ft.dropdown.Option(str(route["id"]), label))
+
+        route_dd.options = options
+        valid = ["TODAS"] + [str(r["id"]) for r in routes]
+        wanted = current_value if preserve_current else state.get("selected_route", "TODAS")
+        if wanted not in valid:
+            wanted = "TODAS"
+        state["selected_route"] = wanted
+        route_dd.value = wanted
+
+    def on_route_change(e=None):
+        state["selected_route"] = route_dd.value or "TODAS"
+        state["root_loaded"] = False
+        state["root_rows"] = []
+        state["all_root_rows"] = []
+        state["root_page"] = 1
+        state["selected_paths"] = set()
+        state["inspection"] = None
+        state["inspection_stack"] = []
+        clear_cache()
+        safe_update()
+
+    route_dd.on_change = on_route_change
+
+    def _prepare_folder_for_memory(folder):
+        """
+        Precalcula campos caros una sola vez al cargar desde SQLite.
+        El filtro y la ordenación trabajan después solo en memoria.
+        """
+        item = dict(folder or {})
+
+        route_label = _document_route_label(item)
+        client_folder = _client_root_folder(item)
+        year = _document_year(item)
+        case_label = _document_case_label(item)
+
+        item["_route_label"] = route_label
+        item["_client_folder"] = client_folder
+        item["_document_year"] = year
+        item["_case_label"] = case_label
+        item["_search_key"] = _filter_norm(" ".join([
+            str(client_folder or ""),
+            str(year or ""),
+            str(case_label or ""),
+            str(route_label or ""),
+            str(item.get("ruta_relativa") or ""),
+            str(item.get("nombre_carpeta") or ""),
+            str(item.get("ruta") or ""),
+            str(item.get("expediente_display") or ""),
+            str(item.get("numero_expediente") or ""),
+            str(item.get("cliente_nombre") or ""),
+            str(item.get("cliente_primer_apellido") or ""),
+            str(item.get("cliente_segundo_apellido") or ""),
+        ]))
+        return item
+
+    def _folder_matches_filter(folder, text):
+        text = _filter_norm(text)
+        if not text:
+            return True
+        return text in str(folder.get("_search_key") or "")
+
+    def apply_memory_filter(force_text=None):
+        """
+        Filtro 100% en memoria.
+        Caso importante: si el TextBox queda vacío, restaura TODA la tabla cargada
+        desde all_root_rows, no desde la tabla previamente filtrada.
+        """
+        text = (root_filter_input.value if force_text is None else force_text) or ""
+        text = str(text).strip()
+        state["root_filter"] = text
+
+        base_rows = state.get("all_root_rows") or []
+
+        if not text:
+            filtered = list(base_rows)
+        else:
+            normalized = _filter_norm(text)
+            filtered = [row for row in base_rows if normalized in str(row.get("_search_key") or "")]
+
+        state["root_rows"] = _sorted_root_rows(filtered)
+        state["root_page"] = 1
+        _clamp_root_page()
+
+        selected_paths = set(state.get("selected_paths") or set())
+        visible_paths = {row.get("ruta") for row in state["root_rows"]}
+        state["selected_paths"] = {path for path in selected_paths if path in visible_paths}
+
+        # Guardamos solo estado ligero. Guardar listas grandes en cada tecla mete lag.
+        BOX_WATCH_VIEW_CACHE["loaded"] = bool(state.get("root_loaded"))
+        BOX_WATCH_VIEW_CACHE["selected_route"] = state.get("selected_route") or "TODAS"
+        BOX_WATCH_VIEW_CACHE["root_filter"] = state.get("root_filter") or ""
+        BOX_WATCH_VIEW_CACHE["root_limit"] = state.get("root_limit") or 999999999
+        BOX_WATCH_VIEW_CACHE["root_page"] = int(state.get("root_page") or 1)
+        BOX_WATCH_VIEW_CACHE["root_page_size"] = int(state.get("root_page_size") or ROOT_PAGE_SIZE_DEFAULT)
+        BOX_WATCH_VIEW_CACHE["sort_by"] = state.get("sort_by") or "Última actividad"
+        BOX_WATCH_VIEW_CACHE["sort_dir"] = state.get("sort_dir") or "Descendente"
+        BOX_WATCH_VIEW_CACHE["selected_paths"] = set(state.get("selected_paths") or set())
+
+    def _sorted_root_rows(rows):
+        sort_by = sort_by_dd.value or state.get("sort_by") or "Última actividad"
+        sort_dir = sort_dir_dd.value or state.get("sort_dir") or "Descendente"
+        state["sort_by"] = sort_by
+        state["sort_dir"] = sort_dir
+        reverse = sort_dir == "Descendente"
+        try:
+            return sorted(rows or [], key=lambda r: _sort_key_for_folder(r, sort_by), reverse=reverse)
+        except Exception:
+            return rows or []
+
+    def _root_page_size():
+        try:
+            size = int(page_size_dd.value or state.get("root_page_size") or ROOT_PAGE_SIZE_DEFAULT)
+        except Exception:
+            size = ROOT_PAGE_SIZE_DEFAULT
+        if size not in ROOT_PAGE_SIZE_OPTIONS:
+            size = ROOT_PAGE_SIZE_DEFAULT
+        state["root_page_size"] = size
+        page_size_dd.value = str(size)
+        return size
+
+    def _root_total_pages():
+        total = int(state.get("root_total_rows") or len(state.get("root_rows") or []))
+        size = max(1, _root_page_size())
+        return max(1, (total + size - 1) // size)
+
+    def _clamp_root_page():
+        total_pages = _root_total_pages()
+        try:
+            page_number = int(state.get("root_page") or 1)
+        except Exception:
+            page_number = 1
+        state["root_page"] = max(1, min(page_number, total_pages))
+        return state["root_page"]
+
+    def _current_page_rows():
+        # Paginación visual en memoria: root_rows contiene TODAS las carpetas cargadas.
+        page_number = _clamp_root_page()
+        page_size = _root_page_size()
+        rows = state.get("root_rows") or []
+        start = (page_number - 1) * page_size
+        end = start + page_size
+        return rows[start:end]
+
+    def on_page_size_change(e=None):
+        state["root_page_size"] = _root_page_size()
+        state["root_page"] = 1
+        BOX_WATCH_VIEW_CACHE["root_page_size"] = state["root_page_size"]
+        BOX_WATCH_VIEW_CACHE["root_page"] = 1
+        refresh_root_table()
+
+    page_size_dd.on_change = on_page_size_change
+
+    def on_sort_change(e=None):
+        state["sort_by"] = sort_by_dd.value or "Última actividad"
+        state["sort_dir"] = sort_dir_dd.value or "Descendente"
+        state["root_page"] = 1
+        if state.get("root_loaded"):
+            state["root_rows"] = _sorted_root_rows(state.get("root_rows") or [])
+            state["all_root_rows"] = list(state.get("root_rows") or [])
+            save_cache()
+            refresh_root_table()
+        else:
+            safe_update()
+
+    sort_by_dd.on_change = on_sort_change
+    sort_dir_dd.on_change = on_sort_change
+
+    def refresh_root_table(e=None):
+        # Repintado ligero: NO reconstruye toda la vista.
+        root_toolbar_container.content = build_root_toolbar()
+        root_table_container.content = build_root_folders_table()
+        page.update()
+
+    def _run_filter_after_debounce(seq, text):
+        if not state.get("root_loaded"):
+            return
+        # Evita que timers antiguos repinten por detrás y provoquen saltos.
+        if seq != filter_job.get("seq"):
+            return
+        if text == filter_job.get("last_applied"):
+            return
+        try:
+            filter_job["last_applied"] = text
+            state["root_filter"] = text
+            state["root_page"] = 1
+            load_root_folders(show_loading=False, refresh_routes_before=False)
+        except Exception:
+            pass
+
+    def on_root_filter_change(e=None):
+        if not state.get("root_loaded"):
+            return
+
+        text = (root_filter_input.value or "").strip()
+        state["root_filter"] = text
+
+        current_timer = filter_timer.get("timer")
+        if current_timer:
+            try:
+                current_timer.cancel()
+            except Exception:
+                pass
+
+        filter_job["seq"] = int(filter_job.get("seq") or 0) + 1
+        seq = filter_job["seq"]
+
+        # Caso crítico: si se limpia el TextBox, se restaura la lista completa INMEDIATAMENTE.
+        # No esperamos al debounce porque Flet puede no disparar otro evento y la tabla queda filtrada.
+        if not text:
+            filter_job["last_applied"] = ""
+            state["root_filter"] = ""
+            state["root_page"] = 1
+            load_root_folders(show_loading=False, refresh_routes_before=False)
+            return
+
+        # Con texto, sí aplicamos debounce para no reconstruir la tabla por cada pulsación.
+        delay = 0.45
+        timer = threading.Timer(delay, lambda: _run_filter_after_debounce(seq, text))
+        filter_timer["timer"] = timer
+        timer.daemon = True
+        timer.start()
+
+    root_filter_input.on_change = on_root_filter_change
+
+    def selected_route_ids():
+        value = route_dd.value or state.get("selected_route") or "TODAS"
+        state["selected_route"] = value
+        if value == "TODAS":
+            return [int(r["id"]) for r in state.get("routes", [])]
+        return [int(value)]
+
+    def selected_route_label():
+        value = route_dd.value or state.get("selected_route") or "TODAS"
+        if value == "TODAS":
+            return "Todas las rutas configuradas"
+        route = next((r for r in state.get("routes", []) if str(r.get("id")) == str(value)), None)
+        if not route:
+            return "Ruta seleccionada"
+        return f"{route.get('tipo_expediente_nombre')} · {route.get('ruta_box')}"
+
+    def on_progress(progress):
+        processed = int(progress.get("processed", 0) or 0)
+        folders = int(progress.get("processed_folders", 0) or 0)
+        total = int(progress.get("total", 0) or 0)
+        total_folders = int(progress.get("total_folders", 0) or 0)
+
+        state["progress_processed"] = processed
+        state["progress_folders"] = folders
+        state["progress_total"] = total
+        state["progress_total_folders"] = total_folders
+        state["progress_percent"] = float(progress.get("percent", 0) or 0)
+        state["progress_file"] = progress.get("current_file", "") or ""
+        state["progress_route"] = progress.get("route_label", "") or state.get("progress_route", "")
+
+        save_progress_state()
+        # Escaneo silencioso: no repintamos la vista en cada avance.
+        # Evita barras, bloqueos visuales y parpadeos mientras Box se escanea en segundo plano.
+
+
+    def start_background_worker(target, *args):
+        """
+        Ejecuta trabajos en segundo plano usando el mecanismo de Flet cuando existe.
+        Con threading.Thread puro, algunas versiones de Flet no empujan page.update()
+        hasta que el usuario hace otra acción.
+        """
+        try:
+            runner = getattr(page, "run_thread", None)
+            if callable(runner):
+                runner(target, *args)
+                return
+        except Exception:
+            pass
+
+        threading.Thread(target=target, args=args, daemon=True).start()
+
+    def scan_worker(route_ids):
+        try:
+            results = box_watch_service.scan_configured_routes(
+                route_ids=route_ids,
+                progress_callback=on_progress,
+                calculate_hash=False,
+            )
+            total_folders = sum(int(r.get("total_carpetas", 0) or 0) for r in results)
+            total_files = sum(int(r.get("total_archivos", 0) or 0) for r in results)
+            # No recalculamos contadores recursivos aquí: era uno de los cuellos de botella.
+            # La vista permanece usable durante el escaneo.
+            notify_ok(f"Escaneado finalizado: {len(results)} ruta(s), {total_folders} carpetas, {total_files} archivos. Pulsa Recargar para refrescar la tabla.")
+            state["selected_paths"] = set()
+            save_cache()
+        except Exception as exc:
+            notify_error(f"No se pudo reescanear: {exc}")
+        finally:
+            state["scanning"] = False
+            save_progress_state()
+            safe_update()
+
+    def scan_selected(e=None):
+        if state["scanning"]:
+            return
+        refresh_routes()
+        route_ids = selected_route_ids()
+        if not route_ids:
+            notify_error("No hay rutas activas configuradas.")
+            safe_update()
+            return
+        state["scanning"] = True
+        state["message"] = None
+        state["progress_file"] = "Escaneando en segundo plano..."
+        state["progress_route"] = selected_route_label()
+        save_progress_state()
+        # No hacemos safe_update inicial: la tabla no queda bloqueada por barras de progreso.
+        start_background_worker(scan_worker, route_ids)
+
+    def scan_all(e=None):
+        if state["scanning"]:
+            return
+        refresh_routes()
+        route_ids = [int(r["id"]) for r in state.get("routes", [])]
+        if not route_ids:
+            notify_error("No hay rutas activas configuradas.")
+            safe_update()
+            return
+        route_dd.value = "TODAS"
+        state["selected_route"] = "TODAS"
+        state["scanning"] = True
+        state["message"] = None
+        state["progress_file"] = "Escaneando todas las rutas en segundo plano..."
+        state["progress_route"] = "Todas las rutas configuradas"
+        save_progress_state()
+        # No hacemos safe_update inicial: la tabla no queda bloqueada por barras de progreso.
+        start_background_worker(scan_worker, route_ids)
+
+    def _load_root_rows():
+        selected = state.get("selected_route") or "TODAS"
+        text = (state.get("root_filter") or root_filter_input.value or "").strip()
+        sort_by = state.get("sort_by") or sort_by_dd.value or "Última actividad"
+        sort_dir = state.get("sort_dir") or sort_dir_dd.value or "Descendente"
+
+        # Carga completa real por páginas internas.
+        # El backend puede devolver 500 por página; aquí seguimos pidiendo páginas
+        # hasta traer todo y luego la paginación visible queda solo en memoria.
+        sql_page_size = 500
+
+        def load_route_full(route_id):
+            all_rows = []
+            page_number = 1
+            total = None
+
+            while True:
+                data = box_watch_service.list_root_folders_sql_page_for_route_id(
+                    int(route_id),
+                    ruta_contains=text or None,
+                    page=page_number,
+                    page_size=sql_page_size,
+                    sort_by=sort_by,
+                    sort_dir=sort_dir,
+                )
+
+                rows = data.get("rows") if isinstance(data, dict) else (data or [])
+                if not rows:
+                    break
+
+                all_rows.extend(rows)
+
+                if isinstance(data, dict):
+                    total = int(data.get("total") or 0)
+                    if total and len(all_rows) >= total:
+                        break
+
+                if len(rows) < sql_page_size:
+                    break
+
+                page_number += 1
+
+            return all_rows
+
+        if selected == "TODAS":
+            rows = []
+            for route in state.get("routes", []) or []:
+                route_id = route.get("id")
+                if not route_id:
+                    continue
+                try:
+                    rows.extend(load_route_full(route_id))
+                except Exception:
+                    continue
+            return {"rows": rows, "total": len(rows)}
+
+        rows = load_route_full(selected)
+        return {"rows": rows, "total": len(rows)}
+
+    def load_root_folders(e=None, show_loading=True, refresh_routes_before=True):
+        try:
+            if show_loading:
+                state["loading_folders"] = True
+                state["loading_label"] = "Cargando carpetas desde SQLite..."
+                save_progress_state()
+                safe_update()
+
+            selected_before_refresh = route_dd.value or state.get("selected_route") or "TODAS"
+            state["selected_route"] = selected_before_refresh
+
+            if refresh_routes_before:
+                refresh_routes(preserve_current=True)
+
+                if selected_before_refresh in (["TODAS"] + [str(r["id"]) for r in state.get("routes", [])]):
+                    state["selected_route"] = selected_before_refresh
+                    route_dd.value = selected_before_refresh
+
+            state["root_filter"] = (root_filter_input.value or state.get("root_filter") or "").strip()
+            data = _load_root_rows()
+            rows = data.get("rows") if isinstance(data, dict) else (data or [])
+            prepared_rows = [_prepare_folder_for_memory(row) for row in (rows or [])]
+            state["root_rows"] = _sorted_root_rows(prepared_rows)
+            state["all_root_rows"] = list(state["root_rows"])
+            state["root_total_rows"] = len(state["root_rows"])
+            state["root_loaded"] = True
+            _clamp_root_page()
+            state["inspection"] = None
+            state["inspection_stack"] = []
+            state["selected_paths"] = {
+                p for p in state["selected_paths"]
+                if any((r.get("ruta") == p) for r in state["root_rows"])
+            }
+            # No mostramos alerta verde de carga: ocupa espacio y no aporta en uso diario.
+            state["message"] = None
+            save_cache()
+            state["loading_folders"] = False
+            state["loading_label"] = ""
+            save_progress_state()
+        except Exception as exc:
+            state["root_rows"] = []
+            state["root_total_rows"] = 0
+            state["root_loaded"] = True
+            state["loading_folders"] = False
+            state["loading_label"] = ""
+            save_progress_state()
+            notify_error(f"No se pudieron cargar carpetas raíz: {exc}")
+        safe_update()
+
+    def load_all_root_folders(e=None):
+        state["selected_route"] = "TODAS"
+        route_dd.value = "TODAS"
+        load_root_folders()
+
+    def load_more_root(e=None):
+        state["root_limit"] += 500
+        load_root_folders()
+
+    def toggle_selected(path, selected=None, row_ref=None, checkbox_ref=None, index=0):
+        selected_paths = set(state.get("selected_paths") or set())
+
+        if selected is None:
+            selected = path not in selected_paths
+
+        if selected:
+            selected_paths.add(path)
+        else:
+            selected_paths.discard(path)
+
+        state["selected_paths"] = selected_paths
+        is_selected = path in selected_paths
+
+        if row_ref and row_ref.current:
+            row_ref.current.bgcolor = "#EAF3FF" if is_selected else ("#FAFBFC" if index % 2 else "#FFFFFF")
+
+        if checkbox_ref and checkbox_ref.current:
+            checkbox_ref.current.value = is_selected
+
+        save_cache()
+        root_toolbar_container.content = build_root_toolbar()
+        page.update()
+
+    def select_all_visible(e=None):
+        current = {r.get("ruta") for r in _current_page_rows() if r.get("ruta")}
+        selected_paths = set(state.get("selected_paths") or set())
+        selected_paths.update(current)
+        state["selected_paths"] = selected_paths
+        notify_ok(f"Seleccionadas en página: {len(current)}")
+        save_cache()
+        refresh_root_table()
+
+    def clear_selection(e=None):
+        state["selected_paths"] = set()
+        notify_ok("Selección limpiada.")
+        save_cache()
+        refresh_root_table()
+
+    def inspect_marked_folder(e=None):
+        selected = list(state.get("selected_paths") or [])
+        if not selected:
+            notify_error("Marca una carpeta para inspeccionarla.")
+            safe_update()
+            return
+        if len(selected) > 1:
+            notify_error("Marca solo una carpeta para inspeccionarla.")
+            safe_update()
+            return
+        inspect_folder(selected[0], push_history=False)
+
+    def watchdog_placeholder(e=None):
+        notify_ok("Vigilancia Watchdog preparada. Se desarrollará en un módulo independiente.")
+        safe_update()
+
+    def _option_id(value):
+        if not value or " - " not in str(value):
+            return None
+        try:
+            return int(str(value).split(" - ", 1)[0])
+        except Exception:
+            return None
+
+    def load_link_expediente_options():
+        try:
+            expedientes = box_watch_service.get_expedientes_for_box_link()
+        except Exception:
+            expedientes = []
+
+        link_expediente_dd.options = [
+            ft.dropdown.Option(e["display"])
+            for e in expedientes
+        ]
+
+        current = None
+        inspection = state.get("inspection") or {}
+        folder = inspection.get("folder") or {}
+        expediente_id = folder.get("expediente_id")
+        if expediente_id:
+            current = next(
+                (e["display"] for e in expedientes if int(e.get("id")) == int(expediente_id)),
+                None,
+            )
+
+        link_expediente_dd.value = current
+
+    def selected_folder_is_root_folder():
+        path = state.get("selected_folder_path")
+        if not path:
+            return False
+        return any((row.get("ruta") == path) for row in (state.get("root_rows") or []))
+
+    def update_linked_folder_in_memory(path, link_result):
+        """
+        Refresca la vinculación en las filas ya cargadas de la vista Box.
+        No consulta Box ni modifica archivos. Solo actualiza el estado visual local.
+        """
+        normalized = str(path or "").replace("\\", "/").rstrip("/")
+        if not normalized:
+            return
+
+        expediente_id = link_result.get("expediente_id")
+        cliente_id = link_result.get("cliente_id")
+        display = link_result.get("display") or f"EXPEDIENTE ID {expediente_id}"
+
+        for collection_name in ("root_rows", "all_root_rows"):
+            updated = []
+            for row in state.get(collection_name, []) or []:
+                item = dict(row)
+                row_path = str(item.get("ruta") or "").replace("\\", "/").rstrip("/")
+                if row_path == normalized:
+                    item["expediente_id"] = expediente_id
+                    item["cliente_id"] = cliente_id
+                    item["expediente_display"] = display
+                updated.append(item)
+            state[collection_name] = updated
+
+        save_cache()
+
+    def link_selected_folder_to_expediente(e=None):
+        path = state.get("selected_folder_path")
+        expediente_id = _option_id(link_expediente_dd.value)
+
+        if not path:
+            notify_error("No hay carpeta seleccionada.")
+            safe_update()
+            return
+
+        if not selected_folder_is_root_folder():
+            notify_error("Solo se pueden vincular carpetas principales, no subcarpetas.")
+            safe_update()
+            return
+
+        if not expediente_id:
+            notify_error("Selecciona un expediente para vincular.")
+            safe_update()
+            return
+
+        try:
+            result = box_watch_service.link_box_folder_to_expediente(path, expediente_id)
+            update_linked_folder_in_memory(path, result)
+            state["inspection"] = box_watch_service.get_box_folder_inspection(path)
+            notify_ok(f"Carpeta vinculada: {result.get('display')}")
+            refresh_inspection_dialog_content()
+            root_toolbar_container.content = build_root_toolbar()
+            root_table_container.content = build_root_folders_table()
+            inspection_dialog.open = True
+            page.update()
+        except Exception as exc:
+            notify_error(f"No se pudo vincular la carpeta: {exc}")
+            safe_update()
+
+    def inspect_folder(folder_path, push_history=False):
+        try:
+            current = state.get("selected_folder_path")
+            if push_history and current:
+                stack = list(state.get("inspection_stack") or [])
+                stack.append(current)
+                state["inspection_stack"] = stack
+
+            state["selected_folder_path"] = folder_path or ""
+            state["inspection"] = box_watch_service.get_box_folder_inspection(folder_path)
+            state["dialog_tab"] = "Resumen"
+            open_inspection_dialog()
+        except Exception as exc:
+            notify_error(f"No se pudo inspeccionar la carpeta: {exc}")
+            safe_update()
+
+    def go_back_inspection(e=None):
+        stack = list(state.get("inspection_stack") or [])
+        if not stack:
+            return
+        previous = stack.pop()
+        state["inspection_stack"] = stack
+        try:
+            state["selected_folder_path"] = previous
+            state["inspection"] = box_watch_service.get_box_folder_inspection(previous)
+            state["dialog_tab"] = "Resumen"
+            refresh_inspection_dialog_content()
+            inspection_dialog.open = True
+            page.update()
+        except Exception as exc:
+            notify_error(f"No se pudo volver a la carpeta anterior: {exc}")
+            safe_update()
+
+    def close_dialog(e=None):
+        inspection_dialog.open = False
+        page.update()
+
+    def set_dialog_tab(tab):
+        state["dialog_tab"] = tab
+        refresh_inspection_dialog_content()
+        inspection_dialog.open = True
+        page.update()
+
+    def open_selected_folder(e=None):
+        path = state.get("selected_folder_path")
+        if not path:
+            notify_error("No hay carpeta seleccionada para abrir.")
+            safe_update()
+            return
+        try:
+            box_watch_service.open_folder_in_explorer(path)
+            notify_ok("Carpeta abierta en el explorador.")
+        except Exception as exc:
+            notify_error(f"No se pudo abrir la carpeta: {exc}")
+        safe_update()
+
+    def export_selected_tree(e=None):
+        path = state.get("selected_folder_path")
+        if not path:
+            notify_error("No hay carpeta seleccionada para exportar.")
+            safe_update()
+            return
+        try:
+            output_path = box_watch_service.export_folder_tree_to_txt(path)
+            try:
+                box_watch_service.open_export_folder_for_file(output_path)
+            except Exception:
+                pass
+            notify_ok(f"Árbol exportado a TXT: {output_path}")
+        except Exception as exc:
+            notify_error(f"No se pudo exportar el árbol: {exc}")
+        safe_update()
+
+    def export_checked_trees(e=None):
+        paths = list(state.get("selected_paths") or [])
+        if not paths:
+            notify_error("Marca al menos una carpeta para exportar su árbol.")
+            safe_update()
+            return
+        try:
+            output_path = box_watch_service.export_multiple_folder_trees_to_txt(paths, "arbol_box_carpetas_marcadas.txt")
+            try:
+                box_watch_service.open_export_folder_for_file(output_path)
+            except Exception:
+                pass
+            notify_ok(f"Árbol exportado: {output_path}")
+        except Exception as exc:
+            notify_error(f"No se pudo exportar el árbol: {exc}")
+        safe_update()
+
+    def export_visible_trees(e=None):
+        paths = [r.get("ruta") for r in state.get("root_rows", []) if r.get("ruta")]
+        if not paths:
+            notify_error("No hay carpetas visibles para exportar.")
+            safe_update()
+            return
+        try:
+            output_path = box_watch_service.export_multiple_folder_trees_to_txt(paths, "arbol_box_tabla_visible.txt")
+            try:
+                box_watch_service.open_export_folder_for_file(output_path)
+            except Exception:
+                pass
+            notify_ok(f"Árbol completo visible exportado: {output_path}")
+        except Exception as exc:
+            notify_error(f"No se pudo exportar el árbol completo: {exc}")
+        safe_update()
+
+    def header():
+        controls = [
+            ft.Text("Vigilancia Box", size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+            ft.Text("Rutas configuradas → carpetas de cliente/expediente → inspección documental", size=14, color=Q_MUTED),
+            ft.Text("El ERP solo observa Box. No borra, no mueve, no renombra y no modifica archivos.", size=13, color=Q_DANGER),
+        ]
+        if state["message"]:
+            controls.append(state["message"])
+        return ft.Column(controls=controls, spacing=8)
+
+    def build_summary():
+        if state["scanning"]:
+            return info_card(
+                "1. Resumen",
+                ft.Row(
+                    controls=[
+                        metric_card("Reescaneo", "En curso"),
+                        metric_card("Ruta", state.get("progress_route") or "—"),
+                        metric_card("Carpetas", state.get("progress_folders", 0)),
+                        metric_card("Archivos", state.get("progress_processed", 0)),
+                        metric_card("Progreso", f"{state.get('progress_percent', 0):.1f}%"),
+                    ],
+                    spacing=12,
+                    wrap=True,
+                ),
+            )
+
+        try:
+            summary = box_watch_service.get_box_dashboard_summary()
+        except Exception as exc:
+            return error_alert(f"No se pudo cargar el resumen: {exc}")
+
+        return info_card(
+            "1. Resumen",
+            ft.Row(
+                controls=[
+                    metric_card("Rutas", len(state.get("routes", []))),
+                    metric_card("Carpetas", summary.get("total_carpetas", 0)),
+                    metric_card("Archivos", summary.get("total_archivos", 0)),
+                    metric_card("Sin clasificar", summary.get("sin_clasificar", 0)),
+                    metric_card("Último escaneo", summary.get("ultimo_escaneo", "Sin escaneos")),
+                ],
+                spacing=12,
+                wrap=True,
+            ),
+        )
+
+    def build_route_controls():
+        # No llamar a refresh_routes() en cada repaint: consulta backend y empeora el lag.
+        # Las rutas se refrescan al entrar en la vista y antes de cargar/escanear.
+        if not state.get("routes"):
+            return info_card(
+                "2. Rutas Box configuradas",
+                ft.Column(
+                    controls=[
+                        empty_state("No hay rutas Box activas en Configuración."),
+                        ft.Text("Ve a Configuración → Rutas Box y añade, por ejemplo: Box/NACIONALIDADES/2019", size=12, color=Q_MUTED),
+                    ],
+                    spacing=8,
+                ),
+            )
+
+        valid_sort_values = {"Última actividad", "Cliente", "Año", "Trámite", "Último escaneo", "Archivos", "Subcarpetas"}
+        if state.get("sort_by") not in valid_sort_values:
+            state["sort_by"] = "Última actividad"
+        if state.get("sort_dir") not in {"Ascendente", "Descendente"}:
+            state["sort_dir"] = "Descendente"
+
+        sort_by_dd.value = state.get("sort_by") or "Última actividad"
+        sort_dir_dd.value = state.get("sort_dir") or "Descendente"
+
+        left = ft.Column(
+            controls=[
+                ft.Row([route_dd, root_filter_input], spacing=8, wrap=True),
+                ft.Row([sort_by_dd, sort_dir_dd, page_size_dd, secondary_button("Ordenar", on_sort_change)], spacing=8, wrap=True),
+            ],
+            spacing=8,
+        )
+
+        right = ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        primary_button("Cargar", load_root_folders),
+                        secondary_button("Todas", load_all_root_folders),
+                        secondary_button("Recargar", load_root_folders),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        primary_button("Reescanear", scan_selected),
+                        secondary_button("Reescanear todas", scan_all),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                ),
+            ],
+            spacing=8,
+        )
+
+        controls = [
+            ft.Row([left, right], spacing=14, wrap=True),
+        ]
+
+        if state.get("loading_folders"):
+            controls.extend([
+                ft.ProgressBar(value=None, width=760),
+                ft.Text(state.get("loading_label") or "Cargando carpetas...", size=12, color=Q_MUTED),
+            ])
+
+        if state["scanning"]:
+            controls.append(
+                ft.Text(
+                    f"Escaneo en segundo plano: {state.get('progress_route') or 'ruta seleccionada'}. La tabla sigue disponible.",
+                    size=12,
+                    color=Q_MUTED,
+                )
+            )
+
+        return info_card("2. Rutas Box configuradas", ft.Column(controls=controls, spacing=10))
+
+    def go_first_root_page(e=None):
+        state["root_page"] = 1
+        BOX_WATCH_VIEW_CACHE["root_page"] = 1
+        load_root_folders(show_loading=False, refresh_routes_before=False)
+
+    def go_prev_root_page(e=None):
+        state["root_page"] = max(1, int(state.get("root_page") or 1) - 1)
+        BOX_WATCH_VIEW_CACHE["root_page"] = state["root_page"]
+        load_root_folders(show_loading=False, refresh_routes_before=False)
+
+    def go_next_root_page(e=None):
+        state["root_page"] = min(_root_total_pages(), int(state.get("root_page") or 1) + 1)
+        BOX_WATCH_VIEW_CACHE["root_page"] = state["root_page"]
+        load_root_folders(show_loading=False, refresh_routes_before=False)
+
+    def go_last_root_page(e=None):
+        state["root_page"] = _root_total_pages()
+        BOX_WATCH_VIEW_CACHE["root_page"] = state["root_page"]
+        load_root_folders(show_loading=False, refresh_routes_before=False)
+
+    def go_to_root_page(page_number):
+        try:
+            page_number = int(page_number)
+        except Exception:
+            page_number = 1
+        state["root_page"] = max(1, min(page_number, _root_total_pages()))
+        BOX_WATCH_VIEW_CACHE["root_page"] = state["root_page"]
+        load_root_folders(show_loading=False, refresh_routes_before=False)
+
+    def _root_page_numbers(current, total):
+        # Devuelve una paginación compacta: 1 2 3 4 5 ... última
+        if total <= 7:
+            return list(range(1, total + 1))
+
+        pages = {1, total, current - 1, current, current + 1}
+        if current <= 4:
+            pages.update(range(1, 6))
+        elif current >= total - 3:
+            pages.update(range(total - 4, total + 1))
+
+        result = []
+        last = None
+        for num in sorted(p for p in pages if 1 <= p <= total):
+            if last is not None and num - last > 1:
+                result.append("...")
+            result.append(num)
+            last = num
+        return result
+
+    def build_root_pagination():
+        root_folders = state.get("root_rows") or []
+        total_rows = int(state.get("root_total_rows") or len(root_folders))
+        page_number = int(state.get("root_page") or 1)
+        total_pages = _root_total_pages()
+        page_size = _root_page_size()
+        selection_count = len(state.get("selected_paths") or set())
+        start_num = 0 if not total_rows else ((page_number - 1) * page_size) + 1
+        end_num = min(total_rows, ((page_number - 1) * page_size) + len(root_folders))
+
+        first_btn = secondary_button("«", go_first_root_page)
+        prev_btn = secondary_button("‹", go_prev_root_page)
+        next_btn = secondary_button("›", go_next_root_page)
+        last_btn = secondary_button("»", go_last_root_page)
+        first_btn.disabled = page_number <= 1
+        prev_btn.disabled = page_number <= 1
+        next_btn.disabled = page_number >= total_pages
+        last_btn.disabled = page_number >= total_pages
+
+        page_controls = [first_btn, prev_btn]
+        for item in _root_page_numbers(page_number, total_pages):
+            if item == "...":
+                page_controls.append(ft.Text("...", size=13, color=Q_MUTED))
+                continue
+            btn = primary_button(str(item), lambda e, n=item: go_to_root_page(n)) if item == page_number else secondary_button(str(item), lambda e, n=item: go_to_root_page(n))
+            btn.width = 42
+            page_controls.append(btn)
+        page_controls.extend([next_btn, last_btn])
+
+        return ft.Row(
+            controls=[
+                ft.Text(
+                    f"Resultados: {total_rows} · Mostrando {start_num}-{end_num} · Marcadas: {selection_count}",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                ft.Row(controls=page_controls, spacing=4, wrap=True),
+            ],
+            spacing=12,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+    def build_root_toolbar():
+        selection_count = len(state.get("selected_paths") or set())
+
+        inspect_btn = primary_button("Inspeccionar marcada", inspect_marked_folder)
+        inspect_btn.disabled = selection_count != 1
+
+        watchdog_btn = secondary_button("Vigilancia Watchdog", watchdog_placeholder)
+        watchdog_btn.disabled = True
+        watchdog_btn.tooltip = "Pendiente de desarrollo en módulo independiente"
+
+        return ft.Row(
+            controls=[
+                secondary_button("Marcar página", select_all_visible),
+                secondary_button("Limpiar marcas", clear_selection),
+                inspect_btn,
+                primary_button("Tree marcadas TXT", export_checked_trees),
+                secondary_button("Tree página TXT", export_visible_trees),
+                watchdog_btn,
+            ],
+            spacing=8,
+            wrap=True,
+        )
+
+    def build_root_folders_table():
+        if state.get("loading_folders"):
+            return ft.Column(
+                controls=[
+                    ft.ProgressBar(value=None, width=760),
+                    ft.Text(state.get("loading_label") or "Cargando carpetas...", size=13, color=Q_MUTED),
+                ],
+                spacing=10,
+            )
+
+        # Aunque haya escaneo en curso, la tabla permanece visible y usable.
+
+        if not state["root_loaded"]:
+            return empty_state("Pulsa “Cargar” para mostrar carpetas raíz.")
+
+        root_folders = state.get("root_rows") or []
+        if not root_folders:
+            return empty_state("No hay carpetas raíz para esa ruta o filtro.")
+
+        headers = [
+            {"key": "Sel.", "width": 60},
+            {"key": "Nombre cliente", "width": 360},
+            {"key": "Año", "width": 90},
+            {"key": "Trámite / ruta documental", "width": 430},
+            {"key": "Vinculación", "width": 260},
+            {"key": "Arch. dir.", "width": 90},
+            {"key": "Sub. dir.", "width": 90},
+            {"key": "Arch. total", "width": 105},
+            {"key": "Sub. total", "width": 105},
+            {"key": "Última actividad", "width": 160},
+            {"key": "Último escaneo", "width": 160},
+            {"key": "Ruta técnica", "width": 320},
+        ]
+
+        rows_to_paint = _current_page_rows()
+
+        rows = []
+        selected_paths = state.get("selected_paths") or set()
+
+        for index, folder in enumerate(rows_to_paint):
+            route_label = folder.get("_route_label") or _document_route_label(folder)
+            client_folder = folder.get("_client_folder") or _client_root_folder(folder)
+            year = folder.get("_document_year") or _document_year(folder)
+            case_label = folder.get("_case_label") or _document_case_label(folder)
+            ruta = folder.get("ruta")
+            checked = ruta in selected_paths
+            row_ref = ft.Ref()
+            checkbox_ref = ft.Ref()
+            checkbox = ft.Checkbox(
+                ref=checkbox_ref,
+                value=checked,
+                on_change=lambda e, path=ruta, rr=row_ref, cr=checkbox_ref, idx=index: toggle_selected(path, bool(e.control.value), rr, cr, idx),
+            )
+
+            rows.append([
+                {
+                    "selected": checked,
+                    "row_ref": row_ref,
+                    "on_click": lambda e, path=ruta, rr=row_ref, cr=checkbox_ref, idx=index: toggle_selected(path, None, rr, cr, idx),
+                },
+                checkbox,
+                ft.Text(client_folder, weight=ft.FontWeight.BOLD, size=13),
+                ft.Text(year, weight=ft.FontWeight.BOLD, size=13),
+                ft.Text(case_label, weight=ft.FontWeight.BOLD, size=13),
+                ft.Text(_box_link_label(folder), size=12, color=_box_link_color(folder), weight=ft.FontWeight.W_600),
+                folder.get("total_archivos_directos") if folder.get("total_archivos_directos") is not None else (folder.get("total_archivos") or 0),
+                folder.get("total_subcarpetas_directas") if folder.get("total_subcarpetas_directas") is not None else (folder.get("total_subcarpetas") or 0),
+                folder.get("total_archivos_recursivos") if folder.get("total_archivos_recursivos") is not None else (folder.get("total_archivos") or 0),
+                folder.get("total_subcarpetas_recursivas") if folder.get("total_subcarpetas_recursivas") is not None else (folder.get("total_subcarpetas") or 0),
+                ft.Text(_datetime_label(folder.get("fecha_ultima_actividad")), weight=ft.FontWeight.BOLD, size=13),
+                _datetime_label(folder.get("last_scan") or folder.get("ultimo_escaneo")),
+                folder.get("ruta_relativa") or folder.get("ruta") or "",
+            ])
+
+        return ft.Column(
+            controls=[
+                root_toolbar_container,
+                app_table(headers=headers, rows=rows, height=560),
+                build_root_pagination(),
+            ],
+            spacing=10,
+        )
+
+    def build_dialog_summary():
+        inspection = state.get("inspection") or {}
+        folder = inspection.get("folder") or {}
+        summary = inspection.get("summary") or {}
+        fases = summary.get("fases") or {}
+        documentos = summary.get("documentos") or {}
+
+        fase_text = ", ".join([f"{k}: {v}" for k, v in list(fases.items())[:12]]) or "Sin fases detectadas"
+        doc_text = ", ".join([f"{k}: {v}" for k, v in list(documentos.items())[:14]]) or "Sin documentos detectados"
+
+        return ft.Column(
+            controls=[
+                ft.Text(folder.get("nombre_carpeta") or state.get("selected_folder_path") or "Carpeta seleccionada", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text(folder.get("ruta") or state.get("selected_folder_path") or "—", size=12, color=Q_MUTED),
+                ft.Row(
+                    controls=[
+                        metric_card("Subcarpetas", summary.get("total_subcarpetas", 0)),
+                        metric_card("Archivos directos", summary.get("total_archivos", 0)),
+                        metric_card("Tipo carpeta", folder.get("tipo_detectado") or "—"),
+                        metric_card("Última actividad", _datetime_label(folder.get("fecha_ultima_actividad"))),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Text(
+                    "Vinculación con expediente" if selected_folder_is_root_folder() else "Vinculación con expediente no disponible",
+                    size=13,
+                    weight=ft.FontWeight.W_600,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Row(
+                    controls=[
+                        link_expediente_dd,
+                        primary_button("Vincular expediente", link_selected_folder_to_expediente),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                    visible=selected_folder_is_root_folder(),
+                ),
+                ft.Text(
+                    "Esta acción solo actualiza SQLite. No modifica Box." if selected_folder_is_root_folder() else "Las subcarpetas heredan la vinculación de la carpeta principal.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                ft.Text("Fases detectadas", size=13, weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
+                ft.Text(fase_text, size=12, color=Q_MUTED),
+                ft.Text("Tipos documentales detectados", size=13, weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
+                ft.Text(doc_text, size=12, color=Q_MUTED),
+            ],
+            spacing=10,
+        )
+
+    def build_dialog_subfolders():
+        inspection = state.get("inspection") or {}
+        subfolders = inspection.get("subfolders") or []
+
+        if not subfolders:
+            return empty_state("Esta carpeta no tiene subcarpetas directas inventariadas.")
+
+        headers = [
+            {"key": "Subcarpeta", "width": 250},
+            {"key": "Fase", "width": 140},
+            {"key": "Arch. dir.", "width": 90},
+            {"key": "Sub. dir.", "width": 85},
+            {"key": "Arch. total", "width": 100},
+            {"key": "Sub. total", "width": 95},
+            {"key": "Última actividad", "width": 150},
+            {"key": "Acción", "width": 150},
+        ]
+
+        rows = []
+        for folder in subfolders:
+            rows.append([
+                folder.get("nombre_carpeta") or "—",
+                folder.get("tipo_detectado") or "—",
+                folder.get("total_archivos_directos") if folder.get("total_archivos_directos") is not None else (folder.get("total_archivos") or 0),
+                folder.get("total_subcarpetas_directas") if folder.get("total_subcarpetas_directas") is not None else (folder.get("total_subcarpetas") or 0),
+                folder.get("total_archivos_recursivos") if folder.get("total_archivos_recursivos") is not None else (folder.get("total_archivos") or 0),
+                folder.get("total_subcarpetas_recursivas") if folder.get("total_subcarpetas_recursivas") is not None else (folder.get("total_subcarpetas") or 0),
+                _datetime_label(folder.get("fecha_ultima_actividad")),
+                secondary_button("Abrir", lambda e, path=folder.get("ruta"): inspect_folder(path, push_history=True)),
+            ])
+
+        return app_table(headers=headers, rows=rows, height=380)
+
+    def build_dialog_files():
+        inspection = state.get("inspection") or {}
+        files = inspection.get("files") or []
+
+        if not files:
+            return empty_state("Esta carpeta no tiene archivos directos inventariados.")
+
+        headers = [
+            {"key": "Archivo", "width": 320},
+            {"key": "Tipo", "width": 170},
+            {"key": "Estado", "width": 140},
+            {"key": "Ext.", "width": 70},
+            {"key": "Tamaño", "width": 95},
+            {"key": "Fecha modificación", "width": 155},
+        ]
+
+        rows = []
+        for item in files:
+            rows.append([
+                item.get("nombre_archivo") or "—",
+                item.get("tipo_detectado") or "—",
+                _status_text(item.get("estado") or "—"),
+                item.get("extension") or "—",
+                _size_label(item.get("tamano_bytes")),
+                _datetime_label(item.get("fecha_modificacion")),
+            ])
+
+        return app_table(headers=headers, rows=rows, height=380)
+
+    def refresh_inspection_dialog_content():
+        load_link_expediente_options()
+        tab = state.get("dialog_tab") or "Resumen"
+
+        if tab == "Subcarpetas":
+            body = build_dialog_subfolders()
+        elif tab == "Archivos":
+            body = build_dialog_files()
+        else:
+            body = build_dialog_summary()
+
+        nav = ft.Row(
+            controls=[
+                primary_button("Resumen", lambda e: set_dialog_tab("Resumen")),
+                secondary_button("Subcarpetas", lambda e: set_dialog_tab("Subcarpetas")),
+                secondary_button("Archivos", lambda e: set_dialog_tab("Archivos")),
+            ],
+            spacing=8,
+            wrap=True,
+        )
+
+        action_controls = []
+        if state.get("inspection_stack"):
+            action_controls.append(secondary_button("← Volver atrás", go_back_inspection))
+
+        action_controls.extend([
+            secondary_button("Abrir carpeta", open_selected_folder),
+            primary_button("Exportar árbol TXT", export_selected_tree),
+            secondary_button("Cerrar", close_dialog),
+        ])
+
+        actions = ft.Row(
+            controls=action_controls,
+            spacing=8,
+            wrap=True,
+        )
+
+        inspection_dialog_content.content = ft.Column(
+            controls=[
+                nav,
+                body,
+                actions,
+            ],
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
+    def open_inspection_dialog():
+        if not state.get("inspection"):
+            notify_error("No hay carpeta inspeccionada.")
+            safe_update()
+            return
+
+        refresh_inspection_dialog_content()
+        inspection_dialog.open = True
+        page.update()
+
+    def build_layout():
+        return ft.Container(
+            bgcolor=Q_BG,
+            padding=18,
+            expand=True,
+            content=ft.Column(
+                controls=[
+                    header(),
+                    build_summary(),
+                    build_route_controls(),
+                    info_card("3. Carpetas raíz detectadas", root_table_container),
+                ],
+                spacing=14,
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        )
+
+    sync_progress_from_global()
+    refresh_routes()
+    root_toolbar_container.content = build_root_toolbar()
+    root_table_container.content = build_root_folders_table()
+    content_area.content = build_layout()
+    return content_area

@@ -1,8 +1,57 @@
+
+
+UPPERCASE_CLIENT_FIELDS = {
+    'nombre',
+    'primer_apellido',
+    'segundo_apellido',
+    'nie',
+    'pasaporte',
+    'dni',
+    'nacionalidad',
+    'estado_cliente',
+    'domicilio_espana',
+    'localidad',
+    'provincia',
+    'codigo_postal',
+    'localidad_nacimiento',
+    'pais_nacimiento',
+    'nombre_padre',
+    'nombre_madre',
+    'estado_civil',
+    'sexo',
+    'observaciones',
+    'observaciones_internas',
+}
+
+
+def normalize_upper(value):
+    if value is None:
+        return ''
+    return str(value).strip().upper()
+
+
+def normalize_client_data(data):
+    normalized = dict(data)
+
+    for field in UPPERCASE_CLIENT_FIELDS:
+        if field in normalized:
+            normalized[field] = normalize_upper(normalized.get(field))
+
+    if 'email' in normalized:
+        normalized['email'] = (normalized.get('email') or '').strip().lower()
+
+    if 'telefono' in normalized:
+        normalized['telefono'] = (normalized.get('telefono') or '').strip()
+
+    return normalized
+
+
 from database.connection import get_connection
 from datetime import datetime
 
 
 def create_client(data):
+    data = normalize_client_data(data)
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -16,9 +65,9 @@ def create_client(data):
             telefono, email,
             domicilio_espana, localidad, codigo_postal, provincia, numero, piso,
             estado_cliente, fecha_alta, origen_cliente, responsable_interno,
-            observaciones, observaciones_internas
+            observaciones, observaciones_internas, sexo
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data.get("nombre"),
         data.get("primer_apellido"),
@@ -47,6 +96,7 @@ def create_client(data):
         data.get("responsable_interno"),
         data.get("observaciones"),
         data.get("observaciones_internas"),
+        data.get("sexo"),
     ))
 
     conn.commit()
@@ -76,6 +126,7 @@ def get_client_by_id(client_id):
 
 
 def update_client(client_id, data):
+    data = normalize_client_data(data)
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -108,6 +159,7 @@ def update_client(client_id, data):
             responsable_interno = ?,
             observaciones = ?,
             observaciones_internas = ?,
+            sexo = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     """, (
@@ -137,6 +189,7 @@ def update_client(client_id, data):
         data.get("responsable_interno"),
         data.get("observaciones"),
         data.get("observaciones_internas"),
+        data.get("sexo"),
         client_id,
     ))
 

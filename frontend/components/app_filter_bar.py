@@ -1,22 +1,28 @@
 import flet as ft
 
-Q_BORDER = "#D8E2EE"
-
 
 def filter_bar(dropdown, search_input, actions=None):
+    action_controls = []
+
+    if actions is None:
+        action_controls = []
+    elif isinstance(actions, list):
+        action_controls = actions
+    else:
+        action_controls = [actions]
+
     return ft.Container(
         content=ft.Row(
             controls=[
                 dropdown,
                 search_input,
-                ft.Container(expand=True),
-                *(actions or []),
+                *action_controls,
             ],
             spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
         ),
+        padding=12,
         bgcolor="#FFFFFF",
-        border=ft.border.all(1, Q_BORDER),
-        border_radius=14,
-        padding=14,
+        border_radius=12,
+        border=ft.border.all(1, "#E4E7EC"),
     )

@@ -11,7 +11,12 @@ def main_layout(sidebar, content):
                 content=content,
                 expand=True,
                 bgcolor=Q_BG,
-                padding=24,
+                padding=ft.padding.only(
+                    left=16,
+                    top=16,
+                    right=4,
+                    bottom=16,
+                ),
             ),
         ],
         spacing=0,

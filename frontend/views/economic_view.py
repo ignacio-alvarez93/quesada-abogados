@@ -1,0 +1,884 @@
+import flet as ft
+from datetime import datetime
+
+from backend.services import economic_service
+from frontend.components.app_button import primary_button, secondary_button
+from frontend.components.app_text_field import text_input, required_text_input, multiline_input
+from frontend.components.app_dropdown import select_input
+from frontend.components.app_dialog import form_dialog
+from frontend.components.app_table import app_table
+from frontend.components.app_empty_state import empty_state
+from frontend.components.app_card import metric_card
+from frontend.components.app_alert import success_alert, error_alert
+from frontend.components.economic_badge import economic_badge
+from frontend.components.app_autocomplete import AppAutocomplete
+
+Q_PRIMARY_DARK = "#003B7A"
+Q_MUTED = "#64748B"
+Q_BORDER = "#E4E7EC"
+
+
+def _date_to_sql(value):
+    value = (value or "").strip()
+    if not value:
+        return ""
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return ""
+
+
+def _date_to_display(value):
+    value = (value or "").strip()
+    if not value:
+        return ""
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(value, fmt).strftime("%d/%m/%Y")
+        except ValueError:
+            pass
+    return value
+
+
+def _today_display():
+    return datetime.today().strftime("%d/%m/%Y")
+
+
+def _id(value):
+    if not value or " - " not in value:
+        return None
+    return int(value.split(" - ", 1)[0])
+
+
+def _option_by_id(options, value_id, empty_label):
+    if not value_id:
+        return empty_label
+    prefix = f"{int(value_id)} - "
+    for option in options:
+        if str(option).startswith(prefix):
+            return option
+    return empty_label
+
+
+def _money(value):
+    try:
+        return f"{float(value or 0):.2f} €"
+    except Exception:
+        return "0.00 €"
+
+
+def economic_view(page: ft.Page):
+    economic_service.initialize_economic_schema()
+
+    state = {"section": "cobros", "message": None}
+
+    content_area = ft.Container(expand=True)
+    table_container = ft.Container(expand=True)
+
+    clientes = economic_service.get_clientes_for_select()
+    cliente_options = [c["display"] for c in clientes]
+    expediente_options = [e["display"] for e in economic_service.get_expedientes_for_select()]
+    hoja_options = [h["display"] for h in economic_service.get_hojas_for_select()]
+
+    def show_message(control):
+        state["message"] = control
+
+    def set_section(section):
+        state["section"] = section
+        state["message"] = None
+        refresh()
+
+    def section_button(key, label):
+        selected = state["section"] == key
+        return ft.Container(
+            content=ft.Text(
+                label,
+                color="#FFFFFF" if selected else "#0057B8",
+                weight=ft.FontWeight.BOLD,
+                size=13,
+            ),
+            bgcolor="#0057B8" if selected else "#EAF3FF",
+            border_radius=20,
+            padding=ft.padding.symmetric(horizontal=14, vertical=8),
+            ink=True,
+            on_click=lambda e, k=key: set_section(k),
+        )
+
+    def build_nav():
+        return ft.Row(
+            controls=[
+                section_button("hojas", "Hojas de encargo"),
+                section_button("cobros", "Cobros"),
+                section_button("facturas", "Facturas"),
+                section_button("gastos", "Gastos"),
+                section_button("movimientos", "Movimientos / conciliación"),
+            ],
+            spacing=8,
+            wrap=True,
+        )
+
+    def refresh(e=None):
+        table_container.content = build_table()
+        content_area.content = build_view()
+        page.update()
+
+    def build_view():
+        resumen = economic_service.resumen_economico()
+        controls = [
+            ft.Text("Módulo económico", size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+            ft.Text("Hojas de encargo, ingresos, cobros, facturas, gastos y conciliación.", size=14, color=Q_MUTED),
+        ]
+
+        if state["message"]:
+            controls.append(state["message"])
+
+        controls.extend(
+            [
+                ft.Row(
+                    controls=[
+                        metric_card("Total cobros", _money(resumen["total_cobros"])),
+                        metric_card("Total facturas", _money(resumen["total_facturas"])),
+                        metric_card("Total gastos", _money(resumen["total_gastos"])),
+                        metric_card("Mov. pendientes", resumen["movimientos_pendientes"]),
+                    ],
+                    spacing=12,
+                    wrap=True,
+                ),
+                build_nav(),
+                build_actions(),
+                table_container,
+            ]
+        )
+        return ft.Column(controls=controls, spacing=18, expand=True)
+
+    def build_actions():
+        mapping = {
+            "hojas": ("Nueva hoja de encargo", open_hoja_dialog),
+            "cobros": ("Nuevo cobro", open_cobro_dialog),
+            "facturas": ("Nueva factura", open_factura_dialog),
+            "gastos": ("Nuevo gasto", open_gasto_dialog),
+            "movimientos": ("Nuevo movimiento", open_movimiento_dialog),
+        }
+        if state["section"] == "facturas":
+            return ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Text(
+                    "Las facturas se generan automáticamente al guardar un cobro marcado como facturable.",
+                    color=Q_MUTED,
+                    size=13,
+                ),
+            )
+
+        label, handler = mapping[state["section"]]
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Row(controls=[primary_button(label, handler)], alignment=ft.MainAxisAlignment.END),
+        )
+
+    def build_table():
+        if state["section"] == "hojas":
+            rows = []
+            for h in economic_service.list_hojas_encargo():
+                cliente = f"{h.get('nombre') or ''} {h.get('primer_apellido') or ''} {h.get('segundo_apellido') or ''}".strip()
+                rows.append([
+                    h.get("numero_hoja") or "-",
+                    _date_to_display(h.get("fecha_firma")),
+                    cliente,
+                    h.get("numero_expediente") or "-",
+                    h.get("procedimiento") or "-",
+                    _money(h.get("importe_bruto")),
+                    _money(h.get("importe_neto")),
+                    economic_badge(h.get("estado")),
+                ])
+            return app_table(
+                ["Nº hoja", "Firma", "Cliente", "Expediente", "Procedimiento", "Bruto", "Neto", "Estado"],
+                rows,
+                height=430,
+            ) if rows else empty_state("No hay hojas de encargo")
+
+        if state["section"] == "cobros":
+            rows = []
+            for c in economic_service.list_cobros():
+                cliente = f"{c.get('nombre') or ''} {c.get('primer_apellido') or ''} {c.get('segundo_apellido') or ''}".strip()
+                rows.append([
+                    ft.Text(c.get("numero_cobro") or "-", weight=ft.FontWeight.BOLD, size=13, color=Q_PRIMARY_DARK),
+                    _date_to_display(c.get("fecha_cobro")),
+                    cliente,
+                    c.get("numero_expediente") or "-",
+                    c.get("numero_hoja") or "-",
+                    _money(c.get("importe")),
+                    c.get("forma_pago") or "-",
+                    "Sí" if c.get("facturable") else "No",
+                    c.get("numero_factura") or "-",
+                    economic_badge(c.get("estado_conciliacion")),
+                    secondary_button("Editar", lambda e, cobro=dict(c): open_edit_cobro_dialog(cobro)),
+                ])
+            return app_table(
+                ["Nº cobro", "Fecha", "Cliente", "Expediente", "Hoja", "Importe", "Forma", "Facturable", "Factura", "Conciliación", "Editar"],
+                rows,
+                height=430,
+            ) if rows else empty_state("No hay cobros")
+
+        if state["section"] == "facturas":
+            rows = []
+            for f in economic_service.list_facturas():
+                cliente = f"{f.get('nombre') or ''} {f.get('primer_apellido') or ''} {f.get('segundo_apellido') or ''}".strip()
+                rows.append([
+                    f.get("numero_factura") or "-",
+                    _date_to_display(f.get("fecha_factura")),
+                    cliente,
+                    f.get("numero_expediente") or "-",
+                    _money(f.get("base_imponible")),
+                    _money(f.get("iva")),
+                    _money(f.get("total")),
+                    economic_badge(f.get("estado")),
+                    "Sí" if f.get("exportada_holded") else "No",
+                ])
+            return app_table(
+                ["Nº factura", "Fecha", "Cliente", "Expediente", "Base", "IVA", "Total", "Estado", "Holded"],
+                rows,
+                height=430,
+            ) if rows else empty_state("No hay facturas")
+
+        if state["section"] == "gastos":
+            rows = []
+            for g in economic_service.list_gastos():
+                rows.append([
+                    _date_to_display(g.get("fecha_gasto")),
+                    g.get("proveedor") or "-",
+                    g.get("concepto") or "-",
+                    g.get("categoria") or "-",
+                    _money(g.get("importe")),
+                    g.get("forma_pago") or "-",
+                    "Sí" if g.get("deducible") else "No",
+                    economic_badge(g.get("estado_conciliacion")),
+                ])
+            return app_table(
+                ["Fecha", "Proveedor", "Concepto", "Categoría", "Importe", "Forma", "Deducible", "Conciliación"],
+                rows,
+                height=430,
+            ) if rows else empty_state("No hay gastos")
+
+        rows = []
+        for m in economic_service.list_movimientos():
+            rows.append([
+                m.get("origen") or "-",
+                _date_to_display(m.get("fecha_operacion")),
+                m.get("concepto") or "-",
+                _money(m.get("importe")),
+                m.get("referencia") or "-",
+                m.get("cuenta") or "-",
+                economic_badge(m.get("estado_conciliacion")),
+            ])
+        return app_table(
+            ["Origen", "Fecha", "Concepto", "Importe", "Referencia", "Cuenta", "Conciliación"],
+            rows,
+            height=430,
+        ) if rows else empty_state("No hay movimientos importados")
+
+    # Controles independientes por formulario
+    hoja_cliente_ac = AppAutocomplete(page, "Cliente", cliente_options, width=520, max_results=12)
+    cobro_cliente_ac = AppAutocomplete(page, "Cliente", cliente_options, width=520, max_results=12)
+    factura_cliente_ac = AppAutocomplete(page, "Cliente", cliente_options, width=520, max_results=12)
+
+    hoja_expediente_dd = select_input("Expediente", ["Sin expediente"] + expediente_options, value="Sin expediente", width=420)
+    cobro_expediente_dd = select_input("Expediente", ["Sin expediente"] + expediente_options, value="Sin expediente", width=420)
+    factura_expediente_dd = select_input("Expediente", ["Sin expediente"] + expediente_options, value="Sin expediente", width=420)
+
+    cobro_hoja_dd = select_input("Hoja de encargo", ["Sin hoja"] + hoja_options, value="Sin hoja", width=420)
+    factura_hoja_dd = select_input("Hoja de encargo", ["Sin hoja"] + hoja_options, value="Sin hoja", width=420)
+
+    def _set_dropdown_options(dropdown, values, empty_label):
+        dropdown.options = [ft.dropdown.Option(empty_label)] + [ft.dropdown.Option(v) for v in values]
+        dropdown.value = empty_label
+
+    def refresh_runtime_options():
+        nonlocal clientes, cliente_options, expediente_options, hoja_options
+
+        clientes = economic_service.get_clientes_for_select()
+        cliente_options = [c["display"] for c in clientes]
+        expediente_options = [e["display"] for e in economic_service.get_expedientes_for_select()]
+        hoja_options = [h["display"] for h in economic_service.get_hojas_for_select()]
+
+        hoja_cliente_ac.set_options(cliente_options, clear_value=True)
+        cobro_cliente_ac.set_options(cliente_options, clear_value=True)
+        factura_cliente_ac.set_options(cliente_options, clear_value=True)
+
+        _set_dropdown_options(hoja_expediente_dd, expediente_options, "Sin expediente")
+        _set_dropdown_options(cobro_expediente_dd, expediente_options, "Sin expediente")
+        _set_dropdown_options(factura_expediente_dd, expediente_options, "Sin expediente")
+        _set_dropdown_options(cobro_hoja_dd, hoja_options, "Sin hoja")
+        _set_dropdown_options(factura_hoja_dd, hoja_options, "Sin hoja")
+
+    def refresh_hoja_expedientes_for_cliente(value=None):
+        cliente_id = _id(hoja_cliente_ac.get_value())
+        options = [e["display"] for e in economic_service.get_expedientes_for_select(cliente_id=cliente_id)] if cliente_id else expediente_options
+        _set_dropdown_options(hoja_expediente_dd, options, "Sin expediente")
+        page.update()
+
+    def refresh_cobro_dependencies(value=None):
+        cliente_id = _id(cobro_cliente_ac.get_value())
+
+        exp_options = [
+            e["display"]
+            for e in economic_service.get_expedientes_for_select(cliente_id=cliente_id)
+        ] if cliente_id else []
+
+        _set_dropdown_options(cobro_expediente_dd, exp_options, "Sin expediente")
+
+        # IMPORTANTE:
+        # No vaciar hojas al seleccionar cliente. Primero cargamos todas las hojas
+        # visibles para ese cliente/pagador. Después, si se selecciona expediente,
+        # se filtran por expediente.
+        hojas = economic_service.get_hojas_for_select(cliente_id=cliente_id) if cliente_id else []
+        _set_dropdown_options(cobro_hoja_dd, [h["display"] for h in hojas], "Sin hoja")
+
+        page.update()
+
+    def refresh_cobro_hojas_for_expediente(e=None):
+        cliente_id = _id(cobro_cliente_ac.get_value())
+        expediente_id = None if cobro_expediente_dd.value == "Sin expediente" else _id(cobro_expediente_dd.value)
+
+        hojas = []
+
+        if expediente_id:
+            hojas = economic_service.get_hojas_for_select(
+                cliente_id=cliente_id,
+                expediente_id=expediente_id,
+            )
+
+            # Fallback fundamental para expedientes multicliente:
+            # si cliente+expediente no devuelve hojas, buscar solo por expediente.
+            if not hojas:
+                hojas = economic_service.get_hojas_for_select(
+                    cliente_id=None,
+                    expediente_id=expediente_id,
+                )
+
+        elif cliente_id:
+            # Si todavía no se ha elegido expediente, mostrar hojas del cliente.
+            hojas = economic_service.get_hojas_for_select(cliente_id=cliente_id)
+
+        _set_dropdown_options(cobro_hoja_dd, [h["display"] for h in hojas], "Sin hoja")
+        page.update()
+
+    def refresh_factura_dependencies(value=None):
+        cliente_id = _id(factura_cliente_ac.get_value())
+        options = [e["display"] for e in economic_service.get_expedientes_for_select(cliente_id=cliente_id)] if cliente_id else []
+        _set_dropdown_options(factura_expediente_dd, options, "Sin expediente")
+        _set_dropdown_options(factura_hoja_dd, [], "Sin hoja")
+        page.update()
+
+    def refresh_factura_hojas_for_expediente(e=None):
+        cliente_id = _id(factura_cliente_ac.get_value())
+        expediente_id = None if factura_expediente_dd.value == "Sin expediente" else _id(factura_expediente_dd.value)
+        options = [
+            h["display"]
+            for h in economic_service.get_hojas_for_select(cliente_id=cliente_id, expediente_id=expediente_id)
+        ] if cliente_id else []
+        _set_dropdown_options(factura_hoja_dd, options, "Sin hoja")
+        page.update()
+
+    hoja_cliente_ac.on_select = refresh_hoja_expedientes_for_cliente
+    cobro_cliente_ac.on_select = refresh_cobro_dependencies
+    factura_cliente_ac.on_select = refresh_factura_dependencies
+    cobro_expediente_dd.on_change = refresh_cobro_hojas_for_expediente
+    factura_expediente_dd.on_change = refresh_factura_hojas_for_expediente
+
+    # Hoja dialog
+    hoja_numero = text_input("Nº hoja automático", width=180)
+    hoja_fecha = text_input("Fecha firma DD/MM/AAAA", width=220)
+    hoja_proc = text_input("Procedimiento", width=360)
+    hoja_bruto = required_text_input("Importe bruto", width=180)
+    hoja_desc_manual = text_input("Descuento manual", "0", width=180)
+    hoja_desc_consulta = text_input("Descuento consultas", "0", width=180)
+    hoja_forma = text_input("Forma pago pactada", width=260)
+    hoja_plazos = text_input("Nº plazos", "1", width=120)
+    hoja_fecha_max = text_input("Fecha máxima pago DD/MM/AAAA", width=240)
+    hoja_ruta = text_input("Ruta documento", width=620)
+    hoja_estado = select_input("Estado", ["PENDIENTE FIRMA", "FIRMADA", "CANCELADA", "ARCHIVADA"], value="PENDIENTE FIRMA", width=220)
+    hoja_obs = multiline_input("Observaciones", width=620)
+
+    def open_hoja_dialog(e=None):
+        refresh_runtime_options()
+        hoja_cliente_ac.set_value("", update=False)
+        hoja_expediente_dd.value = "Sin expediente"
+        for field in [hoja_numero, hoja_fecha, hoja_proc, hoja_bruto, hoja_ruta, hoja_obs]:
+            field.value = ""
+        hoja_desc_manual.value = "0"
+        hoja_desc_consulta.value = "0"
+        hoja_forma.value = ""
+        hoja_plazos.value = "1"
+        hoja_fecha_max.value = ""
+        hoja_estado.value = "PENDIENTE FIRMA"
+        hoja_dialog.open = True
+        page.update()
+
+    def save_hoja(e=None):
+        try:
+            cliente_id = _id(hoja_cliente_ac.get_value())
+            if not cliente_id:
+                raise ValueError("Selecciona un cliente válido")
+
+            economic_service.create_hoja_encargo({
+                "cliente_id": cliente_id,
+                "expediente_id": None if hoja_expediente_dd.value == "Sin expediente" else _id(hoja_expediente_dd.value),
+                "numero_hoja": hoja_numero.value,
+                "fecha_firma": _date_to_sql(hoja_fecha.value),
+                "procedimiento": hoja_proc.value,
+                "importe_bruto": hoja_bruto.value,
+                "descuento_manual": hoja_desc_manual.value,
+                "descuento_consultas_previas": hoja_desc_consulta.value,
+                "forma_pago_pactada": hoja_forma.value,
+                "numero_plazos": hoja_plazos.value,
+                "fecha_maxima_pago": _date_to_sql(hoja_fecha_max.value),
+                "documento_ruta": hoja_ruta.value,
+                "estado": hoja_estado.value,
+                "observaciones": hoja_obs.value,
+            })
+            hoja_dialog.open = False
+            refresh_runtime_options()
+            show_message(success_alert("Hoja de encargo creada"))
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+        refresh()
+
+    hoja_dialog = form_dialog(
+        "Hoja de encargo",
+        ft.Column(
+            [
+                hoja_cliente_ac.control,
+                hoja_expediente_dd,
+                ft.Row([hoja_numero, hoja_fecha, hoja_estado], wrap=True, spacing=10),
+                hoja_proc,
+                ft.Row([hoja_bruto, hoja_desc_manual, hoja_desc_consulta], wrap=True, spacing=10),
+                ft.Row([hoja_forma, hoja_plazos, hoja_fecha_max], wrap=True, spacing=10),
+                hoja_ruta,
+                hoja_obs,
+            ],
+            width=760,
+            height=600,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        [secondary_button("Cancelar", lambda e: close(hoja_dialog)), primary_button("Guardar", save_hoja)],
+    )
+    page.overlay.append(hoja_dialog)
+
+    # Cobro dialog
+    cobro_fecha = required_text_input("Fecha cobro DD/MM/AAAA", width=220)
+    cobro_numero = text_input("Nº cobro automático", width=220)
+    cobro_importe = required_text_input("Importe", width=160)
+    cobro_forma = select_input("Forma pago", ["EFECTIVO", "TRANSFERENCIA", "TARJETA", "BIZUM", "OTRO"], value="EFECTIVO", width=180)
+    cobro_tipo = select_input("Tipo", ["CONSULTA", "PAGO_EXPEDIENTE", "PAGO_PARCIAL", "RESERVA", "DEVOLUCION", "AJUSTE"], value="PAGO_EXPEDIENTE", width=220)
+    cobro_facturable = select_input("Facturable", ["No", "Sí"], value="No", width=120)
+    cobro_concepto = text_input("Concepto", width=420)
+    cobro_recibo = text_input("Ruta recibo/documento", width=620)
+    cobro_obs = multiline_input("Observaciones", width=620)
+
+    def open_cobro_dialog(e=None):
+        refresh_runtime_options()
+        cobro_cliente_ac.set_value("", update=False)
+        cobro_expediente_dd.value = "Sin expediente"
+        cobro_hoja_dd.value = "Sin hoja"
+        cobro_fecha.value = _today_display()
+        cobro_numero.value = ""
+        cobro_importe.value = ""
+        cobro_forma.value = "EFECTIVO"
+        cobro_tipo.value = "PAGO_EXPEDIENTE"
+        cobro_facturable.value = "No"
+        cobro_concepto.value = ""
+        cobro_recibo.value = ""
+        cobro_obs.value = ""
+        cobro_dialog.open = True
+        page.update()
+
+    def save_cobro(e=None):
+        try:
+            cliente_id = _id(cobro_cliente_ac.get_value())
+            if not cliente_id:
+                raise ValueError("Selecciona un cliente pagador válido")
+            # Las consultas previas pueden registrarse sin expediente y sin hoja.
+            # Los pagos de expediente sí deben vincularse a una hoja de encargo.
+            if cobro_tipo.value != "CONSULTA" and cobro_hoja_dd.value == "Sin hoja":
+                raise ValueError("Selecciona una hoja de encargo para el cobro")
+
+            economic_service.create_cobro({
+                "cliente_id": cliente_id,
+                "expediente_id": None if cobro_expediente_dd.value == "Sin expediente" else _id(cobro_expediente_dd.value),
+                "hoja_encargo_id": None if cobro_hoja_dd.value == "Sin hoja" else _id(cobro_hoja_dd.value),
+                "numero_cobro": cobro_numero.value,
+                "fecha_cobro": _date_to_sql(cobro_fecha.value),
+                "importe": cobro_importe.value,
+                "forma_pago": cobro_forma.value,
+                "tipo_cobro": cobro_tipo.value,
+                "facturable": 1 if cobro_facturable.value == "Sí" else 0,
+                "concepto": cobro_concepto.value,
+                "recibo_ruta": cobro_recibo.value,
+                "observaciones": cobro_obs.value,
+            })
+            cobro_dialog.open = False
+            show_message(success_alert("Cobro creado"))
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+        refresh()
+
+    cobro_dialog = form_dialog(
+        "Cobro",
+        ft.Column(
+            [
+                cobro_cliente_ac.control,
+                cobro_expediente_dd,
+                ft.Row(
+                    [
+                        cobro_hoja_dd,
+                        secondary_button("Buscar hojas", refresh_cobro_hojas_for_expediente),
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+                ft.Row([cobro_fecha, cobro_numero, cobro_importe], wrap=True, spacing=10),
+                ft.Row([cobro_forma, cobro_tipo, cobro_facturable], wrap=True, spacing=10),
+                cobro_concepto,
+                cobro_recibo,
+                cobro_obs,
+            ],
+            width=760,
+            height=620,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        [secondary_button("Cancelar", lambda e: close(cobro_dialog)), primary_button("Guardar", save_cobro)],
+    )
+    page.overlay.append(cobro_dialog)
+
+
+    # Editar cobro dialog
+    edit_cobro_state = {"id": None, "cliente_id": None}
+
+    edit_cobro_fecha = required_text_input("Fecha cobro DD/MM/AAAA", width=220)
+    edit_cobro_importe = required_text_input("Importe", width=160)
+    edit_cobro_forma = select_input("Forma pago", ["EFECTIVO", "TRANSFERENCIA", "TARJETA", "BIZUM", "OTRO"], value="EFECTIVO", width=180)
+    edit_cobro_tipo = select_input("Tipo", ["CONSULTA", "PAGO_EXPEDIENTE", "PAGO_PARCIAL", "RESERVA", "DEVOLUCION", "AJUSTE"], value="PAGO_EXPEDIENTE", width=220)
+    edit_cobro_facturable = select_input("Facturable", ["No", "Sí"], value="No", width=120)
+    edit_cobro_expediente_dd = select_input("Expediente", ["Sin expediente"] + expediente_options, value="Sin expediente", width=420)
+    edit_cobro_hoja_dd = select_input("Hoja de encargo", ["Sin hoja"], value="Sin hoja", width=420)
+    edit_cobro_concepto = text_input("Concepto", width=420)
+    edit_cobro_recibo = text_input("Ruta recibo/documento", width=620)
+    edit_cobro_obs = multiline_input("Observaciones", width=620)
+
+    def refresh_edit_cobro_hojas(e=None):
+        cliente_id = edit_cobro_state.get("cliente_id")
+        expediente_id = None if edit_cobro_expediente_dd.value == "Sin expediente" else _id(edit_cobro_expediente_dd.value)
+
+        hojas = []
+        if expediente_id:
+            hojas = economic_service.get_hojas_for_select(cliente_id=cliente_id, expediente_id=expediente_id)
+            if not hojas:
+                hojas = economic_service.get_hojas_for_select(cliente_id=None, expediente_id=expediente_id)
+        elif cliente_id:
+            hojas = economic_service.get_hojas_for_select(cliente_id=cliente_id)
+
+        _set_dropdown_options(edit_cobro_hoja_dd, [h["display"] for h in hojas], "Sin hoja")
+        page.update()
+
+    edit_cobro_expediente_dd.on_change = refresh_edit_cobro_hojas
+
+    def open_edit_cobro_dialog(cobro):
+        refresh_runtime_options()
+
+        edit_cobro_state["id"] = cobro.get("id")
+        edit_cobro_state["cliente_id"] = cobro.get("cliente_id")
+
+        cliente_id = cobro.get("cliente_id")
+        exp_options = [
+            e["display"]
+            for e in economic_service.get_expedientes_for_select(cliente_id=cliente_id)
+        ] if cliente_id else expediente_options
+
+        _set_dropdown_options(edit_cobro_expediente_dd, exp_options, "Sin expediente")
+        edit_cobro_expediente_dd.value = _option_by_id(exp_options, cobro.get("expediente_id"), "Sin expediente")
+
+        hojas = []
+        if cobro.get("expediente_id"):
+            hojas = economic_service.get_hojas_for_select(cliente_id=cliente_id, expediente_id=cobro.get("expediente_id"))
+            if not hojas:
+                hojas = economic_service.get_hojas_for_select(cliente_id=None, expediente_id=cobro.get("expediente_id"))
+        elif cliente_id:
+            hojas = economic_service.get_hojas_for_select(cliente_id=cliente_id)
+
+        hoja_opts = [h["display"] for h in hojas]
+        _set_dropdown_options(edit_cobro_hoja_dd, hoja_opts, "Sin hoja")
+        edit_cobro_hoja_dd.value = _option_by_id(hoja_opts, cobro.get("hoja_encargo_id"), "Sin hoja")
+
+        edit_cobro_fecha.value = _date_to_display(cobro.get("fecha_cobro"))
+        edit_cobro_importe.value = str(cobro.get("importe") or "")
+        edit_cobro_forma.value = cobro.get("forma_pago") or "EFECTIVO"
+        edit_cobro_tipo.value = cobro.get("tipo_cobro") or "PAGO_EXPEDIENTE"
+        edit_cobro_facturable.value = "Sí" if cobro.get("facturable") else "No"
+        edit_cobro_concepto.value = cobro.get("concepto") or ""
+        edit_cobro_recibo.value = cobro.get("recibo_ruta") or ""
+        edit_cobro_obs.value = cobro.get("observaciones") or ""
+
+        edit_cobro_dialog.open = True
+        page.update()
+
+    def save_edit_cobro(e=None):
+        try:
+            cobro_id = edit_cobro_state.get("id")
+            if not cobro_id:
+                raise ValueError("Cobro no identificado")
+
+            if edit_cobro_tipo.value != "CONSULTA" and edit_cobro_hoja_dd.value == "Sin hoja":
+                raise ValueError("Selecciona una hoja de encargo para el cobro")
+
+            economic_service.update_cobro(cobro_id, {
+                "fecha_cobro": _date_to_sql(edit_cobro_fecha.value),
+                "expediente_id": None if edit_cobro_expediente_dd.value == "Sin expediente" else _id(edit_cobro_expediente_dd.value),
+                "hoja_encargo_id": None if edit_cobro_hoja_dd.value == "Sin hoja" else _id(edit_cobro_hoja_dd.value),
+                "importe": edit_cobro_importe.value,
+                "forma_pago": edit_cobro_forma.value,
+                "tipo_cobro": edit_cobro_tipo.value,
+                "facturable": 1 if edit_cobro_facturable.value == "Sí" else 0,
+                "concepto": edit_cobro_concepto.value,
+                "recibo_ruta": edit_cobro_recibo.value,
+                "observaciones": edit_cobro_obs.value,
+            })
+
+            edit_cobro_dialog.open = False
+            show_message(success_alert("Cobro modificado"))
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+        refresh()
+
+    edit_cobro_dialog = form_dialog(
+        "Editar cobro",
+        ft.Column(
+            [
+                edit_cobro_expediente_dd,
+                ft.Row(
+                    [
+                        edit_cobro_hoja_dd,
+                        secondary_button("Buscar hojas", refresh_edit_cobro_hojas),
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+                ft.Row([edit_cobro_fecha, edit_cobro_importe], wrap=True, spacing=10),
+                ft.Row([edit_cobro_forma, edit_cobro_tipo, edit_cobro_facturable], wrap=True, spacing=10),
+                edit_cobro_concepto,
+                edit_cobro_recibo,
+                edit_cobro_obs,
+                ft.Text(
+                    "Si marcas el cobro como facturable, se generará factura automáticamente si aún no existe.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            ],
+            width=760,
+            height=620,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        [secondary_button("Cancelar", lambda e: close(edit_cobro_dialog)), primary_button("Guardar cambios", save_edit_cobro)],
+    )
+    page.overlay.append(edit_cobro_dialog)
+
+    # Factura dialog
+    fra_fecha = required_text_input("Fecha factura DD/MM/AAAA", width=220)
+    fra_numero = text_input("Nº factura automático", width=220)
+    fra_base = required_text_input("Base imponible", width=180)
+    fra_iva = text_input("IVA", "0", width=140)
+    fra_irpf = text_input("IRPF", "0", width=140)
+    fra_total = text_input("Total opcional", width=160)
+    fra_estado = select_input("Estado", ["BORRADOR", "EMITIDA", "EXPORTADA", "ANULADA"], value="BORRADOR", width=180)
+    fra_ruta = text_input("Ruta factura", width=620)
+    fra_obs = multiline_input("Observaciones", width=620)
+
+    def open_factura_dialog(e=None):
+        refresh_runtime_options()
+        factura_cliente_ac.set_value("", update=False)
+        factura_expediente_dd.value = "Sin expediente"
+        factura_hoja_dd.value = "Sin hoja"
+        fra_fecha.value = _today_display()
+        fra_numero.value = ""
+        fra_base.value = ""
+        fra_iva.value = "0"
+        fra_irpf.value = "0"
+        fra_total.value = ""
+        fra_estado.value = "BORRADOR"
+        fra_ruta.value = ""
+        fra_obs.value = ""
+        factura_dialog.open = True
+        page.update()
+
+    def save_factura(e=None):
+        try:
+            cliente_id = _id(factura_cliente_ac.get_value())
+            if not cliente_id:
+                raise ValueError("Selecciona un cliente válido")
+
+            economic_service.create_factura({
+                "cliente_id": cliente_id,
+                "expediente_id": None if factura_expediente_dd.value == "Sin expediente" else _id(factura_expediente_dd.value),
+                "hoja_encargo_id": None if factura_hoja_dd.value == "Sin hoja" else _id(factura_hoja_dd.value),
+                "numero_factura": fra_numero.value,
+                "fecha_factura": _date_to_sql(fra_fecha.value),
+                "base_imponible": fra_base.value,
+                "iva": fra_iva.value,
+                "irpf": fra_irpf.value,
+                "total": fra_total.value,
+                "estado": fra_estado.value,
+                "documento_ruta": fra_ruta.value,
+                "observaciones": fra_obs.value,
+            })
+            factura_dialog.open = False
+            show_message(success_alert("Factura creada"))
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+        refresh()
+
+    factura_dialog = form_dialog(
+        "Factura",
+        ft.Column(
+            [
+                factura_cliente_ac.control,
+                factura_expediente_dd,
+                factura_hoja_dd,
+                ft.Row([fra_fecha, fra_numero, fra_estado], wrap=True, spacing=10),
+                ft.Row([fra_base, fra_iva, fra_irpf, fra_total], wrap=True, spacing=10),
+                fra_ruta,
+                fra_obs,
+            ],
+            width=760,
+            height=560,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        [secondary_button("Cancelar", lambda e: close(factura_dialog)), primary_button("Guardar", save_factura)],
+    )
+    page.overlay.append(factura_dialog)
+
+    # Gasto dialog
+    gasto_fecha = required_text_input("Fecha gasto DD/MM/AAAA", width=220)
+    gasto_proveedor = text_input("Proveedor", width=260)
+    gasto_concepto = required_text_input("Concepto", width=420)
+    gasto_categoria = text_input("Categoría", width=220)
+    gasto_importe = required_text_input("Importe", width=160)
+    gasto_forma = text_input("Forma pago", width=180)
+    gasto_deducible = select_input("Deducible", ["Sí", "No"], value="Sí", width=120)
+    gasto_ruta = text_input("Ruta factura recibida", width=620)
+    gasto_obs = multiline_input("Observaciones", width=620)
+
+    def open_gasto_dialog(e=None):
+        for field in [gasto_proveedor, gasto_concepto, gasto_categoria, gasto_importe, gasto_forma, gasto_ruta, gasto_obs]:
+            field.value = ""
+        gasto_fecha.value = _today_display()
+        gasto_deducible.value = "Sí"
+        gasto_dialog.open = True
+        page.update()
+
+    def save_gasto(e=None):
+        try:
+            economic_service.create_gasto({
+                "fecha_gasto": _date_to_sql(gasto_fecha.value),
+                "proveedor": gasto_proveedor.value,
+                "concepto": gasto_concepto.value,
+                "categoria": gasto_categoria.value,
+                "importe": gasto_importe.value,
+                "forma_pago": gasto_forma.value,
+                "deducible": 1 if gasto_deducible.value == "Sí" else 0,
+                "factura_recibida_ruta": gasto_ruta.value,
+                "observaciones": gasto_obs.value,
+            })
+            gasto_dialog.open = False
+            show_message(success_alert("Gasto creado"))
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+        refresh()
+
+    gasto_dialog = form_dialog(
+        "Gasto",
+        ft.Column(
+            [
+                ft.Row([gasto_fecha, gasto_proveedor, gasto_importe], wrap=True, spacing=10),
+                gasto_concepto,
+                ft.Row([gasto_categoria, gasto_forma, gasto_deducible], wrap=True, spacing=10),
+                gasto_ruta,
+                gasto_obs,
+            ],
+            width=760,
+            height=500,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        [secondary_button("Cancelar", lambda e: close(gasto_dialog)), primary_button("Guardar", save_gasto)],
+    )
+    page.overlay.append(gasto_dialog)
+
+    # Movimiento dialog
+    mov_origen = select_input("Origen", ["BANCO", "CASHMATIC", "STRIPE", "MANUAL"], value="BANCO", width=180)
+    mov_fecha = required_text_input("Fecha operación DD/MM/AAAA", width=240)
+    mov_concepto = text_input("Concepto", width=520)
+    mov_importe = required_text_input("Importe", width=160)
+    mov_ref = text_input("Referencia", width=260)
+    mov_cuenta = text_input("Cuenta", width=220)
+    mov_obs = multiline_input("Observaciones", width=620)
+
+    def open_movimiento_dialog(e=None):
+        mov_origen.value = "BANCO"
+        mov_fecha.value = _today_display()
+        for field in [mov_concepto, mov_importe, mov_ref, mov_cuenta, mov_obs]:
+            field.value = ""
+        movimiento_dialog.open = True
+        page.update()
+
+    def save_movimiento(e=None):
+        try:
+            economic_service.create_movimiento_importado({
+                "origen": mov_origen.value,
+                "fecha_operacion": _date_to_sql(mov_fecha.value),
+                "concepto": mov_concepto.value,
+                "importe": mov_importe.value,
+                "referencia": mov_ref.value,
+                "cuenta": mov_cuenta.value,
+                "observaciones": mov_obs.value,
+            })
+            movimiento_dialog.open = False
+            show_message(success_alert("Movimiento creado"))
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+        refresh()
+
+    movimiento_dialog = form_dialog(
+        "Movimiento importado / conciliación",
+        ft.Column(
+            [
+                ft.Row([mov_origen, mov_fecha, mov_importe], wrap=True, spacing=10),
+                mov_concepto,
+                ft.Row([mov_ref, mov_cuenta], wrap=True, spacing=10),
+                mov_obs,
+            ],
+            width=760,
+            height=420,
+            spacing=12,
+        ),
+        [secondary_button("Cancelar", lambda e: close(movimiento_dialog)), primary_button("Guardar", save_movimiento)],
+    )
+    page.overlay.append(movimiento_dialog)
+
+    def close(dialog):
+        dialog.open = False
+        page.update()
+
+    table_container.content = build_table()
+    content_area.content = build_view()
+    return content_area
