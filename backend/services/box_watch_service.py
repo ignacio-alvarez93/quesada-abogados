@@ -377,8 +377,8 @@ def _upsert_folder(conn, base, root, dirs, files):
         INSERT INTO box_watch_folders
         (ruta, nombre_carpeta, ruta_padre, nivel, total_archivos, total_subcarpetas,
          tamano_total_bytes, fecha_ultima_actividad, cliente_id, expediente_id,
-         tipo_detectado, estado, observaciones, activo)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+         tipo_detectado, estado, observaciones, activo, last_seen_scan_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """,
         (ruta, nombre, ruta_padre, nivel, total_archivos, total_subcarpetas, tamano_total, last_activity,
          match.get("cliente_id"), match.get("expediente_id"), tipo, ESTADO_OK, "Carpeta detectada en escaneo local"),
@@ -487,8 +487,8 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                             """
                             INSERT INTO box_watch_items
                             (ruta, nombre_archivo, extension, tipo_detectado, cliente_id, expediente_id,
-                             tamano_bytes, fecha_modificacion, hash_archivo, estado, observaciones, activo)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                             tamano_bytes, fecha_modificacion, hash_archivo, estado, observaciones, activo, last_seen_scan_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                             """,
                             (str(root), file_name, extension, tipo_detectado, match.get("cliente_id"), match.get("expediente_id"),
                              stat.st_size, modified, hash_archivo, estado, "Detectado en escaneo local"),
@@ -508,7 +508,7 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                             SET extension = ?, tipo_detectado = ?, cliente_id = COALESCE(?, cliente_id),
                                 expediente_id = COALESCE(?, expediente_id), tamano_bytes = ?,
                                 fecha_modificacion = ?, hash_archivo = ?, estado = ?, activo = 1,
-                                updated_at = CURRENT_TIMESTAMP
+                                last_seen_scan_id = ?, updated_at = CURRENT_TIMESTAMP
                             WHERE id = ?
                             """,
                             (extension, tipo_detectado, match.get("cliente_id"), match.get("expediente_id"), stat.st_size,
@@ -915,301 +915,6 @@ def list_box_root_client_folders(ruta_base=None, ruta_contains=None, limit=500):
 
 
 
-
-# === QUESADA BOX PRUNE MISSING INVENTORY START ===
-
-def _qa_norm_fs_path(value):
-    return str(value or "").replace("\\", "/").rstrip("/")
-
-
-def _qa_prune_missing_inventory_under_path(conn, folder_path):
-    """
-    Limpieza quirúrgica del inventario mostrado.
-
-    Si la carpeta inspeccionada existe físicamente en Box Drive, desactiva en SQLite
-    subcarpetas/archivos activos bajo esa ruta que ya no existen en disco.
-
-    No modifica Box.
-    No borra registros.
-    Solo marca activo=0 / FALTANTE en SQLite.
-    """
-    target = _qa_norm_fs_path(folder_path)
-    if not target:
-        return {"folders": 0, "files": 0}
-
-    try:
-        target_path = Path(target)
-        if not target_path.exists() or not target_path.is_dir():
-            return {"folders": 0, "files": 0}
-    except Exception:
-        return {"folders": 0, "files": 0}
-
-    folders = conn.execute(
-        """
-        SELECT id, ruta
-        FROM box_watch_folders
-        WHERE COALESCE(activo, 1) = 1
-          AND (
-                REPLACE(ruta, char(92), '/') = ?
-                OR REPLACE(ruta, char(92), '/') LIKE ?
-              )
-        """,
-        (target, target + "/%"),
-    ).fetchall()
-
-    folder_ids = []
-    for row in folders:
-        ruta = _qa_norm_fs_path(row["ruta"])
-        try:
-            if not Path(ruta).exists() or not Path(ruta).is_dir():
-                folder_ids.append(row["id"])
-        except Exception:
-            pass
-
-    if folder_ids:
-        conn.executemany(
-            """
-            UPDATE box_watch_folders
-            SET activo = 0,
-                estado = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            [(ESTADO_FALTANTE, folder_id) for folder_id in folder_ids],
-        )
-
-    items = conn.execute(
-        """
-        SELECT id, ruta, nombre_archivo
-        FROM box_watch_items
-        WHERE COALESCE(activo, 1) = 1
-          AND (
-                REPLACE(ruta, char(92), '/') = ?
-                OR REPLACE(ruta, char(92), '/') LIKE ?
-              )
-        """,
-        (target, target + "/%"),
-    ).fetchall()
-
-    item_ids = []
-    for row in items:
-        ruta = _qa_norm_fs_path(row["ruta"])
-        nombre = str(row["nombre_archivo"] or "")
-        try:
-            file_path = Path(ruta) / nombre
-            if not file_path.exists() or not file_path.is_file():
-                item_ids.append(row["id"])
-        except Exception:
-            pass
-
-    if item_ids:
-        conn.executemany(
-            """
-            UPDATE box_watch_items
-            SET activo = 0,
-                estado = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            [(ESTADO_FALTANTE, item_id) for item_id in item_ids],
-        )
-
-    return {"folders": len(folder_ids), "files": len(item_ids)}
-
-# === QUESADA BOX PRUNE MISSING INVENTORY END ===
-
-
-
-# === QUESADA BOX INSPECTION DIRECT REFRESH START ===
-
-def _qa_refresh_direct_inventory_from_disk(conn, folder_path):
-    """
-    Refresco quirúrgico al inspeccionar una carpeta.
-    Actualiza/crea en SQLite los archivos y carpetas directas que existen físicamente.
-    No modifica Box.
-    """
-    target = _qa_norm_fs_path(folder_path)
-    if not target:
-        return {"folders": 0, "files": 0}
-
-    root = Path(target)
-    if not root.exists() or not root.is_dir():
-        return {"folders": 0, "files": 0}
-
-    try:
-        rules = _load_rules(conn)
-    except Exception:
-        rules = []
-
-    try:
-        expedient_links = _qa_load_expedient_links(conn)
-    except Exception:
-        expedient_links = []
-
-    updated_folders = 0
-    updated_files = 0
-
-    for child in root.iterdir():
-        try:
-            child_path = str(child)
-            child_path_norm = _qa_norm_fs_path(child_path)
-
-            if child.is_dir():
-                folder_name = child.name
-                direct_files = 0
-                direct_folders = 0
-                total_bytes = 0
-                last_activity = None
-
-                try:
-                    for direct in child.iterdir():
-                        if direct.is_dir():
-                            direct_folders += 1
-                        elif direct.is_file():
-                            direct_files += 1
-                            try:
-                                st = direct.stat()
-                                total_bytes += int(st.st_size or 0)
-                                m = datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")
-                                if not last_activity or m > last_activity:
-                                    last_activity = m
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-
-                try:
-                    stat = child.stat()
-                    own_modified = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
-                    if not last_activity:
-                        last_activity = own_modified
-                except Exception:
-                    pass
-
-                match = _qa_match_loaded_expedient(child_path, expedient_links)
-                tipo = detect_folder_type(folder_name)
-                existing = conn.execute(
-                    """
-                    SELECT id
-                    FROM box_watch_folders
-                    WHERE REPLACE(ruta, char(92), '/') = ?
-                    LIMIT 1
-                    """,
-                    (child_path_norm,),
-                ).fetchone()
-
-                if existing:
-                    conn.execute(
-                        """
-                        UPDATE box_watch_folders
-                        SET nombre_carpeta = ?,
-                            ruta = ?,
-                            ruta_padre = ?,
-                            total_archivos = ?,
-                            total_subcarpetas = ?,
-                            tamano_total_bytes = ?,
-                            fecha_ultima_actividad = ?,
-                            cliente_id = COALESCE(?, cliente_id),
-                            expediente_id = COALESCE(?, expediente_id),
-                            tipo_detectado = ?,
-                            estado = ?,
-                            activo = 1,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        """,
-                        (
-                            folder_name, child_path, target, direct_files, direct_folders,
-                            total_bytes, last_activity, match.get("cliente_id"),
-                            match.get("expediente_id"), tipo, ESTADO_OK, existing["id"],
-                        ),
-                    )
-                else:
-                    conn.execute(
-                        """
-                        INSERT INTO box_watch_folders
-                        (ruta, nombre_carpeta, ruta_padre, nivel, total_archivos, total_subcarpetas,
-                         tamano_total_bytes, fecha_ultima_actividad, cliente_id, expediente_id,
-                         tipo_detectado, estado, observaciones, activo)
-                        VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                        """,
-                        (
-                            child_path, folder_name, target, direct_files, direct_folders,
-                            total_bytes, last_activity, match.get("cliente_id"),
-                            match.get("expediente_id"), tipo, ESTADO_OK,
-                            "Detectado al inspeccionar carpeta",
-                        ),
-                    )
-                updated_folders += 1
-
-            elif child.is_file():
-                stat = child.stat()
-                file_name = child.name
-                extension = child.suffix.lower().lstrip(".")
-                modified = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
-                size = int(stat.st_size or 0)
-                tipo_detectado = _qa_detect_file_type_fast(file_name, extension, rules)
-                estado = ESTADO_OK if tipo_detectado != ESTADO_SIN_CLASIFICAR else ESTADO_SIN_CLASIFICAR
-                match = _qa_match_loaded_expedient(target, expedient_links)
-
-                existing = conn.execute(
-                    """
-                    SELECT id
-                    FROM box_watch_items
-                    WHERE REPLACE(ruta, char(92), '/') = ?
-                      AND nombre_archivo = ?
-                    LIMIT 1
-                    """,
-                    (target, file_name),
-                ).fetchone()
-
-                if existing:
-                    conn.execute(
-                        """
-                        UPDATE box_watch_items
-                        SET ruta = ?,
-                            nombre_archivo = ?,
-                            extension = ?,
-                            tipo_detectado = ?,
-                            cliente_id = COALESCE(?, cliente_id),
-                            expediente_id = COALESCE(?, expediente_id),
-                            tamano_bytes = ?,
-                            fecha_modificacion = ?,
-                            estado = ?,
-                            activo = 1,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        """,
-                        (
-                            target, file_name, extension, tipo_detectado,
-                            match.get("cliente_id"), match.get("expediente_id"),
-                            size, modified, estado, existing["id"],
-                        ),
-                    )
-                else:
-                    conn.execute(
-                        """
-                        INSERT INTO box_watch_items
-                        (ruta, nombre_archivo, extension, tipo_detectado, cliente_id, expediente_id,
-                         tamano_bytes, fecha_modificacion, hash_archivo, estado, observaciones, activo)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
-                        """,
-                        (
-                            target, file_name, extension, tipo_detectado,
-                            match.get("cliente_id"), match.get("expediente_id"),
-                            size, modified, estado,
-                            "Detectado al inspeccionar carpeta",
-                        ),
-                    )
-                updated_files += 1
-
-        except Exception:
-            continue
-
-    return {"folders": updated_folders, "files": updated_files}
-
-# === QUESADA BOX INSPECTION DIRECT REFRESH END ===
-
-
 def get_box_folder_inspection(folder_path):
     """
     Devuelve inspección de una carpeta concreta:
@@ -1236,10 +941,6 @@ def get_box_folder_inspection(folder_path):
     target = str(folder_path).strip().replace("\\", "/").rstrip("/")
 
     with _connect() as conn:
-        _qa_refresh_direct_inventory_from_disk(conn, target)
-        _qa_prune_missing_inventory_under_path(conn, target)
-        conn.commit()
-
         folder = conn.execute(
             """
             SELECT *
@@ -1346,6 +1047,7 @@ def ensure_box_watch_runtime_columns():
             "activo": "INTEGER DEFAULT 1",
             "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
             "updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
+            "last_seen_scan_id": "INTEGER",
         },
         "box_watch_scan_runs": {
             "fecha_inicio": "TEXT",
@@ -1377,6 +1079,7 @@ def ensure_box_watch_runtime_columns():
             "activo": "INTEGER DEFAULT 1",
             "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
             "updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
+            "last_seen_scan_id": "INTEGER",
         },
     }
 
@@ -1896,13 +1599,6 @@ def build_folder_tree_text(folder_path, max_depth=6, max_items=5000):
     root = _qa_norm_path(folder_path)
     if not root:
         raise ValueError("No hay carpeta seleccionada")
-
-    try:
-        with _connect() as conn:
-            _qa_prune_missing_inventory_under_path(conn, root)
-            conn.commit()
-    except Exception:
-        pass
 
     max_depth = int(max_depth or 6)
     max_items = int(max_items or 5000)
@@ -3283,7 +2979,99 @@ def _qa_folder_stats_fast(root, dirs, files):
     return total_archivos, len(dirs), total_bytes, last_activity, stable_files
 
 
-def _qa_upsert_folder_incremental(conn, existing_folders, expedient_links, base, root, dirs, files):
+
+def _qa_mark_missing_after_scan(conn, base, run_id):
+    """
+    Autolimpieza segura tras escaneo incremental.
+
+    Marca como FALTANTE/inactivo solo registros bajo la ruta escaneada que:
+    - estaban activos en SQLite;
+    - no han sido vistos en este escaneo;
+    - y ya no existen físicamente en Box Drive.
+
+    No borra registros.
+    No modifica Box.
+    Solo actualiza SQLite.
+    """
+    base_norm = str(base).replace("\\", "/").rstrip("/")
+    if not base_norm:
+        return {"folders": 0, "files": 0}
+
+    folders = conn.execute(
+        """
+        SELECT id, ruta
+        FROM box_watch_folders
+        WHERE COALESCE(activo, 1) = 1
+          AND (
+                REPLACE(ruta, char(92), '/') = ?
+                OR REPLACE(ruta, char(92), '/') LIKE ?
+              )
+          AND COALESCE(last_seen_scan_id, 0) != ?
+        """,
+        (base_norm, base_norm + "/%", int(run_id)),
+    ).fetchall()
+
+    missing_folder_ids = []
+    for row in folders:
+        ruta = str(row["ruta"] or "")
+        try:
+            if not Path(ruta).exists() or not Path(ruta).is_dir():
+                missing_folder_ids.append(row["id"])
+        except Exception:
+            missing_folder_ids.append(row["id"])
+
+    if missing_folder_ids:
+        conn.executemany(
+            """
+            UPDATE box_watch_folders
+            SET activo = 0,
+                estado = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            [(ESTADO_FALTANTE, folder_id) for folder_id in missing_folder_ids],
+        )
+
+    items = conn.execute(
+        """
+        SELECT id, ruta, nombre_archivo
+        FROM box_watch_items
+        WHERE COALESCE(activo, 1) = 1
+          AND (
+                REPLACE(ruta, char(92), '/') = ?
+                OR REPLACE(ruta, char(92), '/') LIKE ?
+              )
+          AND COALESCE(last_seen_scan_id, 0) != ?
+        """,
+        (base_norm, base_norm + "/%", int(run_id)),
+    ).fetchall()
+
+    missing_item_ids = []
+    for row in items:
+        ruta = str(row["ruta"] or "")
+        nombre = str(row["nombre_archivo"] or "")
+        try:
+            file_path = Path(ruta) / nombre
+            if not file_path.exists() or not file_path.is_file():
+                missing_item_ids.append(row["id"])
+        except Exception:
+            missing_item_ids.append(row["id"])
+
+    if missing_item_ids:
+        conn.executemany(
+            """
+            UPDATE box_watch_items
+            SET activo = 0,
+                estado = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            [(ESTADO_FALTANTE, item_id) for item_id in missing_item_ids],
+        )
+
+    return {"folders": len(missing_folder_ids), "files": len(missing_item_ids)}
+
+def _qa_upsert_folder_incremental(conn, existing_folders, expedient_links, base, root, dirs, files, run_id=None):
     total_archivos, total_subcarpetas, tamano_total, last_activity, stable_files = _qa_folder_stats_fast(root, dirs, files)
     rel = root.relative_to(base) if root != base else Path("")
     nivel = 0 if str(rel) in ("", ".") else len(rel.parts)
@@ -3313,7 +3101,7 @@ def _qa_upsert_folder_incremental(conn, existing_folders, expedient_links, base,
                 SET nombre_carpeta = ?, ruta_padre = ?, nivel = ?, total_archivos = ?,
                     total_subcarpetas = ?, tamano_total_bytes = ?, fecha_ultima_actividad = ?,
                     cliente_id = COALESCE(?, cliente_id), expediente_id = COALESCE(?, expediente_id),
-                    activo = 1, updated_at = CURRENT_TIMESTAMP
+                    activo = 1, last_seen_scan_id = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
                 (
@@ -3326,10 +3114,22 @@ def _qa_upsert_folder_incremental(conn, existing_folders, expedient_links, base,
                     last_activity,
                     match.get("cliente_id"),
                     match.get("expediente_id"),
+                    int(run_id or 0),
                     existing["id"],
                 ),
             )
             return 0, 1, stable_files
+        conn.execute(
+            """
+            UPDATE box_watch_folders
+            SET activo = 1,
+                estado = ?,
+                last_seen_scan_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (ESTADO_OK, int(run_id or 0), existing["id"]),
+        )
         return 0, 0, stable_files
 
     tipo = detect_folder_type(nombre)
@@ -3338,8 +3138,8 @@ def _qa_upsert_folder_incremental(conn, existing_folders, expedient_links, base,
         INSERT INTO box_watch_folders
         (ruta, nombre_carpeta, ruta_padre, nivel, total_archivos, total_subcarpetas,
          tamano_total_bytes, fecha_ultima_actividad, cliente_id, expediente_id,
-         tipo_detectado, estado, observaciones, activo)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+         tipo_detectado, estado, observaciones, activo, last_seen_scan_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """,
         (
             ruta,
@@ -3355,10 +3155,11 @@ def _qa_upsert_folder_incremental(conn, existing_folders, expedient_links, base,
             tipo,
             ESTADO_OK,
             "Carpeta detectada en escaneo incremental local",
+            int(run_id or 0),
         ),
     )
     row_id = cur.lastrowid
-    fake_row = {"id": row_id, "ruta": ruta, "total_archivos": total_archivos, "total_subcarpetas": total_subcarpetas, "tamano_total_bytes": tamano_total, "fecha_ultima_actividad": last_activity}
+    fake_row = {"id": row_id, "ruta": ruta, "total_archivos": total_archivos, "total_subcarpetas": total_subcarpetas, "tamano_total_bytes": tamano_total, "fecha_ultima_actividad": last_activity, "last_seen_scan_id": int(run_id or 0)}
     existing_folders[ruta] = fake_row
     existing_folders[ruta_norm] = fake_row
     return 1, 0, stable_files
@@ -3392,6 +3193,8 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
     carpetas_modificadas = 0
     archivos_sin_cambios = 0
     carpetas_sin_cambios = 0
+    faltantes_carpetas = 0
+    faltantes_archivos = 0
     final_state = ESTADO_OK
 
     def report(current=""):
@@ -3436,7 +3239,7 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
             for root, dirs, files in _iter_tree(base):
                 total_carpetas += 1
                 new_folder, changed_folder, stable_files = _qa_upsert_folder_incremental(
-                    conn, existing_folders, expedient_links, base, root, dirs, files
+                    conn, existing_folders, expedient_links, base, root, dirs, files, run_id=run_id
                 )
                 carpetas_nuevas += new_folder
                 carpetas_modificadas += changed_folder
@@ -3457,11 +3260,22 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                     except Exception:
                         size = 0
 
-                    # Punto clave: archivo idéntico => no clasificar, no alertas, no UPDATE.
+                    # Punto clave: archivo idéntico => no clasificar, no alertas.
+                    # Aun así marcamos last_seen_scan_id para que la autolimpieza no lo marque como FALTANTE.
                     if existing and int(existing["tamano_bytes"] or 0) == size and str(existing["fecha_modificacion"] or "") == str(modified):
                         archivos_sin_cambios += 1
                         if str(existing["estado"] or "") == ESTADO_SIN_CLASIFICAR or str(existing["tipo_detectado"] or "") == ESTADO_SIN_CLASIFICAR:
                             sin_clasificar += 1
+                        conn.execute(
+                            """
+                            UPDATE box_watch_items
+                            SET activo = 1,
+                                last_seen_scan_id = ?,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                            """,
+                            (int(run_id or 0), existing["id"]),
+                        )
                         if total_archivos % 1000 == 0:
                             report(file_name)
                         continue
@@ -3489,8 +3303,8 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                             """
                             INSERT INTO box_watch_items
                             (ruta, nombre_archivo, extension, tipo_detectado, cliente_id, expediente_id,
-                             tamano_bytes, fecha_modificacion, hash_archivo, estado, observaciones, activo)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                             tamano_bytes, fecha_modificacion, hash_archivo, estado, observaciones, activo, last_seen_scan_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                             """,
                             (
                                 ruta,
@@ -3504,6 +3318,7 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                                 hash_archivo,
                                 estado,
                                 "Detectado en escaneo incremental local",
+                                int(run_id or 0),
                             ),
                         )
                         item_id = cur_item.lastrowid
@@ -3527,7 +3342,7 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                             SET extension = ?, tipo_detectado = ?, cliente_id = COALESCE(?, cliente_id),
                                 expediente_id = COALESCE(?, expediente_id), tamano_bytes = ?,
                                 fecha_modificacion = ?, hash_archivo = ?, estado = ?, activo = 1,
-                                updated_at = CURRENT_TIMESTAMP
+                                last_seen_scan_id = ?, updated_at = CURRENT_TIMESTAMP
                             WHERE id = ?
                             """,
                             (
@@ -3539,6 +3354,7 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                                 modified,
                                 hash_archivo,
                                 estado,
+                                int(run_id or 0),
                                 item_id,
                             ),
                         )
@@ -3563,6 +3379,11 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
 
                 if total_carpetas % 300 == 0:
                     conn.commit()
+
+            # Autolimpieza segura: registros activos que no reaparecen y ya no existen físicamente.
+            missing_result = _qa_mark_missing_after_scan(conn, base, run_id)
+            faltantes_carpetas = int(missing_result.get("folders") or 0)
+            faltantes_archivos = int(missing_result.get("files") or 0)
 
             # No ejecutamos _evaluate_missing_required en cada escaneo incremental.
             # Es costoso y debe pasar a una revisión documental separada/profunda.
@@ -3589,6 +3410,8 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                         f"Carpetas modificadas: {carpetas_modificadas}. "
                         f"Carpetas sin cambios: {carpetas_sin_cambios}. "
                         f"Archivos sin cambios omitidos: {archivos_sin_cambios}. "
+                        f"Carpetas marcadas FALTANTE: {faltantes_carpetas}. "
+                        f"Archivos marcados FALTANTE: {faltantes_archivos}. "
                         f"Hash activo: {calculate_hash}. "
                         "No modifica Box. No recalcula recursivos N+1."
                     ),
@@ -3612,6 +3435,8 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
         "carpetas_nuevas": carpetas_nuevas,
         "carpetas_modificadas": carpetas_modificadas,
         "carpetas_sin_cambios": carpetas_sin_cambios,
+        "faltantes_carpetas": faltantes_carpetas,
+        "faltantes_archivos": faltantes_archivos,
         "nuevos": nuevos,
         "modificados": modificados,
         "archivos_sin_cambios": archivos_sin_cambios,
