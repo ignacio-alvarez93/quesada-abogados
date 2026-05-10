@@ -23,6 +23,7 @@ from backend.services.master_data_service import (
     get_estados_civiles,
 )
 from backend.services.config_service import get_columnas_tabla
+from backend.services.economic_service import get_deuda_cliente
 from frontend.components.client_context_panel import client_context_panel
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.views.client_detail_view import client_detail_view
@@ -107,7 +108,8 @@ CLIENT_TABLE_DEFAULT_COLUMNS = [
     {"campo": "edad", "visible": 1, "orden": 4, "ancho": 80},
     {"campo": "telefono", "visible": 1, "orden": 5, "ancho": 140},
     {"campo": "estado_cliente", "visible": 1, "orden": 6, "ancho": 210},
-    {"campo": "ficha", "visible": 1, "orden": 7, "ancho": 120},
+    {"campo": "deuda_pendiente", "visible": 1, "orden": 7, "ancho": 170},
+    {"campo": "ficha", "visible": 1, "orden": 8, "ancho": 120},
 ]
 
 CLIENT_TABLE_LABELS = {
@@ -127,6 +129,7 @@ CLIENT_TABLE_LABELS = {
     "telefono": "Teléfono",
     "email": "Email",
     "estado_cliente": "Estado",
+    "deuda_pendiente": "Deuda pendiente",
     "domicilio_espana": "Domicilio",
     "localidad": "Localidad",
     "provincia": "Provincia",
@@ -165,10 +168,13 @@ def client_table_columns():
             if int(col.get("visible", 1)) == 1
         ]
         if visible:
-            return sorted(
+            ordered = sorted(
                 visible,
                 key=lambda col: (int(col.get("orden") or 0), col.get("campo") or ""),
             )
+            if not any(col.get("campo") == "deuda_pendiente" for col in ordered):
+                ordered.append({"campo": "deuda_pendiente", "visible": 1, "orden": 999, "ancho": 170})
+            return ordered
     except Exception:
         pass
 
@@ -192,6 +198,9 @@ def client_table_value(cliente, field):
 
     if field == "estado" or field == "estado_cliente":
         return status_badge(cliente.get("estado_cliente") or "-")
+
+    if field == "deuda_pendiente":
+        return deuda_badge(cliente)
 
     if field == "ficha":
         return ficha_badge(cliente)
@@ -382,6 +391,41 @@ def quick_filter_colors(key):
     if key.startswith("estado::"):
         return "#F0F9FF", "#026AA2", "#B9E6FE"
     return "#EAF3FF", "#0057B8", "#BFD7FF"
+
+
+def money_display(value):
+    try:
+        return f"{float(value or 0):.2f} €"
+    except Exception:
+        return "0.00 €"
+
+
+def deuda_badge(cliente):
+    deuda = cliente.get("_deuda_cliente") or {}
+    total = float(deuda.get("deuda_total") or 0)
+    tramites = deuda.get("tramites") or []
+
+    if total <= 0:
+        color, bg, label = "#027A48", "#ECFDF3", "0.00 €"
+    elif total < 500:
+        color, bg, label = "#B54708", "#FFFAEB", money_display(total)
+    else:
+        color, bg, label = "#B42318", "#FEF3F2", money_display(total)
+
+    tooltip_lines = [f"Deuda total: {money_display(total)}"]
+    for item in tramites:
+        tramite = item.get("tramite") or "Sin trámite"
+        expediente = item.get("numero_expediente") or "Sin expediente"
+        deuda_tramite = money_display(item.get("deuda") or 0)
+        tooltip_lines.append(f"{expediente} · {tramite}: {deuda_tramite}")
+
+    return ft.Container(
+        content=ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=color),
+        bgcolor=bg,
+        border_radius=20,
+        padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        tooltip="\n".join(tooltip_lines),
+    )
 
 def clients_view(page: ft.Page):
     state = {
@@ -720,6 +764,15 @@ def clients_view(page: ft.Page):
 
         for cliente in clientes:
             cliente["estado_cliente"] = resolver_estado_cliente(cliente)
+            try:
+                cliente["_deuda_cliente"] = get_deuda_cliente(cliente["id"])
+            except Exception:
+                cliente["_deuda_cliente"] = {
+                    "importe_hojas": 0.0,
+                    "importe_cobros": 0.0,
+                    "deuda_total": 0.0,
+                    "tramites": [],
+                }
 
         state["clients"] = clientes
 

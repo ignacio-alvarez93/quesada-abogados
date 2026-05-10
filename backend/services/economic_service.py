@@ -886,6 +886,91 @@ def conciliar_movimiento_con_cobro(movimiento_id, cobro_id):
     registrar_evento("eco_cobros", cobro_id, "CONCILIACION", "COBRO CONCILIADO", f"Movimiento {movimiento_id}")
 
 
+
+def get_deuda_cliente(cliente_id):
+    """
+    Calcula deuda pendiente por cliente usando SOLO hojas de encargo y cobros activos.
+
+    deuda = SUM(eco_hojas_encargo.importe_neto) - SUM(eco_cobros.importe)
+
+    No usa facturas.
+    Devuelve total y desglose por expediente/trámite.
+    """
+    cliente_id = int(cliente_id)
+    resumen = {
+        "cliente_id": cliente_id,
+        "importe_hojas": 0.0,
+        "importe_cobros": 0.0,
+        "deuda_total": 0.0,
+        "tramites": [],
+    }
+
+    with _connect() as conn:
+        if not _table_exists(conn, "eco_hojas_encargo") or not _table_exists(conn, "eco_cobros"):
+            return resumen
+
+        hojas = conn.execute(
+            """
+            SELECT
+                COALESCE(h.expediente_id, 0) AS expediente_key,
+                h.expediente_id,
+                COALESCE(e.numero_expediente, 'SIN EXPEDIENTE') AS numero_expediente,
+                COALESCE(t.nombre, h.procedimiento, 'SIN TRÁMITE') AS tramite,
+                COALESCE(SUM(h.importe_neto), 0) AS importe_hojas
+            FROM eco_hojas_encargo h
+            LEFT JOIN expedientes e ON e.id = h.expediente_id
+            LEFT JOIN config_tipos_expediente t ON t.id = e.tipo_expediente_id
+            WHERE h.cliente_id = ?
+              AND COALESCE(h.activo, 1) = 1
+            GROUP BY COALESCE(h.expediente_id, 0), h.expediente_id, e.numero_expediente, t.nombre, h.procedimiento
+            """,
+            (cliente_id,),
+        ).fetchall()
+
+        cobros = conn.execute(
+            """
+            SELECT
+                COALESCE(c.expediente_id, h.expediente_id, 0) AS expediente_key,
+                COALESCE(c.expediente_id, h.expediente_id) AS expediente_id,
+                COALESCE(e.numero_expediente, 'SIN EXPEDIENTE') AS numero_expediente,
+                COALESCE(t.nombre, h.procedimiento, 'SIN TRÁMITE') AS tramite,
+                COALESCE(SUM(c.importe), 0) AS importe_cobros
+            FROM eco_cobros c
+            LEFT JOIN eco_hojas_encargo h ON h.id = c.hoja_encargo_id
+            LEFT JOIN expedientes e ON e.id = COALESCE(c.expediente_id, h.expediente_id)
+            LEFT JOIN config_tipos_expediente t ON t.id = e.tipo_expediente_id
+            WHERE c.cliente_id = ?
+              AND COALESCE(c.activo, 1) = 1
+            GROUP BY COALESCE(c.expediente_id, h.expediente_id, 0), COALESCE(c.expediente_id, h.expediente_id), e.numero_expediente, t.nombre, h.procedimiento
+            """,
+            (cliente_id,),
+        ).fetchall()
+
+    by_key = {}
+    for row in hojas:
+        key = row["expediente_key"]
+        by_key.setdefault(key, {"expediente_id": row["expediente_id"], "numero_expediente": row["numero_expediente"], "tramite": row["tramite"], "importe_hojas": 0.0, "importe_cobros": 0.0, "deuda": 0.0})
+        by_key[key]["importe_hojas"] += float(row["importe_hojas"] or 0)
+
+    for row in cobros:
+        key = row["expediente_key"]
+        by_key.setdefault(key, {"expediente_id": row["expediente_id"], "numero_expediente": row["numero_expediente"], "tramite": row["tramite"], "importe_hojas": 0.0, "importe_cobros": 0.0, "deuda": 0.0})
+        by_key[key]["importe_cobros"] += float(row["importe_cobros"] or 0)
+
+    tramites = []
+    for item in by_key.values():
+        item["deuda"] = round(float(item["importe_hojas"] or 0) - float(item["importe_cobros"] or 0), 2)
+        item["importe_hojas"] = round(float(item["importe_hojas"] or 0), 2)
+        item["importe_cobros"] = round(float(item["importe_cobros"] or 0), 2)
+        tramites.append(item)
+
+    tramites.sort(key=lambda item: (item.get("numero_expediente") or "", item.get("tramite") or ""))
+    resumen["tramites"] = tramites
+    resumen["importe_hojas"] = round(sum(item["importe_hojas"] for item in tramites), 2)
+    resumen["importe_cobros"] = round(sum(item["importe_cobros"] for item in tramites), 2)
+    resumen["deuda_total"] = round(resumen["importe_hojas"] - resumen["importe_cobros"], 2)
+    return resumen
+
 def resumen_economico():
     with _connect() as conn:
         row = conn.execute(
