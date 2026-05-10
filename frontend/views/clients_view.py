@@ -87,9 +87,12 @@ FICHA_FIELDS = [
 
 QUICK_FILTERS = [
     ("Todos", "todos"),
+    ("Morosos", "morosos"),
+    ("Al día", "al_dia"),
     ("Sin documento", "sin_documento"),
     ("Ficha incompleta", "ficha_incompleta"),
     ("Pagos vencidos", "pagos_vencidos"),
+    ("Varios trámites", "varios_tramites"),
 ]
 
 BULK_ACTIONS = [
@@ -201,7 +204,7 @@ def client_table_value(cliente, field):
         return calcular_edad(cliente.get("fecha_nacimiento"))
 
     if field == "estado" or field == "estado_cliente":
-        return status_badge(cliente.get("estado_cliente") or "-")
+        return estado_economico_cliente_badge(cliente)
 
     if field == "deuda_pendiente":
         return deuda_badge(cliente)
@@ -389,12 +392,18 @@ def title_filter_label(value):
 def quick_filter_colors(key):
     if key == "todos":
         return "#0057B8", "#FFFFFF", "#0057B8"
+    if key == "morosos":
+        return "#FEF3F2", "#B42318", "#FDA29B"
+    if key == "al_dia":
+        return "#ECFDF3", "#027A48", "#ABEFC6"
     if key == "sin_documento":
         return "#FEF3F2", "#B42318", "#FDA29B"
     if key == "ficha_incompleta":
         return "#FFFAEB", "#B54708", "#FEDF89"
     if key == "pagos_vencidos":
         return "#FFF1F3", "#C01048", "#FECDD6"
+    if key == "varios_tramites":
+        return "#EEF4FF", "#3538CD", "#C7D7FE"
     if key.startswith("estado::"):
         return "#F0F9FF", "#026AA2", "#B9E6FE"
     return "#EAF3FF", "#0057B8", "#BFD7FF"
@@ -495,6 +504,375 @@ def deuda_tramites_cell(cliente):
         padding=ft.padding.symmetric(horizontal=10, vertical=5),
         tooltip="\n".join(tooltip_lines),
     )
+
+CLOSED_EXPEDIENT_STATES = {
+    "FINALIZADO",
+    "ARCHIVADO",
+    "CONCEDIDO",
+    "DENEGADO",
+    "DESISTIDO",
+    "CERRADO",
+}
+
+
+def estado_cliente_tooltip_lines(cliente):
+    expedientes = cliente.get("_expedientes_cliente") or []
+
+    if not expedientes:
+        return ["Sin expedientes activos"]
+
+    lines = []
+    for item in expedientes:
+        prioridad = item.get("prioridad") or "Sin prioridad"
+        numero = item.get("numero_expediente") or "Sin expediente"
+        tramite = item.get("tipo_expediente") or "Sin trámite"
+        estado = item.get("estado_administrativo") or item.get("estado_presentacion") or item.get("estado_documental") or "-"
+        lines.append(f"{prioridad} · {numero} · {tramite}: {estado}")
+
+    return lines
+
+
+def estado_cliente_priorizado_badge(cliente):
+    estado = cliente.get("estado_cliente") or "-"
+    return ft.Container(
+        content=status_badge(estado),
+        tooltip="\n".join(estado_cliente_tooltip_lines(cliente)),
+    )
+
+
+def cliente_tiene_varios_tramites_en_proceso(cliente):
+    expedientes = cliente.get("_expedientes_cliente") or []
+    abiertos = []
+
+    for item in expedientes:
+        estado = normalize_filter_label(
+            item.get("estado_administrativo")
+            or item.get("estado_presentacion")
+            or item.get("estado_documental")
+            or ""
+        )
+
+        if estado and estado in CLOSED_EXPEDIENT_STATES:
+            continue
+
+        abiertos.append(item)
+
+    return len(abiertos) > 1
+
+
+def resolver_estado_economico_cliente(cliente):
+    deuda = cliente.get("_deuda_cliente") or {}
+
+    importe_hojas = float(deuda.get("importe_hojas") or 0)
+    importe_cobros = float(deuda.get("importe_cobros") or 0)
+    deuda_total = float(deuda.get("deuda_total") or 0)
+
+    if deuda_total > 0:
+        return "MOROSO"
+
+    if importe_hojas > 0 and deuda_total <= 0:
+        return "AL DÍA"
+
+    if importe_cobros > 0 and importe_hojas <= 0:
+        return "COBROS SIN HOJA"
+
+    return "SIN ACTIVIDAD ECONÓMICA"
+
+
+def estado_economico_cliente_badge(cliente):
+    estado = cliente.get("estado_cliente") or "SIN ACTIVIDAD ECONÓMICA"
+    deuda = cliente.get("_deuda_cliente") or {}
+
+    deuda_total = float(deuda.get("deuda_total") or 0)
+    importe_hojas = float(deuda.get("importe_hojas") or 0)
+    importe_cobros = float(deuda.get("importe_cobros") or 0)
+
+    if estado == "MOROSO":
+        color, bg = "#B42318", "#FEF3F2"
+    elif estado == "AL DÍA":
+        color, bg = "#027A48", "#ECFDF3"
+    elif estado == "COBROS SIN HOJA":
+        color, bg = "#B54708", "#FFFAEB"
+    else:
+        color, bg = "#475467", "#F2F4F7"
+
+    tooltip = "\n".join(
+        [
+            f"Estado económico: {estado}",
+            f"Hojas encargo: {money_display(importe_hojas)}",
+            f"Cobros: {money_display(importe_cobros)}",
+            f"Deuda pendiente: {money_display(deuda_total)}",
+        ]
+    )
+
+    return ft.Container(
+        content=ft.Text(
+            estado.title(),
+            size=12,
+            weight=ft.FontWeight.BOLD,
+            color=color,
+        ),
+        bgcolor=bg,
+        border_radius=20,
+        padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        tooltip=tooltip,
+    )
+
+
+def cliente_deuda_total(cliente):
+    deuda = cliente.get("_deuda_cliente") or {}
+
+    try:
+        importe_hojas = float(deuda.get("importe_hojas") or 0)
+        deuda_total = float(deuda.get("deuda_total") or 0)
+
+        # Solo existe deuda real si:
+        # - hay hojas de encargo
+        # - y la deuda es positiva
+        if importe_hojas <= 0:
+            return 0.0
+
+        return max(deuda_total, 0.0)
+
+    except Exception:
+        return 0.0
+
+
+def total_morosos(clientes):
+    return sum(1 for cliente in clientes if cliente_deuda_total(cliente) > 0)
+
+
+def importe_total_deuda(clientes):
+    return sum(cliente_deuda_total(cliente) for cliente in clientes)
+
+
+def table_columns(conn, table_name):
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return [row["name"] for row in rows]
+    except Exception:
+        return []
+
+
+def first_existing_column(columns, candidates):
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def recalcular_deuda_cliente_sobre_bruto(cliente_id, deuda_base=None):
+    """
+    Recalcula la deuda usando el importe BRUTO de hojas de encargo.
+
+    Mantiene la estructura de get_deuda_cliente para que la tabla y tooltips
+    sigan funcionando, pero sustituye:
+    - importe_hojas
+    - deuda_total
+    - tramites[].deuda
+
+    No cuenta facturas.
+    No cuenta cobros sin hoja para generar deuda negativa.
+    """
+    deuda_base = deuda_base or {
+        "importe_hojas": 0.0,
+        "importe_cobros": 0.0,
+        "deuda_total": 0.0,
+        "tramites": [],
+    }
+
+    if not cliente_id:
+        return deuda_base
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+
+        if not db_table_exists_global(conn, "eco_hojas_encargo"):
+            conn.close()
+            return deuda_base
+
+        hojas_columns = table_columns(conn, "eco_hojas_encargo")
+        cobros_columns = table_columns(conn, "eco_cobros") if db_table_exists_global(conn, "eco_cobros") else []
+        expedientes_columns = table_columns(conn, "expedientes") if db_table_exists_global(conn, "expedientes") else []
+
+        bruto_col = first_existing_column(
+            hojas_columns,
+            [
+                "importe_bruto",
+                "bruto",
+                "total_bruto",
+                "importe_total",
+                "total",
+                "importe_hoja",
+                "importe",
+            ],
+        )
+
+        if not bruto_col:
+            conn.close()
+            return deuda_base
+
+        hoja_cliente_col = "cliente_id" if "cliente_id" in hojas_columns else None
+        hoja_expediente_col = "expediente_id" if "expediente_id" in hojas_columns else None
+        hoja_activo_filter = "AND COALESCE(h.activo, 1) = 1" if "activo" in hojas_columns else ""
+
+        if not hoja_cliente_col:
+            conn.close()
+            return deuda_base
+
+        importe_hojas = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(h.{bruto_col}), 0) AS total
+            FROM eco_hojas_encargo h
+            WHERE h.{hoja_cliente_col} = ?
+              {hoja_activo_filter}
+            """,
+            (int(cliente_id),),
+        ).fetchone()["total"] or 0
+
+        importe_cobros = 0.0
+        if cobros_columns:
+            cobro_cliente_col = "cliente_id" if "cliente_id" in cobros_columns else None
+            cobro_importe_col = first_existing_column(cobros_columns, ["importe", "importe_cobrado", "total", "cantidad"])
+            cobro_hoja_col = "hoja_encargo_id" if "hoja_encargo_id" in cobros_columns else None
+            cobro_activo_filter = "AND COALESCE(c.activo, 1) = 1" if "activo" in cobros_columns else ""
+
+            if cobro_importe_col:
+                if cobro_hoja_col and "id" in hojas_columns:
+                    # Solo cobros vinculados a hojas de encargo.
+                    importe_cobros = conn.execute(
+                        f"""
+                        SELECT COALESCE(SUM(c.{cobro_importe_col}), 0) AS total
+                        FROM eco_cobros c
+                        INNER JOIN eco_hojas_encargo h ON h.id = c.{cobro_hoja_col}
+                        WHERE h.{hoja_cliente_col} = ?
+                          {hoja_activo_filter}
+                          {cobro_activo_filter}
+                        """,
+                        (int(cliente_id),),
+                    ).fetchone()["total"] or 0
+                elif cobro_cliente_col:
+                    # Fallback: cobros del cliente solo si no hay columna hoja_encargo_id.
+                    importe_cobros = conn.execute(
+                        f"""
+                        SELECT COALESCE(SUM(c.{cobro_importe_col}), 0) AS total
+                        FROM eco_cobros c
+                        WHERE c.{cobro_cliente_col} = ?
+                          {cobro_activo_filter}
+                        """,
+                        (int(cliente_id),),
+                    ).fetchone()["total"] or 0
+
+        deuda_total = max(float(importe_hojas or 0) - float(importe_cobros or 0), 0.0)
+
+        tramites = []
+        if hoja_expediente_col:
+            tipo_join = ""
+            tipo_select = "'Sin trámite' AS tramite"
+            numero_select = "CAST(h.expediente_id AS TEXT) AS numero_expediente"
+
+            if db_table_exists_global(conn, "expedientes") and "id" in expedientes_columns:
+                tipo_join = "LEFT JOIN expedientes e ON e.id = h.expediente_id"
+                numero_select = "COALESCE(e.numero_expediente, CAST(h.expediente_id AS TEXT)) AS numero_expediente"
+
+                if db_table_exists_global(conn, "config_tipos_expediente"):
+                    tipo_join += " LEFT JOIN config_tipos_expediente te ON te.id = e.tipo_expediente_id"
+                    tipo_select = "COALESCE(te.nombre, 'Sin trámite') AS tramite"
+
+            hojas_por_exp = conn.execute(
+                f"""
+                SELECT
+                    h.{hoja_expediente_col} AS expediente_id,
+                    {numero_select},
+                    {tipo_select},
+                    COALESCE(SUM(h.{bruto_col}), 0) AS importe_hojas
+                FROM eco_hojas_encargo h
+                {tipo_join}
+                WHERE h.{hoja_cliente_col} = ?
+                  {hoja_activo_filter}
+                GROUP BY h.{hoja_expediente_col}
+                """,
+                (int(cliente_id),),
+            ).fetchall()
+
+            cobros_por_exp = {}
+            if cobros_columns:
+                cobro_importe_col = first_existing_column(cobros_columns, ["importe", "importe_cobrado", "total", "cantidad"])
+                cobro_hoja_col = "hoja_encargo_id" if "hoja_encargo_id" in cobros_columns else None
+                cobro_expediente_col = "expediente_id" if "expediente_id" in cobros_columns else None
+                cobro_activo_filter = "AND COALESCE(c.activo, 1) = 1" if "activo" in cobros_columns else ""
+
+                if cobro_importe_col and cobro_hoja_col and "id" in hojas_columns:
+                    rows = conn.execute(
+                        f"""
+                        SELECT
+                            h.{hoja_expediente_col} AS expediente_id,
+                            COALESCE(SUM(c.{cobro_importe_col}), 0) AS importe_cobros
+                        FROM eco_cobros c
+                        INNER JOIN eco_hojas_encargo h ON h.id = c.{cobro_hoja_col}
+                        WHERE h.{hoja_cliente_col} = ?
+                          {hoja_activo_filter}
+                          {cobro_activo_filter}
+                        GROUP BY h.{hoja_expediente_col}
+                        """,
+                        (int(cliente_id),),
+                    ).fetchall()
+                    cobros_por_exp = {row["expediente_id"]: float(row["importe_cobros"] or 0) for row in rows}
+                elif cobro_importe_col and cobro_expediente_col:
+                    rows = conn.execute(
+                        f"""
+                        SELECT
+                            c.{cobro_expediente_col} AS expediente_id,
+                            COALESCE(SUM(c.{cobro_importe_col}), 0) AS importe_cobros
+                        FROM eco_cobros c
+                        WHERE c.cliente_id = ?
+                          {cobro_activo_filter}
+                        GROUP BY c.{cobro_expediente_col}
+                        """,
+                        (int(cliente_id),),
+                    ).fetchall()
+                    cobros_por_exp = {row["expediente_id"]: float(row["importe_cobros"] or 0) for row in rows}
+
+            for row in hojas_por_exp:
+                importe_hoja = float(row["importe_hojas"] or 0)
+                importe_cobro = float(cobros_por_exp.get(row["expediente_id"], 0.0) or 0)
+                deuda_exp = max(importe_hoja - importe_cobro, 0.0)
+
+                tramites.append(
+                    {
+                        "expediente_id": row["expediente_id"],
+                        "numero_expediente": row["numero_expediente"],
+                        "tramite": row["tramite"],
+                        "importe_hojas": importe_hoja,
+                        "importe_cobros": importe_cobro,
+                        "deuda": deuda_exp,
+                    }
+                )
+
+        conn.close()
+
+        deuda_base["importe_hojas"] = float(importe_hojas or 0)
+        deuda_base["importe_cobros"] = float(importe_cobros or 0)
+        deuda_base["deuda_total"] = deuda_total
+        deuda_base["tramites"] = tramites
+
+        return deuda_base
+
+    except Exception:
+        return deuda_base
+
+
+def db_table_exists_global(conn, table_name):
+    try:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
 
 def clients_view(page: ft.Page):
     state = {
@@ -787,11 +1165,11 @@ def clients_view(page: ft.Page):
     )
     page.overlay.append(cliente_dialog)
 
-    def resolver_estado_cliente(cliente):
+    def get_expedientes_priorizados_cliente(cliente):
         cliente_id = cliente.get("id")
 
         if not cliente_id:
-            return cliente.get("estado_cliente") or "Asesoramiento inicial"
+            return []
 
         try:
             conn = sqlite3.connect(DB_PATH)
@@ -799,49 +1177,103 @@ def clients_view(page: ft.Page):
 
             if not db_table_exists(conn, "expedientes"):
                 conn.close()
-                return cliente.get("estado_cliente") or "Asesoramiento inicial"
+                return []
 
-            row = conn.execute(
-                '''
-                SELECT
-                    ea.nombre AS estado_administrativo
-                FROM expedientes e
-                LEFT JOIN config_estados_administrativos ea
-                    ON ea.id = e.estado_administrativo_id
-                WHERE e.cliente_id = ?
-                  AND COALESCE(e.activo, 1) = 1
-                ORDER BY
-                    COALESCE(e.updated_at, e.created_at) DESC,
-                    e.id DESC
-                LIMIT 1
-                ''',
-                (int(cliente_id),),
-            ).fetchone()
+            has_prioridades = db_table_exists(conn, "config_prioridades")
 
+            if has_prioridades:
+                sql = """
+                    SELECT
+                        e.id,
+                        e.numero_expediente,
+                        e.estado_presentacion,
+                        e.fecha_apertura,
+                        e.fecha_presentacion,
+                        e.created_at,
+                        e.updated_at,
+                        te.nombre AS tipo_expediente,
+                        ed.nombre AS estado_documental,
+                        ea.nombre AS estado_administrativo,
+                        cp.nombre AS prioridad,
+                        COALESCE(cp.orden, 999) AS prioridad_orden
+                    FROM expedientes e
+                    LEFT JOIN config_tipos_expediente te ON te.id = e.tipo_expediente_id
+                    LEFT JOIN config_estados_documentales ed ON ed.id = e.estado_documental_id
+                    LEFT JOIN config_estados_administrativos ea ON ea.id = e.estado_administrativo_id
+                    LEFT JOIN config_prioridades cp ON cp.id = e.prioridad_id
+                    WHERE e.cliente_id = ?
+                      AND COALESCE(e.activo, 1) = 1
+                    ORDER BY
+                        COALESCE(cp.orden, 999) ASC,
+                        COALESCE(e.updated_at, e.created_at) DESC,
+                        e.id DESC
+                """
+            else:
+                sql = """
+                    SELECT
+                        e.id,
+                        e.numero_expediente,
+                        e.estado_presentacion,
+                        e.fecha_apertura,
+                        e.fecha_presentacion,
+                        e.created_at,
+                        e.updated_at,
+                        te.nombre AS tipo_expediente,
+                        ed.nombre AS estado_documental,
+                        ea.nombre AS estado_administrativo,
+                        '' AS prioridad,
+                        999 AS prioridad_orden
+                    FROM expedientes e
+                    LEFT JOIN config_tipos_expediente te ON te.id = e.tipo_expediente_id
+                    LEFT JOIN config_estados_documentales ed ON ed.id = e.estado_documental_id
+                    LEFT JOIN config_estados_administrativos ea ON ea.id = e.estado_administrativo_id
+                    WHERE e.cliente_id = ?
+                      AND COALESCE(e.activo, 1) = 1
+                    ORDER BY
+                        COALESCE(e.updated_at, e.created_at) DESC,
+                        e.id DESC
+                """
+
+            rows = conn.execute(sql, (int(cliente_id),)).fetchall()
             conn.close()
 
-            if row and row["estado_administrativo"]:
-                return row["estado_administrativo"]
+            return [dict(row) for row in rows]
 
         except Exception:
-            pass
+            return []
 
-        return cliente.get("estado_cliente") or "Asesoramiento inicial"
+    def resolver_estado_cliente(cliente):
+        expedientes = cliente.get("_expedientes_cliente") or []
+
+        if not expedientes:
+            return cliente.get("estado_cliente") or "Asesoramiento inicial"
+
+        principal = expedientes[0]
+        estado = (
+            principal.get("estado_administrativo")
+            or principal.get("estado_presentacion")
+            or principal.get("estado_documental")
+        )
+
+        return estado or cliente.get("estado_cliente") or "Asesoramiento inicial"
 
     def cargar_clientes():
         clientes = get_all_clients()
 
         for cliente in clientes:
-            cliente["estado_cliente"] = resolver_estado_cliente(cliente)
+            cliente["_expedientes_cliente"] = get_expedientes_priorizados_cliente(cliente)
             try:
-                cliente["_deuda_cliente"] = get_deuda_cliente(cliente["id"])
+                deuda_base = get_deuda_cliente(cliente["id"])
             except Exception:
-                cliente["_deuda_cliente"] = {
+                deuda_base = {
                     "importe_hojas": 0.0,
                     "importe_cobros": 0.0,
                     "deuda_total": 0.0,
                     "tramites": [],
                 }
+
+            cliente["_deuda_cliente"] = recalcular_deuda_cliente_sobre_bruto(cliente["id"], deuda_base)
+            cliente["estado_cliente"] = resolver_estado_economico_cliente(cliente)
 
         state["clients"] = clientes
 
@@ -919,6 +1351,12 @@ def clients_view(page: ft.Page):
         if qf == "todos":
             return True
 
+        if qf == "morosos":
+            return (cliente.get("estado_cliente") or "").strip().upper() == "MOROSO"
+
+        if qf == "al_dia":
+            return (cliente.get("estado_cliente") or "").strip().upper() == "AL DÍA"
+
         if qf == "sin_documento":
             return not documento_cliente(cliente)
 
@@ -928,9 +1366,8 @@ def clients_view(page: ft.Page):
         if qf == "pagos_vencidos":
             return cliente_tiene_pagos_vencidos(cliente)
 
-        if qf.startswith("estado::"):
-            estado_filtro = qf.split("estado::", 1)[1].strip()
-            return estado.lower() == estado_filtro.lower()
+        if qf == "varios_tramites":
+            return cliente_tiene_varios_tramites_en_proceso(cliente)
 
         return True
 
@@ -1250,7 +1687,7 @@ def clients_view(page: ft.Page):
 
         ficha_pct = porcentaje_ficha(cliente)
         nombre = nombre_completo(cliente) or "Cliente sin nombre"
-        expedientes = get_context_expedientes(cliente)
+        expedientes = cliente.get("_expedientes_cliente") or get_context_expedientes(cliente)
         expediente_principal = expedientes[0] if expedientes else None
         economico = get_context_economico(cliente)
 
@@ -1405,9 +1842,7 @@ def clients_view(page: ft.Page):
     def refresh_quick_filters():
         quick_filters_container.controls.clear()
 
-        dynamic_filters = QUICK_FILTERS + get_estados_administrativos_disponibles()
-
-        for label, key in dynamic_filters:
+        for label, key in QUICK_FILTERS:
             quick_filters_container.controls.append(build_quick_filter_chip(label, key))
 
     def set_quick_filter(key):
@@ -1768,7 +2203,8 @@ def clients_view(page: ft.Page):
                             ft.Row(
                                 controls=[
                                     metric_card("Clientes activos", len(state["clients"])),
-                                    metric_card("Pendientes documentación", sum(1 for c in state["clients"] if c.get("estado_cliente") == "Pendiente de documentación")),
+                                    metric_card("Morosos", total_morosos(state["clients"])),
+                                    metric_card("Importe total a deber", money_display(importe_total_deuda(state["clients"]))),
                                     metric_card("Sin documento", sum(1 for c in state["clients"] if not documento_cliente(c))),
                                 ],
                                 spacing=12,
