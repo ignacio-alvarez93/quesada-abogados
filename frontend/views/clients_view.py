@@ -89,6 +89,14 @@ QUICK_FILTERS = [
     ("Archivados", "archivados"),
 ]
 
+BULK_ACTIONS = [
+    "Acciones en lote",
+    "Mandar email",
+    "Mandar WhatsApp",
+    "Exportar CSV",
+    "Exportar JSON",
+]
+
 
 CLIENT_TABLE_DEFAULT_COLUMNS = [
     {"campo": "nombre", "visible": 1, "orden": 1, "ancho": 360},
@@ -716,7 +724,7 @@ def clients_view(page: ft.Page):
             controls=[
                 client_context_panel(
                     cliente,
-                    on_view_detail=(lambda e, c=cliente: ver_ficha(c)) if cliente else None,
+                    on_view_detail=(lambda e: ver_ficha_contextual()) if cliente else None,
                     metrics=context_metrics(),
                 ),
                 ft.Row(
@@ -735,6 +743,23 @@ def clients_view(page: ft.Page):
             spacing=10,
         )
 
+    def ver_ficha_contextual(e=None):
+        clientes = selected_clients()
+        if not clientes:
+            return
+
+        cliente = context_client()
+        if cliente:
+            for index, selected_cliente in enumerate(clientes):
+                if selected_cliente.get("id") == cliente.get("id"):
+                    state["detail_index"] = index
+                    break
+        else:
+            state["detail_index"] = 0
+
+        content_area.content = build_selected_detail_view()
+        page.update()
+
     def selected_count_text():
         total = len(state["selected_client_ids"])
         if total == 0:
@@ -744,7 +769,37 @@ def clients_view(page: ft.Page):
         return f"{total} clientes seleccionados"
 
     selected_info = ft.Text(selected_count_text(), size=13, color="#64748B")
-    selection_bar = ft.Container(height=48, visible=True)
+    selection_bar = ft.Container(visible=True)
+    bulk_actions = select_input("Acciones en lote", BULK_ACTIONS, value="Acciones en lote", width=220)
+
+    def ejecutar_accion_lote(e=None):
+        accion = bulk_actions.value or "Acciones en lote"
+
+        if accion == "Acciones en lote":
+            return
+
+        total = len(state["selected_client_ids"])
+
+        if total == 0:
+            bulk_actions.value = "Acciones en lote"
+            page.snack_bar = ft.SnackBar(ft.Text("Selecciona al menos un cliente para aplicar acciones en lote"))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        mensajes = {
+            "Mandar email": f"Preparado para mandar email a {total} cliente(s)",
+            "Mandar WhatsApp": f"Preparado para mandar WhatsApp a {total} cliente(s)",
+            "Exportar CSV": f"Preparado para exportar CSV de {total} cliente(s)",
+            "Exportar JSON": f"Preparado para exportar JSON de {total} cliente(s)",
+        }
+
+        page.snack_bar = ft.SnackBar(ft.Text(mensajes.get(accion, accion)))
+        page.snack_bar.open = True
+        bulk_actions.value = "Acciones en lote"
+        page.update()
+
+    bulk_actions.on_change = ejecutar_accion_lote
 
     def build_quick_filter_chip(label, key):
         selected = state["quick_filter"] == key
@@ -776,15 +831,14 @@ def clients_view(page: ft.Page):
     def refresh_selection_bar():
         selected_info.value = selected_count_text()
         has_selection = len(state["selected_client_ids"]) > 0
-        ver_btn = primary_button("Ver ficha", ver_fichas_seleccionadas)
         editar_btn = secondary_button("Editar selección", open_bulk_dialog)
         archivar_btn = danger_button("Archivar selección", archivar_seleccionados)
-        ver_btn.disabled = not has_selection
+        bulk_actions.disabled = not has_selection
         editar_btn.disabled = not has_selection
         archivar_btn.disabled = not has_selection
         selection_bar.visible = True
         selection_bar.content = ft.Row(
-            controls=[selected_info, ver_btn, editar_btn, archivar_btn],
+            controls=[selected_info, bulk_actions, editar_btn, archivar_btn],
             spacing=12,
             wrap=True,
         )
@@ -1036,10 +1090,17 @@ def clients_view(page: ft.Page):
 
             rows.append(row_values)
 
-        return app_table(
-            headers=headers,
-            rows=rows,
-            height=430,
+        return ft.Column(
+            controls=[
+                selection_bar,
+                app_table(
+                    headers=headers,
+                    rows=rows,
+                    height=390,
+                ),
+            ],
+            spacing=4,
+            expand=True,
         )
 
     def build_client_detail(cliente):
@@ -1080,9 +1141,18 @@ def clients_view(page: ft.Page):
         pos = state["detail_index"] + 1
         return ft.Column(
             controls=[
-                action_row([secondary_button("Volver a clientes", lambda e: show_client_list()), secondary_button("Anterior", prev_selected_detail), primary_button("Siguiente", next_selected_detail), primary_button("Editar", lambda e, c=cliente: abrir_editar_cliente(c))]),
+                action_row([
+                    secondary_button("Volver a clientes", lambda e: show_client_list()),
+                    secondary_button("Anterior", prev_selected_detail),
+                    primary_button("Siguiente", next_selected_detail),
+                ]),
                 ft.Text(f"Ficha seleccionada {pos} de {total}", size=14, color="#64748B"),
-                build_client_detail(cliente),
+                client_detail_view(
+                    page,
+                    cliente,
+                    on_back=show_client_list,
+                    on_edit=lambda e, c=cliente: abrir_editar_cliente(c),
+                ),
             ],
             spacing=12,
             expand=True,
@@ -1122,10 +1192,9 @@ def clients_view(page: ft.Page):
                                 actions=[primary_button("Nuevo cliente", abrir_nuevo_cliente), secondary_button("Importar CSV", seleccionar_csv)],
                             ),
                             quick_filters_container,
-                            selection_bar,
                             table_container,
                         ],
-                        spacing=18,
+                        spacing=10,
                         expand=True,
                     ),
                     expand=True,
