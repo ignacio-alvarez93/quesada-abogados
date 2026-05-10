@@ -86,11 +86,9 @@ FICHA_FIELDS = [
 
 QUICK_FILTERS = [
     ("Todos", "todos"),
-    ("Pendientes", "pendientes"),
     ("Sin documento", "sin_documento"),
     ("Ficha incompleta", "ficha_incompleta"),
-    ("En tramitación", "en_tramitacion"),
-    ("Archivados", "archivados"),
+    ("Pagos vencidos", "pagos_vencidos"),
 ]
 
 BULK_ACTIONS = [
@@ -350,6 +348,40 @@ def ficha_badge(cliente):
         padding=ft.padding.symmetric(horizontal=10, vertical=5),
     )
 
+
+
+EXCLUDED_QUICK_FILTER_STATES = {
+    "EN PREPARACION",
+    "EN PREPARACIÓN",
+    "EN TRAMITE",
+    "EN TRÁMITE",
+    "FINALIZADO",
+}
+
+
+def normalize_filter_label(value):
+    return (value or "").strip().upper()
+
+
+def title_filter_label(value):
+    value = (value or "").strip()
+    if not value:
+        return ""
+    return value.title()
+
+
+def quick_filter_colors(key):
+    if key == "todos":
+        return "#0057B8", "#FFFFFF", "#0057B8"
+    if key == "sin_documento":
+        return "#FEF3F2", "#B42318", "#FDA29B"
+    if key == "ficha_incompleta":
+        return "#FFFAEB", "#B54708", "#FEDF89"
+    if key == "pagos_vencidos":
+        return "#FFF1F3", "#C01048", "#FECDD6"
+    if key.startswith("estado::"):
+        return "#F0F9FF", "#026AA2", "#B9E6FE"
+    return "#EAF3FF", "#0057B8", "#BFD7FF"
 
 def clients_view(page: ft.Page):
     state = {
@@ -691,21 +723,93 @@ def clients_view(page: ft.Page):
 
         state["clients"] = clientes
 
+
+    def get_estados_administrativos_disponibles():
+        estados = []
+
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+
+            if db_table_exists(conn, "config_estados_administrativos"):
+                rows = conn.execute(
+                    """
+                    SELECT nombre
+                    FROM config_estados_administrativos
+                    ORDER BY nombre
+                    """
+                ).fetchall()
+
+                estados = [
+                    (title_filter_label(row["nombre"]), f"estado::{row['nombre']}")
+                    for row in rows
+                    if row["nombre"]
+                    and normalize_filter_label(row["nombre"]) not in EXCLUDED_QUICK_FILTER_STATES
+                ]
+
+            conn.close()
+
+        except Exception:
+            pass
+
+        return estados
+
+    def cliente_tiene_pagos_vencidos(cliente):
+        cliente_id = cliente.get("id")
+
+        if not cliente_id:
+            return False
+
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+
+            if not db_table_exists(conn, "eco_cobros"):
+                conn.close()
+                return False
+
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM eco_cobros
+                WHERE cliente_id = ?
+                  AND COALESCE(activo, 1) = 1
+                  AND (
+                        LOWER(COALESCE(estado, '')) LIKE '%vencido%'
+                     OR LOWER(COALESCE(estado_cobro, '')) LIKE '%vencido%'
+                     OR LOWER(COALESCE(estado_conciliacion, '')) LIKE '%vencido%'
+                  )
+                """,
+                (int(cliente_id),),
+            ).fetchone()
+
+            conn.close()
+
+            return bool(row and int(row["total"] or 0) > 0)
+
+        except Exception:
+            return False
+
     def pasa_quick_filter(cliente):
         qf = state["quick_filter"]
-        estado = cliente.get("estado_cliente") or ""
+        estado = (cliente.get("estado_cliente") or "").strip()
+
         if qf == "todos":
             return True
-        if qf == "pendientes":
-            return estado == "Pendiente de documentación"
+
         if qf == "sin_documento":
             return not documento_cliente(cliente)
+
         if qf == "ficha_incompleta":
             return porcentaje_ficha(cliente) < 80
-        if qf == "en_tramitacion":
-            return estado == "En tramitación"
-        if qf == "archivados":
-            return estado == "Archivado"
+
+        if qf == "pagos_vencidos":
+            return cliente_tiene_pagos_vencidos(cliente)
+
+        if qf.startswith("estado::"):
+            estado_filtro = qf.split("estado::", 1)[1].strip()
+            return estado.lower() == estado_filtro.lower()
+
         return True
 
     def cliente_pasa_filtro(cliente):
@@ -1160,15 +1264,16 @@ def clients_view(page: ft.Page):
 
     def build_quick_filter_chip(label, key):
         selected = state["quick_filter"] == key
+        bg, fg, border_color = quick_filter_colors(key)
         return ft.Container(
             content=ft.Text(
-                label,
+                title_filter_label(label),
                 size=13,
                 weight=ft.FontWeight.W_600 if selected else ft.FontWeight.NORMAL,
-                color="#FFFFFF" if selected else "#0057B8",
+                color="#FFFFFF" if selected else fg,
             ),
-            bgcolor="#0057B8" if selected else "#EAF3FF",
-            border=ft.border.all(1, "#BFD7FF"),
+            bgcolor=fg if selected else bg,
+            border=ft.border.all(1, fg if selected else border_color),
             border_radius=20,
             padding=ft.padding.symmetric(horizontal=14, vertical=8),
             ink=True,
@@ -1177,7 +1282,10 @@ def clients_view(page: ft.Page):
 
     def refresh_quick_filters():
         quick_filters_container.controls.clear()
-        for label, key in QUICK_FILTERS:
+
+        dynamic_filters = QUICK_FILTERS + get_estados_administrativos_disponibles()
+
+        for label, key in dynamic_filters:
             quick_filters_container.controls.append(build_quick_filter_chip(label, key))
 
     def set_quick_filter(key):
