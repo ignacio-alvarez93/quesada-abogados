@@ -642,8 +642,54 @@ def clients_view(page: ft.Page):
     )
     page.overlay.append(cliente_dialog)
 
+    def resolver_estado_cliente(cliente):
+        cliente_id = cliente.get("id")
+
+        if not cliente_id:
+            return cliente.get("estado_cliente") or "Asesoramiento inicial"
+
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+
+            if not db_table_exists(conn, "expedientes"):
+                conn.close()
+                return cliente.get("estado_cliente") or "Asesoramiento inicial"
+
+            row = conn.execute(
+                '''
+                SELECT
+                    ea.nombre AS estado_administrativo
+                FROM expedientes e
+                LEFT JOIN config_estados_administrativos ea
+                    ON ea.id = e.estado_administrativo_id
+                WHERE e.cliente_id = ?
+                  AND COALESCE(e.activo, 1) = 1
+                ORDER BY
+                    COALESCE(e.updated_at, e.created_at) DESC,
+                    e.id DESC
+                LIMIT 1
+                ''',
+                (int(cliente_id),),
+            ).fetchone()
+
+            conn.close()
+
+            if row and row["estado_administrativo"]:
+                return row["estado_administrativo"]
+
+        except Exception:
+            pass
+
+        return cliente.get("estado_cliente") or "Asesoramiento inicial"
+
     def cargar_clientes():
-        state["clients"] = get_all_clients()
+        clientes = get_all_clients()
+
+        for cliente in clientes:
+            cliente["estado_cliente"] = resolver_estado_cliente(cliente)
+
+        state["clients"] = clientes
 
     def pasa_quick_filter(cliente):
         qf = state["quick_filter"]
