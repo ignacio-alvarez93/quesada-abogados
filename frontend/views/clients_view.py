@@ -109,7 +109,8 @@ CLIENT_TABLE_DEFAULT_COLUMNS = [
     {"campo": "telefono", "visible": 1, "orden": 5, "ancho": 140},
     {"campo": "estado_cliente", "visible": 1, "orden": 6, "ancho": 210},
     {"campo": "deuda_pendiente", "visible": 1, "orden": 7, "ancho": 170},
-    {"campo": "ficha", "visible": 1, "orden": 8, "ancho": 120},
+    {"campo": "deuda_tramites", "visible": 1, "orden": 8, "ancho": 260},
+    {"campo": "ficha", "visible": 1, "orden": 9, "ancho": 120},
 ]
 
 CLIENT_TABLE_LABELS = {
@@ -130,6 +131,7 @@ CLIENT_TABLE_LABELS = {
     "email": "Email",
     "estado_cliente": "Estado",
     "deuda_pendiente": "Deuda pendiente",
+    "deuda_tramites": "Deuda por trámite",
     "domicilio_espana": "Domicilio",
     "localidad": "Localidad",
     "provincia": "Provincia",
@@ -173,7 +175,9 @@ def client_table_columns():
                 key=lambda col: (int(col.get("orden") or 0), col.get("campo") or ""),
             )
             if not any(col.get("campo") == "deuda_pendiente" for col in ordered):
-                ordered.append({"campo": "deuda_pendiente", "visible": 1, "orden": 999, "ancho": 170})
+                ordered.append({"campo": "deuda_pendiente", "visible": 1, "orden": 998, "ancho": 170})
+            if not any(col.get("campo") == "deuda_tramites" for col in ordered):
+                ordered.append({"campo": "deuda_tramites", "visible": 1, "orden": 999, "ancho": 260})
             return ordered
     except Exception:
         pass
@@ -201,6 +205,9 @@ def client_table_value(cliente, field):
 
     if field == "deuda_pendiente":
         return deuda_badge(cliente)
+
+    if field == "deuda_tramites":
+        return deuda_tramites_cell(cliente)
 
     if field == "ficha":
         return ficha_badge(cliente)
@@ -412,17 +419,79 @@ def deuda_badge(cliente):
     else:
         color, bg, label = "#B42318", "#FEF3F2", money_display(total)
 
-    tooltip_lines = [f"Deuda total: {money_display(total)}"]
-    for item in tramites:
-        tramite = item.get("tramite") or "Sin trámite"
-        expediente = item.get("numero_expediente") or "Sin expediente"
-        deuda_tramite = money_display(item.get("deuda") or 0)
-        tooltip_lines.append(f"{expediente} · {tramite}: {deuda_tramite}")
+    tooltip_lines = deuda_tooltip_lines(total, tramites)
 
     return ft.Container(
         content=ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=color),
         bgcolor=bg,
         border_radius=20,
+        padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        tooltip="\n".join(tooltip_lines),
+    )
+
+
+def deuda_tooltip_lines(total, tramites):
+    tooltip_lines = [f"Deuda total: {money_display(total)}"]
+
+    for item in tramites:
+        deuda_item = float(item.get("deuda") or 0)
+        if deuda_item <= 0:
+            continue
+
+        tramite = item.get("tramite") or "Sin trámite"
+        expediente = item.get("numero_expediente") or "Sin expediente"
+        tooltip_lines.append(f"{expediente} · {tramite}: {money_display(deuda_item)}")
+
+    return tooltip_lines
+
+
+def compact_tramite_name(value):
+    value = (value or "Sin trámite").strip()
+    if len(value) <= 24:
+        return value.title()
+    return value[:21].title() + "..."
+
+
+def deuda_tramites_cell(cliente):
+    deuda = cliente.get("_deuda_cliente") or {}
+    tramites = deuda.get("tramites") or []
+
+    pendientes = [
+        item for item in tramites
+        if float(item.get("deuda") or 0) > 0
+    ]
+
+    if not pendientes:
+        return ft.Container(
+            content=ft.Text("Sin deuda por trámite", size=12, color="#027A48"),
+            bgcolor="#ECFDF3",
+            border_radius=14,
+            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        )
+
+    visibles = pendientes[:2]
+    resumen = " · ".join(
+        f"{compact_tramite_name(item.get('tramite'))}: {money_display(item.get('deuda'))}"
+        for item in visibles
+    )
+
+    restantes = len(pendientes) - len(visibles)
+    if restantes > 0:
+        resumen += f" · +{restantes}"
+
+    total = float(deuda.get("deuda_total") or 0)
+    tooltip_lines = deuda_tooltip_lines(total, pendientes)
+
+    return ft.Container(
+        content=ft.Text(
+            resumen,
+            size=12,
+            color="#101828",
+            no_wrap=True,
+        ),
+        bgcolor="#F8FAFC",
+        border=ft.border.all(1, "#E4E7EC"),
+        border_radius=14,
         padding=ft.padding.symmetric(horizontal=10, vertical=5),
         tooltip="\n".join(tooltip_lines),
     )
