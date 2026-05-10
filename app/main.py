@@ -14,15 +14,29 @@ from frontend.layouts.sidebar import sidebar_menu
 
 
 def main(page: ft.Page):
-    initialize_database()
-
     page.title = "Quesada Abogados ERP"
+
+    initialize_database()
 
     page.window.width = 1650
     page.window.height = 920
-    page.window.min_width = 1500
-    page.window.min_height = 850
+    page.window.min_width = 1200
+    page.window.min_height = 750
+    page.window.full_screen = False
+    page.window.maximized = True
     page.window.resizable = True
+    page.window.minimizable = True
+    page.window.maximizable = True
+
+    try:
+        page.window_maximized = True
+    except Exception:
+        pass
+
+    try:
+        page.window_full_screen = False
+    except Exception:
+        pass
 
     current_user = {"value": None}
     main_container = ft.Container(expand=True)
@@ -69,6 +83,18 @@ def main(page: ft.Page):
 
     page.add(main_container)
     start()
+
+    try:
+        page.window.maximized = True
+    except Exception:
+        pass
+
+    try:
+        page.window_maximized = True
+    except Exception:
+        pass
+
+    page.update()
 
 
 ft.run(main)
