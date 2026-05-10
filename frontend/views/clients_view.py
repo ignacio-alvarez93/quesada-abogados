@@ -1,6 +1,8 @@
 import re
+import sqlite3
 import flet as ft
 from datetime import date, datetime
+from pathlib import Path
 
 from backend.services.client_service import (
     create_client,
@@ -45,6 +47,8 @@ from frontend.components import (
     status_badge,
 )
 
+
+DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
 FILTER_COLUMNS = ["Nombre", "NIE / Pasaporte", "Nacionalidad", "Telefono", "Estado"]
 
@@ -369,7 +373,11 @@ def clients_view(page: ft.Page):
     content_area = ft.Container(expand=True)
     table_container = ft.Container(expand=True)
     quick_filters_container = ft.Row(spacing=8, wrap=True)
-    context_panel_container = ft.Container(width=360)
+    context_panel_container = ft.Container(
+        width=360,
+        padding=ft.padding.only(top=0),
+        margin=ft.margin.only(top=0),
+    )
 
     filter_column = select_input("Filtrar por", FILTER_COLUMNS, value="Nombre", width=220)
     search_input = text_input("Buscar cliente", width=320)
@@ -717,15 +725,312 @@ def clients_view(page: ft.Page):
         refresh_context_panel()
         page.update()
 
-    def refresh_context_panel():
-        cliente = context_client()
-        clientes = context_selected_clients()
-        context_panel_container.content = ft.Column(
+    def db_table_exists(conn, table_name):
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    def get_context_expedientes(cliente):
+        cliente_id = cliente.get("id")
+        if not cliente_id:
+            return []
+
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+
+            if not db_table_exists(conn, "expedientes"):
+                conn.close()
+                return []
+
+            rows = conn.execute(
+                '''
+                SELECT
+                    e.numero_expediente,
+                    e.estado_presentacion,
+                    e.fecha_apertura,
+                    e.fecha_presentacion,
+                    te.nombre AS tipo_expediente,
+                    ed.nombre AS estado_documental,
+                    ea.nombre AS estado_administrativo
+                FROM expedientes e
+                LEFT JOIN config_tipos_expediente te ON te.id = e.tipo_expediente_id
+                LEFT JOIN config_estados_documentales ed ON ed.id = e.estado_documental_id
+                LEFT JOIN config_estados_administrativos ea ON ea.id = e.estado_administrativo_id
+                WHERE e.cliente_id = ? AND COALESCE(e.activo, 1) = 1
+                ORDER BY e.created_at DESC, e.id DESC
+                ''',
+                (int(cliente_id),),
+            ).fetchall()
+            conn.close()
+            return [dict(row) for row in rows]
+        except Exception:
+            return []
+
+    def get_context_economico(cliente):
+        cliente_id = cliente.get("id")
+        resumen = {
+            "cobros": 0,
+            "total_cobrado": 0.0,
+            "hojas": 0,
+            "facturas": 0,
+            "pendientes_conciliar": 0,
+        }
+
+        if not cliente_id:
+            return resumen
+
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+
+            if db_table_exists(conn, "eco_cobros"):
+                row = conn.execute(
+                    '''
+                    SELECT
+                        COUNT(*) AS total_cobros,
+                        COALESCE(SUM(importe), 0) AS total_importe,
+                        SUM(CASE WHEN COALESCE(estado_conciliacion, '') != 'CONCILIADO' THEN 1 ELSE 0 END) AS pendientes
+                    FROM eco_cobros
+                    WHERE cliente_id = ? AND COALESCE(activo, 1) = 1
+                    ''',
+                    (int(cliente_id),),
+                ).fetchone()
+                if row:
+                    resumen["cobros"] = int(row["total_cobros"] or 0)
+                    resumen["total_cobrado"] = float(row["total_importe"] or 0)
+                    resumen["pendientes_conciliar"] = int(row["pendientes"] or 0)
+
+            if db_table_exists(conn, "eco_hojas_encargo"):
+                row = conn.execute(
+                    "SELECT COUNT(*) AS total FROM eco_hojas_encargo WHERE cliente_id = ? AND COALESCE(activo, 1) = 1",
+                    (int(cliente_id),),
+                ).fetchone()
+                resumen["hojas"] = int(row["total"] or 0) if row else 0
+
+            if db_table_exists(conn, "eco_facturas"):
+                row = conn.execute(
+                    "SELECT COUNT(*) AS total FROM eco_facturas WHERE cliente_id = ? AND COALESCE(activo, 1) = 1",
+                    (int(cliente_id),),
+                ).fetchone()
+                resumen["facturas"] = int(row["total"] or 0) if row else 0
+
+            conn.close()
+        except Exception:
+            pass
+
+        return resumen
+
+    def money_context(value):
+        try:
+            return f"{float(value or 0):.2f} €"
+        except Exception:
+            return "0.00 €"
+
+    def context_card(title, controls):
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Text(title, size=14, weight=ft.FontWeight.BOLD, color="#003B7A"),
+                    *controls,
+                ],
+                spacing=8,
+            ),
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, "#E4E7EC"),
+            border_radius=14,
+            padding=12,
+        )
+
+    def context_line(label, value):
+        return ft.Row(
             controls=[
-                client_context_panel(
-                    cliente,
-                    on_view_detail=(lambda e: ver_ficha_contextual()) if cliente else None,
-                    metrics=context_metrics(),
+                ft.Text(label, size=12, color="#64748B", expand=True),
+                ft.Text(str(value or "-"), size=12, color="#101828", weight=ft.FontWeight.W_600),
+            ],
+            spacing=8,
+        )
+
+    def build_context_alerts(cliente, expedientes=None, economico=None):
+        expedientes = expedientes or []
+        economico = economico or {}
+        alerts = []
+
+        if not documento_cliente(cliente):
+            alerts.append("Sin NIE/Pasaporte/DNI")
+        if not cliente.get("telefono"):
+            alerts.append("Sin teléfono")
+        if not cliente.get("email"):
+            alerts.append("Sin email")
+        if porcentaje_ficha(cliente) < 80:
+            alerts.append("Ficha incompleta")
+        if not expedientes:
+            alerts.append("Sin expediente activo")
+        if economico.get("pendientes_conciliar", 0) > 0:
+            alerts.append(f"{economico.get('pendientes_conciliar')} cobro(s) sin conciliar")
+
+        if not alerts:
+            alerts.append("Sin alertas críticas")
+
+        return [
+            ft.Text(
+                alert,
+                size=12,
+                color="#B42318" if alert != "Sin alertas críticas" else "#027A48",
+                weight=ft.FontWeight.W_600,
+            )
+            for alert in alerts[:5]
+        ]
+
+    def client_initials(cliente):
+        nombre = (cliente.get("nombre") or "").strip()
+        primer_apellido = (cliente.get("primer_apellido") or "").strip()
+        segundo_apellido = (cliente.get("segundo_apellido") or "").strip()
+
+        parts = [part for part in [nombre, primer_apellido, segundo_apellido] if part]
+        initials = "".join(part[0] for part in parts[:2]).upper()
+
+        return initials or "CL"
+
+    def build_empty_context_panel():
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.PERSON_SEARCH, size=42, color="#0057B8"),
+                        bgcolor="#EAF3FF",
+                        border_radius=50,
+                        width=82,
+                        height=82,
+                        alignment=ft.alignment.Alignment(0, 0),
+                    ),
+                    ft.Text(
+                        "Sin cliente seleccionado",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color="#003B7A",
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                    ft.Text(
+                        "Selecciona uno o varios clientes en la tabla para ver aquí su resumen operativo.",
+                        size=13,
+                        color="#64748B",
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                ],
+                spacing=12,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            width=360,
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, "#E4E7EC"),
+            border_radius=16,
+            padding=18,
+            margin=ft.margin.only(top=0),
+        )
+
+    def context_header_card(cliente, nombre, ficha_pct):
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Text(
+                            client_initials(cliente),
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color="#FFFFFF",
+                        ),
+                        width=52,
+                        height=52,
+                        border_radius=26,
+                        bgcolor="#0057B8",
+                        alignment=ft.alignment.Alignment(0, 0),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(nombre, size=15, weight=ft.FontWeight.BOLD, color="#101828"),
+                            ft.Text(
+                                f"Ficha completa: {ficha_pct}%",
+                                size=12,
+                                color="#64748B",
+                            ),
+                            status_badge(cliente.get("estado_cliente") or "-"),
+                        ],
+                        spacing=5,
+                        expand=True,
+                    ),
+                ],
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, "#E4E7EC"),
+            border_radius=16,
+            padding=14,
+            margin=ft.margin.only(top=0),
+        )
+
+    def build_context_panel(cliente, clientes):
+        if not cliente:
+            return build_empty_context_panel()
+
+        ficha_pct = porcentaje_ficha(cliente)
+        nombre = nombre_completo(cliente) or "Cliente sin nombre"
+        expedientes = get_context_expedientes(cliente)
+        expediente_principal = expedientes[0] if expedientes else None
+        economico = get_context_economico(cliente)
+
+        expediente_estado = "-"
+        expediente_tipo = "-"
+        expediente_numero = "-"
+
+        if expediente_principal:
+            expediente_estado = (
+                expediente_principal.get("estado_administrativo")
+                or expediente_principal.get("estado_presentacion")
+                or expediente_principal.get("estado_documental")
+                or "-"
+            )
+            expediente_tipo = expediente_principal.get("tipo_expediente") or "-"
+            expediente_numero = expediente_principal.get("numero_expediente") or "-"
+
+        return ft.Column(
+            controls=[
+                context_header_card(cliente, nombre, ficha_pct),
+                context_card(
+                    "Resumen ficha",
+                    [
+                        context_line("Documento", documento_cliente(cliente)),
+                        context_line("Teléfono", cliente.get("telefono")),
+                        context_line("Email", cliente.get("email")),
+                        context_line("Ficha", f"{ficha_pct}%"),
+                        primary_button("Ver ficha", ver_ficha_contextual),
+                    ],
+                ),
+                context_card(
+                    "Resumen expedientes",
+                    [
+                        context_line("Activos", len(expedientes)),
+                        context_line("Expediente", expediente_numero),
+                        context_line("Tipo", expediente_tipo),
+                        context_line("Estado", expediente_estado),
+                    ],
+                ),
+                context_card(
+                    "Resumen económico",
+                    [
+                        context_line("Cobros", economico.get("cobros")),
+                        context_line("Total cobrado", money_context(economico.get("total_cobrado"))),
+                        context_line("Hojas encargo", economico.get("hojas")),
+                        context_line("Facturas", economico.get("facturas")),
+                        context_line("Sin conciliar", economico.get("pendientes_conciliar")),
+                    ],
+                ),
+                context_card(
+                    "Alertas",
+                    build_context_alerts(cliente, expedientes, economico),
                 ),
                 ft.Row(
                     controls=[secondary_button("Anterior", prev_context_client), primary_button("Siguiente", next_context_client)],
@@ -741,7 +1046,13 @@ def clients_view(page: ft.Page):
                 ),
             ],
             spacing=10,
+            scroll=ft.ScrollMode.AUTO,
         )
+
+    def refresh_context_panel():
+        cliente = context_client()
+        clientes = context_selected_clients()
+        context_panel_container.content = build_context_panel(cliente, clientes)
 
     def ver_ficha_contextual(e=None):
         clientes = selected_clients()
