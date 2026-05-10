@@ -139,12 +139,10 @@ def app_table(headers, rows, height=430):
         width=table_width,
     )
 
-    body = ft.ListView(
+    body = ft.Column(
         controls=table_rows,
         spacing=0,
-        padding=0,
-        auto_scroll=False,
-        expand=True,
+        scroll=ft.ScrollMode.AUTO,
     )
 
     table_content = ft.Container(
@@ -157,6 +155,7 @@ def app_table(headers, rows, height=430):
                     content=body,
                     height=height - header_height,
                     width=table_width,
+                    clip_behavior=ft.ClipBehavior.HARD_EDGE,
                 ),
             ],
             spacing=0,
@@ -167,9 +166,12 @@ def app_table(headers, rows, height=430):
         content=ft.Row(
             controls=[table_content],
             scroll=ft.ScrollMode.AUTO,
-            expand=True,
+            expand=False,
+            spacing=0,
+            vertical_alignment=ft.CrossAxisAlignment.START,
         ),
-        expand=True,
+        expand=False,
+        height=height,
         bgcolor="#FFFFFF",
         border=ft.border.all(1, Q_BORDER),
         border_radius=12,
