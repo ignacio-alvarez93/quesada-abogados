@@ -1259,6 +1259,9 @@ def expedients_view(page: ft.Page):
         if section == "diagnostico":
             return build_diagnostic_content(expediente_id)
 
+        if section == "trazabilidad":
+            return build_traceability_content(expediente_id)
+
         if section == "justificantes":
             return build_justificantes_content(expediente_id)
 
@@ -1278,8 +1281,8 @@ def expedients_view(page: ft.Page):
         Ficha de expediente con menú interno.
 
         Evita un diálogo largo con scroll vertical general.
-        El usuario navega por zonas: Ficha, Diagnóstico, Justificantes,
-        Hojas de encargo, Consultas aplicadas e Historial.
+        El usuario navega por zonas: Ficha, Documentación, Diagnóstico,
+        Trazabilidad, Justificantes, Hojas de encargo, Consultas aplicadas e Historial.
         """
         state["dialog_expediente_id"] = expediente_id
 
@@ -1290,6 +1293,7 @@ def expedients_view(page: ft.Page):
             ("Ficha", "ficha"),
             ("Documentación", "documentacion"),
             ("Diagnóstico", "diagnostico"),
+            ("Trazabilidad", "trazabilidad"),
             ("Justificantes", "justificantes"),
             ("Hojas de encargo", "hojas"),
             ("Consultas aplicadas", "consultas"),
