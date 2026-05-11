@@ -307,6 +307,8 @@ def expedients_view(page: ft.Page):
         tipo_expediente.set_value(selected_tipo_value, update=False)
 
         refresh_subtipo_options_for_tipo(tipo_value=selected_tipo_value, reset_value=True)
+        if state.get("dialog_section") == "datos_especificos":
+            expediente_dialog.content = build_expediente_dialog_content(state.get("dialog_expediente_id"))
         page.update()
 
     tipo_expediente.on_select = on_tipo_expediente_change
@@ -721,6 +723,126 @@ def expedients_view(page: ft.Page):
             )
         )
         return _section_box("DOCUMENTACIÓN MERCURIO", controls)
+
+    def _selected_option_label(value):
+        value = str(value or "").strip()
+        if " - " in value:
+            return value.split(" - ", 1)[1].strip()
+        return value or "-"
+
+    def _selected_subtipo_label():
+        value = str(subtipo_expediente.get_value() or "").strip()
+        if not value or value == "Sin subtipo":
+            manual = str(subtipo_expediente_manual.value or "").strip()
+            return manual or "Sin subtipo"
+        parts = value.split(" - ", 2)
+        return parts[-1].strip() if parts else value
+
+    def build_specific_data_content(expediente_id):
+        tipo_label = _selected_option_label(tipo_expediente.get_value())
+        subtipo_label = _selected_subtipo_label()
+
+        return ft.Container(
+            width=920,
+            height=620,
+            bgcolor="#FFFFFF",
+            content=ft.Column(
+                scroll=ft.ScrollMode.AUTO,
+                spacing=14,
+                controls=[
+                    ft.Text(
+                        "Datos específicos del expediente",
+                        size=20,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Zona preparada para futuros formularios específicos por tipo y subtipo.",
+                        size=13,
+                        color=Q_MUTED,
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=14,
+                        content=ft.Column(
+                            spacing=10,
+                            controls=[
+                                ft.Text(
+                                    "Clasificación actual",
+                                    size=16,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Row(
+                                    spacing=14,
+                                    wrap=True,
+                                    controls=[
+                                        ft.Container(
+                                            width=390,
+                                            bgcolor="#FFFFFF",
+                                            border=ft.border.all(1, Q_BORDER),
+                                            border_radius=10,
+                                            padding=12,
+                                            content=ft.Column(
+                                                spacing=4,
+                                                controls=[
+                                                    ft.Text("Tipo expediente", size=12, color=Q_MUTED),
+                                                    ft.Text(tipo_label, size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                                ],
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            width=390,
+                                            bgcolor="#FFFFFF",
+                                            border=ft.border.all(1, Q_BORDER),
+                                            border_radius=10,
+                                            padding=12,
+                                            content=ft.Column(
+                                                spacing=4,
+                                                controls=[
+                                                    ft.Text("Subtipo expediente", size=12, color=Q_MUTED),
+                                                    ft.Text(subtipo_label, size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                                ],
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ),
+                    ft.Container(
+                        bgcolor="#EAF3FF",
+                        border=ft.border.all(1, "#B9D7FF"),
+                        border_radius=12,
+                        padding=14,
+                        content=ft.Column(
+                            spacing=8,
+                            controls=[
+                                ft.Text(
+                                    "Formulario específico pendiente de configuración",
+                                    size=16,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    "Cuando Configuración defina campos para este tipo/subtipo, aquí aparecerá la ficha específica del trámite.",
+                                    size=13,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    f"Clave funcional: {tipo_label} / {subtipo_label}",
+                                    size=13,
+                                    color=Q_PRIMARY,
+                                    selectable=True,
+                                ),
+                            ],
+                        ),
+                    ),
+                ],
+            ),
+        )
 
     def build_edit_content():
         return ft.Column(
@@ -1259,20 +1381,11 @@ def expedients_view(page: ft.Page):
         if section == "diagnostico":
             return build_diagnostic_content(expediente_id)
 
+        if section == "datos_especificos":
+            return build_specific_data_content(expediente_id)
+
         if section == "trazabilidad":
             return build_traceability_content(expediente_id)
-
-        if section == "justificantes":
-            return build_justificantes_content(expediente_id)
-
-        if section == "hojas":
-            return build_hojas_content(expediente_id)
-
-        if section == "consultas":
-            return build_consultas_content(expediente_id)
-
-        if section == "historial":
-            return build_historial_content(expediente_id)
 
         return build_edit_content()
 
@@ -1282,7 +1395,7 @@ def expedients_view(page: ft.Page):
 
         Evita un diálogo largo con scroll vertical general.
         El usuario navega por zonas: Ficha, Documentación, Diagnóstico,
-        Trazabilidad, Justificantes, Hojas de encargo, Consultas aplicadas e Historial.
+        Datos específicos y Trazabilidad.
         """
         state["dialog_expediente_id"] = expediente_id
 
@@ -1293,11 +1406,8 @@ def expedients_view(page: ft.Page):
             ("Ficha", "ficha"),
             ("Documentación", "documentacion"),
             ("Diagnóstico", "diagnostico"),
+            ("Datos específicos", "datos_especificos"),
             ("Trazabilidad", "trazabilidad"),
-            ("Justificantes", "justificantes"),
-            ("Hojas de encargo", "hojas"),
-            ("Consultas aplicadas", "consultas"),
-            ("Historial", "historial"),
         ]
 
         return ft.Container(
