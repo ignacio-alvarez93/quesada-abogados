@@ -7,6 +7,7 @@ from backend.services import expedient_service
 from backend.services import expedient_document_state_service as document_state_service
 from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
+from backend.services import expedient_dynamic_form_service as dynamic_form_service
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
@@ -146,6 +147,7 @@ def _mercurio_file_order_label(item):
 def expedients_view(page: ft.Page):
     expedient_service.initialize_expedients_schema()
     trace_service.initialize_traceability_schema()
+    dynamic_form_service.initialize_dynamic_forms_schema()
 
     state = {
         "expedientes": [],
@@ -162,6 +164,8 @@ def expedients_view(page: ft.Page):
         "document_browser_path": {},
         "para_presentar_documents": {},
         "para_presentar_documents_error": {},
+        "specific_field_controls": {},
+        "specific_formulario_id": None,
     }
 
     content_area = ft.Container(expand=True)
@@ -724,6 +728,12 @@ def expedients_view(page: ft.Page):
         )
         return _section_box("DOCUMENTACIÓN MERCURIO", controls)
 
+    def _selected_tipo_id():
+        return _option_id(tipo_expediente.get_value())
+
+    def _selected_subtipo_id():
+        return _option_id_from_autocomplete_value(subtipo_expediente.get_value(), subtipo_expediente.options)
+
     def _selected_option_label(value):
         value = str(value or "").strip()
         if " - " in value:
@@ -738,109 +748,142 @@ def expedients_view(page: ft.Page):
         parts = value.split(" - ", 2)
         return parts[-1].strip() if parts else value
 
+    def _build_dynamic_field_control(campo, saved_values):
+        codigo = campo.get("codigo")
+        label = campo.get("etiqueta") or codigo
+        value = saved_values.get(codigo, campo.get("valor_defecto") or "")
+        tipo = (campo.get("tipo_campo") or "texto").lower()
+        placeholder = campo.get("placeholder") or ""
+        ayuda = campo.get("ayuda") or ""
+        required_suffix = " *" if int(campo.get("obligatorio") or 0) else ""
+
+        if tipo == "textarea":
+            control = multiline_input(label + required_suffix, value, width=760, height=90)
+        elif tipo == "select":
+            options = dynamic_form_service.parse_field_options(campo.get("opciones_json"))
+            control = select_input(label + required_suffix, options or [""], value=value if value in options else (options[0] if options else ""), width=360)
+        elif tipo == "boolean":
+            control = select_input(label + required_suffix, ["Sí", "No"], value=value if value in ["Sí", "No"] else "No", width=180)
+        else:
+            width = 220 if tipo in ("numero", "fecha") else 360
+            control = text_input(label + required_suffix, value, width=width)
+            if placeholder:
+                control.hint_text = placeholder
+
+        state.setdefault("specific_field_controls", {})[codigo] = control
+
+        if ayuda:
+            return ft.Column(
+                controls=[control, ft.Text(ayuda, size=11, color=Q_MUTED)],
+                spacing=3,
+            )
+
+        return control
+
+    def save_specific_data(e=None):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        formulario_id = state.get("specific_formulario_id")
+        if not expediente_id:
+            show_form_error("Guarda primero el expediente antes de guardar datos específicos")
+            return
+        if not formulario_id:
+            show_form_error("No hay formulario específico configurado para este expediente")
+            return
+
+        values = {
+            codigo: control.value
+            for codigo, control in state.get("specific_field_controls", {}).items()
+        }
+
+        try:
+            dynamic_form_service.save_datos_especificos(expediente_id, formulario_id, values)
+            clear_form_message()
+            set_message(success_alert("Datos específicos guardados"))
+            page.update()
+        except Exception as exc:
+            show_form_error(str(exc))
+
     def build_specific_data_content(expediente_id):
+        tipo_id = _selected_tipo_id()
+        subtipo_id = _selected_subtipo_id()
         tipo_label = _selected_option_label(tipo_expediente.get_value())
         subtipo_label = _selected_subtipo_label()
+
+        context = dynamic_form_service.get_formulario_for_context(tipo_id, subtipo_id)
+        formulario = context.get("formulario")
+        campos = context.get("campos") or []
+        saved_values = dynamic_form_service.load_datos_especificos(expediente_id) if expediente_id else {}
+
+        state["specific_field_controls"] = {}
+        state["specific_formulario_id"] = formulario.get("id") if formulario else None
+
+        controls = [
+            ft.Text("Datos específicos del expediente", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+            ft.Text(f"Tipo/Subtipo: {tipo_label} / {subtipo_label}", size=13, color=Q_MUTED),
+        ]
+
+        if not formulario:
+            controls.append(
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=14,
+                    content=ft.Column(
+                        spacing=8,
+                        controls=[
+                            ft.Text("Sin formulario específico configurado", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text("Crea un formulario dinámico en Configuración para este tipo/subtipo.", size=13, color=Q_MUTED),
+                            ft.Text(f"Clave funcional: {tipo_label} / {subtipo_label}", size=13, color=Q_PRIMARY, selectable=True),
+                        ],
+                    ),
+                )
+            )
+        else:
+            controls.extend(
+                [
+                    ft.Container(
+                        bgcolor="#EAF3FF",
+                        border=ft.border.all(1, "#B9D7FF"),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            spacing=4,
+                            controls=[
+                                ft.Text(formulario.get("nombre") or "Formulario específico", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(formulario.get("descripcion") or "Campos dinámicos configurados para este trámite.", size=12, color=Q_MUTED),
+                            ],
+                        ),
+                    ),
+                ]
+            )
+
+            if campos:
+                field_controls = [_build_dynamic_field_control(campo, saved_values) for campo in campos]
+                controls.append(
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=14,
+                        content=ft.Column(
+                            controls=field_controls,
+                            spacing=12,
+                        ),
+                    )
+                )
+                controls.append(primary_button("Guardar datos específicos", save_specific_data))
+            else:
+                controls.append(empty_state("El formulario existe, pero todavía no tiene campos configurados"))
 
         return ft.Container(
             width=920,
             height=620,
             bgcolor="#FFFFFF",
             content=ft.Column(
-                scroll=ft.ScrollMode.AUTO,
+                controls=controls,
                 spacing=14,
-                controls=[
-                    ft.Text(
-                        "Datos específicos del expediente",
-                        size=20,
-                        weight=ft.FontWeight.BOLD,
-                        color=Q_PRIMARY_DARK,
-                    ),
-                    ft.Text(
-                        "Zona preparada para futuros formularios específicos por tipo y subtipo.",
-                        size=13,
-                        color=Q_MUTED,
-                    ),
-                    ft.Container(
-                        bgcolor="#F8FAFC",
-                        border=ft.border.all(1, Q_BORDER),
-                        border_radius=12,
-                        padding=14,
-                        content=ft.Column(
-                            spacing=10,
-                            controls=[
-                                ft.Text(
-                                    "Clasificación actual",
-                                    size=16,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=Q_PRIMARY_DARK,
-                                ),
-                                ft.Row(
-                                    spacing=14,
-                                    wrap=True,
-                                    controls=[
-                                        ft.Container(
-                                            width=390,
-                                            bgcolor="#FFFFFF",
-                                            border=ft.border.all(1, Q_BORDER),
-                                            border_radius=10,
-                                            padding=12,
-                                            content=ft.Column(
-                                                spacing=4,
-                                                controls=[
-                                                    ft.Text("Tipo expediente", size=12, color=Q_MUTED),
-                                                    ft.Text(tipo_label, size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                                ],
-                                            ),
-                                        ),
-                                        ft.Container(
-                                            width=390,
-                                            bgcolor="#FFFFFF",
-                                            border=ft.border.all(1, Q_BORDER),
-                                            border_radius=10,
-                                            padding=12,
-                                            content=ft.Column(
-                                                spacing=4,
-                                                controls=[
-                                                    ft.Text("Subtipo expediente", size=12, color=Q_MUTED),
-                                                    ft.Text(subtipo_label, size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                                ],
-                                            ),
-                                        ),
-                                    ],
-                                ),
-                            ],
-                        ),
-                    ),
-                    ft.Container(
-                        bgcolor="#EAF3FF",
-                        border=ft.border.all(1, "#B9D7FF"),
-                        border_radius=12,
-                        padding=14,
-                        content=ft.Column(
-                            spacing=8,
-                            controls=[
-                                ft.Text(
-                                    "Formulario específico pendiente de configuración",
-                                    size=16,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=Q_PRIMARY_DARK,
-                                ),
-                                ft.Text(
-                                    "Cuando Configuración defina campos para este tipo/subtipo, aquí aparecerá la ficha específica del trámite.",
-                                    size=13,
-                                    color=Q_MUTED,
-                                ),
-                                ft.Text(
-                                    f"Clave funcional: {tipo_label} / {subtipo_label}",
-                                    size=13,
-                                    color=Q_PRIMARY,
-                                    selectable=True,
-                                ),
-                            ],
-                        ),
-                    ),
-                ],
+                scroll=ft.ScrollMode.AUTO,
             ),
         )
 

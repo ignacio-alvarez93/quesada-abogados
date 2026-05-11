@@ -131,6 +131,15 @@ def _column_exists(conn, table_name, column_name):
         return False
 
 
+def _initialize_dynamic_forms_runtime_schema():
+    schema_path = Path(__file__).resolve().parents[2] / "database" / "expedient_dynamic_forms_schema.sql"
+    if not schema_path.exists():
+        return
+    with _connect() as conn:
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+        conn.commit()
+
+
 def ensure_config_runtime_schema():
     """
     Migración defensiva de configuración.
@@ -138,6 +147,8 @@ def ensure_config_runtime_schema():
     Añade soporte para subtipos de expediente sin depender todavía
     de modificar manualmente config_schema.sql.
     """
+    _initialize_dynamic_forms_runtime_schema()
+
     with _connect() as conn:
         conn.execute(
             """

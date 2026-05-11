@@ -1,6 +1,7 @@
 import flet as ft
 
 from backend.services import config_service
+from backend.services import expedient_dynamic_form_service as dynamic_form_service
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -50,6 +51,9 @@ def settings_view(page: ft.Page):
         "section": "tipos",
         "editing_id": None,
         "editing_subtipo_id": None,
+        "editing_formulario_id": None,
+        "editing_campo_id": None,
+        "selected_formulario_id": None,
         "message": None,
     }
 
@@ -57,6 +61,7 @@ def settings_view(page: ft.Page):
 
     try:
         config_service.initialize_config_schema()
+        dynamic_form_service.initialize_dynamic_forms_schema()
     except Exception as exc:
         content_area.content = error_alert(f"No se pudo inicializar configuración: {exc}")
 
@@ -74,6 +79,9 @@ def settings_view(page: ft.Page):
         state["section"] = section
         state["editing_id"] = None
         state["editing_subtipo_id"] = None
+        state["editing_formulario_id"] = None
+        state["editing_campo_id"] = None
+        state["selected_formulario_id"] = None
         state["message"] = None
         refresh()
 
@@ -98,7 +106,7 @@ def settings_view(page: ft.Page):
                 ft.Container(
                     expand=True,
                     content=ft.Column(
-                        controls=[header(), build_section(), build_representante()],
+                        controls=[header(), build_section()],
                         spacing=18,
                         expand=True,
                         scroll=ft.ScrollMode.AUTO,
@@ -138,6 +146,8 @@ def settings_view(page: ft.Page):
     def cancel_edit(e=None):
         state["editing_id"] = None
         state["editing_subtipo_id"] = None
+        state["editing_formulario_id"] = None
+        state["editing_campo_id"] = None
         state["message"] = None
         refresh()
 
@@ -155,6 +165,8 @@ def settings_view(page: ft.Page):
             return build_box()
         if section == "nomenclaturas":
             return build_nomenclaturas()
+        if section == "formularios":
+            return build_formularios_expediente()
         return build_tablas()
 
 
@@ -560,6 +572,7 @@ def settings_view(page: ft.Page):
                     _table(["Código", "Nombre", "Descripción", "URL presentación", "Activo", "Acciones"], rows, height=260),
                     subtipo_form,
                     _table(["Tipo padre", "Código", "Subtipo", "Descripción", "Orden", "Activo", "Acciones"], subtype_rows, height=260),
+                    build_formularios_expediente(),
                 ],
                 spacing=18,
             ),
@@ -915,6 +928,236 @@ def settings_view(page: ft.Page):
                     _table(["Tipo", "Documento", "Patrón", "Extensiones", "Activo", "Acciones"], rows),
                 ],
                 spacing=16,
+            ),
+        )
+
+    def build_formularios_expediente():
+        formularios = dynamic_form_service.list_formularios()
+        tipos_opts = tipo_options()
+        subtipos_records = config_service.get_subtipos_expediente(active_only=True)
+        subtipo_opts = ["Sin subtipo"] + [
+            f"{s['id']} - {s['tipo_expediente_nombre']} - {s['nombre']}"
+            for s in subtipos_records
+        ]
+
+        selected_formulario_id = state.get("selected_formulario_id")
+        if not selected_formulario_id and formularios:
+            selected_formulario_id = formularios[0]["id"]
+            state["selected_formulario_id"] = selected_formulario_id
+
+        formulario_editing = (
+            dynamic_form_service.get_formulario(state.get("editing_formulario_id"))
+            if state.get("editing_formulario_id") else {}
+        )
+
+        selected_tipo = ""
+        selected_subtipo = "Sin subtipo"
+        if formulario_editing:
+            selected_tipo = next(
+                (x for x in tipos_opts if x.startswith(str(formulario_editing.get("tipo_expediente_id")) + " - ")),
+                "",
+            )
+            selected_subtipo = next(
+                (x for x in subtipo_opts if x.startswith(str(formulario_editing.get("subtipo_expediente_id")) + " - ")),
+                "Sin subtipo",
+            )
+
+        formulario_tipo = select_input("Tipo expediente", tipos_opts, value=selected_tipo, width=300)
+        formulario_subtipo = select_input("Subtipo", subtipo_opts, value=selected_subtipo, width=360)
+        formulario_codigo = text_input("Código formulario", formulario_editing.get("codigo", ""), width=220)
+        formulario_nombre = required_text_input("Nombre formulario", formulario_editing.get("nombre", ""), width=320)
+        formulario_orden = text_input("Orden", str(formulario_editing.get("orden", 0)), width=100)
+        formulario_activo = select_input("Activo", _bool_options(), value=_active_value(formulario_editing) if formulario_editing else "Sí", width=120)
+        formulario_descripcion = multiline_input("Descripción formulario", formulario_editing.get("descripcion", ""), width=620, height=80)
+
+        def save_formulario():
+            tid = selected_id(formulario_tipo.value)
+            if not tid:
+                raise ValueError("Selecciona un tipo de expediente")
+            data = {
+                "tipo_expediente_id": tid,
+                "subtipo_expediente_id": selected_id(formulario_subtipo.value),
+                "codigo": formulario_codigo.value,
+                "nombre": formulario_nombre.value,
+                "descripcion": formulario_descripcion.value,
+                "orden": int(formulario_orden.value or 0),
+                "activo": _bool_to_int(formulario_activo.value),
+            }
+            if not data["nombre"]:
+                raise ValueError("El nombre del formulario es obligatorio")
+            if state.get("editing_formulario_id"):
+                dynamic_form_service.update_formulario(state["editing_formulario_id"], data)
+                state["selected_formulario_id"] = state["editing_formulario_id"]
+            else:
+                state["selected_formulario_id"] = dynamic_form_service.create_formulario(data)
+            state["editing_formulario_id"] = None
+
+        def start_edit_formulario(record_id):
+            state["editing_formulario_id"] = record_id
+            state["selected_formulario_id"] = record_id
+            state["message"] = None
+            refresh()
+
+        def delete_formulario(record_id):
+            dynamic_form_service.delete_formulario(record_id)
+            if state.get("selected_formulario_id") == record_id:
+                state["selected_formulario_id"] = None
+            state["editing_formulario_id"] = None
+            state["editing_campo_id"] = None
+
+        formulario_rows = []
+        for f in formularios:
+            formulario_rows.append(
+                [
+                    f.get("tipo_expediente_nombre") or "-",
+                    f.get("subtipo_expediente_nombre") or "General",
+                    f.get("codigo") or "-",
+                    f.get("nombre") or "-",
+                    f.get("orden") or 0,
+                    "Sí" if f.get("activo") else "No",
+                    ft.Row(
+                        [
+                            secondary_button("Seleccionar", lambda e, fid=f["id"]: select_formulario(fid)),
+                            secondary_button("Editar", lambda e, fid=f["id"]: start_edit_formulario(fid)),
+                            danger_button("Eliminar", lambda e, fid=f["id"]: run_save(lambda: delete_formulario(fid), "Formulario eliminado")),
+                        ],
+                        spacing=8,
+                    ),
+                ]
+            )
+
+        def select_formulario(formulario_id):
+            state["selected_formulario_id"] = formulario_id
+            state["editing_campo_id"] = None
+            state["message"] = None
+            refresh()
+
+        selected_formulario = dynamic_form_service.get_formulario(state.get("selected_formulario_id")) if state.get("selected_formulario_id") else None
+        campo_editing = dynamic_form_service.get_campo_formulario(state.get("editing_campo_id")) if state.get("editing_campo_id") else {}
+
+        campo_codigo = text_input("Código técnico", campo_editing.get("codigo", ""), width=220)
+        campo_etiqueta = required_text_input("Etiqueta", campo_editing.get("etiqueta", ""), width=320)
+        campo_tipo = select_input(
+            "Tipo campo",
+            ["texto", "numero", "fecha", "textarea", "select", "boolean"],
+            value=campo_editing.get("tipo_campo", "texto") if campo_editing else "texto",
+            width=160,
+        )
+        campo_obligatorio = select_input("Obligatorio", _bool_options(), value="Sí" if int(campo_editing.get("obligatorio", 0)) else "No", width=140)
+        campo_opciones = text_input("Opciones select separadas por |", campo_editing.get("opciones_json", ""), width=520)
+        campo_placeholder = text_input("Placeholder", campo_editing.get("placeholder", ""), width=320)
+        campo_ayuda = text_input("Ayuda", campo_editing.get("ayuda", ""), width=420)
+        campo_valor_defecto = text_input("Valor defecto", campo_editing.get("valor_defecto", ""), width=240)
+        campo_orden = text_input("Orden", str(campo_editing.get("orden", 0)), width=100)
+        campo_activo = select_input("Activo", _bool_options(), value=_active_value(campo_editing) if campo_editing else "Sí", width=120)
+
+        def save_campo():
+            if not state.get("selected_formulario_id"):
+                raise ValueError("Selecciona primero un formulario")
+            data = {
+                "formulario_id": state["selected_formulario_id"],
+                "codigo": campo_codigo.value,
+                "etiqueta": campo_etiqueta.value,
+                "tipo_campo": campo_tipo.value,
+                "obligatorio": _bool_to_int(campo_obligatorio.value),
+                "opciones": campo_opciones.value,
+                "placeholder": campo_placeholder.value,
+                "ayuda": campo_ayuda.value,
+                "valor_defecto": campo_valor_defecto.value,
+                "orden": int(campo_orden.value or 0),
+                "activo": _bool_to_int(campo_activo.value),
+            }
+            if not data["etiqueta"]:
+                raise ValueError("La etiqueta del campo es obligatoria")
+            if state.get("editing_campo_id"):
+                dynamic_form_service.update_campo_formulario(state["editing_campo_id"], data)
+            else:
+                dynamic_form_service.create_campo_formulario(state["selected_formulario_id"], data)
+            state["editing_campo_id"] = None
+
+        def start_edit_campo(record_id):
+            state["editing_campo_id"] = record_id
+            state["message"] = None
+            refresh()
+
+        def delete_campo(record_id):
+            dynamic_form_service.delete_campo_formulario(record_id)
+            state["editing_campo_id"] = None
+
+        campo_rows = []
+        if state.get("selected_formulario_id"):
+            for c in dynamic_form_service.list_campos_formulario(state["selected_formulario_id"]):
+                campo_rows.append(
+                    [
+                        c.get("codigo") or "-",
+                        c.get("etiqueta") or "-",
+                        c.get("tipo_campo") or "-",
+                        "Sí" if c.get("obligatorio") else "No",
+                        c.get("orden") or 0,
+                        "Sí" if c.get("activo") else "No",
+                        ft.Row(
+                            [
+                                secondary_button("Editar", lambda e, cid=c["id"]: start_edit_campo(cid)),
+                                danger_button("Eliminar", lambda e, cid=c["id"]: run_save(lambda: delete_campo(cid), "Campo eliminado")),
+                            ],
+                            spacing=8,
+                        ),
+                    ]
+                )
+
+        formulario_form = ft.Column(
+            controls=[
+                ft.Text("Formulario dinámico", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text("Define un formulario por tipo/subtipo. Si no eliges subtipo, actúa como formulario general del tipo.", size=12, color=Q_MUTED),
+                ft.Row([formulario_tipo, formulario_subtipo, formulario_codigo, formulario_nombre], wrap=True, spacing=10),
+                ft.Row([formulario_orden, formulario_activo], wrap=True, spacing=10),
+                formulario_descripcion,
+                ft.Row(
+                    [
+                        primary_button("Guardar formulario", lambda e: run_save(save_formulario, "Formulario guardado")),
+                        secondary_button("Cancelar", lambda e: cancel_edit()),
+                    ],
+                    spacing=8,
+                ),
+            ],
+            spacing=12,
+        )
+
+        campo_form = ft.Column(
+            controls=[
+                ft.Text(
+                    f"Campos del formulario: {(selected_formulario or {}).get('nombre') or 'sin seleccionar'}",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text("Los códigos técnicos se usarán después para mapear Mercurio/PDF.", size=12, color=Q_MUTED),
+                ft.Row([campo_codigo, campo_etiqueta, campo_tipo, campo_obligatorio], wrap=True, spacing=10),
+                campo_opciones,
+                ft.Row([campo_placeholder, campo_ayuda, campo_valor_defecto], wrap=True, spacing=10),
+                ft.Row([campo_orden, campo_activo], wrap=True, spacing=10),
+                ft.Row(
+                    [
+                        primary_button("Guardar campo", lambda e: run_save(save_campo, "Campo guardado")),
+                        secondary_button("Cancelar campo", lambda e: cancel_edit()),
+                    ],
+                    spacing=8,
+                ),
+            ],
+            spacing=12,
+        )
+
+        return config_section_card(
+            "Formularios específicos de expediente",
+            "Constructor de fichas específicas por tipo y subtipo de expediente.",
+            ft.Column(
+                [
+                    formulario_form,
+                    _table(["Tipo", "Subtipo", "Código", "Formulario", "Orden", "Activo", "Acciones"], formulario_rows, height=260),
+                    campo_form if selected_formulario else empty_state("Selecciona o crea un formulario para configurar sus campos"),
+                    _table(["Código", "Etiqueta", "Tipo", "Obligatorio", "Orden", "Activo", "Acciones"], campo_rows, height=280) if selected_formulario else ft.Container(),
+                ],
+                spacing=18,
             ),
         )
 
