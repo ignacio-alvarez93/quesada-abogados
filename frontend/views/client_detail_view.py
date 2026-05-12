@@ -10,7 +10,6 @@ import flet as ft
 from frontend.components.app_button import primary_button, secondary_button
 from frontend.components.app_detail_section import detail_section
 from frontend.components.app_badge import status_badge
-from frontend.components.app_action_row import action_row
 from frontend.components.app_table import app_table
 from frontend.components.app_empty_state import empty_state
 
@@ -453,14 +452,77 @@ def _build_cobros_section(cliente_id):
     return _section_card("Cobros", content)
 
 
+def _client_initials(client):
+    nombre = _nombre_completo(client)
+    parts = [p for p in nombre.split() if p]
+    if not parts:
+        return "CL"
+    if len(parts) == 1:
+        return parts[0][:2].upper()
+    return (parts[0][:1] + parts[1][:1]).upper()
+
+
+def _photo_placeholder(client):
+    return ft.Container(
+        width=92,
+        height=92,
+        bgcolor="#EAF3FF",
+        border=ft.border.all(1, "#B9D7FF"),
+        border_radius=18,
+        content=ft.Column(
+            controls=[
+                ft.Text(_client_initials(client), size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text("Foto", size=11, color=Q_MUTED),
+            ],
+            spacing=2,
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
+
 def client_detail_view(page, client, on_back=None, on_edit=None):
-    actions = []
+    sidebar_actions = []
 
     if on_back:
-        actions.append(secondary_button("Volver", on_back))
+        sidebar_actions.append(
+            ft.IconButton(
+                icon=ft.Icons.ARROW_BACK,
+                tooltip="Volver clientes",
+                icon_color=Q_PRIMARY_DARK,
+                on_click=on_back,
+            )
+        )
+
+    if client.get("_on_previous"):
+        sidebar_actions.append(
+            ft.IconButton(
+                icon=ft.Icons.CHEVRON_LEFT,
+                tooltip="Anterior",
+                icon_color=Q_PRIMARY_DARK,
+                on_click=lambda e: client["_on_previous"](),
+            )
+        )
+
+    if client.get("_on_next"):
+        sidebar_actions.append(
+            ft.IconButton(
+                icon=ft.Icons.CHEVRON_RIGHT,
+                tooltip="Siguiente",
+                icon_color=Q_PRIMARY_DARK,
+                on_click=lambda e: client["_on_next"](),
+            )
+        )
 
     if on_edit:
-        actions.append(primary_button("Editar cliente", on_edit))
+        sidebar_actions.append(
+            ft.IconButton(
+                icon=ft.Icons.EDIT,
+                tooltip="Editar cliente",
+                icon_color="#0057B8",
+                on_click=on_edit,
+            )
+        )
 
     cliente_id = client.get("id")
     state = {"section": "ficha"}
@@ -631,8 +693,6 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
 
     return ft.Column(
         controls=[
-            action_row(actions),
-            _header(client),
             ft.Row(
                 controls=[
                     ft.Container(
@@ -643,12 +703,31 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         padding=12,
                         content=ft.Column(
                             controls=[
+                                _photo_placeholder(client),
+                                ft.Text(_nombre_completo(client), size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                status_badge(client.get("estado_cliente") or "-"),
+                                ft.Text(
+                                    f"Ficha completa: {_porcentaje_ficha(client)}%",
+                                    size=12,
+                                    color=_progress_color(_porcentaje_ficha(client)),
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                ft.Divider(),
                                 ft.Text("Menú cliente", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                                 ft.Text("Navega por áreas sin una ficha única demasiado larga.", size=12, color=Q_MUTED),
                                 ft.Divider(),
                                 *[nav_button(label, section) for label, section in menu_items],
+                                ft.Container(expand=True),
+                                ft.Divider() if sidebar_actions else ft.Container(),
+                                ft.Row(
+                                    controls=sidebar_actions,
+                                    spacing=6,
+                                    alignment=ft.MainAxisAlignment.CENTER,
+                                    visible=bool(sidebar_actions),
+                                ),
                             ],
                             spacing=8,
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
                     ),
                     ft.Container(

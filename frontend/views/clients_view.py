@@ -2161,13 +2161,11 @@ def clients_view(page: ft.Page):
             return empty_state("No hay clientes seleccionados")
         total = len(clientes)
         pos = state["detail_index"] + 1
+        cliente["_on_previous"] = prev_selected_detail
+        cliente["_on_next"] = next_selected_detail
+
         return ft.Column(
             controls=[
-                action_row([
-                    secondary_button("Volver a clientes", lambda e: show_client_list()),
-                    secondary_button("Anterior", prev_selected_detail),
-                    primary_button("Siguiente", next_selected_detail),
-                ]),
                 ft.Text(f"Ficha seleccionada {pos} de {total}", size=14, color="#64748B"),
                 client_detail_view(
                     page,
