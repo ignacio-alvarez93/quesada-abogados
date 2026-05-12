@@ -463,69 +463,207 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         actions.append(primary_button("Editar cliente", on_edit))
 
     cliente_id = client.get("id")
+    state = {"section": "ficha"}
+
+    content_container = ft.Container(expand=True)
+
+    def build_ficha_section():
+        return ft.Column(
+            controls=[
+                detail_section(
+                    "Datos básicos",
+                    [
+                        ("Nombre completo", _nombre_completo(client)),
+                        ("NIE", client.get("nie")),
+                        ("Pasaporte", client.get("pasaporte")),
+                        ("DNI", client.get("dni")),
+                        ("Nacionalidad", client.get("nacionalidad")),
+                        ("Fecha nacimiento", _fecha_display(client.get("fecha_nacimiento"))),
+                        ("Edad", _calcular_edad(client.get("fecha_nacimiento"))),
+                        ("Estado cliente", client.get("estado_cliente")),
+                        ("Sexo", client.get("sexo")),
+                        ("Ficha completada", f"{_porcentaje_ficha(client)}%"),
+                    ],
+                ),
+                detail_section(
+                    "Contacto",
+                    [
+                        ("Teléfono", client.get("telefono")),
+                        ("Email", client.get("email")),
+                    ],
+                ),
+                detail_section(
+                    "Dirección en España",
+                    [
+                        ("Domicilio", client.get("domicilio_espana")),
+                        ("Localidad", client.get("localidad")),
+                        ("Provincia", client.get("provincia")),
+                        ("Código postal", client.get("codigo_postal")),
+                    ],
+                ),
+                detail_section(
+                    "Datos personales",
+                    [
+                        ("Localidad nacimiento", client.get("localidad_nacimiento")),
+                        ("País nacimiento", client.get("pais_nacimiento")),
+                        ("Nombre padre", client.get("nombre_padre")),
+                        ("Nombre madre", client.get("nombre_madre")),
+                        ("Estado civil", client.get("estado_civil")),
+                    ],
+                ),
+                detail_section(
+                    "Observaciones",
+                    [
+                        ("Observaciones", client.get("observaciones")),
+                        ("Observaciones internas", client.get("observaciones_internas")),
+                    ],
+                ),
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_actividad_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Actividad operativa", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                _build_expedientes_section(cliente_id, page),
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_hojas_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Hojas de encargo", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                _build_hojas_section(cliente_id),
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_cobros_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Cobros", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                _build_cobros_section(cliente_id),
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_documentos_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Documentos Box", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                _placeholder_section("Documentos Box", "Aquí se mostrarán carpetas y documentos observados en Box."),
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_historial_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Historial de actuaciones", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                _placeholder_section("Historial de actuaciones", "Aquí se mostrará la actividad interna del cliente."),
+                _placeholder_section("Referidos / recurrencia", "Aquí se mostrarán relaciones, referidos y recurrencia."),
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_section_content():
+        section = state.get("section") or "ficha"
+
+        if section == "actividad":
+            return build_actividad_section()
+        if section == "hojas":
+            return build_hojas_section()
+        if section == "cobros":
+            return build_cobros_section()
+        if section == "documentos":
+            return build_documentos_section()
+        if section == "historial":
+            return build_historial_section()
+
+        return build_ficha_section()
+
+    def set_section(section):
+        state["section"] = section
+        content_container.content = build_section_content()
+        page.update()
+
+    def nav_button(label, section):
+        is_active = state.get("section") == section
+        return ft.Container(
+            content=ft.Text(
+                label,
+                size=13,
+                weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.W_500,
+                color=Q_PRIMARY_DARK if is_active else Q_MUTED,
+            ),
+            bgcolor="#EAF3FF" if is_active else Q_WHITE,
+            border=ft.border.all(1, "#B9D7FF" if is_active else Q_BORDER),
+            border_radius=10,
+            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+            ink=True,
+            on_click=lambda e, s=section: set_section(s),
+        )
+
+    menu_items = [
+        ("Ficha cliente", "ficha"),
+        ("Actividad operativa", "actividad"),
+        ("Hojas de encargo", "hojas"),
+        ("Cobros", "cobros"),
+        ("Documentos Box", "documentos"),
+        ("Historial / relaciones", "historial"),
+    ]
+
+    content_container.content = build_section_content()
 
     return ft.Column(
         controls=[
             action_row(actions),
             _header(client),
-            detail_section(
-                "Datos básicos",
-                [
-                    ("Nombre completo", _nombre_completo(client)),
-                    ("NIE", client.get("nie")),
-                    ("Pasaporte", client.get("pasaporte")),
-                    ("DNI", client.get("dni")),
-                    ("Nacionalidad", client.get("nacionalidad")),
-                    ("Fecha nacimiento", _fecha_display(client.get("fecha_nacimiento"))),
-                    ("Edad", _calcular_edad(client.get("fecha_nacimiento"))),
-                    ("Estado cliente", client.get("estado_cliente")),
-                    ("Sexo", client.get("sexo")),
-                    ("Ficha completada", f"{_porcentaje_ficha(client)}%"),
+            ft.Row(
+                controls=[
+                    ft.Container(
+                        width=230,
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=14,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Menú cliente", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text("Navega por áreas sin una ficha única demasiado larga.", size=12, color=Q_MUTED),
+                                ft.Divider(),
+                                *[nav_button(label, section) for label, section in menu_items],
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    ft.Container(
+                        expand=True,
+                        bgcolor=Q_WHITE,
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=14,
+                        padding=16,
+                        content=content_container,
+                    ),
                 ],
+                spacing=14,
+                expand=True,
             ),
-            detail_section(
-                "Contacto",
-                [
-                    ("Teléfono", client.get("telefono")),
-                    ("Email", client.get("email")),
-                ],
-            ),
-            detail_section(
-                "Dirección en España",
-                [
-                    ("Domicilio", client.get("domicilio_espana")),
-                    ("Localidad", client.get("localidad")),
-                    ("Provincia", client.get("provincia")),
-                    ("Código postal", client.get("codigo_postal")),
-                ],
-            ),
-            detail_section(
-                "Datos personales",
-                [
-                    ("Localidad nacimiento", client.get("localidad_nacimiento")),
-                    ("País nacimiento", client.get("pais_nacimiento")),
-                    ("Nombre padre", client.get("nombre_padre")),
-                    ("Nombre madre", client.get("nombre_madre")),
-                    ("Estado civil", client.get("estado_civil")),
-                ],
-            ),
-            detail_section(
-                "Observaciones",
-                [
-                    ("Observaciones", client.get("observaciones")),
-                    ("Observaciones internas", client.get("observaciones_internas")),
-                ],
-            ),
-            ft.Text("Actividad operativa", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-            _build_expedientes_section(cliente_id, page),
-            _build_hojas_section(cliente_id),
-            _build_cobros_section(cliente_id),
-            ft.Text("Bloques futuros", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-            _placeholder_section("Documentos Box", "Aquí se mostrarán carpetas y documentos observados en Box."),
-            _placeholder_section("Historial de actuaciones", "Aquí se mostrará la actividad interna del cliente."),
-            _placeholder_section("Referidos / recurrencia", "Aquí se mostrarán relaciones, referidos y recurrencia."),
         ],
         spacing=16,
-        scroll=ft.ScrollMode.AUTO,
         expand=True,
     )
