@@ -7,11 +7,19 @@ from datetime import date, datetime
 
 import flet as ft
 
+from backend.services.master_data_service import (
+    get_nacionalidades,
+    get_paises_nombres,
+    get_provincias_nombres,
+    get_localidades_by_provincia,
+)
+
 from frontend.components.app_button import primary_button, secondary_button
 from frontend.components.app_detail_section import detail_section
 from frontend.components.app_badge import status_badge
 from frontend.components.app_table import app_table
 from frontend.components.app_empty_state import empty_state
+from frontend.components.app_autocomplete import AppAutocomplete
 
 Q_PRIMARY_DARK = "#003B7A"
 Q_MUTED = "#64748B"
@@ -43,6 +51,23 @@ FICHA_FIELDS = [
     "estado_civil",
 ]
 
+CONTACT_TYPES = [
+    "Familiar",
+    "Empleador / Empresa",
+]
+
+CONTACT_RELATIONSHIPS = [
+    "Cónyuge",
+    "Pareja",
+    "Padre",
+    "Madre",
+    "Hijo/a",
+    "Hermano/a",
+    "Abuelo/a",
+    "Nieto/a",
+    "Otro familiar",
+]
+
 
 def _connect():
     conn = sqlite3.connect(DB_PATH)
@@ -57,6 +82,257 @@ def _table_exists(conn, table_name):
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _safe_master_values(loader):
+    try:
+        values = loader()
+        return values or []
+    except Exception:
+        return []
+
+
+def _dialog_section(title, icon, controls):
+    return ft.Container(
+        bgcolor="#FFFFFF",
+        border=ft.border.all(1, Q_BORDER),
+        border_radius=14,
+        padding=14,
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=ft.Icon(icon, size=18, color="#0057B8"),
+                            bgcolor="#EAF3FF",
+                            border_radius=18,
+                            width=34,
+                            height=34,
+                            alignment=ft.alignment.Alignment(0, 0),
+                        ),
+                        ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ],
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                *controls,
+            ],
+            spacing=12,
+        ),
+    )
+
+
+def _themed_dialog_content(title, subtitle, sections, width=930, height=640):
+    return ft.Container(
+        width=width,
+        height=height,
+        bgcolor="#F8FAFC",
+        border_radius=18,
+        padding=16,
+        content=ft.Column(
+            controls=[
+                ft.Container(
+                    bgcolor="#EAF3FF",
+                    border=ft.border.all(1, "#B9D7FF"),
+                    border_radius=14,
+                    padding=14,
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.PERSON_ADD, size=24, color="#0057B8"),
+                                bgcolor="#FFFFFF",
+                                border_radius=22,
+                                width=44,
+                                height=44,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(title, size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(subtitle, size=13, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ),
+                ft.Column(
+                    controls=sections,
+                    spacing=12,
+                    scroll=ft.ScrollMode.AUTO,
+                    expand=True,
+                ),
+            ],
+            spacing=12,
+        ),
+    )
+
+
+def _ensure_client_contacts_schema():
+    with _connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cliente_contactos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cliente_id INTEGER NOT NULL,
+                tipo_contacto TEXT NOT NULL,
+                parentesco TEXT,
+                cliente_referenciado_id INTEGER,
+                nombre TEXT,
+                primer_apellido TEXT,
+                segundo_apellido TEXT,
+                nie TEXT,
+                pasaporte TEXT,
+                dni TEXT,
+                nacionalidad TEXT,
+                fecha_nacimiento TEXT,
+                telefono TEXT,
+                email TEXT,
+                estado_cliente TEXT,
+                domicilio_espana TEXT,
+                localidad TEXT,
+                provincia TEXT,
+                codigo_postal TEXT,
+                localidad_nacimiento TEXT,
+                pais_nacimiento TEXT,
+                nombre_padre TEXT,
+                nombre_madre TEXT,
+                estado_civil TEXT,
+                sexo TEXT,
+                observaciones TEXT,
+                observaciones_internas TEXT,
+                activo INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cliente_id) REFERENCES clientes(id) ON DELETE CASCADE,
+                FOREIGN KEY (cliente_referenciado_id) REFERENCES clientes(id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_cliente_contactos_cliente
+            ON cliente_contactos(cliente_id, activo, tipo_contacto)
+            """
+        )
+        conn.commit()
+
+
+def _get_available_clients_for_reference(current_cliente_id):
+    try:
+        with _connect() as conn:
+            if not _table_exists(conn, "clientes"):
+                return []
+            rows = conn.execute(
+                """
+                SELECT
+                    id, nombre, primer_apellido, segundo_apellido, nie, pasaporte, dni,
+                    nacionalidad, fecha_nacimiento, telefono, email, estado_cliente,
+                    domicilio_espana, localidad, provincia, codigo_postal,
+                    localidad_nacimiento, pais_nacimiento, nombre_padre, nombre_madre,
+                    estado_civil, sexo, observaciones, observaciones_internas
+                FROM clientes
+                WHERE COALESCE(activo, 1) = 1
+                  AND id != ?
+                ORDER BY nombre ASC, primer_apellido ASC, segundo_apellido ASC
+                """,
+                (int(current_cliente_id or 0),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+    except Exception:
+        return []
+
+
+def _contact_reference_label(cliente):
+    nombre = _nombre_completo(cliente)
+    documento = cliente.get("nie") or cliente.get("pasaporte") or cliente.get("dni") or ""
+    return f"{cliente.get('id')} - {nombre}" + (f" · {documento}" if documento else "")
+
+
+def _id_from_reference_label(value):
+    raw = str(value or "").strip()
+    if " - " not in raw:
+        return None
+    try:
+        return int(raw.split(" - ", 1)[0])
+    except Exception:
+        return None
+
+
+def _get_client_contacts(cliente_id):
+    _ensure_client_contacts_schema()
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    cc.*,
+                    cr.nombre AS ref_nombre,
+                    cr.primer_apellido AS ref_primer_apellido,
+                    cr.segundo_apellido AS ref_segundo_apellido
+                FROM cliente_contactos cc
+                LEFT JOIN clientes cr ON cr.id = cc.cliente_referenciado_id
+                WHERE cc.cliente_id = ?
+                  AND COALESCE(cc.activo, 1) = 1
+                ORDER BY cc.tipo_contacto ASC, cc.parentesco ASC, cc.nombre ASC, cc.id DESC
+                """,
+                (int(cliente_id),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+    except Exception:
+        return []
+
+
+def _save_client_contact(data):
+    _ensure_client_contacts_schema()
+    fields = [
+        "cliente_id", "tipo_contacto", "parentesco", "cliente_referenciado_id",
+        "nombre", "primer_apellido", "segundo_apellido", "nie", "pasaporte", "dni",
+        "nacionalidad", "fecha_nacimiento", "telefono", "email", "estado_cliente",
+        "domicilio_espana", "localidad", "provincia", "codigo_postal",
+        "localidad_nacimiento", "pais_nacimiento", "nombre_padre", "nombre_madre",
+        "estado_civil", "sexo", "observaciones", "observaciones_internas",
+    ]
+    with _connect() as conn:
+        conn.execute(
+            f"""
+            INSERT INTO cliente_contactos ({", ".join(fields)}, updated_at)
+            VALUES ({", ".join("?" for _ in fields)}, CURRENT_TIMESTAMP)
+            """,
+            [data.get(field) for field in fields],
+        )
+        conn.commit()
+
+
+def _copy_client_to_contact_data(cliente):
+    return {
+        "nombre": cliente.get("nombre") or "",
+        "primer_apellido": cliente.get("primer_apellido") or "",
+        "segundo_apellido": cliente.get("segundo_apellido") or "",
+        "nie": cliente.get("nie") or "",
+        "pasaporte": cliente.get("pasaporte") or "",
+        "dni": cliente.get("dni") or "",
+        "nacionalidad": cliente.get("nacionalidad") or "",
+        "fecha_nacimiento": cliente.get("fecha_nacimiento") or "",
+        "telefono": cliente.get("telefono") or "",
+        "email": cliente.get("email") or "",
+        "estado_cliente": cliente.get("estado_cliente") or "",
+        "domicilio_espana": cliente.get("domicilio_espana") or "",
+        "localidad": cliente.get("localidad") or "",
+        "provincia": cliente.get("provincia") or "",
+        "codigo_postal": cliente.get("codigo_postal") or "",
+        "localidad_nacimiento": cliente.get("localidad_nacimiento") or "",
+        "pais_nacimiento": cliente.get("pais_nacimiento") or "",
+        "nombre_padre": cliente.get("nombre_padre") or "",
+        "nombre_madre": cliente.get("nombre_madre") or "",
+        "estado_civil": cliente.get("estado_civil") or "",
+        "sexo": cliente.get("sexo") or "",
+        "observaciones": cliente.get("observaciones") or "",
+        "observaciones_internas": cliente.get("observaciones_internas") or "",
+    }
 
 
 def _nombre_completo(client):
@@ -630,6 +906,479 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             expand=True,
         )
 
+    def _contact_rows(tipo_contacto):
+        return [
+            item for item in _get_client_contacts(cliente_id)
+            if (item.get("tipo_contacto") or "") == tipo_contacto
+        ]
+
+    def _render_contact_table(items, empty_message, open_new_callback, is_employer=False):
+        if not items:
+            return ft.Column(
+                controls=[
+                    empty_state(empty_message),
+                    primary_button("Nuevo empleador" if is_employer else "Nuevo contacto", open_new_callback),
+                ],
+                spacing=12,
+            )
+
+        rows = []
+        for item in items:
+            ref_nombre = " ".join(
+                [
+                    item.get("ref_nombre") or "",
+                    item.get("ref_primer_apellido") or "",
+                    item.get("ref_segundo_apellido") or "",
+                ]
+            ).strip()
+
+            if is_employer:
+                rows.append(
+                    [
+                        item.get("nombre") or "-",
+                        item.get("dni") or item.get("nie") or item.get("pasaporte") or "-",
+                        item.get("telefono") or "-",
+                        item.get("email") or "-",
+                        item.get("domicilio_espana") or "-",
+                        item.get("localidad") or "-",
+                    ]
+                )
+            else:
+                rows.append(
+                    [
+                        item.get("parentesco") or "-",
+                        _nombre_completo(item),
+                        item.get("nie") or item.get("pasaporte") or item.get("dni") or "-",
+                        item.get("telefono") or "-",
+                        item.get("email") or "-",
+                        "Sí" if item.get("cliente_referenciado_id") else "No",
+                        ref_nombre or "-",
+                    ]
+                )
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        primary_button("Nuevo empleador" if is_employer else "Nuevo contacto", open_new_callback),
+                        ft.Container(
+                            content=ft.Text(
+                                f"{'Empleadores' if is_employer else 'Contactos'}: {len(items)}",
+                                size=12,
+                                color="#0057B8",
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            bgcolor="#EAF3FF",
+                            border_radius=18,
+                            padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                        ),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                ),
+                app_table(
+                    ["Empresa", "CIF/NIF", "Teléfono", "Email", "Domicilio", "Localidad"] if is_employer else
+                    ["Parentesco", "Nombre", "Documento", "Teléfono", "Email", "Es cliente", "Cliente referenciado"],
+                    rows,
+                    height=390,
+                ),
+            ],
+            spacing=12,
+        )
+
+    def build_contactos_section():
+        contactos = _contact_rows("Familiar")
+        available_clients = _get_available_clients_for_reference(cliente_id)
+        client_reference_options = [_contact_reference_label(item) for item in available_clients]
+
+        nacionalidad_options = _safe_master_values(get_nacionalidades)
+        pais_options = _safe_master_values(get_paises_nombres)
+        provincia_options = _safe_master_values(get_provincias_nombres)
+
+        parentesco = ft.Dropdown(
+            label="Parentesco",
+            width=220,
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+            options=[ft.dropdown.Option(item) for item in CONTACT_RELATIONSHIPS],
+        )
+
+        nombre = ft.TextField(label="Nombre", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        primer_apellido = ft.TextField(label="Primer apellido", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        segundo_apellido = ft.TextField(label="Segundo apellido", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        nie = ft.TextField(label="NIE", width=220, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        pasaporte = ft.TextField(label="Pasaporte", width=220, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        dni = ft.TextField(label="DNI", width=220, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+
+        fecha_nacimiento = ft.TextField(label="Fecha nacimiento DD/MM/AAAA", width=260, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        telefono = ft.TextField(label="Teléfono", width=220, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        email = ft.TextField(label="Email", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        estado_cliente = ft.TextField(label="Estado cliente", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        sexo = ft.Dropdown(
+            label="Sexo",
+            width=180,
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+            options=[ft.dropdown.Option("HOMBRE"), ft.dropdown.Option("MUJER"), ft.dropdown.Option("X")],
+        )
+
+        domicilio_espana = ft.TextField(label="Domicilio en España", width=420, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        codigo_postal = ft.TextField(label="Código postal", width=180, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        localidad_nacimiento = ft.TextField(label="Localidad nacimiento", width=260, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        nombre_padre = ft.TextField(label="Nombre del padre", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        nombre_madre = ft.TextField(label="Nombre de la madre", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        estado_civil = ft.TextField(label="Estado civil", width=220, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        observaciones = ft.TextField(label="Observaciones", width=640, multiline=True, min_lines=2, max_lines=4, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        observaciones_internas = ft.TextField(label="Observaciones internas", width=640, multiline=True, min_lines=2, max_lines=4, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+
+        localidad_options = []
+
+        def on_provincia_selected(value):
+            nonlocal localidad_options
+            provincia_value = (value or "").strip()
+            if not provincia_value:
+                localidad_options = []
+                localidad_autocomplete.set_options([], clear_value=True)
+                localidad_autocomplete.input.label = "Localidad"
+                return
+            try:
+                localidad_options = get_localidades_by_provincia(provincia_value)
+            except Exception:
+                localidad_options = []
+            localidad_autocomplete.set_options(localidad_options, clear_value=True)
+            localidad_autocomplete.input.label = f"Localidad ({len(localidad_options)})" if localidad_options else "Localidad (sin datos)"
+
+        nacionalidad_autocomplete = AppAutocomplete(
+            page=page,
+            label="Nacionalidad",
+            options=nacionalidad_options,
+            width=260,
+            max_results=8,
+        )
+        pais_nacimiento_autocomplete = AppAutocomplete(
+            page=page,
+            label="País nacimiento",
+            options=pais_options,
+            width=260,
+            max_results=8,
+        )
+        provincia_autocomplete = AppAutocomplete(
+            page=page,
+            label="Provincia",
+            options=provincia_options,
+            width=260,
+            max_results=12,
+            on_select=on_provincia_selected,
+            allow_free_text=True,
+        )
+        localidad_autocomplete = AppAutocomplete(
+            page=page,
+            label="Localidad",
+            options=[],
+            width=260,
+            max_results=12,
+            allow_free_text=True,
+        )
+
+        controls = {
+            "nombre": nombre,
+            "primer_apellido": primer_apellido,
+            "segundo_apellido": segundo_apellido,
+            "nie": nie,
+            "pasaporte": pasaporte,
+            "dni": dni,
+            "fecha_nacimiento": fecha_nacimiento,
+            "telefono": telefono,
+            "email": email,
+            "estado_cliente": estado_cliente,
+            "sexo": sexo,
+            "domicilio_espana": domicilio_espana,
+            "codigo_postal": codigo_postal,
+            "localidad_nacimiento": localidad_nacimiento,
+            "nombre_padre": nombre_padre,
+            "nombre_madre": nombre_madre,
+            "estado_civil": estado_civil,
+            "observaciones": observaciones,
+            "observaciones_internas": observaciones_internas,
+        }
+
+        referencia_cliente = None
+
+        def fill_from_referenced_client(value=None):
+            ref_id = _id_from_reference_label(value or referencia_cliente.get_value())
+            ref = next((item for item in available_clients if item.get("id") == ref_id), None)
+            if not ref:
+                return
+            data = _copy_client_to_contact_data(ref)
+            for key, control in controls.items():
+                control.value = data.get(key) or ""
+
+            nacionalidad_autocomplete.set_value(data.get("nacionalidad") or "", update=False)
+            pais_nacimiento_autocomplete.set_value(data.get("pais_nacimiento") or "", update=False)
+            provincia_autocomplete.set_value(data.get("provincia") or "", update=False)
+
+            provincia_value = data.get("provincia") or ""
+            try:
+                locs = get_localidades_by_provincia(provincia_value) if provincia_value else []
+            except Exception:
+                locs = []
+            localidad_autocomplete.set_options(locs, clear_value=False)
+            localidad_autocomplete.input.label = f"Localidad ({len(locs)})" if locs else "Localidad"
+            localidad_autocomplete.set_value(data.get("localidad") or "", update=False)
+            page.update()
+
+        referencia_cliente = AppAutocomplete(
+            page=page,
+            label="Referenciar cliente existente",
+            options=client_reference_options,
+            width=520,
+            max_results=10,
+            on_select=fill_from_referenced_client,
+            allow_free_text=True,
+        )
+
+        def close_contact_dialog(e=None):
+            contacto_dialog.open = False
+            page.update()
+
+        def clear_contact_form():
+            parentesco.value = None
+            referencia_cliente.set_value("", update=False)
+            nacionalidad_autocomplete.set_value("", update=False)
+            pais_nacimiento_autocomplete.set_value("", update=False)
+            provincia_autocomplete.set_value("", update=False)
+            localidad_autocomplete.set_options([], clear_value=True)
+            localidad_autocomplete.input.label = "Localidad"
+            for control in controls.values():
+                control.value = ""
+
+        def save_contact(e=None):
+            if not nombre.value and not referencia_cliente.get_value():
+                page.snack_bar = ft.SnackBar(ft.Text("Indica un nombre o selecciona un cliente existente"))
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            data = {
+                "cliente_id": cliente_id,
+                "tipo_contacto": "Familiar",
+                "parentesco": parentesco.value or "",
+                "cliente_referenciado_id": _id_from_reference_label(referencia_cliente.get_value()),
+            }
+            for key, control in controls.items():
+                data[key] = control.value or ""
+
+            data["nacionalidad"] = nacionalidad_autocomplete.get_value()
+            data["pais_nacimiento"] = pais_nacimiento_autocomplete.get_value()
+            data["provincia"] = provincia_autocomplete.get_value()
+            data["localidad"] = localidad_autocomplete.get_value()
+
+            _save_client_contact(data)
+            close_contact_dialog()
+            content_container.content = build_contactos_section()
+            page.update()
+
+        contacto_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Nuevo contacto"),
+            content=_themed_dialog_content(
+                "Nuevo contacto relacionado",
+                "Alta rápida con la misma estructura de la ficha de cliente y búsquedas asistidas.",
+                [
+                    _dialog_section(
+                        "Datos básicos",
+                        ft.Icons.PERSON,
+                        [
+                            ft.Row([parentesco, referencia_cliente.control], wrap=True, spacing=10),
+                            ft.Row([nombre, primer_apellido, segundo_apellido], wrap=True, spacing=10),
+                            ft.Row([nie, pasaporte, dni], wrap=True, spacing=10),
+                            ft.Row([nacionalidad_autocomplete.control, fecha_nacimiento, telefono], wrap=True, spacing=10),
+                            ft.Row([email, estado_cliente], wrap=True, spacing=10),
+                        ],
+                    ),
+                    _dialog_section(
+                        "Dirección en España",
+                        ft.Icons.HOME,
+                        [
+                            domicilio_espana,
+                            ft.Row([provincia_autocomplete.control, localidad_autocomplete.control, codigo_postal], wrap=True, spacing=10),
+                        ],
+                    ),
+                    _dialog_section(
+                        "Datos personales",
+                        ft.Icons.BADGE,
+                        [
+                            ft.Row([localidad_nacimiento, pais_nacimiento_autocomplete.control], wrap=True, spacing=10),
+                            ft.Row([nombre_padre, nombre_madre, estado_civil, sexo], wrap=True, spacing=10),
+                        ],
+                    ),
+                    _dialog_section(
+                        "Observaciones",
+                        ft.Icons.NOTES,
+                        [
+                            observaciones,
+                            observaciones_internas,
+                        ],
+                    ),
+                ],
+            ),
+            actions=[
+                secondary_button("Cancelar", close_contact_dialog),
+                primary_button("Guardar contacto", save_contact),
+            ],
+        )
+
+        if contacto_dialog not in page.overlay:
+            page.overlay.append(contacto_dialog)
+
+        def open_new_contact(e=None):
+            clear_contact_form()
+            contacto_dialog.open = True
+            page.update()
+
+        return ft.Column(
+            controls=[
+                ft.Text("Contactos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text(
+                    "Familiares y personas relacionadas. Pueden referenciar a otro cliente existente.",
+                    size=13,
+                    color=Q_MUTED,
+                ),
+                _section_card(
+                    "Contactos familiares",
+                    _render_contact_table(
+                        contactos,
+                        "Este cliente no tiene contactos familiares relacionados",
+                        open_new_contact,
+                        is_employer=False,
+                    ),
+                ),
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_empleadores_section():
+        empleadores = _contact_rows("Empleador / Empresa")
+
+        empresa = ft.TextField(label="Empresa / empleador", width=360, border_radius=10)
+        cif = ft.TextField(label="CIF / NIF", width=220, border_radius=10)
+        telefono = ft.TextField(label="Teléfono", width=220, border_radius=10)
+        email = ft.TextField(label="Email", width=320, border_radius=10)
+        domicilio = ft.TextField(label="Domicilio", width=520, border_radius=10)
+        localidad = ft.TextField(label="Localidad", width=220, border_radius=10)
+        provincia = ft.TextField(label="Provincia", width=220, border_radius=10)
+        codigo_postal = ft.TextField(label="Código postal", width=160, border_radius=10)
+        observaciones = ft.TextField(label="Observaciones", width=640, multiline=True, min_lines=2, max_lines=4, border_radius=10)
+
+        def close_employer_dialog(e=None):
+            employer_dialog.open = False
+            page.update()
+
+        def clear_employer_form():
+            for control in [empresa, cif, telefono, email, domicilio, localidad, provincia, codigo_postal, observaciones]:
+                control.value = ""
+
+        def save_employer(e=None):
+            if not empresa.value:
+                page.snack_bar = ft.SnackBar(ft.Text("Indica el nombre de la empresa o empleador"))
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            _save_client_contact(
+                {
+                    "cliente_id": cliente_id,
+                    "tipo_contacto": "Empleador / Empresa",
+                    "parentesco": "",
+                    "cliente_referenciado_id": None,
+                    "nombre": empresa.value or "",
+                    "primer_apellido": "",
+                    "segundo_apellido": "",
+                    "nie": "",
+                    "pasaporte": "",
+                    "dni": cif.value or "",
+                    "nacionalidad": "",
+                    "fecha_nacimiento": "",
+                    "telefono": telefono.value or "",
+                    "email": email.value or "",
+                    "estado_cliente": "",
+                    "domicilio_espana": domicilio.value or "",
+                    "localidad": localidad.value or "",
+                    "provincia": provincia.value or "",
+                    "codigo_postal": codigo_postal.value or "",
+                    "localidad_nacimiento": "",
+                    "pais_nacimiento": "",
+                    "nombre_padre": "",
+                    "nombre_madre": "",
+                    "estado_civil": "",
+                    "sexo": "",
+                    "observaciones": observaciones.value or "",
+                    "observaciones_internas": "",
+                }
+            )
+            close_employer_dialog()
+            content_container.content = build_empleadores_section()
+            page.update()
+
+        employer_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Nuevo empleador / empresa"),
+            content=ft.Column(
+                controls=[
+                    ft.Text("Datos empresa / empleador", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Row([empresa, cif], wrap=True, spacing=10),
+                    ft.Row([telefono, email], wrap=True, spacing=10),
+                    ft.Text("Dirección", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    domicilio,
+                    ft.Row([provincia, localidad, codigo_postal], wrap=True, spacing=10),
+                    observaciones,
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+                height=420,
+                width=760,
+            ),
+            actions=[
+                secondary_button("Cancelar", close_employer_dialog),
+                primary_button("Guardar empleador", save_employer),
+            ],
+        )
+
+        if employer_dialog not in page.overlay:
+            page.overlay.append(employer_dialog)
+
+        def open_new_employer(e=None):
+            clear_employer_form()
+            employer_dialog.open = True
+            page.update()
+
+        return ft.Column(
+            controls=[
+                ft.Text("Empleadores / Empresas", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text(
+                    "Empresas, empleadores o entidades vinculadas al cliente.",
+                    size=13,
+                    color=Q_MUTED,
+                ),
+                _section_card(
+                    "Empleadores",
+                    _render_contact_table(
+                        empleadores,
+                        "Este cliente no tiene empleadores o empresas vinculadas",
+                        open_new_employer,
+                        is_employer=True,
+                    ),
+                ),
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
     def build_historial_section():
         return ft.Column(
             controls=[
@@ -653,6 +1402,10 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             return build_cobros_section()
         if section == "documentos":
             return build_documentos_section()
+        if section == "contactos":
+            return build_contactos_section()
+        if section == "empleadores":
+            return build_empleadores_section()
         if section == "historial":
             return build_historial_section()
 
@@ -686,6 +1439,8 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         ("Hojas de encargo", "hojas"),
         ("Cobros", "cobros"),
         ("Documentos Box", "documentos"),
+        ("Contactos", "contactos"),
+        ("Empleadores", "empleadores"),
         ("Historial / relaciones", "historial"),
     ]
 
