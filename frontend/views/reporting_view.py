@@ -49,6 +49,22 @@ def _size_label(value):
     return f"{size} B"
 
 
+def _status_text(value):
+    value = str(value or "—")
+    color = Q_PRIMARY
+    if value in ("CRITICA", "ERROR", "DUPLICADO", "RESUELTO_DENEGADO"):
+        color = "#B42318"
+    if value in ("ALTA", "SIN CLASIFICAR", "PENDIENTE REVISION", "REQUERIDO"):
+        color = "#B54708"
+    return ft.Text(value, size=13, weight=ft.FontWeight.W_600, color=color)
+
+
+def _datetime_label(value):
+    if not value:
+        return "—"
+    return str(value)
+
+
 def _metric_card(title, value, subtitle=None):
     controls = [
         ft.Text(title, size=13, color=Q_MUTED, weight=ft.FontWeight.W_600),
@@ -115,6 +131,82 @@ def _table(headers, rows, height=260):
                             width=headers[index][1],
                         )
                         for index, control in enumerate(row)
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
+        )
+
+    table_inner = ft.Column(
+        width=total_width,
+        controls=[
+            ft.Container(
+                bgcolor="#F8FAFC",
+                border_radius=10,
+                padding=8,
+                content=header_row,
+            ),
+            ft.Container(
+                height=body_height,
+                content=ft.Column(
+                    controls=body_rows or [ft.Text("Sin datos disponibles.", size=13, color=Q_MUTED)],
+                    spacing=0,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+        ],
+        spacing=6,
+    )
+
+    return ft.Container(
+        height=height,
+        content=ft.Row(
+            controls=[table_inner],
+            scroll=ft.ScrollMode.AUTO,
+        ),
+    )
+
+
+def _selectable_table(headers, rows, height=260):
+    total_width = sum(int(width or 0) for _, width in headers) + (len(headers) - 1) * 8 + 24
+    body_height = max(120, int(height or 260) - 52)
+
+    header_row = ft.Row(
+        controls=[
+            ft.Container(
+                content=ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                width=width,
+            )
+            for label, width in headers
+        ],
+        spacing=8,
+    )
+
+    body_rows = []
+    for index, row in enumerate(rows):
+        meta = {}
+        cells = row
+        if row and isinstance(row[0], dict) and row[0].get("__row_meta__"):
+            meta = row[0]
+            cells = row[1:]
+
+        selected = bool(meta.get("selected"))
+        body_rows.append(
+            ft.Container(
+                padding=ft.padding.symmetric(vertical=8),
+                border=ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7")),
+                bgcolor="#EAF3FF" if selected else ("#FAFBFC" if index % 2 else "#FFFFFF"),
+                border_radius=8,
+                ink=bool(meta.get("on_click")),
+                on_click=meta.get("on_click"),
+                content=ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=control if isinstance(control, ft.Control) else ft.Text(str(control), size=12, color="#101828"),
+                            width=headers[cell_index][1],
+                        )
+                        for cell_index, control in enumerate(cells)
                     ],
                     spacing=8,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -435,88 +527,473 @@ def reporting_view(page: ft.Page):
         allow_free_text=True,
     )
 
-    def open_missing_folder_dialog(folder):
+    def open_missing_folder_dialog(folder, selected_folders=None, selected_index=0):
+        selected_folders = list(selected_folders or [folder])
+        if not selected_folders:
+            return
+        try:
+            selected_index = max(0, min(int(selected_index or 0), len(selected_folders) - 1))
+        except Exception:
+            selected_index = 0
+        folder = selected_folders[selected_index]
         ruta = folder.get("ruta") or ""
-        status = ft.Text("Actualizando ruta concreta antes de abrir ficha...", size=12, color=Q_MUTED)
-        content_box = ft.Container(
-            height=420,
-            content=ft.Column(
-                controls=[status],
-                spacing=8,
-                scroll=ft.ScrollMode.AUTO,
-            ),
+        if not ruta:
+            return
+
+        inspection_state = {
+            "selected_folder_path": ruta,
+            "inspection": None,
+            "inspection_stack": [],
+            "dialog_tab": "Documentación",
+            "selected_folders": selected_folders,
+            "selected_index": selected_index,
+        }
+
+        inspection_dialog_content = ft.Container(
+            width=1080,
+            height=720,
+            bgcolor="#FFFFFF",
+            border_radius=12,
+            padding=0,
         )
 
-        def close_dialog():
-            page.dialog.open = False
+        def close_dialog(e=None):
+            dialog.open = False
             page.update()
+
+        def go_prev_selected_folder(e=None):
+            selected = inspection_state.get("selected_folders") or []
+            if not selected:
+                return
+            current = int(inspection_state.get("selected_index") or 0)
+            next_index = max(0, current - 1)
+            inspection_state["selected_index"] = next_index
+            next_folder = selected[next_index]
+            inspection_state["inspection_stack"] = []
+            inspect_folder(next_folder.get("ruta"), push_history=False)
+
+        def go_next_selected_folder(e=None):
+            selected = inspection_state.get("selected_folders") or []
+            if not selected:
+                return
+            current = int(inspection_state.get("selected_index") or 0)
+            next_index = min(len(selected) - 1, current + 1)
+            inspection_state["selected_index"] = next_index
+            next_folder = selected[next_index]
+            inspection_state["inspection_stack"] = []
+            inspect_folder(next_folder.get("ruta"), push_history=False)
 
         dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text(folder.get("nombre_carpeta") or "Ficha carpeta"),
-            content=ft.Container(
-                width=900,
-                height=520,
-                content=ft.Column(
-                    controls=[
-                        ft.Text(ruta, size=11, color=Q_MUTED),
-                        content_box,
-                    ],
-                    spacing=12,
-                ),
-            ),
-            actions=[
-                ft.TextButton("Cerrar", on_click=lambda e: close_dialog()),
-            ],
+            title=ft.Text("Inspección documental Box", color=Q_PRIMARY_DARK, weight=ft.FontWeight.BOLD),
+            content=inspection_dialog_content,
+            actions=[],
         )
 
-        page.dialog = dialog
-        dialog.open = True
-        page.update()
+        def open_selected_folder(e=None):
+            try:
+                from backend.services import box_watch_service
+                box_watch_service.open_folder_in_explorer(inspection_state.get("selected_folder_path"))
+            except Exception as exc:
+                inspection_dialog_content.content = ft.Text(f"No se pudo abrir la carpeta: {exc}", color="#B42318")
+                page.update()
 
-        try:
-            from backend.services.box_watch_service import (
-                get_box_folder_inspection,
-                refresh_box_folder_before_inspection,
+        def export_selected_tree(e=None):
+            try:
+                from backend.services import box_watch_service
+                output_path = box_watch_service.export_folder_tree_to_txt(inspection_state.get("selected_folder_path"))
+                try:
+                    box_watch_service.open_export_folder_for_file(output_path)
+                except Exception:
+                    pass
+            except Exception as exc:
+                inspection_dialog_content.content = ft.Text(f"No se pudo exportar el árbol: {exc}", color="#B42318")
+                page.update()
+
+        def set_dialog_tab(tab):
+            inspection_state["dialog_tab"] = tab
+            refresh_inspection_dialog_content()
+            dialog.open = True
+            page.update()
+
+        def _inspection_nav_button(label, tab):
+            is_active = inspection_state.get("dialog_tab") == tab
+            return ft.Container(
+                content=ft.Text(
+                    label,
+                    size=13,
+                    weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.W_500,
+                    color=Q_PRIMARY_DARK if is_active else Q_MUTED,
+                ),
+                bgcolor="#EAF3FF" if is_active else "#FFFFFF",
+                border=ft.border.all(1, "#B9D7FF" if is_active else "#E4E7EC"),
+                border_radius=10,
+                padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                ink=True,
+                on_click=lambda e, t=tab: set_dialog_tab(t),
             )
 
+        def inspect_folder(folder_path, push_history=False):
             try:
-                refresh_box_folder_before_inspection(ruta, calculate_hash=False)
-                status.value = "Ruta actualizada. Revisando inventario..."
-            except Exception as refresh_exc:
-                status.value = f"No se pudo refrescar la ruta antes de inspeccionar: {refresh_exc}"
+                from backend.services import box_watch_service
 
-            inspection = get_box_folder_inspection(ruta)
+                current = inspection_state.get("selected_folder_path")
+                if push_history and current:
+                    stack = list(inspection_state.get("inspection_stack") or [])
+                    stack.append(current)
+                    inspection_state["inspection_stack"] = stack
+
+                inspection_state["selected_folder_path"] = folder_path or ""
+
+                # Refresco quirúrgico obligatorio antes de mostrar la ficha.
+                # Escanea SOLO esta carpeta/ruta para no perder archivos nuevos, renombrados o modificados.
+                box_watch_service.refresh_box_folder_before_inspection(folder_path, calculate_hash=False)
+
+                inspection_state["inspection"] = box_watch_service.get_box_folder_inspection(folder_path)
+                inspection_state["dialog_tab"] = "Documentación"
+                refresh_inspection_dialog_content()
+                dialog.open = True
+                page.update()
+            except Exception as exc:
+                inspection_dialog_content.content = ft.Text(f"No se pudo inspeccionar la carpeta: {exc}", color="#B42318")
+                dialog.open = True
+                page.update()
+
+        def go_back_inspection(e=None):
+            stack = list(inspection_state.get("inspection_stack") or [])
+            if not stack:
+                return
+            previous = stack.pop()
+            inspection_state["inspection_stack"] = stack
+            inspect_folder(previous, push_history=False)
+
+        def build_dialog_summary():
+            inspection = inspection_state.get("inspection") or {}
+            folder_data = inspection.get("folder") or {}
             summary = inspection.get("summary") or {}
+            fases = summary.get("fases") or {}
+            documentos = summary.get("documentos") or {}
+
+            fase_text = ", ".join([f"{k}: {v}" for k, v in list(fases.items())[:12]]) or "Sin fases detectadas"
+            doc_text = ", ".join([f"{k}: {v}" for k, v in list(documentos.items())[:14]]) or "Sin documentos detectados"
+
+            return ft.Column(
+                controls=[
+                    ft.Text(folder_data.get("nombre_carpeta") or inspection_state.get("selected_folder_path") or "Carpeta seleccionada", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text(folder_data.get("ruta") or inspection_state.get("selected_folder_path") or "—", size=12, color=Q_MUTED),
+                    ft.Row(
+                        controls=[
+                            _metric_card("Subcarpetas", summary.get("total_subcarpetas", 0)),
+                            _metric_card("Archivos directos", summary.get("total_archivos", 0)),
+                            _metric_card("Tipo carpeta", folder_data.get("tipo_detectado") or "—"),
+                            _metric_card("Última actividad", _datetime_label(folder_data.get("fecha_ultima_actividad"))),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Text("Fases detectadas", size=13, weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
+                    ft.Text(fase_text, size=12, color=Q_MUTED),
+                    ft.Text("Tipos documentales detectados", size=13, weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
+                    ft.Text(doc_text, size=12, color=Q_MUTED),
+                ],
+                spacing=10,
+            )
+
+        def build_dialog_documentacion():
+            inspection = inspection_state.get("inspection") or {}
+            folder_data = inspection.get("folder") or {}
             subfolders = inspection.get("subfolders") or []
             files = inspection.get("files") or []
+            current_path = folder_data.get("ruta") or inspection_state.get("selected_folder_path") or "—"
 
-            controls = [
-                status,
-                ft.Divider(),
-                ft.Text("Resumen", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                ft.Text(f"Subcarpetas directas: {summary.get('total_subcarpetas', 0)}", size=12),
-                ft.Text(f"Archivos directos: {summary.get('total_archivos', 0)}", size=12),
-                ft.Divider(),
-                ft.Text("Subcarpetas", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+            folder_controls = []
+            for child in subfolders:
+                is_para = str(child.get("nombre_carpeta") or "").strip().upper() == "PARA PRESENTAR"
+                folder_controls.append(
+                    ft.Container(
+                        padding=10,
+                        border_radius=10,
+                        border=ft.border.all(1, "#B9D7FF" if is_para else "#E4E7EC"),
+                        bgcolor="#EAF3FF" if is_para else "#F8FAFC",
+                        ink=True,
+                        on_click=lambda e, path=child.get("ruta"): inspect_folder(path, push_history=True),
+                        content=ft.Row(
+                            controls=[
+                                ft.Text("📁", size=20),
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(child.get("nombre_carpeta") or "—", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(child.get("ruta") or "", size=11, color=Q_MUTED, selectable=True),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                ft.Text("PARA PRESENTAR", size=11, color=Q_PRIMARY, weight=ft.FontWeight.BOLD, visible=is_para),
+                            ],
+                            spacing=10,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    )
+                )
+
+            file_controls = []
+            for item in files:
+                file_controls.append(
+                    ft.Container(
+                        padding=10,
+                        border_radius=10,
+                        border=ft.border.all(1, "#E4E7EC"),
+                        bgcolor="#FFFFFF",
+                        content=ft.Row(
+                            controls=[
+                                ft.Text("📄", size=18),
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(item.get("nombre_archivo") or "—", weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
+                                        ft.Text(item.get("tipo_detectado") or "SIN CLASIFICAR", size=11, color=Q_MUTED),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                ft.Text(_size_label(item.get("tamano_bytes")), color=Q_MUTED, size=12),
+                            ],
+                            spacing=10,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    )
+                )
+
+            return ft.Column(
+                width=760,
+                spacing=10,
+                controls=[
+                    ft.Text("Documentación Box", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text(
+                        "Explorador readonly de la carpeta inspeccionada. No crea, mueve, borra ni renombra documentos.",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, "#E4E7EC"),
+                        border_radius=12,
+                        padding=10,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Ruta actual", size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(current_path, selectable=True, size=12, color=Q_MUTED),
+                            ],
+                            spacing=4,
+                        ),
+                    ),
+                    ft.Row(
+                        controls=[
+                            _small_button("Volver atrás", go_back_inspection),
+                            _small_button("‹ Anterior seleccionada", go_prev_selected_folder),
+                            _small_button("Siguiente seleccionada ›", go_next_selected_folder),
+                            _small_button("Abrir carpeta Windows", open_selected_folder),
+                            _small_button("Exportar árbol TXT", export_selected_tree),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Divider(),
+                    ft.Text(f"Carpetas ({len(folder_controls)})", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    *(folder_controls or [ft.Text("No hay subcarpetas directas inventariadas.", color=Q_MUTED, size=13)]),
+                    ft.Text(f"Archivos ({len(file_controls)})", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    *(file_controls or [ft.Text("No hay archivos directos inventariados en esta carpeta.", color=Q_MUTED, size=13)]),
+                ],
+            )
+
+        def build_dialog_files():
+            inspection = inspection_state.get("inspection") or {}
+            files = inspection.get("files") or []
+
+            if not files:
+                return ft.Text("Esta carpeta no tiene archivos directos inventariados.", size=13, color=Q_MUTED)
+
+            headers = [
+                ("Archivo", 320),
+                ("Tipo", 170),
+                ("Estado", 140),
+                ("Ext.", 70),
+                ("Tamaño", 95),
+                ("Fecha modificación", 155),
             ]
 
-            for item in subfolders[:80]:
-                controls.append(ft.Text(f"📁 {item.get('nombre_carpeta') or '—'} · {item.get('tipo_detectado') or 'OTROS'}", size=12))
+            rows = []
+            for item in files:
+                rows.append([
+                    item.get("nombre_archivo") or "—",
+                    item.get("tipo_detectado") or "—",
+                    _status_text(item.get("estado") or "—"),
+                    item.get("extension") or "—",
+                    _size_label(item.get("tamano_bytes")),
+                    _datetime_label(item.get("fecha_modificacion")),
+                ])
 
-            controls.append(ft.Divider())
-            controls.append(ft.Text("Archivos", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK))
+            return _table(headers, rows, height=380)
 
-            for item in files[:120]:
-                controls.append(ft.Text(f"📄 {item.get('nombre_archivo') or '—'} · {item.get('tipo_detectado') or 'SIN CLASIFICAR'}", size=12))
+        def build_dialog_acciones():
+            action_controls = []
+            if inspection_state.get("inspection_stack"):
+                action_controls.append(_small_button("← Volver atrás", go_back_inspection))
 
-            content_box.content.controls = controls
-            page.update()
-        except Exception as exc:
-            content_box.content.controls = [
-                ft.Text(f"No se pudo abrir la ficha de carpeta: {exc}", size=13, color="#B42318")
+            action_controls.extend([
+                _small_button("Abrir carpeta Windows", open_selected_folder),
+                _small_button("Exportar árbol TXT", export_selected_tree),
+                _small_button("Cerrar", close_dialog),
+            ])
+
+            return ft.Column(
+                controls=[
+                    ft.Text("Acciones sobre la carpeta", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text("Acciones readonly. No crean, mueven, borran ni renombran documentos en Box.", size=12, color=Q_MUTED),
+                    ft.Row(controls=action_controls, spacing=8, wrap=True),
+                ],
+                spacing=12,
+            )
+
+        def refresh_inspection_dialog_content():
+            inspection = inspection_state.get("inspection") or {}
+            folder_data = inspection.get("folder") or {}
+
+            current_path = folder_data.get("ruta") or inspection_state.get("selected_folder_path") or "—"
+            current_name = folder_data.get("nombre_carpeta") or inspection_state.get("selected_folder_path") or "Carpeta seleccionada"
+            selected = inspection_state.get("selected_folders") or []
+            current_selected_index = int(inspection_state.get("selected_index") or 0)
+            selected_label = f"Ficha {current_selected_index + 1}/{len(selected)}" if len(selected) > 1 else ""
+
+            tab = inspection_state.get("dialog_tab") or "Resumen"
+            if tab == "Documentación":
+                body = build_dialog_documentacion()
+            elif tab == "Archivos":
+                body = build_dialog_files()
+            elif tab == "Acciones":
+                body = build_dialog_acciones()
+            else:
+                body = build_dialog_summary()
+
+            menu_items = [
+                ("Resumen", "Resumen"),
+                ("Documentación", "Documentación"),
+                ("Archivos", "Archivos"),
+                ("Acciones", "Acciones"),
             ]
-            page.update()
+
+            inspection_dialog_content.content = ft.Row(
+                controls=[
+                    ft.Container(
+                        width=240,
+                        height=700,
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, "#E4E7EC"),
+                        border_radius=14,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Menú documentación", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text("Navega por cada zona sin deslizar todo el diálogo.", size=12, color=Q_MUTED),
+                                ft.Divider(),
+                                *[_inspection_nav_button(label, tab_name) for label, tab_name in menu_items],
+                                ft.Divider(),
+                                _small_button("Abrir carpeta", open_selected_folder),
+                                _small_button("Cerrar", close_dialog),
+                            ],
+                            spacing=8,
+                            scroll=ft.ScrollMode.AUTO,
+                        ),
+                    ),
+                    ft.Container(
+                        width=810,
+                        height=700,
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, "#E4E7EC"),
+                        border_radius=14,
+                        padding=16,
+                        content=ft.Column(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        ft.Text("Documentación Box", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(current_name, size=13, color=Q_MUTED),
+                                        ft.Text(selected_label, size=12, color=Q_MUTED, visible=bool(selected_label)),
+                                        ft.Container(
+                                            content=_small_button("‹ Anterior", go_prev_selected_folder),
+                                            visible=len(selected) > 1,
+                                            opacity=1 if current_selected_index > 0 else 0.35,
+                                        ),
+                                        ft.Container(
+                                            content=_small_button("Siguiente ›", go_next_selected_folder),
+                                            visible=len(selected) > 1,
+                                            opacity=1 if current_selected_index < len(selected) - 1 else 0.35,
+                                        ),
+                                    ],
+                                    spacing=8,
+                                    wrap=True,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                                ft.Text(
+                                    "Explorador readonly de la carpeta inspeccionada. No crea, mueve, borra ni renombra documentos.",
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Container(
+                                    bgcolor="#F8FAFC",
+                                    border=ft.border.all(1, "#E4E7EC"),
+                                    border_radius=12,
+                                    padding=10,
+                                    content=ft.Column(
+                                        controls=[
+                                            ft.Text("Ruta actual", size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                            ft.Text(current_path, selectable=True, size=12, color=Q_MUTED),
+                                        ],
+                                        spacing=4,
+                                    ),
+                                ),
+                                ft.Container(
+                                    height=510,
+                                    bgcolor="#FFFFFF",
+                                    content=ft.Column(
+                                        controls=[body],
+                                        spacing=10,
+                                        scroll=ft.ScrollMode.AUTO,
+                                    ),
+                                ),
+                            ],
+                            spacing=12,
+                        ),
+                    ),
+                ],
+                spacing=14,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            )
+
+        try:
+            if dialog not in page.overlay:
+                page.overlay.append(dialog)
+        except Exception:
+            pass
+        dialog.open = True
+        inspection_dialog_content.content = ft.Container(
+            width=1080,
+            height=700,
+            bgcolor="#FFFFFF",
+            alignment=ft.Alignment(0, 0),
+            content=ft.Column(
+                controls=[
+                    ft.ProgressRing(),
+                    ft.Text("Escaneando solo esta ruta antes de abrir la ficha...", size=13, color=Q_MUTED),
+                    ft.Text(ruta, size=11, color=Q_MUTED, selectable=True),
+                ],
+                spacing=12,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+        page.update()
+
+        inspect_folder(ruta, push_history=False)
+
 
     def build_missing_presentation_table():
         all_rows = missing_presentation_rows_cache["rows"] or []
@@ -539,6 +1016,42 @@ def reporting_view(page: ft.Page):
         end_index = min(total_rows, start_index + page_size)
         visible_items = all_rows[start_index:end_index]
         rows = []
+
+        selected_items = [
+            item for item in all_rows
+            if str(item.get("ruta") or "") in selected_missing_presentation
+        ]
+
+        def open_single_missing_folder(folder_item):
+            path = str((folder_item or {}).get("ruta") or "")
+            if path and path not in selected_missing_presentation:
+                selected_missing_presentation.add(path)
+            current_selected = [
+                item for item in (missing_presentation_rows_cache["rows"] or [])
+                if str(item.get("ruta") or "") in selected_missing_presentation
+            ]
+            selected_index = 0
+            for idx, item in enumerate(current_selected):
+                if str(item.get("ruta") or "") == path:
+                    selected_index = idx
+                    break
+            open_missing_folder_dialog(folder_item, selected_folders=current_selected or [folder_item], selected_index=selected_index)
+
+        def open_selected_missing_folder(e=None):
+            current_paths = set(selected_missing_presentation or set())
+            current_selected = [
+                item for item in (missing_presentation_rows_cache["rows"] or [])
+                if str(item.get("ruta") or "") in current_paths
+            ]
+            if not current_selected:
+                table_container.content = _section(
+                    "Sin justificante presentación",
+                    ft.Text("Marca al menos una carpeta para abrir la ficha.", color="#B42318", size=13),
+                    subtitle="Carpetas raíz/expedientes donde no se detecta justificante principal de presentación.",
+                )
+                page.update()
+                return
+            open_missing_folder_dialog(current_selected[0], selected_folders=current_selected, selected_index=0)
 
         def set_missing_page(page_number):
             try:
@@ -591,10 +1104,24 @@ def reporting_view(page: ft.Page):
                     selected_missing_presentation.add(path)
                 else:
                     selected_missing_presentation.discard(path)
+                render_active_table()
+                nav_container.content = build_nav()
+                page.update()
+
+            selected = ruta in selected_missing_presentation
+
+            def toggle_row(e=None, path=ruta):
+                if path in selected_missing_presentation:
+                    selected_missing_presentation.discard(path)
+                else:
+                    selected_missing_presentation.add(path)
+                render_active_table()
+                nav_container.content = build_nav()
                 page.update()
 
             rows.append([
-                ft.Checkbox(value=ruta in selected_missing_presentation, on_change=toggle_one),
+                {"__row_meta__": True, "selected": selected, "on_click": toggle_row},
+                ft.Checkbox(value=selected, on_change=toggle_one),
                 ft.Text(item.get("tipo_expediente") or "—", size=12, weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
                 item.get("ruta_box") or "—",
                 item.get("nombre_carpeta") or "—",
@@ -602,7 +1129,7 @@ def reporting_view(page: ft.Page):
                 _number(item.get("total_subcarpetas")),
                 _safe_value(item.get("fecha_ultima_actividad")),
                 _safe_value(item.get("ultimo_escaneo")),
-                ft.TextButton("Abrir ficha", on_click=lambda e, folder=item: open_missing_folder_dialog(folder)),
+                ft.TextButton("Abrir", on_click=lambda e, folder=item: open_single_missing_folder(folder)),
             ])
 
         page_controls = [
@@ -663,6 +1190,11 @@ def reporting_view(page: ft.Page):
                         missing_route_filter.control,
                         _small_button("Cargar / filtrar", on_click=lambda e: load_missing_presentation(), icon=ft.Icons.SEARCH),
                         ft.Checkbox(label="Seleccionar página", on_change=toggle_all),
+                        ft.Container(
+                            content=_small_button("Abrir ficha", on_click=open_selected_missing_folder, icon=ft.Icons.FOLDER_OPEN),
+                            tooltip="Marca una o varias carpetas. Si hay varias, podrás navegar entre sus fichas.",
+                            opacity=1 if len(selected_items) >= 1 else 0.45,
+                        ),
                     ],
                     spacing=10,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -670,7 +1202,7 @@ def reporting_view(page: ft.Page):
                 (
                     ft.Column(
                         controls=[
-                            _table(
+                            _selectable_table(
                                 headers=[
                                     ("Sel.", 55),
                                     ("Tipo", 160),
@@ -680,7 +1212,7 @@ def reporting_view(page: ft.Page):
                                     ("Sub.", 70),
                                     ("Última actividad", 150),
                                     ("Último escaneo", 160),
-                                    ("Acción", 110),
+                                    ("Acción", 80),
                                 ],
                                 rows=rows,
                                 height=315,
