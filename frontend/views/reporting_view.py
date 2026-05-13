@@ -192,27 +192,31 @@ def _selectable_table(headers, rows, height=260):
             cells = row[1:]
 
         selected = bool(meta.get("selected"))
-        body_rows.append(
-            ft.Container(
-                padding=ft.padding.symmetric(vertical=8),
-                border=ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7")),
-                bgcolor="#EAF3FF" if selected else ("#FAFBFC" if index % 2 else "#FFFFFF"),
-                border_radius=8,
-                ink=bool(meta.get("on_click")),
-                on_click=meta.get("on_click"),
-                content=ft.Row(
-                    controls=[
-                        ft.Container(
-                            content=control if isinstance(control, ft.Control) else ft.Text(str(control), size=12, color="#101828"),
-                            width=headers[cell_index][1],
-                        )
-                        for cell_index, control in enumerate(cells)
-                    ],
-                    spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-            )
+        row_container = ft.Container(
+            padding=ft.padding.symmetric(vertical=8),
+            border=ft.border.only(bottom=ft.BorderSide(1, "#EEF2F7")),
+            bgcolor="#EAF3FF" if selected else ("#FAFBFC" if index % 2 else "#FFFFFF"),
+            border_radius=8,
+            ink=bool(meta.get("on_click")),
+            on_click=meta.get("on_click"),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=control if isinstance(control, ft.Control) else ft.Text(str(control), size=12, color="#101828"),
+                        width=headers[cell_index][1],
+                    )
+                    for cell_index, control in enumerate(cells)
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
         )
+        if meta.get("row_ref") is not None:
+            try:
+                meta["row_ref"]["control"] = row_container
+            except Exception:
+                pass
+        body_rows.append(row_container)
 
     table_inner = ft.Column(
         width=total_width,
@@ -373,6 +377,27 @@ def _small_button(label, on_click=None, icon=None):
     )
 
 
+def _icon_action(label, icon, on_click=None, disabled=False):
+    return ft.Container(
+        height=38,
+        border_radius=10,
+        border=ft.border.all(1, Q_BORDER),
+        bgcolor=Q_WHITE,
+        ink=not disabled,
+        opacity=0.40 if disabled else 1,
+        on_click=None if disabled else on_click,
+        padding=ft.padding.symmetric(horizontal=10, vertical=8),
+        content=ft.Row(
+            controls=[
+                ft.Icon(icon, size=16, color=Q_MUTED if disabled else Q_PRIMARY_DARK),
+                ft.Text(label, size=12, color=Q_MUTED if disabled else Q_PRIMARY_DARK, weight=ft.FontWeight.W_600),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
+
 def _pagination_button(label, on_click=None, active=False, disabled=False):
     return ft.Container(
         width=36,
@@ -506,6 +531,9 @@ def reporting_view(page: ft.Page):
         options=[ft.dropdown.Option(str(v)) for v in REPORTING_PAGE_SIZE_OPTIONS],
         value=str(REPORTING_PAGE_SIZE_DEFAULT),
     )
+    missing_selection_counter = ft.Text("Seleccionados: 0", size=12, color=Q_MUTED)
+    missing_open_button_holder = ft.Container(opacity=0.45)
+    missing_select_all_checkbox = ft.Checkbox(label="Seleccionar página")
     route_filter_options = []
     for route in routes_report or []:
         label = " · ".join([
@@ -789,8 +817,6 @@ def reporting_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             _small_button("Volver atrás", go_back_inspection),
-                            _small_button("‹ Anterior seleccionada", go_prev_selected_folder),
-                            _small_button("Siguiente seleccionada ›", go_next_selected_folder),
                             _small_button("Abrir carpeta Windows", open_selected_folder),
                             _small_button("Exportar árbol TXT", export_selected_tree),
                         ],
@@ -897,8 +923,13 @@ def reporting_view(page: ft.Page):
                                 ft.Divider(),
                                 *[_inspection_nav_button(label, tab_name) for label, tab_name in menu_items],
                                 ft.Divider(),
-                                _small_button("Abrir carpeta", open_selected_folder),
-                                _small_button("Cerrar", close_dialog),
+                                ft.Text(selected_label or "Ficha actual", size=12, color=Q_MUTED),
+                                _icon_action("Anterior", ft.Icons.ARROW_BACK, go_prev_selected_folder, disabled=not (len(selected) > 1 and current_selected_index > 0)),
+                                _icon_action("Siguiente", ft.Icons.ARROW_FORWARD, go_next_selected_folder, disabled=not (len(selected) > 1 and current_selected_index < len(selected) - 1)),
+                                _icon_action("Atrás carpeta", ft.Icons.KEYBOARD_RETURN, go_back_inspection, disabled=not bool(inspection_state.get("inspection_stack"))),
+                                ft.Divider(),
+                                _icon_action("Abrir carpeta", ft.Icons.FOLDER_OPEN, open_selected_folder),
+                                _icon_action("Cerrar", ft.Icons.CLOSE, close_dialog),
                             ],
                             spacing=8,
                             scroll=ft.ScrollMode.AUTO,
@@ -918,16 +949,6 @@ def reporting_view(page: ft.Page):
                                         ft.Text("Documentación Box", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                                         ft.Text(current_name, size=13, color=Q_MUTED),
                                         ft.Text(selected_label, size=12, color=Q_MUTED, visible=bool(selected_label)),
-                                        ft.Container(
-                                            content=_small_button("‹ Anterior", go_prev_selected_folder),
-                                            visible=len(selected) > 1,
-                                            opacity=1 if current_selected_index > 0 else 0.35,
-                                        ),
-                                        ft.Container(
-                                            content=_small_button("Siguiente ›", go_next_selected_folder),
-                                            visible=len(selected) > 1,
-                                            opacity=1 if current_selected_index < len(selected) - 1 else 0.35,
-                                        ),
                                     ],
                                     spacing=8,
                                     wrap=True,
@@ -1022,6 +1043,26 @@ def reporting_view(page: ft.Page):
             if str(item.get("ruta") or "") in selected_missing_presentation
         ]
 
+        def refresh_selection_controls():
+            selected_count = len(selected_missing_presentation)
+            missing_selection_counter.value = f"Seleccionados: {selected_count}"
+            missing_open_button_holder.opacity = 1 if selected_count >= 1 else 0.45
+            page.update()
+
+        def update_row_visual(row_ref, checkbox, selected, index):
+            try:
+                if checkbox is not None:
+                    checkbox.value = selected
+                control = (row_ref or {}).get("control")
+                if control is not None:
+                    control.bgcolor = "#EAF3FF" if selected else ("#FAFBFC" if index % 2 else "#FFFFFF")
+                    control.update()
+                if checkbox is not None:
+                    checkbox.update()
+            except Exception:
+                pass
+            refresh_selection_controls()
+
         def open_single_missing_folder(folder_item):
             path = str((folder_item or {}).get("ruta") or "")
             if path and path not in selected_missing_presentation:
@@ -1093,35 +1134,33 @@ def reporting_view(page: ft.Page):
                 for item in visible_items:
                     selected_missing_presentation.add(str(item.get("ruta") or ""))
             render_active_table()
-            nav_container.content = build_nav()
-            page.update()
+            refresh_selection_controls()
 
-        for item in visible_items:
+        for row_index, item in enumerate(visible_items):
             ruta = str(item.get("ruta") or "")
-
-            def toggle_one(e, path=ruta):
-                if e.control.value:
-                    selected_missing_presentation.add(path)
-                else:
-                    selected_missing_presentation.discard(path)
-                render_active_table()
-                nav_container.content = build_nav()
-                page.update()
-
+            row_ref = {"control": None}
             selected = ruta in selected_missing_presentation
+            checkbox = ft.Checkbox(value=selected)
 
-            def toggle_row(e=None, path=ruta):
-                if path in selected_missing_presentation:
-                    selected_missing_presentation.discard(path)
-                else:
+            def set_selected(path, value, row_ref=row_ref, checkbox=checkbox, index=row_index):
+                if value:
                     selected_missing_presentation.add(path)
-                render_active_table()
-                nav_container.content = build_nav()
-                page.update()
+                else:
+                    selected_missing_presentation.discard(path)
+                update_row_visual(row_ref, checkbox, value, index)
+
+            def toggle_one(e, path=ruta, row_ref=row_ref, checkbox=checkbox, index=row_index):
+                set_selected(path, bool(e.control.value), row_ref=row_ref, checkbox=checkbox, index=index)
+
+            def toggle_row(e=None, path=ruta, row_ref=row_ref, checkbox=checkbox, index=row_index):
+                new_value = path not in selected_missing_presentation
+                set_selected(path, new_value, row_ref=row_ref, checkbox=checkbox, index=index)
+
+            checkbox.on_change = toggle_one
 
             rows.append([
-                {"__row_meta__": True, "selected": selected, "on_click": toggle_row},
-                ft.Checkbox(value=selected, on_change=toggle_one),
+                {"__row_meta__": True, "selected": selected, "on_click": toggle_row, "row_ref": row_ref},
+                checkbox,
                 ft.Text(item.get("tipo_expediente") or "—", size=12, weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
                 item.get("ruta_box") or "—",
                 item.get("nombre_carpeta") or "—",
@@ -1161,6 +1200,16 @@ def reporting_view(page: ft.Page):
             _pagination_button("»", on_click=go_last, disabled=current_page >= total_pages),
         ])
 
+        missing_select_all_checkbox.on_change = toggle_all
+        missing_select_all_checkbox.value = bool(visible_items) and all(
+            str(item.get("ruta") or "") in selected_missing_presentation
+            for item in visible_items
+        )
+        missing_selection_counter.value = f"Seleccionados: {len(selected_missing_presentation)}"
+        missing_open_button_holder.content = _small_button("Abrir ficha", on_click=open_selected_missing_folder, icon=ft.Icons.FOLDER_OPEN)
+        missing_open_button_holder.tooltip = "Marca una o varias carpetas. Si hay varias, podrás navegar entre sus fichas."
+        missing_open_button_holder.opacity = 1 if len(selected_items) >= 1 else 0.45
+
         start_label = 0 if total_rows == 0 else start_index + 1
         pagination = ft.Container(
             bgcolor=Q_WHITE,
@@ -1170,7 +1219,7 @@ def reporting_view(page: ft.Page):
             content=ft.Row(
                 controls=[
                     ft.Text(
-                        f"Resultados: {total_rows} · Mostrando {start_label}-{end_index} · Seleccionados: {len(selected_missing_presentation)}",
+                        f"Resultados: {total_rows} · Mostrando {start_label}-{end_index}",
                         size=12,
                         color=Q_MUTED,
                     ),
@@ -1189,12 +1238,9 @@ def reporting_view(page: ft.Page):
                     controls=[
                         missing_route_filter.control,
                         _small_button("Cargar / filtrar", on_click=lambda e: load_missing_presentation(), icon=ft.Icons.SEARCH),
-                        ft.Checkbox(label="Seleccionar página", on_change=toggle_all),
-                        ft.Container(
-                            content=_small_button("Abrir ficha", on_click=open_selected_missing_folder, icon=ft.Icons.FOLDER_OPEN),
-                            tooltip="Marca una o varias carpetas. Si hay varias, podrás navegar entre sus fichas.",
-                            opacity=1 if len(selected_items) >= 1 else 0.45,
-                        ),
+                        missing_select_all_checkbox,
+                        missing_selection_counter,
+                        missing_open_button_holder,
                     ],
                     spacing=10,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
