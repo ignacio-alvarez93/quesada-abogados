@@ -1,8 +1,11 @@
 import flet as ft
 
+from frontend.components.app_autocomplete import AppAutocomplete
+
 from backend.services.box_report_service import (
     get_document_type_counts,
     get_global_report,
+    get_missing_presentation_report,
     get_recent_scan_runs,
     get_routes_report,
 )
@@ -258,6 +261,23 @@ def _timeline_chart(title, runs, height=170):
     )
 
 
+def _small_button(label, on_click=None, icon=None):
+    controls = []
+    if icon:
+        controls.append(ft.Icon(icon, size=16))
+    controls.append(ft.Text(label, size=12, weight=ft.FontWeight.W_600))
+
+    return ft.ElevatedButton(
+        content=ft.Row(
+            controls=controls,
+            spacing=6,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        on_click=on_click,
+        height=36,
+    )
+
+
 def reporting_view(page: ft.Page):
     try:
         global_report = get_global_report()
@@ -340,6 +360,215 @@ def reporting_view(page: ft.Page):
 
     table_container = ft.Container(expand=True)
     active_section = {"value": "Rutas"}
+    selected_missing_presentation = set()
+    missing_presentation_rows_cache = {"rows": [], "loaded": False}
+    route_filter_options = []
+    for route in routes_report or []:
+        label = " · ".join([
+            str(route.get("tipo_expediente") or "").strip(),
+            str(route.get("ruta_box") or "").strip(),
+        ]).strip(" ·")
+        if label and label not in route_filter_options:
+            route_filter_options.append(label)
+        ruta_box = str(route.get("ruta_box") or "").strip()
+        if ruta_box and ruta_box not in route_filter_options:
+            route_filter_options.append(ruta_box)
+
+    missing_route_filter = AppAutocomplete(
+        page=page,
+        label="Filtrar por ruta Box",
+        options=route_filter_options,
+        width=390,
+        max_results=8,
+        allow_free_text=True,
+    )
+
+    def open_missing_folder_dialog(folder):
+        ruta = folder.get("ruta") or ""
+        status = ft.Text("Actualizando ruta concreta antes de abrir ficha...", size=12, color=Q_MUTED)
+        content_box = ft.Container(
+            height=420,
+            content=ft.Column(
+                controls=[status],
+                spacing=8,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        )
+
+        def close_dialog():
+            page.dialog.open = False
+            page.update()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(folder.get("nombre_carpeta") or "Ficha carpeta"),
+            content=ft.Container(
+                width=900,
+                height=520,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(ruta, size=11, color=Q_MUTED),
+                        content_box,
+                    ],
+                    spacing=12,
+                ),
+            ),
+            actions=[
+                ft.TextButton("Cerrar", on_click=lambda e: close_dialog()),
+            ],
+        )
+
+        page.dialog = dialog
+        dialog.open = True
+        page.update()
+
+        try:
+            from backend.services.box_watch_service import (
+                get_box_folder_inspection,
+                refresh_box_folder_before_inspection,
+            )
+
+            try:
+                refresh_box_folder_before_inspection(ruta, calculate_hash=False)
+                status.value = "Ruta actualizada. Revisando inventario..."
+            except Exception as refresh_exc:
+                status.value = f"No se pudo refrescar la ruta antes de inspeccionar: {refresh_exc}"
+
+            inspection = get_box_folder_inspection(ruta)
+            summary = inspection.get("summary") or {}
+            subfolders = inspection.get("subfolders") or []
+            files = inspection.get("files") or []
+
+            controls = [
+                status,
+                ft.Divider(),
+                ft.Text("Resumen", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text(f"Subcarpetas directas: {summary.get('total_subcarpetas', 0)}", size=12),
+                ft.Text(f"Archivos directos: {summary.get('total_archivos', 0)}", size=12),
+                ft.Divider(),
+                ft.Text("Subcarpetas", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+            ]
+
+            for item in subfolders[:80]:
+                controls.append(ft.Text(f"📁 {item.get('nombre_carpeta') or '—'} · {item.get('tipo_detectado') or 'OTROS'}", size=12))
+
+            controls.append(ft.Divider())
+            controls.append(ft.Text("Archivos", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK))
+
+            for item in files[:120]:
+                controls.append(ft.Text(f"📄 {item.get('nombre_archivo') or '—'} · {item.get('tipo_detectado') or 'SIN CLASIFICAR'}", size=12))
+
+            content_box.content.controls = controls
+            page.update()
+        except Exception as exc:
+            content_box.content.controls = [
+                ft.Text(f"No se pudo abrir la ficha de carpeta: {exc}", size=13, color="#B42318")
+            ]
+            page.update()
+
+    def build_missing_presentation_table():
+        rows = []
+
+        def toggle_all(e):
+            selected_missing_presentation.clear()
+            if bool(e.control.value):
+                for item in missing_presentation_rows_cache["rows"]:
+                    selected_missing_presentation.add(str(item.get("ruta") or ""))
+            render_active_table()
+            nav_container.content = build_nav()
+            page.update()
+
+        for item in missing_presentation_rows_cache["rows"]:
+            ruta = str(item.get("ruta") or "")
+
+            def toggle_one(e, path=ruta):
+                if e.control.value:
+                    selected_missing_presentation.add(path)
+                else:
+                    selected_missing_presentation.discard(path)
+                page.update()
+
+            rows.append([
+                ft.Checkbox(value=ruta in selected_missing_presentation, on_change=toggle_one),
+                ft.Text(item.get("tipo_expediente") or "—", size=12, weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
+                item.get("ruta_box") or "—",
+                item.get("nombre_carpeta") or "—",
+                _number(item.get("total_archivos")),
+                _number(item.get("total_subcarpetas")),
+                _safe_value(item.get("fecha_ultima_actividad")),
+                _safe_value(item.get("ultimo_escaneo")),
+                ft.TextButton("Abrir ficha", on_click=lambda e, folder=item: open_missing_folder_dialog(folder)),
+            ])
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        missing_route_filter.control,
+                        _small_button("Cargar / filtrar", on_click=lambda e: load_missing_presentation(), icon=ft.Icons.SEARCH),
+                        ft.Checkbox(label="Seleccionar todos", on_change=toggle_all),
+                        ft.Text(f"Seleccionados: {len(selected_missing_presentation)}", size=12, color=Q_MUTED),
+                    ],
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                (
+                    _table(
+                        headers=[
+                            ("Sel.", 55),
+                            ("Tipo", 160),
+                            ("Ruta Box", 220),
+                            ("Carpeta raíz", 250),
+                            ("Arch.", 70),
+                            ("Sub.", 70),
+                            ("Última actividad", 150),
+                            ("Último escaneo", 160),
+                            ("Acción", 110),
+                        ],
+                        rows=rows,
+                        height=405,
+                    )
+                    if rows
+                    else ft.Container(
+                        height=405,
+                        content=ft.Text("No se encontraron carpetas sin justificante de presentación para ese filtro.", size=13, color=Q_MUTED),
+                    )
+                ) if missing_presentation_rows_cache["loaded"] else ft.Container(
+                    height=405,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Pulsa “Cargar / filtrar” para consultar carpetas sin justificante de presentación.", size=13, color=Q_MUTED),
+                            ft.Text("La consulta se carga bajo demanda para evitar bloquear Reporting.", size=12, color=Q_MUTED),
+                        ],
+                        spacing=8,
+                    ),
+                ),
+            ],
+            spacing=10,
+        )
+
+    def load_missing_presentation():
+        try:
+            missing_presentation_rows_cache["rows"] = get_missing_presentation_report(
+                route_filter=missing_route_filter.get_value(),
+                limit=300,
+            )
+            missing_presentation_rows_cache["loaded"] = True
+            selected_missing_presentation.clear()
+        except Exception as exc:
+            missing_presentation_rows_cache["rows"] = []
+            missing_presentation_rows_cache["loaded"] = True
+            table_container.content = _section(
+                "Sin justificante presentación",
+                ft.Text(f"No se pudo cargar la tabla: {exc}", color="#B42318", size=13),
+                subtitle="Carpetas raíz sin justificante de presentación detectado.",
+            )
+            page.update()
+            return
+
+        render_active_table()
+        nav_container.content = build_nav()
+        page.update()
 
     table_sections = {
         "Rutas": {
@@ -362,6 +591,11 @@ def reporting_view(page: ft.Page):
                 rows=routes_rows,
                 height=460,
             ),
+        },
+        "SinPresentacion": {
+            "title": "Sin justificante presentación",
+            "subtitle": "Carpetas raíz/expedientes donde no se detecta justificante principal de presentación.",
+            "table": build_missing_presentation_table(),
         },
         "Tipos": {
             "title": "Tipos documentales detectados",
@@ -406,7 +640,15 @@ def reporting_view(page: ft.Page):
     }
 
     def render_active_table():
-        section = table_sections.get(active_section["value"], table_sections["Rutas"])
+        if active_section["value"] == "SinPresentacion":
+            section = {
+                "title": "Sin justificante presentación",
+                "subtitle": "Carpetas raíz/expedientes donde no se detecta justificante principal de presentación.",
+                "table": build_missing_presentation_table(),
+            }
+        else:
+            section = table_sections.get(active_section["value"], table_sections["Rutas"])
+
         table_container.content = _section(
             section["title"],
             section["table"],
@@ -432,6 +674,7 @@ def reporting_view(page: ft.Page):
                     ft.Text("Selecciona el bloque de datos.", size=12, color=Q_MUTED),
                     ft.Divider(),
                     _nav_button("Resumen rutas Box", active_section["value"] == "Rutas", lambda e: set_active_table("Rutas")),
+                    _nav_button("Sin presentación", active_section["value"] == "SinPresentacion", lambda e: set_active_table("SinPresentacion")),
                     _nav_button("Tipos detectados", active_section["value"] == "Tipos", lambda e: set_active_table("Tipos")),
                     _nav_button("Últimos escaneos", active_section["value"] == "Escaneos", lambda e: set_active_table("Escaneos")),
                     _nav_button("Evolución temporal", active_section["value"] == "Evolución", lambda e: set_active_table("Evolución")),

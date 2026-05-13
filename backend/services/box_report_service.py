@@ -8,6 +8,7 @@ Solo lectura:
 - Lee el inventario SQLite existente de Box Watch.
 """
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -465,3 +466,135 @@ def get_focus_documents(limit=80):
             list(focus) + [int(limit or 80)],
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
+
+def _reporting_filter_text(value):
+    text = str(value or "").replace("\\", "/").replace("·", " ").lower().strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def _route_matches_filter(route, route_filter=None):
+    """
+    Filtro tolerante:
+    - acepta texto libre;
+    - acepta opción de autocomplete tipo 'TRÁMITE · Box/...';
+    - no depende de coincidencia exacta.
+    """
+    query = _reporting_filter_text(route_filter)
+    if not query:
+        return True
+
+    haystack = _reporting_filter_text(" ".join([
+        str((route or {}).get("tipo_expediente_nombre") or ""),
+        str((route or {}).get("ruta_box") or ""),
+        str((route or {}).get("ruta_resuelta") or ""),
+    ]))
+
+    tokens = [t for t in re.split(r"[\s/>]+", query) if len(t) >= 2]
+    if not tokens:
+        return True
+
+    # Coincidencia flexible: basta con que todos los tokens significativos estén.
+    return all(token in haystack for token in tokens)
+
+
+def _root_folder_rows_for_route(conn, route, limit=500):
+    """
+    Devuelve carpetas raíz usando la lógica robusta ya validada en Box Watch.
+    Motivo: las rutas Windows/Box pueden estar guardadas de varias formas en SQLite.
+    """
+    try:
+        from backend.services.box_watch_service import list_root_folders_sql_page_for_route_id
+
+        data = list_root_folders_sql_page_for_route_id(
+            route.get("id"),
+            ruta_contains=None,
+            page=1,
+            page_size=min(int(limit or 500), 500),
+            sort_by="Cliente",
+            sort_dir="Ascendente",
+        )
+        rows = data.get("rows") or []
+    except Exception:
+        rows = []
+
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["ruta_box"] = route.get("ruta_box") or item.get("config_route_relative") or "—"
+        item["tipo_expediente"] = route.get("tipo_expediente_nombre") or "—"
+        item["ruta_resuelta"] = route.get("ruta_resuelta") or item.get("config_route_resolved") or ""
+        result.append(item)
+
+    return result[: int(limit or 500)]
+
+
+def _root_has_matching_item(conn, root_path, condition_sql):
+    root = _norm_path(root_path or "")
+    if not root:
+        return False
+
+    norm_ruta = "REPLACE(ruta, char(92), '/')"
+    sql = f"""
+        SELECT 1
+        FROM box_watch_items
+        WHERE {_active_condition()}
+          AND ({norm_ruta} = ? OR {norm_ruta} LIKE ?)
+          AND {condition_sql}
+        LIMIT 1
+    """
+    return conn.execute(sql, (root, root + "/%")).fetchone() is not None
+
+
+def get_missing_presentation_report(route_filter=None, limit=300):
+    """
+    Carpetas raíz sin justificante de presentación principal.
+
+    Carga bajo demanda:
+    - no se ejecuta al abrir Reporting;
+    - usa carpetas raíz robustas de Box Watch;
+    - no escanea;
+    - no modifica SQLite ni Box.
+    """
+    try:
+        routes = config_service.get_box_rutas(active_only=True, include_resolved=True)
+    except Exception:
+        routes = []
+
+    max_rows = int(limit or 300)
+    result = []
+
+    with _connect() as conn:
+        for route in routes:
+            if not _route_matches_filter(route, route_filter):
+                continue
+
+            roots = _root_folder_rows_for_route(conn, route, limit=10000)
+            for root in roots:
+                root_path = root.get("ruta")
+                if not root_path:
+                    continue
+
+                if _root_has_matching_item(conn, root_path, _justificante_presentacion_sql()):
+                    continue
+
+                item = dict(root)
+                item["tiene_justificante_presentacion"] = False
+                item["ultimo_escaneo"] = item.get("ultimo_escaneo") or item.get("last_scan") or _scalar(
+                    conn,
+                    """
+                    SELECT COALESCE(MAX(fecha_fin), MAX(fecha_inicio))
+                    FROM box_watch_scan_runs
+                    WHERE REPLACE(ruta_base, char(92), '/') = ?
+                       OR ? LIKE REPLACE(ruta_base, char(92), '/') || '/%'
+                    """,
+                    [_norm_path(item.get("ruta_resuelta")), _norm_path(root_path)],
+                    default="Sin escaneos",
+                )
+                result.append(item)
+
+                if len(result) >= max_rows:
+                    return result
+
+    return result
+
