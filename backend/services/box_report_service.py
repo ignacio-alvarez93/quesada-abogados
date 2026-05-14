@@ -339,15 +339,6 @@ def get_document_type_counts(limit=50):
 
 
 def _route_report_for(conn, route):
-    """
-    Resumen por ruta Box alineado con la tabla Sin presentación.
-
-    Cambio clave:
-    - carpetas_raiz = mismas carpetas raíz que usa Sin presentación;
-    - justificantes_presentacion = carpetas raíz con justificante válido;
-    - sin_presentacion = carpetas raíz sin justificante válido;
-    - porcentaje_presentados se calcula sobre carpetas raíz evaluables.
-    """
     resolved = _norm_path(route.get("ruta_resuelta") or "")
     if not resolved:
         return None
@@ -359,6 +350,7 @@ def _route_report_for(conn, route):
 
     total_archivos = _scalar(conn, f"SELECT COUNT(*) FROM box_watch_items WHERE {_active_condition()} AND {item_filter}", item_params)
     total_carpetas = _scalar(conn, f"SELECT COUNT(*) FROM box_watch_folders WHERE {_active_condition()} AND {folder_filter}", folder_params)
+    carpetas_raiz = _count_root_folders(conn, resolved)
     total_bytes = _scalar(conn, f"SELECT COALESCE(SUM(tamano_bytes), 0) FROM box_watch_items WHERE {_active_condition()} AND {item_filter}", item_params)
 
     rows = conn.execute(
@@ -386,17 +378,13 @@ def _route_report_for(conn, route):
         default="Sin escaneos",
     )
 
-    root_rows = _root_folder_rows_for_route_full(conn, route, limit=10000)
-    carpetas_raiz = len(root_rows)
-
-    presentadas = _count_roots_with_matching_items(
+    justificantes_presentacion = _count_justificantes_presentacion(
         conn,
-        root_rows,
-        _justificante_presentacion_sql(),
+        item_filter,
+        item_params,
+        route_base=resolved,
+        distinct_root=True,
     )
-
-    sin_presentacion = max(0, carpetas_raiz - presentadas)
-
     justificantes_tasa = _count_justificantes_tasa(
         conn,
         item_filter,
@@ -415,14 +403,13 @@ def _route_report_for(conn, route):
         "total_archivos": total_archivos,
         "total_bytes": total_bytes,
         "pasaportes": type_map.get("PASAPORTE", 0) + type_map.get("PASAPORTE_ACTUAL", 0) + type_map.get("PASAPORTE_ANTERIOR", 0),
-        "justificantes_presentacion": presentadas,
-        "sin_presentacion": sin_presentacion,
+        "justificantes_presentacion": justificantes_presentacion,
         "justificantes_tasa": justificantes_tasa,
         "requerimientos": requerimientos,
         "tasas": type_map.get("TASA", 0),
         "formularios_ex": type_map.get("FORMULARIO_EXTRANJERIA", 0),
         "sin_clasificar": type_map.get("SIN CLASIFICAR", 0),
-        "porcentaje_presentados": _percent(presentadas, carpetas_raiz),
+        "porcentaje_presentados": _percent(justificantes_presentacion, carpetas_raiz),
         "porcentaje_requerimientos": _percent(requerimientos, carpetas_raiz),
         "ultimo_escaneo": last_scan,
     }
@@ -511,65 +498,6 @@ def _route_matches_filter(route, route_filter=None):
     return all(token in haystack for token in tokens)
 
 
-def _root_folder_rows_for_route_full(conn, route, limit=10000):
-    """
-    Devuelve carpetas raíz de una ruta usando el mismo motor robusto que la tabla
-    Sin presentación, paginando si hay más de 500.
-
-    Esta función es la base común para:
-    - Resumen rutas Box
-    - Sin presentación
-    """
-    try:
-        from backend.services.box_watch_service import list_root_folders_sql_page_for_route_id
-
-        page_size = 500
-        first = list_root_folders_sql_page_for_route_id(
-            route.get("id"),
-            ruta_contains=None,
-            page=1,
-            page_size=page_size,
-            sort_by="Cliente",
-            sort_dir="Ascendente",
-        )
-        rows = list(first.get("rows") or [])
-        total = int(first.get("total") or len(rows))
-
-        page = 2
-        while len(rows) < total and len(rows) < int(limit or 10000):
-            data = list_root_folders_sql_page_for_route_id(
-                route.get("id"),
-                ruta_contains=None,
-                page=page,
-                page_size=page_size,
-                sort_by="Cliente",
-                sort_dir="Ascendente",
-            )
-            chunk = list(data.get("rows") or [])
-            if not chunk:
-                break
-            rows.extend(chunk)
-            page += 1
-
-    except Exception:
-        rows = []
-
-    result = []
-    seen = set()
-    for row in rows[: int(limit or 10000)]:
-        item = dict(row)
-        ruta = _norm_path(item.get("ruta"))
-        if not ruta or ruta in seen:
-            continue
-        seen.add(ruta)
-        item["ruta_box"] = route.get("ruta_box") or item.get("config_route_relative") or "—"
-        item["tipo_expediente"] = route.get("tipo_expediente_nombre") or "—"
-        item["ruta_resuelta"] = route.get("ruta_resuelta") or item.get("config_route_resolved") or ""
-        result.append(item)
-
-    return result
-
-
 def _root_folder_rows_for_route(conn, route, limit=500):
     """
     Devuelve carpetas raíz usando la lógica robusta ya validada en Box Watch.
@@ -602,57 +530,68 @@ def _root_folder_rows_for_route(conn, route, limit=500):
 
 
 
-def _count_roots_with_matching_items(conn, root_rows, condition_sql):
+
+def _root_folder_rows_for_route_full(conn, route, limit=10000):
     """
-    Cuenta carpetas raíz con documento coincidente usando una sola consulta.
+    Compatibilidad para reporting avanzado.
 
-    Evita que Resumen rutas Box haga 1 SELECT por carpeta al abrir Reporting.
-    Mantiene el mismo criterio documental que Sin presentación.
+    Devuelve todas las carpetas raíz de una ruta usando el motor paginado de Box Watch
+    si está disponible, y cae al motor anterior si no.
+    No escanea Box. No modifica SQLite.
     """
-    roots = []
-    for root in root_rows or []:
-        ruta = _norm_path((root or {}).get("ruta"))
-        if ruta:
-            roots.append(ruta)
+    try:
+        from backend.services.box_watch_service import list_root_folders_sql_page_for_route_id
 
-    if not roots:
-        return 0
+        page_size = 500
+        page = 1
+        rows = []
+        total = None
 
-    # Prefijo común para limitar SQLite a la ruta/rama relevante.
-    common = roots[0]
-    for ruta in roots[1:]:
-        while common and not ruta.startswith(common):
-            common = common.rsplit("/", 1)[0] if "/" in common else ""
-        if not common:
-            break
+        while len(rows) < int(limit or 10000):
+            data = list_root_folders_sql_page_for_route_id(
+                route.get("id"),
+                ruta_contains=None,
+                page=page,
+                page_size=page_size,
+                sort_by="Cliente",
+                sort_dir="Ascendente",
+            )
+            chunk = list(data.get("rows") or [])
+            if total is None:
+                total = int(data.get("total") or len(chunk))
 
-    if not common:
-        common = roots[0].rsplit("/", 1)[0] if "/" in roots[0] else roots[0]
-
-    norm_ruta = "REPLACE(ruta, char(92), '/')"
-    rows = conn.execute(
-        f"""
-        SELECT DISTINCT {norm_ruta} AS ruta_norm
-        FROM box_watch_items
-        WHERE {_active_condition()}
-          AND ({norm_ruta} = ? OR {norm_ruta} LIKE ?)
-          AND {condition_sql}
-        """,
-        (common, common + "/%"),
-    ).fetchall()
-
-    matched = set()
-    roots_sorted = sorted(set(roots), key=len, reverse=True)
-
-    for row in rows:
-        item_path = _norm_path(row["ruta_norm"])
-        for root in roots_sorted:
-            if item_path == root or item_path.startswith(root + "/"):
-                matched.add(root)
+            if not chunk:
                 break
 
-    return len(matched)
+            rows.extend(chunk)
 
+            if len(rows) >= total:
+                break
+
+            page += 1
+
+    except Exception:
+        rows = _root_folder_rows_for_route(conn, route, limit=limit)
+
+    result = []
+    seen = set()
+
+    for row in rows[: int(limit or 10000)]:
+        item = dict(row)
+        ruta = _norm_path(item.get("ruta"))
+
+        if not ruta or ruta in seen:
+            continue
+
+        seen.add(ruta)
+
+        item["ruta_box"] = route.get("ruta_box") or item.get("config_route_relative") or "—"
+        item["tipo_expediente"] = route.get("tipo_expediente_nombre") or "—"
+        item["ruta_resuelta"] = route.get("ruta_resuelta") or item.get("config_route_resolved") or ""
+
+        result.append(item)
+
+    return result
 
 def _root_has_matching_item(conn, root_path, condition_sql):
     root = _norm_path(root_path or "")
@@ -694,7 +633,7 @@ def get_missing_presentation_report(route_filter=None, limit=300):
             if not _route_matches_filter(route, route_filter):
                 continue
 
-            roots = _root_folder_rows_for_route_full(conn, route, limit=10000)
+            roots = _root_folder_rows_for_route(conn, route, limit=10000)
             for root in roots:
                 root_path = root.get("ruta")
                 if not root_path:
@@ -723,3 +662,117 @@ def get_missing_presentation_report(route_filter=None, limit=300):
 
     return result
 
+
+
+
+def _req_tasa_folder_sql():
+    ruta = _normalize_sql_text("ruta")
+    return f"""
+    (
+        {ruta} LIKE '%/req tasa%'
+        OR {ruta} LIKE '%/req tasas%'
+        OR {ruta} LIKE '%/requerimiento tasa%'
+        OR {ruta} LIKE '%/requerimiento tasas%'
+        OR {ruta} LIKE '%/tasa%'
+        OR {ruta} LIKE '%/tasas%'
+    )
+    """
+
+
+def _requerimiento_sql():
+    nombre = _normalize_sql_text("nombre_archivo")
+    ruta = _normalize_sql_text("ruta")
+    return f"""
+    (
+        COALESCE(NULLIF(TRIM(tipo_detectado), ''), estado, 'SIN CLASIFICAR') IN ('REQUERIMIENTO', 'REQUERIMIENTO_TASA')
+        OR {nombre} LIKE '%requerimiento%'
+        OR {nombre} LIKE '%subsanacion%'
+        OR {nombre} LIKE '%subsanar%'
+        OR {ruta} LIKE '%/requerimiento%'
+        OR {ruta} LIKE '%/req%'
+        OR {ruta} LIKE '%/subsanar%'
+        OR {ruta} LIKE '%/subsanacion%'
+    )
+    """
+
+
+def _build_root_folder_report(route_filter=None, limit=10000, include_when=None):
+    """
+    Constructor común eficiente para tablas reporting por carpeta raíz.
+    No escanea ni modifica Box/SQLite.
+    """
+    try:
+        routes = config_service.get_box_rutas(active_only=True, include_resolved=True)
+    except Exception:
+        routes = []
+
+    max_rows = int(limit or 10000)
+    result = []
+
+    with _connect() as conn:
+        for route in routes:
+            if not _route_matches_filter(route, route_filter):
+                continue
+
+            roots = _root_folder_rows_for_route_full(conn, route, limit=10000)
+            for root in roots:
+                root_path = root.get("ruta")
+                if not root_path:
+                    continue
+
+                try:
+                    include = bool(include_when(conn, root_path)) if include_when else True
+                except Exception:
+                    include = False
+
+                if not include:
+                    continue
+
+                item = dict(root)
+                item["ultimo_escaneo"] = item.get("ultimo_escaneo") or item.get("last_scan") or _scalar(
+                    conn,
+                    """
+                    SELECT COALESCE(MAX(fecha_fin), MAX(fecha_inicio))
+                    FROM box_watch_scan_runs
+                    WHERE REPLACE(ruta_base, char(92), '/') = ?
+                       OR ? LIKE REPLACE(ruta_base, char(92), '/') || '/%'
+                    """,
+                    [_norm_path(item.get("ruta_resuelta")), _norm_path(root_path)],
+                    default="Sin escaneos",
+                )
+                result.append(item)
+
+                if len(result) >= max_rows:
+                    return result
+
+    return result
+
+
+def get_presented_report(route_filter=None, limit=10000):
+    """Carpetas raíz con justificante de presentación válido."""
+    return _build_root_folder_report(
+        route_filter=route_filter,
+        limit=limit,
+        include_when=lambda conn, root_path: _root_has_matching_item(conn, root_path, _justificante_presentacion_sql()),
+    )
+
+
+def get_req_tasa_without_justificante_report(route_filter=None, limit=10000):
+    """Carpetas raíz con REQ/TASA pero sin justificante de tasa."""
+    return _build_root_folder_report(
+        route_filter=route_filter,
+        limit=limit,
+        include_when=lambda conn, root_path: (
+            _root_has_matching_item(conn, root_path, _req_tasa_folder_sql())
+            and not _root_has_matching_item(conn, root_path, _justificante_tasa_sql())
+        ),
+    )
+
+
+def get_requirements_report(route_filter=None, limit=10000):
+    """Carpetas raíz con requerimientos detectados."""
+    return _build_root_folder_report(
+        route_filter=route_filter,
+        limit=limit,
+        include_when=lambda conn, root_path: _root_has_matching_item(conn, root_path, _requerimiento_sql()),
+    )

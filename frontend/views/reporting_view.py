@@ -6,6 +6,9 @@ from backend.services.box_report_service import (
     get_document_type_counts,
     get_global_report,
     get_missing_presentation_report,
+    get_presented_report,
+    get_req_tasa_without_justificante_report,
+    get_requirements_report,
     get_recent_scan_runs,
     get_routes_report,
 )
@@ -475,7 +478,6 @@ def reporting_view(page: ft.Page):
             _number(route.get("carpetas_raiz") or route.get("total_carpetas")),
             _number(route.get("pasaportes")),
             _number(route.get("justificantes_presentacion")),
-            _number(route.get("sin_presentacion")),
             _number(route.get("justificantes_tasa")),
             _number(route.get("requerimientos")),
             f"{float(route.get('porcentaje_presentados') or 0):.1f} %",
@@ -525,6 +527,9 @@ def reporting_view(page: ft.Page):
     active_section = {"value": "Rutas"}
     selected_missing_presentation = set()
     missing_presentation_rows_cache = {"rows": [], "loaded": False}
+    presented_rows_cache = {"rows": [], "loaded": False}
+    req_tasa_rows_cache = {"rows": [], "loaded": False}
+    requirements_rows_cache = {"rows": [], "loaded": False}
     missing_presentation_page = {"value": 1}
     missing_presentation_page_size = {"value": REPORTING_PAGE_SIZE_DEFAULT}
     missing_page_size_dd = ft.Dropdown(
@@ -1021,8 +1026,19 @@ def reporting_view(page: ft.Page):
         inspect_folder(ruta, push_history=False)
 
 
-    def build_missing_presentation_table():
-        all_rows = missing_presentation_rows_cache["rows"] or []
+    def load_active_folder_table():
+        current = active_section["value"]
+        if current == "Presentadas":
+            load_presented()
+        elif current == "ReqTasaSinJustificante":
+            load_req_tasa_without_justificante()
+        elif current == "Requerimientos":
+            load_requirements()
+        else:
+            load_missing_presentation()
+
+    def build_folder_table(cache, empty_text):
+        all_rows = cache["rows"] or []
 
         try:
             page_size = int(missing_presentation_page_size["value"] or REPORTING_PAGE_SIZE_DEFAULT)
@@ -1053,7 +1069,7 @@ def reporting_view(page: ft.Page):
             if path and path not in selected_missing_presentation:
                 selected_missing_presentation.add(path)
             current_selected = [
-                item for item in (missing_presentation_rows_cache["rows"] or [])
+                item for item in (cache["rows"] or [])
                 if str(item.get("ruta") or "") in selected_missing_presentation
             ]
             selected_index = 0
@@ -1066,7 +1082,7 @@ def reporting_view(page: ft.Page):
         def open_selected_missing_folder(e=None):
             current_paths = set(selected_missing_presentation or set())
             current_selected = [
-                item for item in (missing_presentation_rows_cache["rows"] or [])
+                item for item in (cache["rows"] or [])
                 if str(item.get("ruta") or "") in current_paths
             ]
             if not current_selected:
@@ -1214,7 +1230,7 @@ def reporting_view(page: ft.Page):
                 ft.Row(
                     controls=[
                         missing_route_filter.control,
-                        _small_button("Cargar / filtrar", on_click=lambda e: load_missing_presentation(), icon=ft.Icons.SEARCH),
+                        _small_button("Cargar / filtrar", on_click=lambda e: load_active_folder_table(), icon=ft.Icons.SEARCH),
                         ft.Checkbox(label="Seleccionar página", on_change=toggle_all),
                         ft.Container(
                             content=_small_button("Abrir ficha", on_click=open_selected_missing_folder, icon=ft.Icons.FOLDER_OPEN),
@@ -1250,13 +1266,13 @@ def reporting_view(page: ft.Page):
                     if rows
                     else ft.Container(
                         height=340,
-                        content=ft.Text("No se encontraron carpetas sin justificante de presentación para ese filtro.", size=13, color=Q_MUTED),
+                        content=ft.Text(empty_text, size=13, color=Q_MUTED),
                     )
-                ) if missing_presentation_rows_cache["loaded"] else ft.Container(
+                ) if cache["loaded"] else ft.Container(
                     height=405,
                     content=ft.Column(
                         controls=[
-                            ft.Text("Pulsa “Cargar / filtrar” para consultar carpetas sin justificante de presentación.", size=13, color=Q_MUTED),
+                            ft.Text("Pulsa “Cargar / filtrar” para consultar.", size=13, color=Q_MUTED),
                             ft.Text("La consulta se carga bajo demanda para evitar bloquear Reporting.", size=12, color=Q_MUTED),
                         ],
                         spacing=8,
@@ -1267,22 +1283,22 @@ def reporting_view(page: ft.Page):
         )
 
 
-    def load_missing_presentation():
+    def _load_folder_table(cache, loader, error_title, error_subtitle):
         try:
-            missing_presentation_rows_cache["rows"] = get_missing_presentation_report(
+            cache["rows"] = loader(
                 route_filter=missing_route_filter.get_value(),
                 limit=10000,
             )
-            missing_presentation_rows_cache["loaded"] = True
+            cache["loaded"] = True
             missing_presentation_page["value"] = 1
             selected_missing_presentation.clear()
         except Exception as exc:
-            missing_presentation_rows_cache["rows"] = []
-            missing_presentation_rows_cache["loaded"] = True
+            cache["rows"] = []
+            cache["loaded"] = True
             table_container.content = _section(
-                "Sin justificante presentación",
+                error_title,
                 ft.Text(f"No se pudo cargar la tabla: {exc}", color="#B42318", size=13),
-                subtitle="Carpetas raíz sin justificante de presentación detectado.",
+                subtitle=error_subtitle,
             )
             page.update()
             return
@@ -1291,6 +1307,39 @@ def reporting_view(page: ft.Page):
         nav_container.content = build_nav()
         page.update()
 
+    def load_missing_presentation():
+        _load_folder_table(
+            missing_presentation_rows_cache,
+            get_missing_presentation_report,
+            "Sin justificante presentación",
+            "Carpetas raíz sin justificante de presentación detectado.",
+        )
+
+    def load_presented():
+        _load_folder_table(
+            presented_rows_cache,
+            get_presented_report,
+            "Presentadas",
+            "Expedientes con justificante válido detectado.",
+        )
+
+    def load_req_tasa_without_justificante():
+        _load_folder_table(
+            req_tasa_rows_cache,
+            get_req_tasa_without_justificante_report,
+            "REQ/TASA sin justificante",
+            "Expedientes con REQ/TASA pero sin justificante válido.",
+        )
+
+    def load_requirements():
+        _load_folder_table(
+            requirements_rows_cache,
+            get_requirements_report,
+            "Requerimientos",
+            "Expedientes con requerimientos detectados.",
+        )
+
+
     table_sections = {
         "Rutas": {
             "title": "Resumen por rutas Box",
@@ -1298,11 +1347,10 @@ def reporting_view(page: ft.Page):
             "table": _table(
                 headers=[
                     ("Tipo", 170),
-                    ("Ruta", 220),
-                    ("Carpetas raíz", 95),
+                    ("Ruta", 240),
+                    ("Carpetas ruta", 90),
                     ("Pasap.", 70),
-                    ("Presentadas", 90),
-                    ("Sin pres.", 80),
+                    ("Justif. pres.", 90),
                     ("Justif. tasa", 90),
                     ("Req.", 70),
                     ("% Pres.", 80),
@@ -1314,10 +1362,37 @@ def reporting_view(page: ft.Page):
                 height=460,
             ),
         },
+        "Presentadas": {
+            "title": "Presentadas",
+            "subtitle": "Expedientes con justificante válido detectado.",
+            "table": build_folder_table(
+                presented_rows_cache,
+                "No se encontraron expedientes presentados."
+            ),
+        },
+        "ReqTasaSinJustificante": {
+            "title": "REQ/TASA sin justificante",
+            "subtitle": "Expedientes con REQ/TASA pero sin justificante válido.",
+            "table": build_folder_table(
+                req_tasa_rows_cache,
+                "No se encontraron expedientes REQ/TASA sin justificante."
+            ),
+        },
+        "Requerimientos": {
+            "title": "Requerimientos",
+            "subtitle": "Expedientes con requerimientos detectados.",
+            "table": build_folder_table(
+                requirements_rows_cache,
+                "No se encontraron requerimientos."
+            ),
+        },
         "SinPresentacion": {
             "title": "Sin justificante presentación",
             "subtitle": "Carpetas raíz/expedientes donde no se detecta justificante principal de presentación.",
-            "table": build_missing_presentation_table(),
+            "table": build_folder_table(
+                missing_presentation_rows_cache,
+                "No se encontraron carpetas sin justificante de presentación."
+            ),
         },
         "Tipos": {
             "title": "Tipos documentales detectados",
@@ -1362,11 +1437,39 @@ def reporting_view(page: ft.Page):
     }
 
     def render_active_table():
-        if active_section["value"] == "SinPresentacion":
-            section = {
+        dynamic_sections = {
+            "Presentadas": {
+                "title": "Presentadas",
+                "subtitle": "Expedientes con justificante válido detectado.",
+                "cache": presented_rows_cache,
+                "empty": "No se encontraron expedientes presentados.",
+            },
+            "ReqTasaSinJustificante": {
+                "title": "REQ/TASA sin justificante",
+                "subtitle": "Expedientes con REQ/TASA pero sin justificante válido.",
+                "cache": req_tasa_rows_cache,
+                "empty": "No se encontraron expedientes REQ/TASA sin justificante.",
+            },
+            "Requerimientos": {
+                "title": "Requerimientos",
+                "subtitle": "Expedientes con requerimientos detectados.",
+                "cache": requirements_rows_cache,
+                "empty": "No se encontraron requerimientos.",
+            },
+            "SinPresentacion": {
                 "title": "Sin justificante presentación",
                 "subtitle": "Carpetas raíz/expedientes donde no se detecta justificante principal de presentación.",
-                "table": build_missing_presentation_table(),
+                "cache": missing_presentation_rows_cache,
+                "empty": "No se encontraron carpetas sin justificante de presentación.",
+            },
+        }
+
+        if active_section["value"] in dynamic_sections:
+            cfg = dynamic_sections[active_section["value"]]
+            section = {
+                "title": cfg["title"],
+                "subtitle": cfg["subtitle"],
+                "table": build_folder_table(cfg["cache"], cfg["empty"]),
             }
         else:
             section = table_sections.get(active_section["value"], table_sections["Rutas"])
@@ -1396,6 +1499,9 @@ def reporting_view(page: ft.Page):
                     ft.Text("Selecciona el bloque de datos.", size=12, color=Q_MUTED),
                     ft.Divider(),
                     _nav_button("Resumen rutas Box", active_section["value"] == "Rutas", lambda e: set_active_table("Rutas")),
+                    _nav_button("Presentadas", active_section["value"] == "Presentadas", lambda e: set_active_table("Presentadas")),
+                    _nav_button("REQ/TASA sin justif.", active_section["value"] == "ReqTasaSinJustificante", lambda e: set_active_table("ReqTasaSinJustificante")),
+                    _nav_button("Requerimientos", active_section["value"] == "Requerimientos", lambda e: set_active_table("Requerimientos")),
                     _nav_button("Sin presentación", active_section["value"] == "SinPresentacion", lambda e: set_active_table("SinPresentacion")),
                     _nav_button("Tipos detectados", active_section["value"] == "Tipos", lambda e: set_active_table("Tipos")),
                     _nav_button("Últimos escaneos", active_section["value"] == "Escaneos", lambda e: set_active_table("Escaneos")),
