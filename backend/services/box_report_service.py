@@ -121,57 +121,127 @@ def _normalize_sql_text(column):
     return f"LOWER(REPLACE(REPLACE(REPLACE(REPLACE({column}, '_', ' '), '-', ' '), '.', ' '), char(92), '/'))"
 
 
+def _valid_official_justificante_name_sql(column="nombre_archivo"):
+    """
+    Justificante oficial válido según resolución Extranjería:
+    justificante_23010047L... normalizado a 'justificante 23010047l...'.
+    """
+    nombre = _normalize_sql_text(column)
+    return f"{nombre} LIKE 'justificante 23010047l%'"
+
+
+def _presentation_context_sql():
+    ruta = _normalize_sql_text("ruta")
+    return f"""
+    (
+        {ruta} NOT LIKE '%/tasa%'
+        AND {ruta} NOT LIKE '%/tasas%'
+        AND {ruta} NOT LIKE '%/req tasa%'
+        AND {ruta} NOT LIKE '%/req tasas%'
+        AND {ruta} NOT LIKE '%/requerimiento tasa%'
+        AND {ruta} NOT LIKE '%/requerimiento tasas%'
+        AND {ruta} NOT LIKE '%/requerimiento%'
+        AND {ruta} NOT LIKE '%/req doc%'
+        AND {ruta} NOT LIKE '%/aportar%'
+        AND {ruta} NOT LIKE '%/subsanar%'
+        AND {ruta} NOT LIKE '%/subir%'
+        AND {ruta} NOT LIKE '%/adjuntar%'
+        AND {ruta} NOT LIKE '%/anexo%'
+        AND {ruta} NOT LIKE '%/concesion%'
+        AND {ruta} NOT LIKE '%/denegacion%'
+        AND {ruta} NOT LIKE '%/archivo%'
+        AND {ruta} NOT LIKE '%/desistimiento%'
+        AND {ruta} NOT LIKE '%ccse%'
+        AND {ruta} NOT LIKE '%titulo%'
+    )
+    """
+
+
+def _tasa_context_sql():
+    ruta = _normalize_sql_text("ruta")
+    return f"""
+    (
+        {ruta} LIKE '%/tasa%'
+        OR {ruta} LIKE '%/tasas%'
+        OR {ruta} LIKE '%/req tasa%'
+        OR {ruta} LIKE '%/req tasas%'
+        OR {ruta} LIKE '%/requerimiento tasa%'
+        OR {ruta} LIKE '%/requerimiento tasas%'
+        OR {ruta} LIKE '%/admision y tasa%'
+        OR {ruta} LIKE '%/admision tasa%'
+        OR {ruta} LIKE '%/req doc y tasa%'
+    )
+    """
+
+
+def _requerimiento_context_sql():
+    ruta = _normalize_sql_text("ruta")
+    return f"""
+    (
+        {ruta} LIKE '%/req doc%'
+        OR {ruta} LIKE '%/requerimiento%'
+        OR {ruta} LIKE '%/req%'
+        OR {ruta} LIKE '%/req doc y tasa%'
+    )
+    """
+
+
+def _subsanacion_context_sql():
+    ruta = _normalize_sql_text("ruta")
+    return f"""
+    (
+        {ruta} LIKE '%/subsanar%'
+        OR {ruta} LIKE '%/subsanacion%'
+        OR {ruta} LIKE '%/subir%'
+        OR {ruta} LIKE '%/aportar%'
+    )
+    """
+
+
+
 def _justificante_presentacion_sql():
+    """
+    Presentación válida según resolución Extranjería:
+    - justificante oficial tipo justificante_23010047L...
+    - en raíz del cliente o contexto PARA PRESENTAR/PRESENTAR/PRESENTACION
+    - excluye tasa, requerimientos, subsanaciones, concesión, denegación y archivo.
+    """
     nombre = _normalize_sql_text("nombre_archivo")
     ruta = _normalize_sql_text("ruta")
 
     return f"""
     (
-        (
-            {nombre} LIKE '%justificante%'
-            OR {nombre} LIKE '%resguardo%'
-            OR {nombre} LIKE '%presentacion%'
-        )
-
-        AND (
-            {nombre} LIKE 'justificante 23010047l%'
-            OR {ruta} LIKE '%/para presentar%'
-            OR {ruta} LIKE '%/presentar%'
-            OR {ruta} LIKE '%/justificante%'
-            OR (
-                {ruta} NOT LIKE '%/adjuntar%'
-                AND {ruta} NOT LIKE '%/aportar%'
-                AND {ruta} NOT LIKE '%/anexo%'
-                AND {ruta} NOT LIKE '%/req%'
-                AND {ruta} NOT LIKE '%/requerimiento%'
-                AND {ruta} NOT LIKE '%/tasa%'
-                AND {ruta} NOT LIKE '%/concesion%'
-                AND {ruta} NOT LIKE '%/denegacion%'
-                AND {ruta} NOT LIKE '%ccse%'
-                AND {ruta} NOT LIKE '%titulo%'
-            )
-        )
+        {_valid_official_justificante_name_sql("nombre_archivo")}
+        AND {nombre} NOT LIKE '%resguardo%'
+        AND {_presentation_context_sql()}
     )
     """
 
 
 def _justificante_tasa_sql():
+    """
+    Justificante de tasa válido según resolución Extranjería:
+    - debe estar en contexto TASA / REQ TASA / ADMISION Y TASA;
+    - puede ser justificante_23010047L... o nombres de abono/pago de tasa;
+    - excluye resguardos.
+    """
     nombre = _normalize_sql_text("nombre_archivo")
-    ruta = _normalize_sql_text("ruta")
 
     return f"""
     (
-        (
-            {ruta} LIKE '%tasa%'
-            OR {ruta} LIKE '%req tasa%'
-            OR {ruta} LIKE '%requerimiento tasa%'
-        )
-
+        {_tasa_context_sql()}
+        AND {nombre} NOT LIKE '%resguardo%'
         AND (
-            {nombre} LIKE '%justificante%'
-            OR {nombre} LIKE '%pago%'
-            OR {nombre} LIKE '%790%'
-            OR {nombre} LIKE '%resguardo%'
+            {_valid_official_justificante_name_sql("nombre_archivo")}
+            OR COALESCE(NULLIF(TRIM(tipo_detectado), ''), estado, 'SIN CLASIFICAR') = 'JUSTIFICANTE_TASA'
+            OR {nombre} LIKE '%just abono tasa%'
+            OR {nombre} LIKE '%juts abono tasa%'
+            OR {nombre} LIKE '%justificante abono tasa%'
+            OR {nombre} LIKE '%justificante pago tasa%'
+            OR {nombre} LIKE '%tasa pagada%'
+            OR {nombre} LIKE '%tasa empresa%'
+            OR {nombre} LIKE '%pago tasa%'
+            OR {nombre} LIKE '%abono tasa%'
         )
     )
     """
@@ -289,23 +359,23 @@ def get_global_report():
         type_map = {row["tipo_documento"]: int(row["total"] or 0) for row in by_type}
 
     return {
-        "total_archivos": total_archivos,
-        "total_carpetas": total_carpetas,
-        "total_bytes": total_bytes,
-        "sin_clasificar": sin_clasificar,
+        "total_archivos": int(total_archivos or 0),
+        "total_carpetas": int(total_carpetas or 0),
+        "total_bytes": int(total_bytes or 0),
+        "sin_clasificar": int(sin_clasificar or 0),
         "ultimo_escaneo": ultimo_escaneo,
-        "ultimos_archivos_escaneados": ultimos_archivos_escaneados,
-        "ultimas_carpetas_escaneadas": ultimas_carpetas_escaneadas,
-        "pasaportes": type_map.get("PASAPORTE", 0) + type_map.get("PASAPORTE_ACTUAL", 0) + type_map.get("PASAPORTE_ANTERIOR", 0),
-        "justificantes_presentacion": _count_justificantes_presentacion(conn),
-        "justificantes_tasa": _count_justificantes_tasa(conn),
-        "requerimientos": type_map.get("REQUERIMIENTO_TASA", 0),
-        "tasas": type_map.get("TASA", 0),
-        "formularios_ex": type_map.get("FORMULARIO_EXTRANJERIA", 0),
-        "padrones": type_map.get("EMPADRONAMIENTO", 0),
-        "nies": type_map.get("NIE", 0),
-        "dnis": type_map.get("DNI", 0),
-        "resoluciones_favorables": type_map.get("RESOLUCION_FAVORABLE", 0),
+        "ultimos_archivos_escaneados": int(ultimos_archivos_escaneados or 0),
+        "ultimas_carpetas_escaneadas": int(ultimas_carpetas_escaneadas or 0),
+        "pasaportes": int(type_map.get("PASAPORTE", 0) or 0) + int(type_map.get("PASAPORTE_ACTUAL", 0) or 0) + int(type_map.get("PASAPORTE_ANTERIOR", 0) or 0),
+        "justificantes_presentacion": int(_count_justificantes_presentacion(conn) or 0),
+        "justificantes_tasa": int(_count_justificantes_tasa(conn) or 0),
+        "requerimientos": int(type_map.get("REQUERIMIENTO", 0) or 0),
+        "tasas": int(type_map.get("TASA", 0) or 0),
+        "formularios_ex": int(type_map.get("FORMULARIO_EXTRANJERIA", 0) or 0),
+        "padrones": int(type_map.get("EMPADRONAMIENTO", 0) or 0),
+        "nies": int(type_map.get("NIE", 0) or 0),
+        "dnis": int(type_map.get("DNI", 0) or 0),
+        "resoluciones_favorables": int(type_map.get("RESOLUCION_FAVORABLE", 0) or 0),
     }
 
 
@@ -317,6 +387,14 @@ def get_document_type_counts(limit=50):
             SELECT
                    CASE
                        WHEN LOWER(REPLACE(REPLACE(REPLACE(nombre_archivo, '_', ' '), '-', ' '), '.', ' ')) LIKE 'justificante 23010047l%'
+                            AND (
+                                LOWER(REPLACE(REPLACE(REPLACE(REPLACE(ruta, '_', ' '), '-', ' '), '.', ' '), char(92), '/')) LIKE '%/tasa%'
+                                OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(ruta, '_', ' '), '-', ' '), '.', ' '), char(92), '/')) LIKE '%/req tasa%'
+                                OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(ruta, '_', ' '), '-', ' '), '.', ' '), char(92), '/')) LIKE '%/admision y tasa%'
+                                OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(ruta, '_', ' '), '-', ' '), '.', ' '), char(92), '/')) LIKE '%/req doc y tasa%'
+                            )
+                       THEN 'JUSTIFICANTE_TASA'
+                       WHEN LOWER(REPLACE(REPLACE(REPLACE(nombre_archivo, '_', ' '), '-', ' '), '.', ' ')) LIKE 'justificante 23010047l%'
                        THEN 'JUSTIFICANTE_PRESENTACION'
                        ELSE COALESCE(NULLIF(TRIM(tipo_detectado), ''), estado, 'SIN CLASIFICAR')
                    END AS tipo_documento,
@@ -326,6 +404,14 @@ def get_document_type_counts(limit=50):
             WHERE {_active_condition()}
             GROUP BY
                    CASE
+                       WHEN LOWER(REPLACE(REPLACE(REPLACE(nombre_archivo, '_', ' '), '-', ' '), '.', ' ')) LIKE 'justificante 23010047l%'
+                            AND (
+                                LOWER(REPLACE(REPLACE(REPLACE(REPLACE(ruta, '_', ' '), '-', ' '), '.', ' '), char(92), '/')) LIKE '%/tasa%'
+                                OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(ruta, '_', ' '), '-', ' '), '.', ' '), char(92), '/')) LIKE '%/req tasa%'
+                                OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(ruta, '_', ' '), '-', ' '), '.', ' '), char(92), '/')) LIKE '%/admision y tasa%'
+                                OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(ruta, '_', ' '), '-', ' '), '.', ' '), char(92), '/')) LIKE '%/req doc y tasa%'
+                            )
+                       THEN 'JUSTIFICANTE_TASA'
                        WHEN LOWER(REPLACE(REPLACE(REPLACE(nombre_archivo, '_', ' '), '-', ' '), '.', ' ')) LIKE 'justificante 23010047l%'
                        THEN 'JUSTIFICANTE_PRESENTACION'
                        ELSE COALESCE(NULLIF(TRIM(tipo_detectado), ''), estado, 'SIN CLASIFICAR')
@@ -392,7 +478,14 @@ def _route_report_for(conn, route):
         route_base=resolved,
         distinct_root=True,
     )
-    requerimientos = type_map.get("REQUERIMIENTO_TASA", 0)
+    requerimientos = _count_matching_items(
+        conn,
+        _requerimiento_sql(),
+        item_filter,
+        item_params,
+        route_base=resolved,
+        distinct_root=True,
+    )
 
     return {
         "tipo_expediente": route.get("tipo_expediente_nombre") or "—",
@@ -666,32 +759,52 @@ def get_missing_presentation_report(route_filter=None, limit=300):
 
 
 def _req_tasa_folder_sql():
+    """Carpeta/contexto de tasa según resolución Extranjería."""
+    return _tasa_context_sql()
+
+
+
+def _requerimiento_sql():
+    """
+    Requerimiento general según resolución Extranjería:
+    exige justificante oficial dentro de REQ DOC / REQUERIMIENTO / REQ.
+    Las carpetas REQ DOC Y TASA computan como requerimiento y tasa.
+    """
+    nombre = _normalize_sql_text("nombre_archivo")
     ruta = _normalize_sql_text("ruta")
+
     return f"""
     (
-        {ruta} LIKE '%/req tasa%'
-        OR {ruta} LIKE '%/req tasas%'
-        OR {ruta} LIKE '%/requerimiento tasa%'
-        OR {ruta} LIKE '%/requerimiento tasas%'
-        OR {ruta} LIKE '%/tasa%'
-        OR {ruta} LIKE '%/tasas%'
+        {_valid_official_justificante_name_sql("nombre_archivo")}
+        AND {nombre} NOT LIKE '%resguardo%'
+        AND {_requerimiento_context_sql()}
+        AND (
+            {ruta} LIKE '%/req doc y tasa%'
+            OR (
+                {ruta} NOT LIKE '%/req tasa%'
+                AND {ruta} NOT LIKE '%/req tasas%'
+                AND {ruta} NOT LIKE '%/requerimiento tasa%'
+                AND {ruta} NOT LIKE '%/requerimiento tasas%'
+                AND {ruta} NOT LIKE '%/tasa%'
+                AND {ruta} NOT LIKE '%/tasas%'
+            )
+        )
     )
     """
 
 
-def _requerimiento_sql():
+
+def _subsanacion_sql():
+    """
+    Subsanación según resolución Extranjería:
+    exige justificante oficial dentro de SUBSANAR / SUBIR / APORTAR.
+    """
     nombre = _normalize_sql_text("nombre_archivo")
-    ruta = _normalize_sql_text("ruta")
     return f"""
     (
-        COALESCE(NULLIF(TRIM(tipo_detectado), ''), estado, 'SIN CLASIFICAR') IN ('REQUERIMIENTO', 'REQUERIMIENTO_TASA')
-        OR {nombre} LIKE '%requerimiento%'
-        OR {nombre} LIKE '%subsanacion%'
-        OR {nombre} LIKE '%subsanar%'
-        OR {ruta} LIKE '%/requerimiento%'
-        OR {ruta} LIKE '%/req%'
-        OR {ruta} LIKE '%/subsanar%'
-        OR {ruta} LIKE '%/subsanacion%'
+        {_valid_official_justificante_name_sql("nombre_archivo")}
+        AND {nombre} NOT LIKE '%resguardo%'
+        AND {_subsanacion_context_sql()}
     )
     """
 

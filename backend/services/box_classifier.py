@@ -20,12 +20,14 @@ import unicodedata
 FOLDER_CATEGORY_PRESENTACION = "PRESENTACION"
 FOLDER_CATEGORY_APORTACION = "APORTACION"
 FOLDER_CATEGORY_REQUERIMIENTO = "REQUERIMIENTO"
+FOLDER_CATEGORY_REQ_TASA = "REQ_TASA"
 FOLDER_CATEGORY_RESOLUCION = "RESOLUCION"
 FOLDER_CATEGORY_RESOLUCION_FAVORABLE = "RESOLUCION_FAVORABLE"
 FOLDER_CATEGORY_RESOLUCION_DENEGADA = "RESOLUCION_DENEGADA"
 FOLDER_CATEGORY_POLICIALES = "POLICIALES"
 FOLDER_CATEGORY_ESCRITOS = "ESCRITOS"
 FOLDER_CATEGORY_CONCESION = "CONCESION"
+FOLDER_CATEGORY_ARCHIVADO = "ARCHIVADO"
 FOLDER_CATEGORY_OTROS = "OTROS"
 
 DOC_SIN_CLASIFICAR = "SIN CLASIFICAR"
@@ -99,8 +101,8 @@ def classify_folder(name):
     if _has_any(text, ["JUSTIFICANTE", "JUSTIFICANTES"]):
         return {"categoria": "JUSTIFICANTES", "confianza": 0.95, "motivo": "Carpeta de justificantes detectada"}
 
-    if _has_any(text, ["REQ TASAS", "REQ TASA"]):
-        return {"categoria": FOLDER_CATEGORY_REQUERIMIENTO, "confianza": 0.95, "motivo": "Carpeta de requerimiento de tasas detectada"}
+    if _has_any(text, ["REQ TASAS", "REQ TASA", "REQUERIMIENTO TASA", "REQUERIMIENTO TASAS"]):
+        return {"categoria": FOLDER_CATEGORY_REQ_TASA, "confianza": 0.95, "motivo": "Carpeta específica de requerimiento de tasas detectada"}
 
     if _has_any(text, ["ABONO", "ABONOS"]):
         return {"categoria": "ABONOS", "confianza": 0.90, "motivo": "Carpeta de abonos detectada"}
@@ -125,6 +127,18 @@ def classify_folder(name):
     )
     if score >= 0.45:
         return {"categoria": FOLDER_CATEGORY_RESOLUCION_DENEGADA, "confianza": score, "motivo": f"Coincidencias: {', '.join(matched)}"}
+
+    # Archivo / desistimiento.
+    score, matched = _score_match(
+        text,
+        strong_tokens=[
+            "DESISTIMIENTO",
+            "RES DESISTIMIENTO",
+            "ARCHIVO",
+        ],
+    )
+    if score >= 0.45:
+        return {"categoria": FOLDER_CATEGORY_ARCHIVADO, "confianza": score, "motivo": f"Coincidencias: {', '.join(matched)}"}
 
     # Resoluciones favorables / concesiones.
     score, matched = _score_match(
@@ -201,8 +215,8 @@ def classify_file(filename):
         return {"tipo_documento": DOC_SIN_CLASIFICAR, "confianza": 0.0, "motivo": "Nombre vacío"}
 
     # Reglas reales Quesada: se aplican antes de patterns para evitar falsos negativos.
-    if re.search(r"\bJUSTIFICANTE\s+23010047L(?:\s+\d+)?\b", text):
-        return {"tipo_documento": "JUSTIFICANTE_PRESENTACION", "confianza": 0.98, "motivo": "Patrón real justificante_23010047L"}
+    if re.search(r"\bJUSTIFICANTE\s+23010047L\s+\d+", text):
+        return {"tipo_documento": "JUSTIFICANTE_PRESENTACION", "confianza": 0.98, "motivo": "Patrón real justificante_23010047L_fecha"}
 
     if re.search(r"\bFORMULARIO\s+EX\d+", text):
         return {"tipo_documento": "FORMULARIO_EXTRANJERIA", "confianza": 0.95, "motivo": "Formulario oficial EX detectado"}
@@ -222,9 +236,14 @@ def classify_file(filename):
     if _has_any(text, ["CERT TGSS", "CERTIFICADO TGSS"]):
         return {"tipo_documento": "CERTIFICADO_TGSS", "confianza": 0.95, "motivo": "Certificado TGSS detectado"}
 
+    # Resguardo_... no es justificante de presentación ni de tasa en el flujo Quesada:
+    # normalmente es acceso/resguardo de notificación. Dejamos fuera matrícula/CCSE.
+    if "RESGUARDO" in text and "MATRICULA" not in text and "CCSE" not in text:
+        return {"tipo_documento": "ACCESO_NOTIFICACION", "confianza": 0.90, "motivo": "Resguardo tratado como acceso/notificación, no justificante"}
+
     patterns = [
         ("HOJA_ENCARGO", ["HOJA DE ENCARGO", "HOJA ENCARGO", "HOJA ENCARGO FIRMADA", "HOJA DE CARGO"], ["ENCARGO"]),
-        ("JUSTIFICANTE_PRESENTACION", ["JUSTIFICANTE PRESENTACION", "JUSTIFICANTE DE PRESENTACION", "JUSTIFICANTE SOLICITUD", "JUSTIFICANTE ANEXO", "JUSTF SOL", "RESGUARDO", "RESG PENADOS"], ["REGISTRO", "ANEXO"]),
+        ("JUSTIFICANTE_PRESENTACION", ["JUSTIFICANTE PRESENTACION", "JUSTIFICANTE DE PRESENTACION", "JUSTIFICANTE SOLICITUD", "JUSTIFICANTE ANEXO", "JUSTF SOL"], ["REGISTRO", "ANEXO"]),
         ("RESOLUCION_DENEGADA", ["DENEGACION", "DENEGADA", "RES DENEGACION"], ["DENEGA"]),
         ("RESOLUCION_FAVORABLE", ["RES CONCESION", "RESOLUCION CONCESION", "CONCESION", "FAVORABLE"], ["CONCESIO", "CONCEDIDO"]),
         ("REQUERIMIENTO_TASA", ["REQ TASAS", "REQ TASA", "REQUERIMIENTO TASA", "REQUERIMIENTO TASAS"], []),
@@ -289,6 +308,9 @@ def detect_expedient_state(folder_categories, file_types=None):
 
     if FOLDER_CATEGORY_RESOLUCION_DENEGADA in categories or "RESOLUCION_DENEGADA" in docs:
         return {"estado": "RESUELTO_DENEGADO", "confianza": 0.90, "motivo": "Existe resolución denegatoria"}
+
+    if FOLDER_CATEGORY_ARCHIVADO in categories:
+        return {"estado": "ARCHIVADO", "confianza": 0.90, "motivo": "Existe carpeta de archivo/desistimiento"}
 
     if FOLDER_CATEGORY_RESOLUCION_FAVORABLE in categories or "RESOLUCION_FAVORABLE" in docs:
         return {"estado": "RESUELTO_FAVORABLE", "confianza": 0.90, "motivo": "Existe concesión/resolución favorable"}
