@@ -1,3 +1,4 @@
+import csv
 import os
 import subprocess
 import sys
@@ -27,6 +28,25 @@ Q_BORDER = "#E4E7EC"
 Q_WHITE = "#FFFFFF"
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
+CATALOGOS_MERCURIO_CSV_DIR = Path(__file__).resolve().parents[2] / "database" / "catalogos_mercurio" / "csv"
+
+CONTACT_TYPES = [
+    "Familiar",
+    "Empleador / Empresa",
+]
+
+CONTACT_RELATIONSHIPS = [
+    "Cónyuge",
+    "Pareja",
+    "Padre",
+    "Madre",
+    "Hijo/a",
+    "Hermano/a",
+    "Abuelo/a",
+    "Nieto/a",
+    "Otro familiar",
+]
+
 
 FICHA_FIELDS = [
     "nombre",
@@ -51,23 +71,6 @@ FICHA_FIELDS = [
     "estado_civil",
 ]
 
-CONTACT_TYPES = [
-    "Familiar",
-    "Empleador / Empresa",
-]
-
-CONTACT_RELATIONSHIPS = [
-    "Cónyuge",
-    "Pareja",
-    "Padre",
-    "Madre",
-    "Hijo/a",
-    "Hermano/a",
-    "Abuelo/a",
-    "Nieto/a",
-    "Otro familiar",
-]
-
 
 def _connect():
     conn = sqlite3.connect(DB_PATH)
@@ -84,12 +87,70 @@ def _table_exists(conn, table_name):
     return row is not None
 
 
-def _safe_master_values(loader):
+def _table_columns(conn, table_name):
     try:
-        values = loader()
-        return values or []
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return [row["name"] for row in rows]
     except Exception:
         return []
+
+
+def _ensure_column(conn, table_name, column_name, definition="TEXT"):
+    if column_name not in _table_columns(conn, table_name):
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _load_catalog_options(filename, label_code="Código"):
+    path = CATALOGOS_MERCURIO_CSV_DIR / filename
+    if not path.exists():
+        return []
+
+    options = []
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                codigo = str(row.get("codigo") or "").strip()
+                descripcion = str(row.get("descripcion") or "").strip()
+                activo = str(row.get("activo") or "1").strip()
+                if activo in {"0", "False", "false"}:
+                    continue
+                if not codigo and not descripcion:
+                    continue
+                if codigo and descripcion:
+                    options.append(f"{descripcion} · {label_code} {codigo}")
+                else:
+                    options.append(descripcion or codigo)
+    except Exception:
+        return []
+
+    return options
+
+
+def _extract_catalog_code(value):
+    raw = str(value or "").strip()
+    if " · " not in raw:
+        return raw
+    tail = raw.rsplit(" · ", 1)[-1].strip()
+    parts = tail.split()
+    return parts[-1].strip() if parts else tail
+
+
+def _extract_catalog_description(value):
+    raw = str(value or "").strip()
+    if " · " not in raw:
+        return raw
+    return raw.split(" · ", 1)[0].strip()
+
+
+def _text_input_erp(label, width):
+    return ft.TextField(
+        label=label,
+        width=width,
+        border_radius=10,
+        border_color=Q_BORDER,
+        focused_border_color="#18BFEA",
+    )
 
 
 def _dialog_section(title, icon, controls):
@@ -139,7 +200,7 @@ def _themed_dialog_content(title, subtitle, sections, width=930, height=640):
                     content=ft.Row(
                         controls=[
                             ft.Container(
-                                content=ft.Icon(ft.Icons.PERSON_ADD, size=24, color="#0057B8"),
+                                content=ft.Icon(ft.Icons.BUSINESS, size=24, color="#0057B8"),
                                 bgcolor="#FFFFFF",
                                 border_radius=22,
                                 width=44,
@@ -202,6 +263,9 @@ def _ensure_client_contacts_schema():
                 nombre_madre TEXT,
                 estado_civil TEXT,
                 sexo TEXT,
+                actividad TEXT,
+                cnae TEXT,
+                cno_sepe TEXT,
                 observaciones TEXT,
                 observaciones_internas TEXT,
                 activo INTEGER DEFAULT 1,
@@ -212,6 +276,8 @@ def _ensure_client_contacts_schema():
             )
             """
         )
+        for column in ["actividad", "cnae", "cno_sepe"]:
+            _ensure_column(conn, "cliente_contactos", column, "TEXT")
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_cliente_contactos_cliente
@@ -219,6 +285,15 @@ def _ensure_client_contacts_schema():
             """
         )
         conn.commit()
+
+
+
+def _safe_master_values(loader):
+    try:
+        values = loader()
+        return values or []
+    except Exception:
+        return []
 
 
 def _get_available_clients_for_reference(current_cliente_id):
@@ -262,6 +337,34 @@ def _id_from_reference_label(value):
         return None
 
 
+def _copy_client_to_contact_data(cliente):
+    return {
+        "nombre": cliente.get("nombre") or "",
+        "primer_apellido": cliente.get("primer_apellido") or "",
+        "segundo_apellido": cliente.get("segundo_apellido") or "",
+        "nie": cliente.get("nie") or "",
+        "pasaporte": cliente.get("pasaporte") or "",
+        "dni": cliente.get("dni") or "",
+        "nacionalidad": cliente.get("nacionalidad") or "",
+        "fecha_nacimiento": cliente.get("fecha_nacimiento") or "",
+        "telefono": cliente.get("telefono") or "",
+        "email": cliente.get("email") or "",
+        "estado_cliente": cliente.get("estado_cliente") or "",
+        "domicilio_espana": cliente.get("domicilio_espana") or "",
+        "localidad": cliente.get("localidad") or "",
+        "provincia": cliente.get("provincia") or "",
+        "codigo_postal": cliente.get("codigo_postal") or "",
+        "localidad_nacimiento": cliente.get("localidad_nacimiento") or "",
+        "pais_nacimiento": cliente.get("pais_nacimiento") or "",
+        "nombre_padre": cliente.get("nombre_padre") or "",
+        "nombre_madre": cliente.get("nombre_madre") or "",
+        "estado_civil": cliente.get("estado_civil") or "",
+        "sexo": cliente.get("sexo") or "",
+        "observaciones": cliente.get("observaciones") or "",
+        "observaciones_internas": cliente.get("observaciones_internas") or "",
+    }
+
+
 def _get_client_contacts(cliente_id):
     _ensure_client_contacts_schema()
     try:
@@ -294,7 +397,8 @@ def _save_client_contact(data):
         "nacionalidad", "fecha_nacimiento", "telefono", "email", "estado_cliente",
         "domicilio_espana", "localidad", "provincia", "codigo_postal",
         "localidad_nacimiento", "pais_nacimiento", "nombre_padre", "nombre_madre",
-        "estado_civil", "sexo", "observaciones", "observaciones_internas",
+        "estado_civil", "sexo", "actividad", "cnae", "cno_sepe",
+        "observaciones", "observaciones_internas",
     ]
     with _connect() as conn:
         conn.execute(
@@ -305,34 +409,6 @@ def _save_client_contact(data):
             [data.get(field) for field in fields],
         )
         conn.commit()
-
-
-def _copy_client_to_contact_data(cliente):
-    return {
-        "nombre": cliente.get("nombre") or "",
-        "primer_apellido": cliente.get("primer_apellido") or "",
-        "segundo_apellido": cliente.get("segundo_apellido") or "",
-        "nie": cliente.get("nie") or "",
-        "pasaporte": cliente.get("pasaporte") or "",
-        "dni": cliente.get("dni") or "",
-        "nacionalidad": cliente.get("nacionalidad") or "",
-        "fecha_nacimiento": cliente.get("fecha_nacimiento") or "",
-        "telefono": cliente.get("telefono") or "",
-        "email": cliente.get("email") or "",
-        "estado_cliente": cliente.get("estado_cliente") or "",
-        "domicilio_espana": cliente.get("domicilio_espana") or "",
-        "localidad": cliente.get("localidad") or "",
-        "provincia": cliente.get("provincia") or "",
-        "codigo_postal": cliente.get("codigo_postal") or "",
-        "localidad_nacimiento": cliente.get("localidad_nacimiento") or "",
-        "pais_nacimiento": cliente.get("pais_nacimiento") or "",
-        "nombre_padre": cliente.get("nombre_padre") or "",
-        "nombre_madre": cliente.get("nombre_madre") or "",
-        "estado_civil": cliente.get("estado_civil") or "",
-        "sexo": cliente.get("sexo") or "",
-        "observaciones": cliente.get("observaciones") or "",
-        "observaciones_internas": cliente.get("observaciones_internas") or "",
-    }
 
 
 def _nombre_completo(client):
@@ -1004,17 +1080,17 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             options=[ft.dropdown.Option(item) for item in CONTACT_RELATIONSHIPS],
         )
 
-        nombre = ft.TextField(label="Nombre", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        primer_apellido = ft.TextField(label="Primer apellido", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        segundo_apellido = ft.TextField(label="Segundo apellido", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        nie = ft.TextField(label="NIE", width=220, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        pasaporte = ft.TextField(label="Pasaporte", width=220, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        dni = ft.TextField(label="DNI", width=220, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        nombre = _text_input_erp("Nombre", 320)
+        primer_apellido = _text_input_erp("Primer apellido", 320)
+        segundo_apellido = _text_input_erp("Segundo apellido", 320)
+        nie = _text_input_erp("NIE", 220)
+        pasaporte = _text_input_erp("Pasaporte", 220)
+        dni = _text_input_erp("DNI", 220)
 
-        fecha_nacimiento = ft.TextField(label="Fecha nacimiento DD/MM/AAAA", width=260, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        telefono = ft.TextField(label="Teléfono", width=220, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        email = ft.TextField(label="Email", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        estado_cliente = ft.TextField(label="Estado cliente", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        fecha_nacimiento = _text_input_erp("Fecha nacimiento DD/MM/AAAA", 260)
+        telefono = _text_input_erp("Teléfono", 220)
+        email = _text_input_erp("Email", 320)
+        estado_cliente = _text_input_erp("Estado cliente", 320)
         sexo = ft.Dropdown(
             label="Sexo",
             width=180,
@@ -1024,12 +1100,12 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             options=[ft.dropdown.Option("HOMBRE"), ft.dropdown.Option("MUJER"), ft.dropdown.Option("X")],
         )
 
-        domicilio_espana = ft.TextField(label="Domicilio en España", width=420, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        codigo_postal = ft.TextField(label="Código postal", width=180, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        localidad_nacimiento = ft.TextField(label="Localidad nacimiento", width=260, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        nombre_padre = ft.TextField(label="Nombre del padre", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        nombre_madre = ft.TextField(label="Nombre de la madre", width=320, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
-        estado_civil = ft.TextField(label="Estado civil", width=220, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
+        domicilio_espana = _text_input_erp("Domicilio en España", 420)
+        codigo_postal = _text_input_erp("Código postal", 180)
+        localidad_nacimiento = _text_input_erp("Localidad nacimiento", 260)
+        nombre_padre = _text_input_erp("Nombre del padre", 320)
+        nombre_madre = _text_input_erp("Nombre de la madre", 320)
+        estado_civil = _text_input_erp("Estado civil", 220)
         observaciones = ft.TextField(label="Observaciones", width=640, multiline=True, min_lines=2, max_lines=4, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
         observaciones_internas = ft.TextField(label="Observaciones internas", width=640, multiline=True, min_lines=2, max_lines=4, border_radius=10, border_color=Q_BORDER, focused_border_color="#18BFEA")
 
@@ -1174,6 +1250,9 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             data["pais_nacimiento"] = pais_nacimiento_autocomplete.get_value()
             data["provincia"] = provincia_autocomplete.get_value()
             data["localidad"] = localidad_autocomplete.get_value()
+            data["actividad"] = ""
+            data["cnae"] = ""
+            data["cno_sepe"] = ""
 
             _save_client_contact(data)
             close_contact_dialog()
@@ -1264,23 +1343,69 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
     def build_empleadores_section():
         empleadores = _contact_rows("Empleador / Empresa")
 
-        empresa = ft.TextField(label="Empresa / empleador", width=360, border_radius=10)
-        cif = ft.TextField(label="CIF / NIF", width=220, border_radius=10)
-        telefono = ft.TextField(label="Teléfono", width=220, border_radius=10)
-        email = ft.TextField(label="Email", width=320, border_radius=10)
-        domicilio = ft.TextField(label="Domicilio", width=520, border_radius=10)
-        localidad = ft.TextField(label="Localidad", width=220, border_radius=10)
-        provincia = ft.TextField(label="Provincia", width=220, border_radius=10)
-        codigo_postal = ft.TextField(label="Código postal", width=160, border_radius=10)
-        observaciones = ft.TextField(label="Observaciones", width=640, multiline=True, min_lines=2, max_lines=4, border_radius=10)
+        actividades_options = _load_catalog_options("actividades_cnae.csv", "CNAE")
+        cno_sepe_options = _load_catalog_options("cno_sepe_2011.csv", "CNO/SEPE")
+
+        empresa = _text_input_erp("Empresa / empleador", 360)
+        cif = _text_input_erp("CIF / NIF", 220)
+        telefono = _text_input_erp("Teléfono", 220)
+        email = _text_input_erp("Email", 320)
+        domicilio = _text_input_erp("Domicilio", 520)
+        localidad = _text_input_erp("Localidad", 220)
+        provincia = _text_input_erp("Provincia", 220)
+        codigo_postal = _text_input_erp("Código postal", 160)
+        cnae = _text_input_erp("CNAE", 160)
+        cnae.read_only = True
+        cno_sepe_codigo = _text_input_erp("CNO/SEPE", 180)
+        cno_sepe_codigo.read_only = True
+        observaciones = ft.TextField(
+            label="Observaciones",
+            width=640,
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+        )
+
+        def on_actividad_selected(value=None):
+            cnae.value = _extract_catalog_code(actividad_autocomplete.get_value())
+            page.update()
+
+        def on_cno_selected(value=None):
+            cno_sepe_codigo.value = _extract_catalog_code(cno_sepe_autocomplete.get_value())
+            page.update()
+
+        actividad_autocomplete = AppAutocomplete(
+            page=page,
+            label="Actividad de la empresa",
+            options=actividades_options,
+            width=620,
+            max_results=10,
+            on_select=on_actividad_selected,
+            allow_free_text=True,
+        )
+
+        cno_sepe_autocomplete = AppAutocomplete(
+            page=page,
+            label="Ocupación CNO/SEPE",
+            options=cno_sepe_options,
+            width=620,
+            max_results=10,
+            on_select=on_cno_selected,
+            allow_free_text=True,
+        )
 
         def close_employer_dialog(e=None):
             employer_dialog.open = False
             page.update()
 
         def clear_employer_form():
-            for control in [empresa, cif, telefono, email, domicilio, localidad, provincia, codigo_postal, observaciones]:
+            for control in [empresa, cif, telefono, email, domicilio, localidad, provincia, codigo_postal, cnae, cno_sepe_codigo, observaciones]:
                 control.value = ""
+            actividad_autocomplete.set_value("", update=False)
+            cno_sepe_autocomplete.set_value("", update=False)
 
         def save_employer(e=None):
             if not empresa.value:
@@ -1288,6 +1413,9 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                 page.snack_bar.open = True
                 page.update()
                 return
+
+            actividad_value = actividad_autocomplete.get_value()
+            cno_value = cno_sepe_autocomplete.get_value()
 
             _save_client_contact(
                 {
@@ -1316,6 +1444,9 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                     "nombre_madre": "",
                     "estado_civil": "",
                     "sexo": "",
+                    "actividad": _extract_catalog_description(actividad_value),
+                    "cnae": cnae.value or _extract_catalog_code(actividad_value),
+                    "cno_sepe": cno_sepe_codigo.value or _extract_catalog_code(cno_value),
                     "observaciones": observaciones.value or "",
                     "observaciones_internas": "",
                 }
@@ -1327,20 +1458,43 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         employer_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Nuevo empleador / empresa"),
-            content=ft.Column(
-                controls=[
-                    ft.Text("Datos empresa / empleador", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                    ft.Row([empresa, cif], wrap=True, spacing=10),
-                    ft.Row([telefono, email], wrap=True, spacing=10),
-                    ft.Text("Dirección", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                    domicilio,
-                    ft.Row([provincia, localidad, codigo_postal], wrap=True, spacing=10),
-                    observaciones,
+            content=_themed_dialog_content(
+                "Nuevo empleador / empresa",
+                "Datos de empresa alineados con Mercurio: actividad, CNAE y ocupación CNO/SEPE.",
+                [
+                    _dialog_section(
+                        "Datos empresa / empleador",
+                        ft.Icons.BUSINESS,
+                        [
+                            ft.Row([empresa, cif], wrap=True, spacing=10),
+                            ft.Row([telefono, email], wrap=True, spacing=10),
+                        ],
+                    ),
+                    _dialog_section(
+                        "Actividad y ocupación",
+                        ft.Icons.WORK,
+                        [
+                            actividad_autocomplete.control,
+                            ft.Row([cnae, cno_sepe_codigo], wrap=True, spacing=10),
+                            cno_sepe_autocomplete.control,
+                        ],
+                    ),
+                    _dialog_section(
+                        "Dirección",
+                        ft.Icons.HOME_WORK,
+                        [
+                            domicilio,
+                            ft.Row([provincia, localidad, codigo_postal], wrap=True, spacing=10),
+                        ],
+                    ),
+                    _dialog_section(
+                        "Observaciones",
+                        ft.Icons.NOTES,
+                        [observaciones],
+                    ),
                 ],
-                spacing=10,
-                scroll=ft.ScrollMode.AUTO,
-                height=420,
-                width=760,
+                width=930,
+                height=640,
             ),
             actions=[
                 secondary_button("Cancelar", close_employer_dialog),
@@ -1356,23 +1510,68 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             employer_dialog.open = True
             page.update()
 
+        if not empleadores:
+            content = ft.Column(
+                controls=[
+                    empty_state("Este cliente no tiene empleadores o empresas vinculadas"),
+                    primary_button("Nuevo empleador", open_new_employer),
+                ],
+                spacing=12,
+            )
+        else:
+            rows = []
+            for item in empleadores:
+                rows.append(
+                    [
+                        item.get("nombre") or "-",
+                        item.get("dni") or item.get("nie") or item.get("pasaporte") or "-",
+                        item.get("actividad") or "-",
+                        item.get("cnae") or "-",
+                        item.get("cno_sepe") or "-",
+                        item.get("telefono") or "-",
+                        item.get("email") or "-",
+                        item.get("localidad") or "-",
+                    ]
+                )
+
+            content = ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            primary_button("Nuevo empleador", open_new_employer),
+                            ft.Container(
+                                content=ft.Text(
+                                    f"Empleadores: {len(empleadores)}",
+                                    size=12,
+                                    color="#0057B8",
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                bgcolor="#EAF3FF",
+                                border_radius=18,
+                                padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                            ),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                    app_table(
+                        ["Empresa", "CIF/NIF", "Actividad", "CNAE", "CNO/SEPE", "Teléfono", "Email", "Localidad"],
+                        rows,
+                        height=390,
+                    ),
+                ],
+                spacing=12,
+            )
+
         return ft.Column(
             controls=[
                 ft.Text("Empleadores / Empresas", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                 ft.Text(
-                    "Empresas, empleadores o entidades vinculadas al cliente.",
+                    "Empresas, empleadores y ocupaciones vinculadas al cliente para expedientes laborales.",
                     size=13,
                     color=Q_MUTED,
                 ),
-                _section_card(
-                    "Empleadores",
-                    _render_contact_table(
-                        empleadores,
-                        "Este cliente no tiene empleadores o empresas vinculadas",
-                        open_new_employer,
-                        is_employer=True,
-                    ),
-                ),
+                _section_card("Empleadores", content),
             ],
             spacing=14,
             scroll=ft.ScrollMode.AUTO,
