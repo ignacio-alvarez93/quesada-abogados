@@ -1,4 +1,7 @@
 import threading
+import csv
+import sqlite3
+from pathlib import Path
 
 import flet as ft
 from datetime import datetime
@@ -748,6 +751,93 @@ def expedients_view(page: ft.Page):
         parts = value.split(" - ", 2)
         return parts[-1].strip() if parts else value
 
+    def _dynamic_value(control):
+        """Lee controles normales y AppAutocomplete de forma uniforme."""
+        if hasattr(control, "get_value"):
+            return control.get_value()
+        return getattr(control, "value", "")
+
+    def _database_path():
+        return Path(__file__).resolve().parents[2] / "database" / "quesada.db"
+
+    def _fetch_cliente_contact_options(cliente_id, only_employers=False):
+        if not cliente_id:
+            return []
+        db_path = _database_path()
+        if not db_path.exists():
+            return []
+
+        employer_tokens = ("EMPLEADOR", "EMPRESA", "TRABAJO")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT id, tipo_contacto, parentesco, nombre, primer_apellido, segundo_apellido,
+                           nie, dni, pasaporte, email, telefono
+                    FROM cliente_contactos
+                    WHERE cliente_id = ?
+                      AND COALESCE(activo, 1) = 1
+                    ORDER BY tipo_contacto ASC, parentesco ASC, nombre ASC, id DESC
+                    """,
+                    (int(cliente_id),),
+                ).fetchall()
+        except Exception:
+            return []
+
+        options = []
+        for row in rows:
+            tipo_contacto = str(row["tipo_contacto"] or "").upper()
+            is_employer = any(token in tipo_contacto for token in employer_tokens)
+            if only_employers and not is_employer:
+                continue
+            if not only_employers and is_employer:
+                continue
+
+            nombre = " ".join(
+                part for part in [row["nombre"], row["primer_apellido"], row["segundo_apellido"]] if part
+            ).strip() or "Sin nombre"
+            documento = row["nie"] or row["dni"] or row["pasaporte"] or ""
+            detalle = documento or row["email"] or row["telefono"] or row["parentesco"] or tipo_contacto
+            options.append(f"{row['id']} - {nombre}" + (f" · {detalle}" if detalle else ""))
+
+        return options
+
+    def _load_catalog_options(filename, limit=2500):
+        path = Path(__file__).resolve().parents[2] / "database" / "catalogos_mercurio" / "csv" / filename
+        if not path.exists():
+            return []
+
+        options = []
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as fh:
+                reader = csv.DictReader(fh)
+                for index, row in enumerate(reader):
+                    if index >= limit:
+                        break
+                    values = [str(v or "").strip() for v in row.values() if str(v or "").strip()]
+                    if values:
+                        options.append(" · ".join(values[:3]))
+        except Exception:
+            return []
+        return options
+
+    def _autocomplete_field(codigo, label, value, options, required_suffix, ayuda="", width=520, allow_free_text=True):
+        autocomplete = AppAutocomplete(
+            page=page,
+            label=label + required_suffix,
+            options=options or [],
+            value=value or "",
+            width=width,
+            max_results=10,
+            allow_free_text=allow_free_text,
+        )
+        state.setdefault("specific_field_controls", {})[codigo] = autocomplete
+        controls = [autocomplete.control]
+        if ayuda:
+            controls.append(ft.Text(ayuda, size=11, color=Q_MUTED))
+        return ft.Column(controls=controls, spacing=3)
+
     def _build_dynamic_field_control(campo, saved_values):
         codigo = campo.get("codigo")
         label = campo.get("etiqueta") or codigo
@@ -756,6 +846,70 @@ def expedients_view(page: ft.Page):
         placeholder = campo.get("placeholder") or ""
         ayuda = campo.get("ayuda") or ""
         required_suffix = " *" if int(campo.get("obligatorio") or 0) else ""
+
+        if tipo in ("dato_cliente", "autocomplete_cliente"):
+            return _autocomplete_field(
+                codigo,
+                label,
+                value,
+                cliente_options,
+                required_suffix,
+                ayuda or "Selecciona un cliente del CRM. Se guarda el valor confirmado en datos específicos.",
+                width=560,
+                allow_free_text=True,
+            )
+
+        if tipo in ("contacto_cliente", "autocomplete_familiar"):
+            options = _fetch_cliente_contact_options(_option_id(cliente.get_value()), only_employers=False)
+            return _autocomplete_field(
+                codigo,
+                label,
+                value,
+                options,
+                required_suffix,
+                ayuda or "Selecciona un contacto/familiar vinculado al cliente del expediente.",
+                width=560,
+                allow_free_text=True,
+            )
+
+        if tipo in ("empleador_empresa", "autocomplete_empleador"):
+            options = _fetch_cliente_contact_options(_option_id(cliente.get_value()), only_employers=True)
+            return _autocomplete_field(
+                codigo,
+                label,
+                value,
+                options,
+                required_suffix,
+                ayuda or "Selecciona un empleador/empresa vinculado al cliente del expediente.",
+                width=560,
+                allow_free_text=True,
+            )
+
+        if tipo == "actividad_cnae":
+            options = _load_catalog_options("actividades_cnae.csv")
+            return _autocomplete_field(
+                codigo,
+                label,
+                value,
+                options,
+                required_suffix,
+                ayuda or "Catálogo Mercurio de actividades/CNAE.",
+                width=720,
+                allow_free_text=True,
+            )
+
+        if tipo == "cno_sepe":
+            options = _load_catalog_options("cno_sepe_2011.csv")
+            return _autocomplete_field(
+                codigo,
+                label,
+                value,
+                options,
+                required_suffix,
+                ayuda or "Catálogo Mercurio CNO/SEPE.",
+                width=720,
+                allow_free_text=True,
+            )
 
         if tipo == "textarea":
             control = multiline_input(label + required_suffix, value, width=760, height=90)
@@ -791,7 +945,7 @@ def expedients_view(page: ft.Page):
             return
 
         values = {
-            codigo: control.value
+            codigo: _dynamic_value(control)
             for codigo, control in state.get("specific_field_controls", {}).items()
         }
 
