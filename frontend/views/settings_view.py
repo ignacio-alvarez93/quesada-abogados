@@ -49,6 +49,7 @@ def _table(headers, rows, height=300):
 def settings_view(page: ft.Page):
     state = {
         "section": "tipos",
+        "expediente_tab": "tipos",
         "editing_id": None,
         "editing_subtipo_id": None,
         "editing_formulario_id": None,
@@ -84,6 +85,114 @@ def settings_view(page: ft.Page):
         state["selected_formulario_id"] = None
         state["message"] = None
         refresh()
+
+    def _mini_metric(label, value, icon, accent="#0057B8"):
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=12,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(icon, size=18, color=accent),
+                        bgcolor="#EAF3FF",
+                        border_radius=18,
+                        width=36,
+                        height=36,
+                        alignment=ft.alignment.Alignment(0, 0),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(str(value), size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(label, size=12, color=Q_MUTED),
+                        ],
+                        spacing=0,
+                    ),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def _expediente_tab_button(label, key, icon, subtitle):
+        selected = state.get("expediente_tab") == key
+        return ft.Container(
+            bgcolor="#EAF3FF" if selected else "#FFFFFF",
+            border=ft.border.all(1, "#B9D7FF" if selected else Q_BORDER),
+            border_radius=14,
+            padding=12,
+            ink=True,
+            on_click=lambda e, k=key: open_representante_dialog() if k == "representante" else set_expediente_tab(k),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(icon, size=20, color=Q_PRIMARY if selected else Q_MUTED),
+                        bgcolor="#FFFFFF" if selected else "#F8FAFC",
+                        border_radius=20,
+                        width=40,
+                        height=40,
+                        alignment=ft.alignment.Alignment(0, 0),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(label, size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK if selected else "#101828"),
+                            ft.Text(subtitle, size=11, color=Q_MUTED),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def set_expediente_tab(tab):
+        state["expediente_tab"] = tab
+        state["editing_id"] = None
+        state["editing_subtipo_id"] = None
+        state["editing_formulario_id"] = None
+        state["editing_campo_id"] = None
+        state["message"] = None
+        refresh()
+
+    def _expediente_workspace(title, subtitle, body, metrics=None):
+        metrics = metrics or []
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=18,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=16,
+                        padding=16,
+                        content=ft.Row(
+                            controls=[
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(title, size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(subtitle, size=13, color=Q_MUTED),
+                                    ],
+                                    spacing=3,
+                                    expand=True,
+                                ),
+                                ft.Row(metrics, spacing=10, wrap=True),
+                            ],
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    ),
+                    body,
+                ],
+                spacing=14,
+                expand=True,
+            ),
+        )
 
     def header():
         msg = state["message"]
@@ -165,8 +274,6 @@ def settings_view(page: ft.Page):
             return build_box()
         if section == "nomenclaturas":
             return build_nomenclaturas()
-        if section == "formularios":
-            return build_formularios_expediente()
         return build_tablas()
 
 
@@ -383,6 +490,30 @@ def settings_view(page: ft.Page):
         )
 
 
+    def open_representante_dialog(e=None):
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Representante / presentador"),
+            content=ft.Container(
+                width=1050,
+                height=680,
+                bgcolor="#F8FAFC",
+                border_radius=18,
+                padding=12,
+                content=build_representante(),
+            ),
+            actions=[secondary_button("Cerrar", lambda ev: close_representante_dialog(dialog))],
+        )
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
+    def close_representante_dialog(dialog):
+        dialog.open = False
+        page.update()
+
+
+
     def tipo_options():
         tipos = config_service.get_tipos_expediente(active_only=True)
         return [f"{t['id']} - {t['nombre']}" for t in tipos]
@@ -393,189 +524,327 @@ def settings_view(page: ft.Page):
         return int(value.split(" - ", 1)[0])
 
     def build_tipos():
-        editing = config_service.get_record("config_tipos_expediente", state["editing_id"]) if state["editing_id"] else {}
+        """
+        Hub navegable de configuración de expedientes.
 
-        codigo = text_input("Código", editing.get("codigo", ""), width=220)
-        nombre = required_text_input("Nombre", editing.get("nombre", ""), width=320)
-        descripcion = multiline_input("Descripción", editing.get("descripcion", ""), width=560, height=90)
-        url_presentacion = text_input("URL presentación", editing.get("url_presentacion", ""), width=560)
-        activo = select_input("Activo", _bool_options(), value=_active_value(editing) if editing else "Sí", width=120)
+        Evita una única pantalla vertical gigante mezclando:
+        - tipos de expediente
+        - subtipos
+        - formularios dinámicos
+        """
+        def build_tipos_tab():
+            editing = config_service.get_record("config_tipos_expediente", state["editing_id"]) if state["editing_id"] else {}
 
-        ayuda_codigo = ft.Text(
-            "Código opcional: si lo dejas vacío, se genera automáticamente desde el nombre. "
-            "Siempre se guarda en MAYÚSCULAS y con espacios convertidos en guiones bajos.",
-            size=12,
-            color=Q_MUTED,
-        )
+            codigo = text_input("Código", editing.get("codigo", ""), width=220)
+            nombre = required_text_input("Nombre", editing.get("nombre", ""), width=320)
+            descripcion = multiline_input("Descripción", editing.get("descripcion", ""), width=560, height=90)
+            url_presentacion = text_input("URL presentación", editing.get("url_presentacion", ""), width=560)
+            activo = select_input("Activo", _bool_options(), value=_active_value(editing) if editing else "Sí", width=120)
 
-        def save():
-            data = {
-                "codigo": codigo.value,
-                "nombre": nombre.value,
-                "descripcion": descripcion.value,
-                "url_presentacion": url_presentacion.value,
-                "activo": _bool_to_int(activo.value),
-            }
-            if not data["nombre"]:
-                raise ValueError("El nombre es obligatorio")
-            if state["editing_id"]:
-                config_service.update_tipo_expediente(state["editing_id"], data)
-            else:
-                config_service.create_tipo_expediente(data)
+            ayuda_codigo = ft.Text(
+                "Código opcional: si lo dejas vacío, se genera automáticamente desde el nombre. "
+                "Siempre se guarda en MAYÚSCULAS y con espacios convertidos en guiones bajos.",
+                size=12,
+                color=Q_MUTED,
+            )
 
-        form = ft.Column(
-            controls=[
-                ft.Row([codigo, nombre, activo], wrap=True, spacing=10),
-                ayuda_codigo,
-                url_presentacion,
-                ft.Text(
-                    "URL donde se iniciará la presentación asistida para este tipo de expediente.",
-                    size=12,
-                    color=Q_MUTED,
-                ),
-                descripcion,
-                ft.Row(
-                    [
-                        primary_button("Guardar", lambda e: run_save(save, "Tipo de expediente guardado")),
-                        secondary_button("Cancelar", lambda e: cancel_edit()),
+            def save():
+                data = {
+                    "codigo": codigo.value,
+                    "nombre": nombre.value,
+                    "descripcion": descripcion.value,
+                    "url_presentacion": url_presentacion.value,
+                    "activo": _bool_to_int(activo.value),
+                }
+                if not data["nombre"]:
+                    raise ValueError("El nombre es obligatorio")
+                if state["editing_id"]:
+                    config_service.update_tipo_expediente(state["editing_id"], data)
+                else:
+                    config_service.create_tipo_expediente(data)
+
+            form = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=16,
+                padding=16,
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Container(
+                                    content=ft.Icon(ft.Icons.FOLDER_SPECIAL, size=18, color=Q_PRIMARY),
+                                    bgcolor="#EAF3FF",
+                                    border_radius=18,
+                                    width=36,
+                                    height=36,
+                                    alignment=ft.alignment.Alignment(0, 0),
+                                ),
+                                ft.Column(
+                                    controls=[
+                                        ft.Text("Alta / edición de tipo", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text("Define el trámite principal y su URL de presentación asistida.", size=12, color=Q_MUTED),
+                                    ],
+                                    spacing=2,
+                                ),
+                            ],
+                            spacing=10,
+                        ),
+                        ft.Row([codigo, nombre, activo], wrap=True, spacing=10),
+                        ayuda_codigo,
+                        url_presentacion,
+                        ft.Text(
+                            "URL donde se iniciará la presentación asistida para este tipo de expediente.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                        descripcion,
+                        ft.Row(
+                            [
+                                primary_button("Guardar tipo", lambda e: run_save(save, "Tipo de expediente guardado")),
+                                secondary_button("Cancelar", lambda e: cancel_edit()),
+                            ],
+                            spacing=8,
+                        ),
                     ],
-                    spacing=8,
+                    spacing=12,
                 ),
-            ],
-            spacing=12,
-        )
-
-        rows = []
-        for r in config_service.get_tipos_expediente():
-            rows.append(
-                [
-                    r["codigo"],
-                    r["nombre"],
-                    r.get("descripcion"),
-                    r.get("url_presentacion") or "-",
-                    "Sí" if r["activo"] else "No",
-                    ft.Row(
-                        [
-                            edit_button(r["id"]),
-                            delete_button("config_tipos_expediente", r["id"]),
-                        ],
-                        spacing=8,
-                    ),
-                ]
             )
 
-        
-        # Subtipos de expediente: se gestionan desde el mismo bloque para no
-        # depender de modificar el menú lateral.
-        subtipo_editing = (
-            config_service.get_record("config_subtipos_expediente", state.get("editing_subtipo_id"))
-            if state.get("editing_subtipo_id") else {}
-        )
-        subtipo_tipos_opts = tipo_options()
-        subtipo_selected_tipo = ""
-        if subtipo_editing:
-            subtipo_selected_tipo = next(
-                (x for x in subtipo_tipos_opts if x.startswith(str(subtipo_editing.get("tipo_expediente_id")) + " - ")),
-                "",
+            rows = []
+            for r in config_service.get_tipos_expediente():
+                rows.append(
+                    [
+                        r["codigo"],
+                        r["nombre"],
+                        r.get("descripcion"),
+                        r.get("url_presentacion") or "-",
+                        "Sí" if r["activo"] else "No",
+                        ft.Row(
+                            [
+                                edit_button(r["id"]),
+                                delete_button("config_tipos_expediente", r["id"]),
+                            ],
+                            spacing=8,
+                        ),
+                    ]
+                )
+
+            return _expediente_workspace(
+                "Tipos de expediente",
+                "Catálogo principal de trámites: arraigo, nacionalidad, renovaciones, recursos y futuras automatizaciones.",
+                ft.Column(
+                    controls=[
+                        form,
+                        _table(["Código", "Nombre", "Descripción", "URL presentación", "Activo", "Acciones"], rows, height=360),
+                    ],
+                    spacing=14,
+                ),
+                metrics=[_mini_metric("Tipos", len(rows), ft.Icons.FOLDER_SPECIAL)],
             )
 
-        subtipo_tipo = select_input("Tipo padre", subtipo_tipos_opts, value=subtipo_selected_tipo, width=300)
-        subtipo_codigo = text_input("Código subtipo", subtipo_editing.get("codigo", ""), width=220)
-        subtipo_nombre = required_text_input("Nombre subtipo", subtipo_editing.get("nombre", ""), width=320)
-        subtipo_orden = text_input("Orden", str(subtipo_editing.get("orden", 0)), width=100)
-        subtipo_activo = select_input("Activo", _bool_options(), value=_active_value(subtipo_editing) if subtipo_editing else "Sí", width=120)
-        subtipo_descripcion = multiline_input("Descripción subtipo", subtipo_editing.get("descripcion", ""), width=560, height=80)
+        def build_subtipos_tab():
+            subtipo_editing = (
+                config_service.get_record("config_subtipos_expediente", state.get("editing_subtipo_id"))
+                if state.get("editing_subtipo_id") else {}
+            )
+            subtipo_tipos_opts = tipo_options()
+            subtipo_selected_tipo = ""
+            if subtipo_editing:
+                subtipo_selected_tipo = next(
+                    (x for x in subtipo_tipos_opts if x.startswith(str(subtipo_editing.get("tipo_expediente_id")) + " - ")),
+                    "",
+                )
 
-        def save_subtipo():
-            tid = selected_id(subtipo_tipo.value)
-            if not tid:
-                raise ValueError("Selecciona el tipo padre")
-            data = {
-                "tipo_expediente_id": tid,
-                "codigo": subtipo_codigo.value,
-                "nombre": subtipo_nombre.value,
-                "descripcion": subtipo_descripcion.value,
-                "orden": int(subtipo_orden.value or 0),
-                "activo": _bool_to_int(subtipo_activo.value),
-            }
-            if state.get("editing_subtipo_id"):
-                config_service.update_subtipo_expediente(state["editing_subtipo_id"], data)
-            else:
-                config_service.create_subtipo_expediente(data)
-            state["editing_subtipo_id"] = None
+            subtipo_tipo = select_input("Tipo padre", subtipo_tipos_opts, value=subtipo_selected_tipo, width=300)
+            subtipo_codigo = text_input("Código subtipo", subtipo_editing.get("codigo", ""), width=220)
+            subtipo_nombre = required_text_input("Nombre subtipo", subtipo_editing.get("nombre", ""), width=320)
+            subtipo_orden = text_input("Orden", str(subtipo_editing.get("orden", 0)), width=100)
+            subtipo_activo = select_input("Activo", _bool_options(), value=_active_value(subtipo_editing) if subtipo_editing else "Sí", width=120)
+            subtipo_descripcion = multiline_input("Descripción subtipo", subtipo_editing.get("descripcion", ""), width=620, height=80)
 
-        def start_edit_subtipo(record_id):
-            state["editing_subtipo_id"] = record_id
-            state["message"] = None
-            refresh()
+            def save_subtipo():
+                tid = selected_id(subtipo_tipo.value)
+                if not tid:
+                    raise ValueError("Selecciona el tipo padre")
+                data = {
+                    "tipo_expediente_id": tid,
+                    "codigo": subtipo_codigo.value,
+                    "nombre": subtipo_nombre.value,
+                    "descripcion": subtipo_descripcion.value,
+                    "orden": int(subtipo_orden.value or 0),
+                    "activo": _bool_to_int(subtipo_activo.value),
+                }
+                if state.get("editing_subtipo_id"):
+                    config_service.update_subtipo_expediente(state["editing_subtipo_id"], data)
+                else:
+                    config_service.create_subtipo_expediente(data)
+                state["editing_subtipo_id"] = None
 
-        def delete_subtipo(record_id):
-            config_service.delete_record("config_subtipos_expediente", record_id)
-            state["editing_subtipo_id"] = None
+            def start_edit_subtipo(record_id):
+                state["editing_subtipo_id"] = record_id
+                state["message"] = None
+                refresh()
 
-        subtype_rows = []
+            def delete_subtipo(record_id):
+                config_service.delete_record("config_subtipos_expediente", record_id)
+                state["editing_subtipo_id"] = None
+
+            subtype_rows = []
+            try:
+                subtipos_records = config_service.get_subtipos_expediente()
+            except Exception:
+                subtipos_records = []
+
+            for s in subtipos_records:
+                subtype_rows.append(
+                    [
+                        s.get("tipo_expediente_nombre") or "-",
+                        s.get("codigo") or "-",
+                        s.get("nombre") or "-",
+                        s.get("descripcion") or "",
+                        s.get("orden") or 0,
+                        "Sí" if s.get("activo") else "No",
+                        ft.Row(
+                            [
+                                secondary_button("Editar", lambda e, sid=s["id"]: start_edit_subtipo(sid)),
+                                danger_button(
+                                    "Eliminar",
+                                    lambda e, sid=s["id"]: run_save(lambda: delete_subtipo(sid), "Subtipo eliminado"),
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                    ]
+                )
+
+            subtipo_form = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=16,
+                padding=16,
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Container(
+                                    content=ft.Icon(ft.Icons.ACCOUNT_TREE, size=18, color=Q_PRIMARY),
+                                    bgcolor="#EAF3FF",
+                                    border_radius=18,
+                                    width=36,
+                                    height=36,
+                                    alignment=ft.alignment.Alignment(0, 0),
+                                ),
+                                ft.Column(
+                                    controls=[
+                                        ft.Text("Alta / edición de subtipo", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text("Variantes del trámite para reglas documentales y formularios específicos.", size=12, color=Q_MUTED),
+                                    ],
+                                    spacing=2,
+                                ),
+                            ],
+                            spacing=10,
+                        ),
+                        ft.Row([subtipo_tipo, subtipo_codigo, subtipo_nombre], wrap=True, spacing=10),
+                        ft.Row([subtipo_orden, subtipo_activo], wrap=True, spacing=10),
+                        subtipo_descripcion,
+                        ft.Row(
+                            [
+                                primary_button("Guardar subtipo", lambda e: run_save(save_subtipo, "Subtipo de expediente guardado")),
+                                secondary_button("Cancelar", lambda e: cancel_edit()),
+                            ],
+                            spacing=8,
+                        ),
+                    ],
+                    spacing=12,
+                ),
+            )
+
+            return _expediente_workspace(
+                "Subtipos de expediente",
+                "Divide cada trámite en variantes: residencia caso general, familiar, laboral, estudios o cualquier subtipo futuro.",
+                ft.Column(
+                    controls=[
+                        subtipo_form,
+                        _table(["Tipo padre", "Código", "Subtipo", "Descripción", "Orden", "Activo", "Acciones"], subtype_rows, height=360),
+                    ],
+                    spacing=14,
+                ),
+                metrics=[_mini_metric("Subtipos", len(subtype_rows), ft.Icons.ACCOUNT_TREE)],
+            )
+
+        tipos_count = len(config_service.get_tipos_expediente())
         try:
-            subtipos_records = config_service.get_subtipos_expediente()
+            subtipos_count = len(config_service.get_subtipos_expediente())
         except Exception:
-            subtipos_records = []
+            subtipos_count = 0
+        try:
+            formularios_count = len(dynamic_form_service.list_formularios())
+        except Exception:
+            formularios_count = 0
 
-        for s in subtipos_records:
-            subtype_rows.append(
-                [
-                    s.get("tipo_expediente_nombre") or "-",
-                    s.get("codigo") or "-",
-                    s.get("nombre") or "-",
-                    s.get("descripcion") or "",
-                    s.get("orden") or 0,
-                    "Sí" if s.get("activo") else "No",
-                    ft.Row(
-                        [
-                            secondary_button("Editar", lambda e, sid=s["id"]: start_edit_subtipo(sid)),
-                            danger_button(
-                                "Eliminar",
-                                lambda e, sid=s["id"]: run_save(lambda: delete_subtipo(sid), "Subtipo eliminado"),
+        tab = state.get("expediente_tab") or "tipos"
+        if tab == "subtipos":
+            body = build_subtipos_tab()
+        elif tab == "formularios":
+            body = build_formularios_expediente()
+        else:
+            body = build_tipos_tab()
+
+        return ft.Column(
+            controls=[
+                ft.Container(
+                    bgcolor="#EAF3FF",
+                    border=ft.border.all(1, "#B9D7FF"),
+                    border_radius=18,
+                    padding=16,
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.TUNE, size=26, color=Q_PRIMARY),
+                                bgcolor="#FFFFFF",
+                                border_radius=24,
+                                width=48,
+                                height=48,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text("Expedientes", size=24, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text("Configura la arquitectura del expediente sin una pantalla vertical interminable.", size=13, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    _mini_metric("Tipos", tipos_count, ft.Icons.FOLDER_SPECIAL),
+                                    _mini_metric("Subtipos", subtipos_count, ft.Icons.ACCOUNT_TREE),
+                                    _mini_metric("Formularios", formularios_count, ft.Icons.DYNAMIC_FORM),
+                                ],
+                                spacing=8,
+                                wrap=True,
                             ),
                         ],
-                        spacing=8,
+                        spacing=14,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
-                ]
-            )
-
-        subtipo_form = ft.Column(
-            controls=[
-                ft.Text("Subtipos de expediente", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                ft.Text(
-                    "Permiten diferenciar reglas documentales: por ejemplo NACIONALIDAD → RESIDENCIA CASO GENERAL.",
-                    size=12,
-                    color=Q_MUTED,
                 ),
-                ft.Row([subtipo_tipo, subtipo_codigo, subtipo_nombre], wrap=True, spacing=10),
-                ft.Row([subtipo_orden, subtipo_activo], wrap=True, spacing=10),
-                subtipo_descripcion,
                 ft.Row(
-                    [
-                        primary_button("Guardar subtipo", lambda e: run_save(save_subtipo, "Subtipo de expediente guardado")),
-                        secondary_button("Cancelar subtipo", lambda e: cancel_edit()),
+                    controls=[
+                        _expediente_tab_button("Tipos", "tipos", ft.Icons.FOLDER_SPECIAL, "Trámites principales"),
+                        _expediente_tab_button("Subtipos", "subtipos", ft.Icons.ACCOUNT_TREE, "Variantes por trámite"),
+                        _expediente_tab_button("Formularios", "formularios", ft.Icons.DYNAMIC_FORM, "Campos específicos"),
+                        _expediente_tab_button("Representante", "representante", ft.Icons.VERIFIED_USER, "Datos Mercurio"),
                     ],
-                    spacing=8,
+                    spacing=10,
+                    wrap=True,
                 ),
+                body,
             ],
-            spacing=12,
-        )
-
-        return config_section_card(
-            "Tipos y subtipos de expediente",
-            "Catálogo ampliable de trámites y variantes documentales.",
-            ft.Column(
-                [
-                    form,
-                    _table(["Código", "Nombre", "Descripción", "URL presentación", "Activo", "Acciones"], rows, height=260),
-                    subtipo_form,
-                    _table(["Tipo padre", "Código", "Subtipo", "Descripción", "Orden", "Activo", "Acciones"], subtype_rows, height=260),
-                    build_formularios_expediente(),
-                ],
-                spacing=18,
-            ),
+            spacing=14,
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
         )
 
     def build_documentos():
@@ -931,8 +1200,22 @@ def settings_view(page: ft.Page):
             ),
         )
 
+
     def build_formularios_expediente():
-        formularios = dynamic_form_service.list_formularios()
+        """
+        Constructor de formularios dinámicos por tipo/subtipo.
+
+        Se mantiene separado de Tipos y Subtipos para evitar una pantalla larga.
+        """
+        try:
+            formularios = dynamic_form_service.list_formularios()
+        except Exception as exc:
+            return _expediente_workspace(
+                "Formularios específicos",
+                "Constructor de campos específicos por tipo y subtipo de expediente.",
+                error_alert(f"No se pudieron cargar formularios dinámicos: {exc}"),
+            )
+
         tipos_opts = tipo_options()
         subtipos_records = config_service.get_subtipos_expediente(active_only=True)
         subtipo_opts = ["Sin subtipo"] + [
@@ -992,6 +1275,12 @@ def settings_view(page: ft.Page):
                 state["selected_formulario_id"] = dynamic_form_service.create_formulario(data)
             state["editing_formulario_id"] = None
 
+        def select_formulario(formulario_id):
+            state["selected_formulario_id"] = formulario_id
+            state["editing_campo_id"] = None
+            state["message"] = None
+            refresh()
+
         def start_edit_formulario(record_id):
             state["editing_formulario_id"] = record_id
             state["selected_formulario_id"] = record_id
@@ -1026,12 +1315,6 @@ def settings_view(page: ft.Page):
                 ]
             )
 
-        def select_formulario(formulario_id):
-            state["selected_formulario_id"] = formulario_id
-            state["editing_campo_id"] = None
-            state["message"] = None
-            refresh()
-
         selected_formulario = dynamic_form_service.get_formulario(state.get("selected_formulario_id")) if state.get("selected_formulario_id") else None
         campo_editing = dynamic_form_service.get_campo_formulario(state.get("editing_campo_id")) if state.get("editing_campo_id") else {}
 
@@ -1039,9 +1322,13 @@ def settings_view(page: ft.Page):
         campo_etiqueta = required_text_input("Etiqueta", campo_editing.get("etiqueta", ""), width=320)
         campo_tipo = select_input(
             "Tipo campo",
-            ["texto", "numero", "fecha", "textarea", "select", "boolean"],
+            [
+                "texto", "numero", "fecha", "textarea", "select", "boolean",
+                "autocomplete_cliente", "autocomplete_familiar", "autocomplete_empleador",
+                "actividad_cnae", "cno_sepe", "contrato_trabajo", "representante",
+            ],
             value=campo_editing.get("tipo_campo", "texto") if campo_editing else "texto",
-            width=160,
+            width=220,
         )
         campo_obligatorio = select_input("Obligatorio", _bool_options(), value="Sí" if int(campo_editing.get("obligatorio", 0)) else "No", width=140)
         campo_opciones = text_input("Opciones select separadas por |", campo_editing.get("opciones_json", ""), width=520)
@@ -1105,61 +1392,98 @@ def settings_view(page: ft.Page):
                     ]
                 )
 
-        formulario_form = ft.Column(
-            controls=[
-                ft.Text("Formulario dinámico", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                ft.Text("Define un formulario por tipo/subtipo. Si no eliges subtipo, actúa como formulario general del tipo.", size=12, color=Q_MUTED),
-                ft.Row([formulario_tipo, formulario_subtipo, formulario_codigo, formulario_nombre], wrap=True, spacing=10),
-                ft.Row([formulario_orden, formulario_activo], wrap=True, spacing=10),
-                formulario_descripcion,
-                ft.Row(
-                    [
-                        primary_button("Guardar formulario", lambda e: run_save(save_formulario, "Formulario guardado")),
-                        secondary_button("Cancelar", lambda e: cancel_edit()),
-                    ],
-                    spacing=8,
-                ),
-            ],
-            spacing=12,
-        )
-
-        campo_form = ft.Column(
-            controls=[
-                ft.Text(
-                    f"Campos del formulario: {(selected_formulario or {}).get('nombre') or 'sin seleccionar'}",
-                    size=18,
-                    weight=ft.FontWeight.BOLD,
-                    color=Q_PRIMARY_DARK,
-                ),
-                ft.Text("Los códigos técnicos se usarán después para mapear Mercurio/PDF.", size=12, color=Q_MUTED),
-                ft.Row([campo_codigo, campo_etiqueta, campo_tipo, campo_obligatorio], wrap=True, spacing=10),
-                campo_opciones,
-                ft.Row([campo_placeholder, campo_ayuda, campo_valor_defecto], wrap=True, spacing=10),
-                ft.Row([campo_orden, campo_activo], wrap=True, spacing=10),
-                ft.Row(
-                    [
-                        primary_button("Guardar campo", lambda e: run_save(save_campo, "Campo guardado")),
-                        secondary_button("Cancelar campo", lambda e: cancel_edit()),
-                    ],
-                    spacing=8,
-                ),
-            ],
-            spacing=12,
-        )
-
-        return config_section_card(
-            "Formularios específicos de expediente",
-            "Constructor de fichas específicas por tipo y subtipo de expediente.",
-            ft.Column(
-                [
-                    formulario_form,
-                    _table(["Tipo", "Subtipo", "Código", "Formulario", "Orden", "Activo", "Acciones"], formulario_rows, height=260),
-                    campo_form if selected_formulario else empty_state("Selecciona o crea un formulario para configurar sus campos"),
-                    _table(["Código", "Etiqueta", "Tipo", "Obligatorio", "Orden", "Activo", "Acciones"], campo_rows, height=280) if selected_formulario else ft.Container(),
+        formulario_form = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=16,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.DYNAMIC_FORM, size=18, color=Q_PRIMARY),
+                                bgcolor="#EAF3FF",
+                                border_radius=18,
+                                width=36,
+                                height=36,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text("Alta / edición de formulario", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text("Define un formulario por tipo/subtipo. Si no eliges subtipo, actúa como general.", size=12, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+                    ft.Row([formulario_tipo, formulario_subtipo, formulario_codigo, formulario_nombre], wrap=True, spacing=10),
+                    ft.Row([formulario_orden, formulario_activo], wrap=True, spacing=10),
+                    formulario_descripcion,
+                    ft.Row(
+                        [
+                            primary_button("Guardar formulario", lambda e: run_save(save_formulario, "Formulario guardado")),
+                            secondary_button("Cancelar", lambda e: cancel_edit()),
+                        ],
+                        spacing=8,
+                    ),
                 ],
-                spacing=18,
+                spacing=12,
             ),
         )
+
+        campo_form = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=16,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        f"Campos del formulario: {(selected_formulario or {}).get('nombre') or 'sin seleccionar'}",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text("Los códigos técnicos se usarán después para mapear Mercurio/PDF.", size=12, color=Q_MUTED),
+                    ft.Row([campo_codigo, campo_etiqueta, campo_tipo, campo_obligatorio], wrap=True, spacing=10),
+                    campo_opciones,
+                    ft.Row([campo_placeholder, campo_ayuda, campo_valor_defecto], wrap=True, spacing=10),
+                    ft.Row([campo_orden, campo_activo], wrap=True, spacing=10),
+                    ft.Row(
+                        [
+                            primary_button("Guardar campo", lambda e: run_save(save_campo, "Campo guardado")),
+                            secondary_button("Cancelar campo", lambda e: cancel_edit()),
+                        ],
+                        spacing=8,
+                    ),
+                ],
+                spacing=12,
+            ),
+        )
+
+        body_controls = [
+            formulario_form,
+            _table(["Tipo", "Subtipo", "Código", "Formulario", "Orden", "Activo", "Acciones"], formulario_rows, height=260),
+        ]
+
+        if selected_formulario:
+            body_controls.extend([
+                campo_form,
+                _table(["Código", "Etiqueta", "Tipo", "Obligatorio", "Orden", "Activo", "Acciones"], campo_rows, height=280),
+            ])
+        else:
+            body_controls.append(empty_state("Selecciona o crea un formulario para configurar sus campos"))
+
+        return _expediente_workspace(
+            "Formularios específicos",
+            "Constructor de fichas específicas por tipo y subtipo de expediente.",
+            ft.Column(body_controls, spacing=14),
+            metrics=[_mini_metric("Formularios", len(formulario_rows), ft.Icons.DYNAMIC_FORM)],
+        )
+
 
     def build_tablas():
         """
