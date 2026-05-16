@@ -957,6 +957,33 @@ def expedients_view(page: ft.Page):
         except Exception as exc:
             show_form_error(str(exc))
 
+    def volcar_datos_formulario(e=None):
+        """Acción puente para el futuro volcado a EX/Mercurio.
+
+        En esta fase deja claro que el origen será el snapshot de datos específicos
+        del expediente. La integración real con formularios oficiales/Mercurio se
+        conectará después al mapper.
+        """
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        formulario_id = state.get("specific_formulario_id")
+        if not expediente_id:
+            show_form_error("Guarda primero el expediente antes de volcar datos")
+            return
+        if not formulario_id:
+            show_form_error("No hay formulario específico configurado para este expediente")
+            return
+
+        try:
+            values = dynamic_form_service.load_datos_especificos(expediente_id) or {}
+            if not values:
+                show_form_error("Guarda primero los datos específicos antes de volcarlos al formulario")
+                return
+            clear_form_message()
+            set_message(success_alert("Datos específicos listos para volcado. Siguiente fase: mapper EX/Mercurio"))
+            page.update()
+        except Exception as exc:
+            show_form_error(str(exc))
+
     def build_specific_data_content(expediente_id):
         tipo_id = _selected_tipo_id()
         subtipo_id = _selected_subtipo_id()
@@ -972,8 +999,35 @@ def expedients_view(page: ft.Page):
         state["specific_formulario_id"] = formulario.get("id") if formulario else None
 
         controls = [
-            ft.Text("Datos específicos del expediente", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-            ft.Text(f"Tipo/Subtipo: {tipo_label} / {subtipo_label}", size=13, color=Q_MUTED),
+            ft.Container(
+                bgcolor="#EAF3FF",
+                border=ft.border.all(1, "#B9D7FF"),
+                border_radius=16,
+                padding=14,
+                content=ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.DYNAMIC_FORM, size=24, color=Q_PRIMARY),
+                            bgcolor="#FFFFFF",
+                            border_radius=24,
+                            width=48,
+                            height=48,
+                            alignment=ft.alignment.Alignment(0, 0),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text("Datos específicos del expediente", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(f"Tipo/Subtipo: {tipo_label} / {subtipo_label}", size=13, color=Q_MUTED),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                        secondary_button("Volcar datos en formulario", volcar_datos_formulario),
+                    ],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
         ]
 
         if not formulario:
@@ -1026,7 +1080,29 @@ def expedients_view(page: ft.Page):
                         ),
                     )
                 )
-                controls.append(primary_button("Guardar datos específicos", save_specific_data))
+                controls.append(
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=14,
+                        padding=12,
+                        content=ft.Row(
+                            controls=[
+                                primary_button("Guardar datos específicos", save_specific_data),
+                                secondary_button("Volcar datos en formulario", volcar_datos_formulario),
+                                ft.Text(
+                                    "El volcado usará el snapshot confirmado del expediente, no la ficha maestra.",
+                                    size=12,
+                                    color=Q_MUTED,
+                                    expand=True,
+                                ),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    )
+                )
             else:
                 controls.append(empty_state("El formulario existe, pero todavía no tiene campos configurados"))
 
@@ -1041,23 +1117,104 @@ def expedients_view(page: ft.Page):
             ),
         )
 
+    def _form_card(title, subtitle, controls, icon=ft.Icons.EDIT_DOCUMENT):
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(icon, size=18, color=Q_PRIMARY),
+                                bgcolor="#EAF3FF",
+                                border_radius=18,
+                                width=36,
+                                height=36,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(subtitle, size=12, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    *controls,
+                ],
+                spacing=12,
+            ),
+        )
+
     def build_edit_content():
         return ft.Column(
             controls=[
-                ft.Text("Datos principales", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                ft.Row([numero_expediente, cliente.control], wrap=True, spacing=10),
-                ft.Row([tipo_expediente.control, subtipo_expediente.control, subtipo_expediente_manual, prioridad], wrap=True, spacing=10),
-                ft.Row([estado_documental, estado_administrativo, estado_presentacion], wrap=True, spacing=10),
-                ft.Row([responsable, provincia], wrap=True, spacing=10),
-                ft.Text("Fechas", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                ft.Row([fecha_apertura, fecha_presentacion, fecha_resolucion], wrap=True, spacing=10),
-                ft.Text("Presentación", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                ft.Row([numero_registro, organo_presentacion], wrap=True, spacing=10),
-                ft.Text("Box futuro", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                box_folder_path,
-                ft.Text("Solo se guarda una ruta de referencia. El ERP no manipula Box en esta fase.", size=12, color=Q_MUTED),
-                observaciones,
-                observaciones_internas,
+                ft.Container(
+                    bgcolor="#EAF3FF",
+                    border=ft.border.all(1, "#B9D7FF"),
+                    border_radius=16,
+                    padding=14,
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.FOLDER_SPECIAL, size=24, color=Q_PRIMARY),
+                                bgcolor="#FFFFFF",
+                                border_radius=24,
+                                width=48,
+                                height=48,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text("Ficha principal del expediente", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text("Datos base, estados, presentación y vinculación documental.", size=13, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ),
+                _form_card(
+                    "Datos principales",
+                    "Cliente, tipo, subtipo y estado operativo del asunto.",
+                    [
+                        ft.Row([numero_expediente, cliente.control], wrap=True, spacing=10),
+                        ft.Row([tipo_expediente.control, subtipo_expediente.control, subtipo_expediente_manual, prioridad], wrap=True, spacing=10),
+                        ft.Row([estado_documental, estado_administrativo, estado_presentacion], wrap=True, spacing=10),
+                        ft.Row([responsable, provincia], wrap=True, spacing=10),
+                    ],
+                    ft.Icons.ACCOUNT_TREE,
+                ),
+                _form_card(
+                    "Fechas y presentación",
+                    "Control temporal y datos administrativos de presentación.",
+                    [
+                        ft.Row([fecha_apertura, fecha_presentacion, fecha_resolucion], wrap=True, spacing=10),
+                        ft.Row([numero_registro, organo_presentacion], wrap=True, spacing=10),
+                    ],
+                    ft.Icons.EVENT_NOTE,
+                ),
+                _form_card(
+                    "Box y observaciones",
+                    "Ruta de referencia y notas internas del expediente.",
+                    [
+                        box_folder_path,
+                        ft.Text("Solo se guarda una ruta de referencia. El ERP no manipula Box en esta fase.", size=12, color=Q_MUTED),
+                        observaciones,
+                        observaciones_internas,
+                    ],
+                    ft.Icons.FOLDER_OPEN,
+                ),
                 form_message,
             ],
             width=920,
@@ -1408,6 +1565,7 @@ def expedients_view(page: ft.Page):
                     secondary_button("Subir nivel", lambda e: open_document_parent_folder(data.get("current_path"), root_path)),
                     primary_button("Abrir carpeta Windows", lambda e: open_current_document_folder(data.get("current_path") or current_path)),
                     secondary_button("Ir a PARA PRESENTAR", open_para_presentar_in_browser),
+                    secondary_button("Volcar datos en formulario", volcar_datos_formulario),
                 ],
                 spacing=10,
                 wrap=True,
@@ -1434,21 +1592,37 @@ def expedients_view(page: ft.Page):
         expediente_dialog.content = build_expediente_dialog_content(state.get("dialog_expediente_id"))
         page.update()
 
-    def _nav_button(label, section):
+    def _nav_button(label, section, icon, subtitle=""):
         is_active = state.get("dialog_section") == section
         return ft.Container(
-            content=ft.Text(
-                label,
-                size=13,
-                weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.W_500,
-                color=Q_PRIMARY_DARK if is_active else Q_MUTED,
-            ),
             bgcolor="#EAF3FF" if is_active else "#FFFFFF",
             border=ft.border.all(1, "#B9D7FF" if is_active else Q_BORDER),
-            border_radius=10,
-            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+            border_radius=14,
+            padding=10,
             ink=True,
             on_click=lambda e, s=section: set_dialog_section(s),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(icon, size=18, color=Q_PRIMARY if is_active else Q_MUTED),
+                        bgcolor="#FFFFFF" if is_active else "#F8FAFC",
+                        border_radius=18,
+                        width=36,
+                        height=36,
+                        alignment=ft.alignment.Alignment(0, 0),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(label, size=13, weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.W_600, color=Q_PRIMARY_DARK if is_active else "#101828"),
+                            ft.Text(subtitle, size=10, color=Q_MUTED),
+                        ],
+                        spacing=1,
+                        expand=True,
+                    ),
+                ],
+                spacing=9,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
         )
 
     def build_justificantes_content(expediente_id):
@@ -1600,39 +1774,49 @@ def expedients_view(page: ft.Page):
             state["dialog_section"] = "ficha"
 
         menu_items = [
-            ("Ficha", "ficha"),
-            ("Documentación", "documentacion"),
-            ("Diagnóstico", "diagnostico"),
-            ("Datos específicos", "datos_especificos"),
-            ("Trazabilidad", "trazabilidad"),
+            ("Ficha", "ficha", ft.Icons.ARTICLE, "Datos base"),
+            ("Datos específicos", "datos_especificos", ft.Icons.DYNAMIC_FORM, "Formulario"),
+            ("Documentación", "documentacion", ft.Icons.FOLDER_OPEN, "Box / PARA PRESENTAR"),
+            ("Diagnóstico", "diagnostico", ft.Icons.FACT_CHECK, "Estado documental"),
+            ("Trazabilidad", "trazabilidad", ft.Icons.TIMELINE, "Historial"),
         ]
 
         return ft.Container(
-            width=1080,
-            height=720,
+            width=1160,
+            height=740,
             content=ft.Row(
                 controls=[
                     ft.Container(
-                        width=220,
+                        width=260,
                         bgcolor="#F8FAFC",
                         border=ft.border.all(1, Q_BORDER),
-                        border_radius=14,
-                        padding=12,
+                        border_radius=18,
+                        padding=14,
                         content=ft.Column(
                             controls=[
-                                ft.Text("Menú expediente", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                ft.Text("Navega por cada zona sin deslizar todo el diálogo.", size=12, color=Q_MUTED),
-                                ft.Divider(),
-                                *[_nav_button(label, section) for label, section in menu_items],
+                                ft.Container(
+                                    bgcolor="#EAF3FF",
+                                    border=ft.border.all(1, "#B9D7FF"),
+                                    border_radius=16,
+                                    padding=12,
+                                    content=ft.Column(
+                                        controls=[
+                                            ft.Text("Menú expediente", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                            ft.Text("Ficha completa organizada por zonas.", size=11, color=Q_MUTED),
+                                        ],
+                                        spacing=2,
+                                    ),
+                                ),
+                                *[_nav_button(label, section, icon, subtitle) for label, section, icon, subtitle in menu_items],
                             ],
                             spacing=8,
                         ),
                     ),
                     ft.Container(
                         expand=True,
-                        bgcolor="#FFFFFF",
+                        bgcolor="#F8FAFC",
                         border=ft.border.all(1, Q_BORDER),
-                        border_radius=14,
+                        border_radius=18,
                         padding=16,
                         content=ft.Column(
                             controls=[
