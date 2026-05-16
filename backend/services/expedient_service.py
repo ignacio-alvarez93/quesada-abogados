@@ -72,6 +72,8 @@ def ensure_expedients_runtime_schema():
         )
         if not _column_exists(conn, "expedientes", "subtipo_expediente_id"):
             conn.execute("ALTER TABLE expedientes ADD COLUMN subtipo_expediente_id INTEGER")
+        if not _column_exists(conn, "expedientes", "numero_expediente_mercurio"):
+            conn.execute("ALTER TABLE expedientes ADD COLUMN numero_expediente_mercurio TEXT")
 
         # Preparación documental Mercurio / Box.
         # No altera el flujo Mercurio ni automatiza subidas: solo guarda estado detectado.
@@ -275,6 +277,7 @@ def create_expediente(data):
             INSERT INTO expedientes (
                 cliente_id,
                 numero_expediente,
+                numero_expediente_mercurio,
                 tipo_expediente_id,
                 subtipo_expediente_id,
                 subtipo_expediente,
@@ -294,11 +297,12 @@ def create_expediente(data):
                 box_folder_path,
                 activo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(data.get("cliente_id")),
                 numero,
+                _normalize_text(data.get("numero_expediente_mercurio")),
                 _int_or_none(data.get("tipo_expediente_id")),
                 _int_or_none(data.get("subtipo_expediente_id")),
                 _normalize_text(data.get("subtipo_expediente")),
@@ -330,6 +334,7 @@ def update_expediente(expediente_id, data):
             UPDATE expedientes
             SET cliente_id = ?,
                 numero_expediente = ?,
+                numero_expediente_mercurio = ?,
                 tipo_expediente_id = ?,
                 subtipo_expediente_id = ?,
                 subtipo_expediente = ?,
@@ -354,6 +359,7 @@ def update_expediente(expediente_id, data):
             (
                 int(data.get("cliente_id")),
                 _normalize_text(data.get("numero_expediente")),
+                _normalize_text(data.get("numero_expediente_mercurio")),
                 _int_or_none(data.get("tipo_expediente_id")),
                 _int_or_none(data.get("subtipo_expediente_id")),
                 _normalize_text(data.get("subtipo_expediente")),
