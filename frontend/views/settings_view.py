@@ -1,7 +1,13 @@
+import json
+
 import flet as ft
 
 from backend.services import config_service
 from backend.services import expedient_dynamic_form_service as dynamic_form_service
+from backend.services import expedient_service
+from backend.services import expedient_snapshot_service as snapshot_service
+from backend.services import form_mapper_service
+from backend.services import form_mapper_admin_service as mapper_admin_service
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -55,6 +61,8 @@ def settings_view(page: ft.Page):
         "editing_formulario_id": None,
         "editing_campo_id": None,
         "selected_formulario_id": None,
+        "editing_mapper_id": None,
+        "editing_mapper_block_id": None,
         "message": None,
     }
 
@@ -63,6 +71,7 @@ def settings_view(page: ft.Page):
     try:
         config_service.initialize_config_schema()
         dynamic_form_service.initialize_dynamic_forms_schema()
+        mapper_admin_service.initialize_mapper_admin_schema()
     except Exception as exc:
         content_area.content = error_alert(f"No se pudo inicializar configuración: {exc}")
 
@@ -83,6 +92,8 @@ def settings_view(page: ft.Page):
         state["editing_formulario_id"] = None
         state["editing_campo_id"] = None
         state["selected_formulario_id"] = None
+        state["editing_mapper_id"] = None
+        state["editing_mapper_block_id"] = None
         state["message"] = None
         refresh()
 
@@ -154,6 +165,8 @@ def settings_view(page: ft.Page):
         state["editing_subtipo_id"] = None
         state["editing_formulario_id"] = None
         state["editing_campo_id"] = None
+        state["editing_mapper_id"] = None
+        state["editing_mapper_block_id"] = None
         state["message"] = None
         refresh()
 
@@ -257,6 +270,8 @@ def settings_view(page: ft.Page):
         state["editing_subtipo_id"] = None
         state["editing_formulario_id"] = None
         state["editing_campo_id"] = None
+        state["editing_mapper_id"] = None
+        state["editing_mapper_block_id"] = None
         state["message"] = None
         refresh()
 
@@ -782,12 +797,24 @@ def settings_view(page: ft.Page):
             formularios_count = len(dynamic_form_service.list_formularios())
         except Exception:
             formularios_count = 0
+        try:
+            mappers_count = len(mapper_admin_service.list_mapper_templates())
+        except Exception:
+            mappers_count = 0
+        try:
+            mapper_blocks_count = len(mapper_admin_service.list_mapper_blocks())
+        except Exception:
+            mapper_blocks_count = 0
 
         tab = state.get("expediente_tab") or "tipos"
         if tab == "subtipos":
             body = build_subtipos_tab()
         elif tab == "formularios":
             body = build_formularios_expediente()
+        elif tab == "mappers":
+            body = build_mappers_expediente()
+        elif tab == "mapper_blocks":
+            body = build_mapper_blocks_expediente()
         else:
             body = build_tipos_tab()
 
@@ -821,6 +848,8 @@ def settings_view(page: ft.Page):
                                     _mini_metric("Tipos", tipos_count, ft.Icons.FOLDER_SPECIAL),
                                     _mini_metric("Subtipos", subtipos_count, ft.Icons.ACCOUNT_TREE),
                                     _mini_metric("Formularios", formularios_count, ft.Icons.DYNAMIC_FORM),
+                                    _mini_metric("Mappers", mappers_count, ft.Icons.HUB),
+                                    _mini_metric("Blocks", mapper_blocks_count, ft.Icons.VIEW_MODULE),
                                 ],
                                 spacing=8,
                                 wrap=True,
@@ -836,6 +865,8 @@ def settings_view(page: ft.Page):
                         _expediente_tab_button("Subtipos", "subtipos", ft.Icons.ACCOUNT_TREE, "Variantes por trámite"),
                         _expediente_tab_button("Formularios", "formularios", ft.Icons.DYNAMIC_FORM, "Campos específicos"),
                         _expediente_tab_button("Representante", "representante", ft.Icons.VERIFIED_USER, "Datos Mercurio"),
+                        _expediente_tab_button("Mappers", "mappers", ft.Icons.HUB, "Snapshot → destino"),
+                        _expediente_tab_button("Mapper Blocks", "mapper_blocks", ft.Icons.VIEW_MODULE, "Bloques reutilizables"),
                     ],
                     spacing=10,
                     wrap=True,
@@ -1482,6 +1513,628 @@ def settings_view(page: ft.Page):
             "Constructor de fichas específicas por tipo y subtipo de expediente.",
             ft.Column(body_controls, spacing=14),
             metrics=[_mini_metric("Formularios", len(formulario_rows), ft.Icons.DYNAMIC_FORM)],
+        )
+
+
+    def build_mappers_expediente():
+        """
+        Administración profesional de mappers dinámicos.
+
+        Permite configurar la transformación:
+        Snapshot expediente → payload destino (Mercurio / EX / PDF / futuros adaptadores)
+
+        Esta vista solo administra templates. El motor de mapeo sigue separado en
+        backend/services/form_mapper_service.py.
+        """
+        try:
+            mapper_templates = mapper_admin_service.list_mapper_templates()
+        except Exception as exc:
+            return _expediente_workspace(
+                "Mappers",
+                "Plantillas de transformación desde snapshot hacia Mercurio, EX y otros destinos.",
+                error_alert(f"No se pudieron cargar los mappers: {exc}"),
+            )
+
+        tipos_opts = tipo_options()
+        subtipos_records = config_service.get_subtipos_expediente(active_only=True)
+        subtipo_opts = ["Sin subtipo"] + [
+            f"{s['id']} - {s['tipo_expediente_nombre']} - {s['nombre']}"
+            for s in subtipos_records
+        ]
+
+        editing = mapper_admin_service.get_mapper_template(state.get("editing_mapper_id")) if state.get("editing_mapper_id") else {}
+
+        selected_tipo = ""
+        selected_subtipo = "Sin subtipo"
+        if editing:
+            selected_tipo = next(
+                (x for x in tipos_opts if x.startswith(str(editing.get("tipo_expediente_id")) + " - ")),
+                "",
+            )
+            selected_subtipo = next(
+                (x for x in subtipo_opts if x.startswith(str(editing.get("subtipo_expediente_id")) + " - ")),
+                "Sin subtipo",
+            )
+
+        codigo = text_input("Código mapper", editing.get("codigo", ""), width=240)
+        nombre = required_text_input("Nombre", editing.get("nombre", ""), width=320)
+        tipo_destino = select_input(
+            "Destino",
+            ["MERCURIO", "EX", "PDF", "WORD", "OCR", "OTRO"],
+            value=editing.get("tipo_destino", "MERCURIO") if editing else "MERCURIO",
+            width=180,
+        )
+        tipo = select_input("Tipo expediente", tipos_opts, value=selected_tipo, width=300)
+        subtipo = select_input("Subtipo", subtipo_opts, value=selected_subtipo, width=360)
+        version = text_input("Versión", str(editing.get("version", 1)), width=100)
+        activo = select_input("Activo", _bool_options(), value=_active_value(editing) if editing else "Sí", width=120)
+
+        default_mapper = '{\n  "nombre": "cliente.nombre",\n  "apellido1": "cliente.primer_apellido",\n  "nie": "cliente.nie"\n}'
+        default_required = '[\n  "nombre",\n  "apellido1"\n]'
+
+        try:
+            available_blocks = mapper_admin_service.list_mapper_blocks()
+        except Exception:
+            available_blocks = []
+
+        selected_block_codes = editing.get("block_codes") or []
+
+        block_checkboxes = []
+
+        for block in available_blocks:
+            checkbox = ft.Checkbox(
+                label=f"{block.get('codigo')} · {block.get('nombre')}",
+                value=block.get("codigo") in selected_block_codes,
+            )
+            checkbox.block_code = block.get("codigo")
+            block_checkboxes.append(checkbox)
+
+        mapper_json = multiline_input(
+            "Mapper JSON",
+            editing.get("mapper_json") or default_mapper,
+            width=760,
+            height=180,
+        )
+        required_fields_json = multiline_input(
+            "Campos obligatorios JSON",
+            editing.get("required_fields_json") or default_required,
+            width=760,
+            height=110,
+        )
+
+        def save_mapper():
+            tid = selected_id(tipo.value)
+            if not tid:
+                raise ValueError("Selecciona un tipo de expediente")
+
+            data = {
+                "codigo": codigo.value,
+                "nombre": nombre.value,
+                "tipo_destino": tipo_destino.value,
+                "tipo_expediente_id": tid,
+                "subtipo_expediente_id": selected_id(subtipo.value),
+                "version": int(version.value or 1),
+                "activo": _bool_to_int(activo.value),
+                "mapper_json": mapper_json.value,
+                "required_fields_json": required_fields_json.value,
+                "block_codes_json": json.dumps(
+                    [
+                        cb.block_code
+                        for cb in block_checkboxes
+                        if cb.value
+                    ],
+                    ensure_ascii=False,
+                ),
+            }
+
+            if state.get("editing_mapper_id"):
+                mapper_admin_service.update_mapper_template(state["editing_mapper_id"], data)
+            else:
+                mapper_admin_service.create_mapper_template(data)
+
+            state["editing_mapper_id"] = None
+
+        def start_edit_mapper(record_id):
+            state["editing_mapper_id"] = record_id
+            state["message"] = None
+            refresh()
+
+        def delete_mapper(record_id):
+            mapper_admin_service.delete_mapper_template(record_id)
+            state["editing_mapper_id"] = None
+
+        def open_test_mapper_dialog(template_id):
+            template = mapper_admin_service.get_mapper_template(template_id)
+            if not template:
+                fail("Mapper no encontrado")
+                refresh()
+                return
+
+            try:
+                expedientes = expedient_service.get_expedientes(active_only=True)
+            except Exception as exc:
+                fail(f"No se pudieron cargar expedientes: {exc}")
+                refresh()
+                return
+
+            expediente_options = []
+            for expediente in expedientes:
+                cliente_nombre = " ".join(
+                    part for part in [
+                        expediente.get("cliente_nombre"),
+                        expediente.get("cliente_primer_apellido"),
+                        expediente.get("cliente_segundo_apellido"),
+                    ] if part
+                ).strip()
+                expediente_options.append(
+                    f"{expediente['id']} - {expediente.get('numero_expediente') or 'SIN NÚMERO'} · {cliente_nombre or 'SIN CLIENTE'}"
+                )
+
+            expediente_selector = select_input(
+                "Expediente con snapshot",
+                expediente_options,
+                value=expediente_options[0] if expediente_options else "",
+                width=640,
+            )
+
+            result_box = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Text(
+                    "Selecciona un expediente y pulsa Probar mapper.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            )
+
+            def run_test(ev=None):
+                expediente_id = selected_id(expediente_selector.value)
+                if not expediente_id:
+                    result_box.content = error_alert("Selecciona un expediente")
+                    page.update()
+                    return
+
+                try:
+                    latest = snapshot_service.load_latest_snapshot(expediente_id)
+                    if not latest:
+                        result_box.content = error_alert(
+                            "Este expediente no tiene snapshot. Genera primero un snapshot desde la ficha del expediente."
+                        )
+                        page.update()
+                        return
+
+                    snapshot = latest.get("snapshot") or {}
+                    result = form_mapper_service.build_payload_from_template(snapshot, template)
+                    validation = result.get("validation") or {}
+                    payload = result.get("payload") or {}
+
+                    status_color = "#027A48" if validation.get("valid") else "#B42318"
+                    status_text = "VALIDACIÓN CORRECTA" if validation.get("valid") else "VALIDACIÓN CON ERRORES"
+                    errors = validation.get("errors") or []
+
+                    result_box.content = ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(status_text, size=14, weight=ft.FontWeight.BOLD, color=status_color),
+                                    ft.Text(f"Snapshot v{latest.get('version')}", size=12, color=Q_MUTED),
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                            ft.Text(
+                                "Errores:\n- " + "\n- ".join(errors) if errors else "Sin errores de validación.",
+                                size=12,
+                                color="#B42318" if errors else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Text(
+                                    json.dumps(payload, ensure_ascii=False, indent=2),
+                                    size=12,
+                                    color="#101828",
+                                    selectable=True,
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                    )
+                    page.update()
+
+                except Exception as exc:
+                    result_box.content = error_alert(str(exc))
+                    page.update()
+
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Probar mapper", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                content=ft.Container(
+                    width=900,
+                    height=650,
+                    bgcolor="#F8FAFC",
+                    border_radius=18,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Container(
+                                bgcolor="#EAF3FF",
+                                border=ft.border.all(1, "#B9D7FF"),
+                                border_radius=14,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(template.get("nombre") or template.get("codigo") or "Mapper", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            f"Destino: {template.get('tipo_destino') or '-'} · Versión: {template.get('version') or 1}",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(
+                                            "La prueba usa el último snapshot guardado del expediente. No abre Mercurio ni ejecuta Selenium.",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            expediente_selector,
+                            ft.Row(
+                                controls=[
+                                    primary_button("Probar mapper", run_test),
+                                    secondary_button("Cerrar", lambda ev: close_test_mapper_dialog(dialog)),
+                                ],
+                                spacing=8,
+                            ),
+                            result_box,
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+                actions=[],
+            )
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+
+        def close_test_mapper_dialog(dialog):
+            dialog.open = False
+            page.update()
+
+        rows = []
+        for m in mapper_templates:
+            active_color = "#027A48" if int(m.get("activo") or 0) else "#B42318"
+            rows.append(
+                [
+                    ft.Row(
+                        [
+                            primary_button("Probar", lambda e, mid=m["id"]: open_test_mapper_dialog(mid)),
+                            secondary_button("Editar", lambda e, mid=m["id"]: start_edit_mapper(mid)),
+                            danger_button("Eliminar", lambda e, mid=m["id"]: run_save(lambda: delete_mapper(mid), "Mapper eliminado")),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                    m.get("codigo") or "-",
+                    m.get("nombre") or "-",
+                    ft.Text(m.get("tipo_destino") or "-", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    m.get("tipo_expediente_nombre") or "General",
+                    m.get("subtipo_expediente_nombre") or "General",
+                    m.get("version") or 1,
+                    ft.Text("Sí" if m.get("activo") else "No", color=active_color, weight=ft.FontWeight.W_600),
+                ]
+            )
+
+        form = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=16,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.HUB, size=18, color=Q_PRIMARY),
+                                bgcolor="#EAF3FF",
+                                border_radius=18,
+                                width=36,
+                                height=36,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text("Alta / edición de mapper", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text("Transforma el snapshot validado del expediente en payloads para Mercurio, EX, PDF u otros destinos.", size=12, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row([codigo, nombre, tipo_destino, version, activo], wrap=True, spacing=10),
+                    ft.Row([tipo, subtipo], wrap=True, spacing=10),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Bloques reutilizables asociados", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(
+                                    "Selecciona bloques reutilizables para componer automáticamente el mapper final.",
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Row(block_checkboxes, wrap=True, spacing=8),
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Regla de mapping", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text("Formato: campo_destino → ruta_origen_snapshot. Ejemplo: nombre → cliente.nombre", size=12, color=Q_MUTED),
+                                mapper_json,
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Validación mínima", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text("Lista JSON de campos destino que no pueden quedar vacíos.", size=12, color=Q_MUTED),
+                                required_fields_json,
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    ft.Row(
+                        [
+                            primary_button("Guardar mapper", lambda e: run_save(save_mapper, "Mapper guardado")),
+                            secondary_button("Cancelar", lambda e: cancel_edit()),
+                        ],
+                        spacing=8,
+                    ),
+                ],
+                spacing=12,
+            ),
+        )
+
+        resumen_destinos = {}
+        for m in mapper_templates:
+            destino = m.get("tipo_destino") or "SIN_DESTINO"
+            resumen_destinos[destino] = resumen_destinos.get(destino, 0) + 1
+
+        metrics = [
+            _mini_metric("Mappers", len(mapper_templates), ft.Icons.HUB),
+            _mini_metric("Mercurio", resumen_destinos.get("MERCURIO", 0), ft.Icons.ROCKET_LAUNCH),
+            _mini_metric("EX/PDF", resumen_destinos.get("EX", 0) + resumen_destinos.get("PDF", 0), ft.Icons.DESCRIPTION),
+        ]
+
+        return _expediente_workspace(
+            "Mappers",
+            "Plantillas configurables para convertir snapshots en datos listos para Mercurio, formularios EX, PDFs y futuras automatizaciones.",
+            ft.Column(
+                controls=[
+                    form,
+                    _table(["Acciones", "Código", "Nombre", "Destino", "Tipo", "Subtipo", "Versión", "Activo"], rows, height=340),
+                ],
+                spacing=14,
+            ),
+            metrics=metrics,
+        )
+
+
+    def build_mapper_blocks_expediente():
+        """
+        Administración profesional de bloques reutilizables de mapper.
+
+        Cambio acotado:
+        - Solo gestiona form_mapper_blocks.
+        - No toca Mercurio, Selenium, snapshots ni templates existentes.
+        """
+        try:
+            blocks = mapper_admin_service.list_mapper_blocks()
+        except Exception as exc:
+            return _expediente_workspace(
+                "Mapper Blocks",
+                "Bloques reutilizables para componer mappers sin duplicar campos.",
+                error_alert(f"No se pudieron cargar los bloques de mapper: {exc}"),
+            )
+
+        editing = (
+            mapper_admin_service.get_mapper_block(state.get("editing_mapper_block_id"))
+            if state.get("editing_mapper_block_id")
+            else {}
+        )
+
+        codigo = text_input("Código bloque", editing.get("codigo", ""), width=240)
+        nombre = required_text_input("Nombre", editing.get("nombre", ""), width=320)
+        descripcion = multiline_input("Descripción", editing.get("descripcion", ""), width=760, height=72)
+        version = text_input("Versión", str(editing.get("version", 1)), width=100)
+        activo = select_input("Activo", _bool_options(), value=_active_value(editing) if editing else "Sí", width=120)
+
+        default_mapper = '{\n  "nombre": "cliente.nombre",\n  "apellido1": "cliente.primer_apellido",\n  "apellido2": "cliente.segundo_apellido",\n  "nie": "cliente.nie"\n}'
+        default_required = '[\n  "nombre",\n  "apellido1"\n]'
+
+        mapper_json = multiline_input(
+            "Mapper JSON",
+            editing.get("mapper_json") or default_mapper,
+            width=760,
+            height=190,
+        )
+        required_fields_json = multiline_input(
+            "Campos obligatorios JSON",
+            editing.get("required_fields_json") or default_required,
+            width=760,
+            height=110,
+        )
+
+        def save_block():
+            data = {
+                "codigo": codigo.value,
+                "nombre": nombre.value,
+                "descripcion": descripcion.value,
+                "mapper_json": mapper_json.value,
+                "required_fields_json": required_fields_json.value,
+                "version": int(version.value or 1),
+                "activo": _bool_to_int(activo.value),
+            }
+
+            if state.get("editing_mapper_block_id"):
+                mapper_admin_service.update_mapper_block(state["editing_mapper_block_id"], data)
+            else:
+                mapper_admin_service.create_mapper_block(data)
+
+            state["editing_mapper_block_id"] = None
+
+        def start_edit_block(block_id):
+            state["editing_mapper_block_id"] = block_id
+            state["message"] = None
+            refresh()
+
+        def delete_block(block_id):
+            mapper_admin_service.delete_mapper_block(block_id)
+            state["editing_mapper_block_id"] = None
+
+        rows = []
+        for b in blocks:
+            active_color = "#027A48" if int(b.get("activo") or 0) else "#B42318"
+            rows.append(
+                [
+                    ft.Row(
+                        [
+                            secondary_button("Editar", lambda e, bid=b["id"]: start_edit_block(bid)),
+                            danger_button("Eliminar", lambda e, bid=b["id"]: run_save(lambda: delete_block(bid), "Bloque eliminado")),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                    b.get("codigo") or "-",
+                    b.get("nombre") or "-",
+                    b.get("version") or 1,
+                    ft.Text("Sí" if b.get("activo") else "No", color=active_color, weight=ft.FontWeight.W_600),
+                    b.get("updated_at") or b.get("created_at") or "-",
+                ]
+            )
+
+        form = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=16,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.VIEW_MODULE, size=18, color=Q_PRIMARY),
+                                bgcolor="#EAF3FF",
+                                border_radius=18,
+                                width=36,
+                                height=36,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text("Alta / edición de bloque", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(
+                                        "Bloques reutilizables para construir mappers compuestos: cliente, domicilio, representante, empleador, contrato, arraigo...",
+                                        size=12,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row([codigo, nombre, version, activo], wrap=True, spacing=10),
+                    descripcion,
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Mapper del bloque", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(
+                                    "Formato: campo_destino → ruta_origen_snapshot. Este bloque podrá reutilizarse después en varios mappers.",
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
+                                mapper_json,
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Validación del bloque", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text("Lista JSON de campos destino obligatorios aportados por este bloque.", size=12, color=Q_MUTED),
+                                required_fields_json,
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    ft.Row(
+                        [
+                            primary_button("Guardar bloque", lambda e: run_save(save_block, "Bloque mapper guardado")),
+                            secondary_button("Cancelar", lambda e: cancel_edit()),
+                        ],
+                        spacing=8,
+                    ),
+                ],
+                spacing=12,
+            ),
+        )
+
+        metrics = [
+            _mini_metric("Blocks", len(blocks), ft.Icons.VIEW_MODULE),
+            _mini_metric("Activos", len([b for b in blocks if int(b.get("activo") or 0)]), ft.Icons.CHECK_CIRCLE),
+            _mini_metric("Reutilizables", len(blocks), ft.Icons.ACCOUNT_TREE),
+        ]
+
+        return _expediente_workspace(
+            "Mapper Blocks",
+            "Bloques reutilizables para componer mappers Mercurio, EX, PDF y OCR sin duplicar reglas.",
+            ft.Column(
+                controls=[
+                    form,
+                    _table(["Acciones", "Código", "Nombre", "Versión", "Activo", "Actualizado"], rows, height=340),
+                ],
+                spacing=14,
+            ),
+            metrics=metrics,
         )
 
 
