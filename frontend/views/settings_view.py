@@ -1780,10 +1780,52 @@ def settings_view(page: ft.Page):
 
         block_checkboxes = []
 
+        def _safe_json_object(raw):
+            try:
+                data = json.loads(raw or "{}")
+                return data if isinstance(data, dict) else {}
+            except Exception:
+                return {}
+
+        def _safe_json_list(raw):
+            try:
+                data = json.loads(raw or "[]")
+                return data if isinstance(data, list) else []
+            except Exception:
+                return []
+
+        def apply_mapper_block(block, checked):
+            block_mapper = _safe_json_object(block.get("mapper_json"))
+            block_required = _safe_json_list(block.get("required_fields_json"))
+
+            current_mapper = _safe_json_object(mapper_json.value)
+            current_required = _safe_json_list(required_fields_json.value)
+
+            if checked:
+                current_mapper.update(block_mapper)
+
+                for field in block_required:
+                    if field not in current_required:
+                        current_required.append(field)
+            else:
+                for key, value in block_mapper.items():
+                    if current_mapper.get(key) == value:
+                        current_mapper.pop(key, None)
+
+                for field in block_required:
+                    if field in current_required:
+                        current_required.remove(field)
+
+            mapper_json.value = json.dumps(current_mapper, ensure_ascii=False, indent=2)
+            required_fields_json.value = json.dumps(current_required, ensure_ascii=False, indent=2)
+            state["message"] = None
+            page.update()
+
         for block in available_blocks:
             checkbox = ft.Checkbox(
                 label=f"{block.get('codigo')} · {block.get('nombre')}",
                 value=block.get("codigo") in selected_block_codes,
+                on_change=lambda e, b=block: apply_mapper_block(b, bool(e.control.value)),
             )
             checkbox.block_code = block.get("codigo")
             block_checkboxes.append(checkbox)
