@@ -1801,6 +1801,62 @@ def settings_view(page: ft.Page):
             height=110,
         )
 
+        insert_key = text_input("Key destino", "", width=220)
+        insert_value = text_input("Ruta origen snapshot", "", width=420)
+
+        def insert_mapping_pair(e=None):
+            key = (insert_key.value or "").strip()
+            value = (insert_value.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino del mapper")
+                page.update()
+                return
+
+            if not value:
+                fail("Indica la ruta origen del snapshot")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = value
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_value.value = ""
+            state["message"] = None
+            page.update()
+
+        mapping_insert_card = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Insertar regla de mapping", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text("Crea el diccionario paso a paso: key destino → ruta origen del snapshot.", size=12, color=Q_MUTED),
+                    ft.Row(
+                        controls=[
+                            insert_key,
+                            insert_value,
+                            primary_button("Insertar", insert_mapping_pair),
+                            secondary_button("Ver campos snapshot", lambda e: open_snapshot_fields_dialog()),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                ],
+                spacing=8,
+            ),
+        )
+
         def save_mapper():
             tid = selected_id(tipo.value)
             if not tid:
@@ -2070,6 +2126,7 @@ def settings_view(page: ft.Page):
                             controls=[
                                 ft.Text("Regla de mapping", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                                 ft.Text("Formato: campo_destino → ruta_origen_snapshot. Ejemplo: nombre → cliente.nombre", size=12, color=Q_MUTED),
+                                mapping_insert_card,
                                 mapper_json,
                             ],
                             spacing=8,
@@ -2192,6 +2249,62 @@ def settings_view(page: ft.Page):
             height=110,
         )
 
+        insert_key = text_input("Key destino", "", width=220)
+        insert_value = text_input("Ruta origen snapshot", "", width=420)
+
+        def insert_mapping_pair(e=None):
+            key = (insert_key.value or "").strip()
+            value = (insert_value.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino del bloque")
+                page.update()
+                return
+
+            if not value:
+                fail("Indica la ruta origen del snapshot")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = value
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_value.value = ""
+            state["message"] = None
+            page.update()
+
+        mapping_insert_card = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Insertar regla del bloque", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text("Añade pares al diccionario del bloque: key destino → ruta origen del snapshot.", size=12, color=Q_MUTED),
+                    ft.Row(
+                        controls=[
+                            insert_key,
+                            insert_value,
+                            primary_button("Insertar", insert_mapping_pair),
+                            secondary_button("Ver campos snapshot", lambda e: open_snapshot_fields_dialog()),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                ],
+                spacing=8,
+            ),
+        )
+
         def save_block():
             data = {
                 "codigo": codigo.value,
@@ -2268,6 +2381,7 @@ def settings_view(page: ft.Page):
                             controls=[
                                 ft.Text("Mapper del bloque", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                                 ft.Text("Formato: campo_destino → ruta_origen_snapshot. Este bloque podrá reutilizarse después en varios mappers.", size=12, color=Q_MUTED),
+                                mapping_insert_card,
                                 mapper_json,
                             ],
                             spacing=8,
