@@ -1734,7 +1734,8 @@ def settings_view(page: ft.Page):
                 error_alert(f"No se pudieron cargar los mappers: {exc}"),
             )
 
-        tipos_opts = tipo_options()
+        general_tipo_option = "General / Sin tipo"
+        tipos_opts = [general_tipo_option] + tipo_options()
         subtipos_records = config_service.get_subtipos_expediente(active_only=True)
         subtipo_opts = ["Sin subtipo"] + [
             f"{s['id']} - {s['tipo_expediente_nombre']} - {s['nombre']}"
@@ -1743,13 +1744,17 @@ def settings_view(page: ft.Page):
 
         editing = mapper_admin_service.get_mapper_template(state.get("editing_mapper_id")) if state.get("editing_mapper_id") else {}
 
-        selected_tipo = ""
+        selected_tipo = general_tipo_option
         selected_subtipo = "Sin subtipo"
         if editing:
-            selected_tipo = next(
-                (x for x in tipos_opts if x.startswith(str(editing.get("tipo_expediente_id")) + " - ")),
-                "",
-            )
+            if editing.get("tipo_expediente_id"):
+                selected_tipo = next(
+                    (x for x in tipos_opts if x.startswith(str(editing.get("tipo_expediente_id")) + " - ")),
+                    general_tipo_option,
+                )
+            else:
+                selected_tipo = general_tipo_option
+
             selected_subtipo = next(
                 (x for x in subtipo_opts if x.startswith(str(editing.get("subtipo_expediente_id")) + " - ")),
                 "Sin subtipo",
@@ -1900,16 +1905,19 @@ def settings_view(page: ft.Page):
         )
 
         def save_mapper():
-            tid = selected_id(tipo.value)
-            if not tid:
-                raise ValueError("Selecciona un tipo de expediente")
+            is_general_mapper = tipo.value == general_tipo_option
+            tid = None if is_general_mapper else selected_id(tipo.value)
+            subtipo_id = None if is_general_mapper else selected_id(subtipo.value)
+
+            if not is_general_mapper and not tid:
+                raise ValueError("Selecciona un tipo de expediente o usa General / Sin tipo")
 
             data = {
                 "codigo": codigo.value,
                 "nombre": nombre.value,
                 "tipo_destino": tipo_destino.value,
                 "tipo_expediente_id": tid,
-                "subtipo_expediente_id": selected_id(subtipo.value),
+                "subtipo_expediente_id": subtipo_id,
                 "version": int(version.value or 1),
                 "activo": _bool_to_int(activo.value),
                 "mapper_json": mapper_json.value,
