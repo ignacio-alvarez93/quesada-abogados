@@ -1,6 +1,9 @@
 import copy
 
 
+STATIC_VALUE_PREFIX = "__static__:"
+
+
 def deep_get(data, path, default=""):
     current = data
 
@@ -18,6 +21,27 @@ def deep_get(data, path, default=""):
 
 def normalize_string(value):
     return str(value or "").strip()
+
+
+def resolve_mapping_source(flat_snapshot, source_path):
+    """
+    Resuelve el origen de una regla de mapping.
+
+    Soporta:
+    - rutas del snapshot: "cliente.nombre"
+    - valores estáticos: "__static__:Residencia"
+    - literales no string
+    """
+    if source_path is None:
+        return ""
+
+    if not isinstance(source_path, str):
+        return source_path
+
+    if source_path.startswith(STATIC_VALUE_PREFIX):
+        return source_path[len(STATIC_VALUE_PREFIX):]
+
+    return flat_snapshot.get(source_path, "")
 
 
 def build_flat_snapshot_map(snapshot):
@@ -80,7 +104,7 @@ def apply_field_mapping(snapshot, mapping):
     result = {}
 
     for target_field, source_path in (mapping or {}).items():
-        result[target_field] = flat.get(source_path, "")
+        result[target_field] = resolve_mapping_source(flat, source_path)
 
     return result
 
@@ -208,6 +232,24 @@ def get_mapper_template(tipo_destino, tipo_expediente_id=None, subtipo_expedient
                 tipo_expediente_id,
             ),
         ).fetchone()
+
+    if not row and tipo_expediente_id is None and subtipo_expediente_id is None:
+        # Fallback mapper global:
+        # cuando no hay tipo/subtipo, SQLite no compara NULL con "=".
+        with _connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM form_mapper_templates
+                WHERE activo = 1
+                  AND tipo_destino = ?
+                  AND tipo_expediente_id IS NULL
+                  AND subtipo_expediente_id IS NULL
+                ORDER BY version DESC
+                LIMIT 1
+                """,
+                (tipo_destino,),
+            ).fetchone()
 
     if not row:
         return None

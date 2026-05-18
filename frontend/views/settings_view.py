@@ -1850,6 +1850,7 @@ def settings_view(page: ft.Page):
 
         insert_key = text_input("Key destino", "", width=220)
         insert_value = text_input("Ruta origen snapshot", "", width=420)
+        insert_static_value = text_input("Valor estático", "", width=420)
 
         def insert_mapping_pair(e=None):
             key = (insert_key.value or "").strip()
@@ -1879,6 +1880,34 @@ def settings_view(page: ft.Page):
             state["message"] = None
             page.update()
 
+        def insert_static_pair(e=None):
+            key = (insert_key.value or "").strip()
+            value = (insert_static_value.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if value == "":
+                fail("Indica el valor estático")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__static__:{value}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_static_value.value = ""
+            state["message"] = None
+            page.update()
+
         mapping_insert_card = ft.Container(
             bgcolor="#F8FAFC",
             border=ft.border.all(1, Q_BORDER),
@@ -1892,8 +1921,18 @@ def settings_view(page: ft.Page):
                         controls=[
                             insert_key,
                             insert_value,
-                            primary_button("Insertar", insert_mapping_pair),
+                            primary_button("Insertar ruta", insert_mapping_pair),
                             secondary_button("Ver campos snapshot", lambda e: open_snapshot_fields_dialog()),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_static_value,
+                            primary_button("Insertar estático", insert_static_pair),
+                            ft.Text("Se guardará como __static__:valor", size=12, color=Q_MUTED),
                         ],
                         wrap=True,
                         spacing=10,
@@ -2301,6 +2340,7 @@ def settings_view(page: ft.Page):
 
         insert_key = text_input("Key destino", "", width=220)
         insert_value = text_input("Ruta origen snapshot", "", width=420)
+        insert_static_value = text_input("Valor estático", "", width=420)
 
         def insert_mapping_pair(e=None):
             key = (insert_key.value or "").strip()
@@ -2330,6 +2370,34 @@ def settings_view(page: ft.Page):
             state["message"] = None
             page.update()
 
+        def insert_static_pair(e=None):
+            key = (insert_key.value or "").strip()
+            value = (insert_static_value.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if value == "":
+                fail("Indica el valor estático")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__static__:{value}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_static_value.value = ""
+            state["message"] = None
+            page.update()
+
         mapping_insert_card = ft.Container(
             bgcolor="#F8FAFC",
             border=ft.border.all(1, Q_BORDER),
@@ -2343,8 +2411,18 @@ def settings_view(page: ft.Page):
                         controls=[
                             insert_key,
                             insert_value,
-                            primary_button("Insertar", insert_mapping_pair),
+                            primary_button("Insertar ruta", insert_mapping_pair),
                             secondary_button("Ver campos snapshot", lambda e: open_snapshot_fields_dialog()),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_static_value,
+                            primary_button("Insertar estático", insert_static_pair),
+                            ft.Text("Se guardará como __static__:valor", size=12, color=Q_MUTED),
                         ],
                         wrap=True,
                         spacing=10,
