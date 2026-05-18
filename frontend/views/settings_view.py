@@ -8,6 +8,7 @@ from backend.services import expedient_service
 from backend.services import expedient_snapshot_service as snapshot_service
 from backend.services import form_mapper_service
 from backend.services import form_mapper_admin_service as mapper_admin_service
+from backend.services import mapper_preview_service
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -2041,32 +2042,56 @@ def settings_view(page: ft.Page):
                     return
 
                 try:
-                    latest = snapshot_service.load_latest_snapshot(expediente_id)
-                    if not latest:
-                        result_box.content = error_alert(
-                            "Este expediente no tiene snapshot. Genera primero un snapshot desde la ficha del expediente."
-                        )
-                        page.update()
-                        return
+                    preview = mapper_preview_service.preview_mapper_for_expedient(
+                        expediente_id,
+                        template_id,
+                        auto_build_snapshot=True,
+                    )
 
-                    snapshot = latest.get("snapshot") or {}
-                    result = form_mapper_service.build_payload_from_template(snapshot, template)
-                    validation = result.get("validation") or {}
-                    payload = result.get("payload") or {}
-
-                    status_color = "#027A48" if validation.get("valid") else "#B42318"
-                    status_text = "VALIDACIÓN CORRECTA" if validation.get("valid") else "VALIDACIÓN CON ERRORES"
+                    payload = preview.get("payload") or {}
+                    validation = preview.get("validation") or {}
                     errors = validation.get("errors") or []
+                    empty_fields = preview.get("empty_fields") or []
+                    summary = preview.get("summary") or {}
+                    snapshot_info = preview.get("snapshot") or {}
+
+                    is_valid = bool(summary.get("valid"))
+                    status_color = "#027A48" if is_valid else "#B42318"
+                    status_text = "PREVIEW CORRECTO" if is_valid else "PREVIEW CON ERRORES"
+
+                    if snapshot_info.get("generated_in_memory"):
+                        snapshot_text = "Snapshot generado en memoria"
+                    else:
+                        snapshot_text = f"Snapshot v{snapshot_info.get('version') or '-'}"
 
                     result_box.content = ft.Column(
                         controls=[
                             ft.Row(
                                 controls=[
                                     ft.Text(status_text, size=14, weight=ft.FontWeight.BOLD, color=status_color),
-                                    ft.Text(f"Snapshot v{latest.get('version')}", size=12, color=Q_MUTED),
+                                    ft.Text(snapshot_text, size=12, color=Q_MUTED),
                                 ],
                                 spacing=10,
                                 wrap=True,
+                            ),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text("Resumen", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            f"Campos payload: {summary.get('payload_fields', len(payload))} · "
+                                            f"Campos vacíos: {summary.get('empty_fields', len(empty_fields))} · "
+                                            f"Errores required: {summary.get('required_errors', len(errors))}",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=4,
+                                ),
                             ),
                             ft.Text(
                                 "Errores:\n- " + "\n- ".join(errors) if errors else "Sin errores de validación.",
@@ -2074,16 +2099,28 @@ def settings_view(page: ft.Page):
                                 color="#B42318" if errors else "#027A48",
                                 selectable=True,
                             ),
+                            ft.Text(
+                                "Campos vacíos:\n- " + "\n- ".join(empty_fields) if empty_fields else "Sin campos vacíos.",
+                                size=12,
+                                color="#B42318" if empty_fields else "#027A48",
+                                selectable=True,
+                            ),
                             ft.Container(
                                 bgcolor="#F8FAFC",
                                 border=ft.border.all(1, Q_BORDER),
                                 border_radius=10,
                                 padding=10,
-                                content=ft.Text(
-                                    json.dumps(payload, ensure_ascii=False, indent=2),
-                                    size=12,
-                                    color="#101828",
-                                    selectable=True,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text("Payload generado", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            json.dumps(payload, ensure_ascii=False, indent=2),
+                                            size=12,
+                                            color="#101828",
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=8,
                                 ),
                             ),
                         ],
