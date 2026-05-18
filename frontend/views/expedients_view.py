@@ -1,4 +1,5 @@
 import threading
+import json
 import csv
 import sqlite3
 from pathlib import Path
@@ -12,6 +13,7 @@ from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
 from backend.services import expedient_dynamic_form_service as dynamic_form_service
 from backend.services import expedient_snapshot_service as snapshot_service
+from backend.services import mapper_preview_service
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
@@ -172,6 +174,9 @@ def expedients_view(page: ft.Page):
         "specific_field_controls": {},
         "specific_formulario_id": None,
         "snapshot_status": {},
+        "payload_preview_destination": "MERCURIO",
+        "payload_preview_result": {},
+        "payload_preview_error": {},
     }
 
     content_area = ft.Container(expand=True)
@@ -687,7 +692,7 @@ def expedients_view(page: ft.Page):
         ]
 
         if folder_path:
-            controls.append(ft.Text(folder_path, size=12, color=Q_MUTED, selectable=True))
+            controls.append(ft.Text(folder_path, size=12, color=Q_MUTED))
 
         controls.append(
             ft.Row(
@@ -1044,13 +1049,513 @@ def expedients_view(page: ft.Page):
                         spacing=10,
                     ),
                     ft.Text(f"Creado: {latest.get('created_at') or '-'}", size=12, color=Q_MUTED),
-                    ft.Text(f"Hash: {latest.get('source_hash') or '-'}", size=11, color=Q_MUTED, selectable=True),
+                    ft.Text(f"Hash: {latest.get('source_hash') or '-'}", size=11, color=Q_MUTED),
                     ft.Text(
                         "Este snapshot será el origen estable para Mercurio, EX y automatización.",
                         size=12,
                         color=Q_MUTED,
                     ),
                 ],
+            ),
+        )
+
+
+
+    def _save_payload_preview_file(expediente_id, destination, preview):
+        base_dir = Path(__file__).resolve().parents[2] / "exports" / "mapper_previews"
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"expediente_{expediente_id}_{destination}_{timestamp}.json"
+        path = base_dir / filename
+
+        path.write_text(
+            json.dumps(preview or {}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return str(path)
+
+    def generate_payload_preview_for_destination(destination, e=None):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            show_form_error("Guarda primero el expediente antes de generar preview")
+            return
+
+        destination = destination or "MERCURIO"
+        state["payload_preview_destination"] = destination
+
+        try:
+            preview = mapper_preview_service.preview_destination_for_expedient(
+                expediente_id,
+                destination,
+                auto_build_snapshot=True,
+            )
+            preview_path = _save_payload_preview_file(expediente_id, destination, preview)
+
+            state.setdefault("payload_preview_result", {})[int(expediente_id)] = preview
+            state.setdefault("payload_preview_file", {})[int(expediente_id)] = preview_path
+            state.setdefault("payload_preview_error", {}).pop(int(expediente_id), None)
+            clear_form_message()
+        except Exception as exc:
+            state.setdefault("payload_preview_result", {}).pop(int(expediente_id), None)
+            state.setdefault("payload_preview_file", {}).pop(int(expediente_id), None)
+            state.setdefault("payload_preview_error", {})[int(expediente_id)] = str(exc)
+
+        # No abrimos segundos diálogos ni pantallas internas.
+        # Se reconstruye solo la sección compacta de Automatización.
+        state["dialog_section"] = "automatizacion"
+        expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+        page.update()
+
+
+    def open_payload_preview_fullscreen(preview, e=None):
+        if not preview:
+            return
+
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            return
+
+        state["payload_preview_fullscreen"] = preview
+        state["dialog_section"] = "payload_preview_fullscreen"
+        expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+        page.update()
+
+    def back_to_payload_preview(e=None):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        state["dialog_section"] = "automatizacion"
+        if expediente_id:
+            expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+        page.update()
+
+    def build_payload_preview_fullscreen_content(expediente_id):
+        preview = state.get("payload_preview_fullscreen") or {}
+        if not preview:
+            return ft.Column(
+                width=920,
+                height=620,
+                spacing=12,
+                controls=[
+                    secondary_button("Volver a Automatización", back_to_payload_preview),
+                    empty_state("No hay preview generado para mostrar"),
+                ],
+            )
+
+        payload = preview.get("payload") or {}
+        errors = ((preview.get("validation") or {}).get("errors")) or []
+        empty_fields = preview.get("empty_fields") or []
+        summary = preview.get("summary") or {}
+        template = preview.get("template") or {}
+        snapshot_info = preview.get("snapshot") or {}
+
+        valid = bool(summary.get("valid"))
+        status_color = "#027A48" if valid else "#B42318"
+        status_text = "PREVIEW VÁLIDO" if valid else "PREVIEW CON ERRORES"
+        snapshot_text = (
+            "Snapshot generado en memoria"
+            if snapshot_info.get("generated_in_memory")
+            else f"Snapshot v{snapshot_info.get('version') or '-'}"
+        )
+
+        return ft.Column(
+            width=920,
+            height=620,
+            scroll=ft.ScrollMode.AUTO,
+            spacing=14,
+            controls=[
+                ft.Container(
+                    bgcolor="#EAF3FF",
+                    border=ft.border.all(1, "#B9D7FF"),
+                    border_radius=16,
+                    padding=14,
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.CODE, size=24, color=Q_PRIMARY),
+                                bgcolor="#FFFFFF",
+                                border_radius=24,
+                                width=48,
+                                height=48,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        f"Payload completo · {preview.get('destination') or '-'}",
+                                        size=20,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        "Vista de solo lectura del payload generado desde el snapshot.",
+                                        size=13,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            secondary_button("Volver", back_to_payload_preview),
+                        ],
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ),
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=6,
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(status_text, size=14, weight=ft.FontWeight.BOLD, color=status_color),
+                                    ft.Text(snapshot_text, size=12, color=Q_MUTED),
+                                    ft.Text(f"Match: {preview.get('match_level') or '-'}", size=12, color=Q_MUTED),
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                            ft.Text(
+                                f"Mapper: {template.get('codigo') or '-'} · {template.get('nombre') or '-'}",
+                                size=12,
+                                color=Q_PRIMARY_DARK,
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                f"Campos payload: {summary.get('payload_fields', 0)} · "
+                                f"Campos vacíos: {summary.get('empty_fields', 0)} · "
+                                f"Errores required: {summary.get('required_errors', 0)}",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                    ),
+                ),
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=8,
+                        controls=[
+                            ft.Text("Validación", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(
+                                "Errores:\n- " + "\n- ".join(errors) if errors else "Sin errores de validación.",
+                                size=12,
+                                color="#B42318" if errors else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                "Campos vacíos:\n- " + "\n- ".join(empty_fields) if empty_fields else "Sin campos vacíos.",
+                                size=12,
+                                color="#B42318" if empty_fields else "#027A48",
+                                selectable=True,
+                            ),
+                        ],
+                    ),
+                ),
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=8,
+                        controls=[
+                            ft.Text("Payload JSON completo", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Text(
+                                    json.dumps(payload, ensure_ascii=False, indent=2),
+                                    size=12,
+                                    color="#101828",
+                                    selectable=True,
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        )
+
+
+    def _payload_preview_destination_button(destination):
+        selected = (state.get("payload_preview_destination") or "MERCURIO") == destination
+
+        return ft.Container(
+            bgcolor=Q_PRIMARY if selected else "#FFFFFF",
+            border=ft.border.all(1, Q_PRIMARY if selected else Q_BORDER),
+            border_radius=10,
+            padding=ft.padding.symmetric(horizontal=14, vertical=10),
+            ink=True,
+            on_click=lambda e, d=destination: generate_payload_preview_for_destination(d, e),
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.PLAY_ARROW,
+                        size=16,
+                        color="#FFFFFF" if selected else Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        destination,
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color="#FFFFFF" if selected else Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=6,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def _payload_preview_summary(preview):
+        summary = preview.get("summary") or {}
+        snapshot_info = preview.get("snapshot") or {}
+        template = preview.get("template") or {}
+
+        valid = bool(summary.get("valid"))
+        status_text = "PREVIEW VÁLIDO" if valid else "PREVIEW CON ERRORES"
+        status_color = "#027A48" if valid else "#B42318"
+        snapshot_text = (
+            "Snapshot generado en memoria"
+            if snapshot_info.get("generated_in_memory")
+            else f"Snapshot v{snapshot_info.get('version') or '-'}"
+        )
+
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                spacing=6,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(status_text, size=14, weight=ft.FontWeight.BOLD, color=status_color),
+                            ft.Text(snapshot_text, size=12, color=Q_MUTED),
+                            ft.Text(f"Match: {preview.get('match_level') or '-'}", size=12, color=Q_MUTED),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Text(
+                        f"Mapper: {template.get('codigo') or '-'} · {template.get('nombre') or '-'}",
+                        size=12,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        f"Destino: {preview.get('destination') or '-'} · "
+                        f"Campos payload: {summary.get('payload_fields', 0)} · "
+                        f"Campos vacíos: {summary.get('empty_fields', 0)} · "
+                        f"Errores required: {summary.get('required_errors', 0)}",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                ],
+            ),
+        )
+
+    def _payload_preview_validation(preview):
+        errors = ((preview.get("validation") or {}).get("errors")) or []
+        empty_fields = preview.get("empty_fields") or []
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                spacing=6,
+                controls=[
+                    ft.Text("Validación", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text(
+                        "Errores:\n- " + "\n- ".join(errors) if errors else "Sin errores de validación.",
+                        size=12,
+                        color="#B42318" if errors else "#027A48",
+                    ),
+                    ft.Text(
+                        "Campos vacíos:\n- " + "\n- ".join(empty_fields) if empty_fields else "Sin campos vacíos.",
+                        size=12,
+                        color="#B42318" if empty_fields else "#027A48",
+                    ),
+                ],
+            ),
+        )
+
+    def _payload_preview_actions(preview):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        preview_path = state.setdefault("payload_preview_file", {}).get(int(expediente_id)) if expediente_id else ""
+
+        controls = [
+            ft.Text(
+                "Preview generado correctamente. El payload completo se ha guardado como JSON para evitar bloqueos visuales en Flet.",
+                size=12,
+                color=Q_MUTED,
+                expand=True,
+            ),
+        ]
+
+        if preview_path:
+            controls.append(
+                ft.Text(
+                    f"Archivo: {preview_path}",
+                    size=11,
+                    color=Q_PRIMARY_DARK,
+                )
+            )
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                spacing=8,
+                controls=controls,
+            ),
+        )
+
+
+    def _payload_preview_payload(preview):
+        payload = preview.get("payload") or {}
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                spacing=8,
+                controls=[
+                    ft.Text("Payload generado", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.TextField(
+                        value=json.dumps(payload, ensure_ascii=False, indent=2),
+                        multiline=True,
+                        read_only=True,
+                        min_lines=10,
+                        max_lines=16,
+                        border_color=Q_BORDER,
+                        text_size=12,
+                    ),
+                ],
+            ),
+        )
+
+    def build_payload_preview_content(expediente_id):
+        if not expediente_id:
+            return empty_state("Guarda el expediente para poder previsualizar payloads")
+
+        expediente_id = int(expediente_id)
+        preview = state.setdefault("payload_preview_result", {}).get(expediente_id)
+        error = state.setdefault("payload_preview_error", {}).get(expediente_id)
+
+        controls = [
+            ft.Container(
+                bgcolor="#EAF3FF",
+                border=ft.border.all(1, "#B9D7FF"),
+                border_radius=16,
+                padding=14,
+                content=ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.ROCKET_LAUNCH, size=24, color=Q_PRIMARY),
+                            bgcolor="#FFFFFF",
+                            border_radius=24,
+                            width=48,
+                            height=48,
+                            alignment=ft.alignment.Alignment(0, 0),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text("Automatización", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(
+                                    "Preview del payload generado desde el snapshot. No ejecuta Mercurio ni presenta.",
+                                    size=13,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
+            build_snapshot_status_content(expediente_id),
+            ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=14,
+                padding=12,
+                content=ft.Column(
+                    spacing=8,
+                    controls=[
+                        ft.Text("Generar preview por destino", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Row(
+                            controls=[
+                                _payload_preview_destination_button("MERCURIO"),
+                                _payload_preview_destination_button("EX"),
+                                _payload_preview_destination_button("PDF"),
+                                _payload_preview_destination_button("WORD"),
+                                _payload_preview_destination_button("OCR"),
+                                _payload_preview_destination_button("OTRO"),
+                            ],
+                            spacing=8,
+                            wrap=True,
+                        ),
+                        ft.Text(
+                            "Busca mapper específico del expediente; si no existe, usa mapper general del destino.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                ),
+            ),
+        ]
+
+        if error:
+            controls.append(error_alert(error))
+
+        if preview:
+            controls.extend([
+                _payload_preview_summary(preview),
+                _payload_preview_validation(preview),
+                _payload_preview_actions(preview),
+            ])
+        else:
+            controls.append(
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=14,
+                    content=ft.Column(
+                        spacing=6,
+                        controls=[
+                            ft.Text("Sin preview generado", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text("Pulsa uno de los destinos para generar el payload.", size=12, color=Q_MUTED),
+                        ],
+                    ),
+                )
+            )
+
+        return ft.Container(
+            width=920,
+            height=620,
+            bgcolor="#FFFFFF",
+            content=ft.Column(
+                controls=controls,
+                spacing=14,
+                scroll=ft.ScrollMode.AUTO,
             ),
         )
 
@@ -1143,7 +1648,7 @@ def expedients_view(page: ft.Page):
                         controls=[
                             ft.Text("Sin formulario específico configurado", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                             ft.Text("Crea un formulario dinámico en Configuración para este tipo/subtipo.", size=13, color=Q_MUTED),
-                            ft.Text(f"Clave funcional: {tipo_label} / {subtipo_label}", size=13, color=Q_PRIMARY, selectable=True),
+                            ft.Text(f"Clave funcional: {tipo_label} / {subtipo_label}", size=13, color=Q_PRIMARY),
                         ],
                     ),
                 )
@@ -1590,7 +2095,7 @@ def expedients_view(page: ft.Page):
                             ft.Column(
                                 controls=[
                                     ft.Text(folder.get("name") or "-", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                    ft.Text(folder.get("path") or "", size=11, color=Q_MUTED, selectable=True),
+                                    ft.Text(folder.get("path") or "", size=11, color=Q_MUTED),
                                 ],
                                 spacing=2,
                                 expand=True,
@@ -1621,7 +2126,7 @@ def expedients_view(page: ft.Page):
                             ft.Column(
                                 controls=[
                                     ft.Text(file.get("name") or "-", weight=ft.FontWeight.W_500),
-                                    ft.Text(file.get("path") or "", size=11, color=Q_MUTED, selectable=True),
+                                    ft.Text(file.get("path") or "", size=11, color=Q_MUTED),
                                 ],
                                 spacing=2,
                                 expand=True,
@@ -1656,7 +2161,7 @@ def expedients_view(page: ft.Page):
                 content=ft.Column(
                     controls=[
                         ft.Text("Ruta actual", size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                        ft.Text(data.get("current_path") or current_path, selectable=True, size=12, color=Q_MUTED),
+                        ft.Text(data.get("current_path") or current_path, size=12, color=Q_MUTED),
                     ],
                     spacing=4,
                 ),
@@ -1860,6 +2365,9 @@ def expedients_view(page: ft.Page):
         if section == "trazabilidad":
             return build_traceability_content(expediente_id)
 
+        if section == "automatizacion":
+            return build_payload_preview_content(expediente_id)
+
         return build_edit_content()
 
     def build_expediente_dialog_content(expediente_id=None):
@@ -1880,6 +2388,7 @@ def expedients_view(page: ft.Page):
             ("Datos específicos", "datos_especificos", ft.Icons.DYNAMIC_FORM, "Formulario"),
             ("Documentación", "documentacion", ft.Icons.FOLDER_OPEN, "Box / PARA PRESENTAR"),
             ("Diagnóstico", "diagnostico", ft.Icons.FACT_CHECK, "Estado documental"),
+            ("Automatización", "automatizacion", ft.Icons.ROCKET_LAUNCH, "Payload mapper"),
             ("Trazabilidad", "trazabilidad", ft.Icons.TIMELINE, "Historial"),
         ]
 
@@ -1951,6 +2460,7 @@ def expedients_view(page: ft.Page):
         refresh_subtipo_options_for_tipo(tipo_value=tipo_expediente.get_value(), reset_value=True)
         state["dialog_section"] = "ficha"
         state["dialog_expediente_id"] = None
+        state.pop("payload_preview_fullscreen", None)
         expediente_dialog.title = ft.Text("Nuevo expediente", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
         expediente_dialog.content = build_expediente_dialog_content()
         expediente_dialog.open = True
@@ -1961,6 +2471,7 @@ def expedients_view(page: ft.Page):
         expediente_id = expediente.get("id")
         state["dialog_section"] = "ficha"
         state["dialog_expediente_id"] = expediente_id
+        state.pop("payload_preview_fullscreen", None)
         state.setdefault("document_browser_path", {}).pop(int(expediente_id), None)
         _get_mercurio_box_status(expediente_id, force=True)
         expediente_dialog.title = ft.Text("Ficha completa del expediente", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
