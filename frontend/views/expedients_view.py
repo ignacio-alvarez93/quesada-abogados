@@ -11,6 +11,7 @@ from backend.services import expedient_document_state_service as document_state_
 from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
 from backend.services import expedient_dynamic_form_service as dynamic_form_service
+from backend.services import expedient_snapshot_service as snapshot_service
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
@@ -151,6 +152,7 @@ def expedients_view(page: ft.Page):
     expedient_service.initialize_expedients_schema()
     trace_service.initialize_traceability_schema()
     dynamic_form_service.initialize_dynamic_forms_schema()
+    snapshot_service.initialize_snapshot_schema()
 
     state = {
         "expedientes": [],
@@ -169,6 +171,7 @@ def expedients_view(page: ft.Page):
         "para_presentar_documents_error": {},
         "specific_field_controls": {},
         "specific_formulario_id": None,
+        "snapshot_status": {},
     }
 
     content_area = ft.Container(expand=True)
@@ -202,6 +205,7 @@ def expedients_view(page: ft.Page):
     filtro_prioridad = select_input("Prioridad", ["Todos"] + prioridad_options, value="Todos", width=220)
 
     numero_expediente = text_input("Nº expediente", width=220)
+    numero_expediente_mercurio = text_input("Nº expediente Mercurio", width=260)
     cliente = AppAutocomplete(
         page=page,
         label="Cliente",
@@ -367,6 +371,7 @@ def expedients_view(page: ft.Page):
     def clear_form():
         state["editing_id"] = None
         numero_expediente.value = ""
+        numero_expediente_mercurio.value = ""
         cliente.set_value("", update=False)
         tipo_expediente.set_value(tipo_options[0] if tipo_options else "", update=False)
         refresh_subtipo_options_for_tipo(tipo_value=tipo_expediente.get_value(), reset_value=True)
@@ -390,6 +395,7 @@ def expedients_view(page: ft.Page):
     def load_form(expediente):
         state["editing_id"] = expediente["id"]
         numero_expediente.value = expediente.get("numero_expediente") or ""
+        numero_expediente_mercurio.value = expediente.get("numero_expediente_mercurio") or ""
 
         cliente.set_value(
             next(
@@ -440,6 +446,7 @@ def expedients_view(page: ft.Page):
         return {
             "cliente_id": _option_id(cliente.get_value()),
             "numero_expediente": numero_expediente.value,
+            "numero_expediente_mercurio": numero_expediente_mercurio.value,
             "tipo_expediente_id": _option_id(tipo_expediente.get_value()),
             "subtipo_expediente_id": _option_id_from_autocomplete_value(subtipo_expediente.get_value(), subtipo_expediente.options),
             "subtipo_expediente": subtipo_expediente_manual.value or (
@@ -957,6 +964,97 @@ def expedients_view(page: ft.Page):
         except Exception as exc:
             show_form_error(str(exc))
 
+    def generate_snapshot(e=None):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            show_form_error("Guarda primero el expediente antes de generar snapshot")
+            return
+
+        try:
+            result = snapshot_service.save_snapshot(expediente_id, created_by="ERP")
+            state.setdefault("snapshot_status", {})[int(expediente_id)] = result
+            clear_form_message()
+
+            if result.get("validated"):
+                set_message(success_alert(f"Snapshot generado correctamente · versión {result.get('version')}"))
+            else:
+                errors = result.get("errors") or []
+                set_message(error_alert("Snapshot generado con advertencias:\n- " + "\n- ".join(errors)))
+
+            expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+            page.update()
+
+        except Exception as exc:
+            show_form_error(str(exc))
+
+
+    def build_snapshot_status_content(expediente_id):
+        if not expediente_id:
+            return ft.Text(
+                "Guarda el expediente para poder generar snapshot.",
+                size=12,
+                color=Q_MUTED,
+            )
+
+        try:
+            latest = snapshot_service.load_latest_snapshot(expediente_id)
+        except Exception as exc:
+            return error_alert(f"No se pudo leer snapshot: {exc}")
+
+        if not latest:
+            return ft.Container(
+                bgcolor="#F8FAFC",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Column(
+                    spacing=6,
+                    controls=[
+                        ft.Text("Snapshot no generado", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Text(
+                            "Todavía no existe una versión congelada de datos para Mercurio / EX.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                ),
+            )
+
+        valid_text = "VALIDADO" if int(latest.get("validated") or 0) else "CON ADVERTENCIAS"
+        valid_color = "#027A48" if int(latest.get("validated") or 0) else "#B42318"
+
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                spacing=6,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                f"Snapshot v{latest.get('version')}",
+                                size=14,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(valid_text, size=12, weight=ft.FontWeight.BOLD, color=valid_color),
+                        ],
+                        spacing=10,
+                    ),
+                    ft.Text(f"Creado: {latest.get('created_at') or '-'}", size=12, color=Q_MUTED),
+                    ft.Text(f"Hash: {latest.get('source_hash') or '-'}", size=11, color=Q_MUTED, selectable=True),
+                    ft.Text(
+                        "Este snapshot será el origen estable para Mercurio, EX y automatización.",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                ],
+            ),
+        )
+
+
     def volcar_datos_formulario(e=None):
         """Acción puente para el futuro volcado a EX/Mercurio.
 
@@ -1022,6 +1120,7 @@ def expedients_view(page: ft.Page):
                             spacing=2,
                             expand=True,
                         ),
+                        secondary_button("Generar snapshot", generate_snapshot),
                         secondary_button("Volcar datos en formulario", volcar_datos_formulario),
                     ],
                     spacing=12,
@@ -1029,6 +1128,8 @@ def expedients_view(page: ft.Page):
                 ),
             ),
         ]
+
+        controls.append(build_snapshot_status_content(expediente_id))
 
         if not formulario:
             controls.append(
@@ -1089,6 +1190,7 @@ def expedients_view(page: ft.Page):
                         content=ft.Row(
                             controls=[
                                 primary_button("Guardar datos específicos", save_specific_data),
+                                secondary_button("Generar snapshot", generate_snapshot),
                                 secondary_button("Volcar datos en formulario", volcar_datos_formulario),
                                 ft.Text(
                                     "El volcado usará el snapshot confirmado del expediente, no la ficha maestra.",
@@ -1188,7 +1290,7 @@ def expedients_view(page: ft.Page):
                     "Datos principales",
                     "Cliente, tipo, subtipo y estado operativo del asunto.",
                     [
-                        ft.Row([numero_expediente, cliente.control], wrap=True, spacing=10),
+                        ft.Row([numero_expediente, numero_expediente_mercurio, cliente.control], wrap=True, spacing=10),
                         ft.Row([tipo_expediente.control, subtipo_expediente.control, subtipo_expediente_manual, prioridad], wrap=True, spacing=10),
                         ft.Row([estado_documental, estado_administrativo, estado_presentacion], wrap=True, spacing=10),
                         ft.Row([responsable, provincia], wrap=True, spacing=10),

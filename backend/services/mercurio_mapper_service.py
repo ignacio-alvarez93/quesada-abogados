@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from backend.services import config_service
+from backend.services import expedient_snapshot_service as snapshot_service
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -350,7 +351,77 @@ def get_presentacion_folder(expediente):
     return folder
 
 
-def build_datos_cliente(expediente):
+
+def load_snapshot_for_mercurio(expediente_id):
+    """
+    Carga el último snapshot validado para Mercurio.
+
+    A partir de esta fase, Mercurio NO consume directamente la ficha cliente.
+    El mapper usa el snapshot congelado del expediente como fuente estable.
+    """
+    latest = snapshot_service.load_latest_snapshot(expediente_id)
+    if not latest:
+        raise ValueError(
+            "No existe snapshot para este expediente. "
+            "Genera primero el snapshot desde la ficha del expediente."
+        )
+
+    if int(latest.get("validated") or 0) != 1:
+        raise ValueError(
+            "El último snapshot del expediente tiene advertencias. "
+            "Corrige los datos y genera un nuevo snapshot validado antes de iniciar Mercurio."
+        )
+
+    snapshot = latest.get("snapshot") or {}
+    snapshot.setdefault("metadata", {})["snapshot_db_id"] = latest.get("id")
+    snapshot.setdefault("metadata", {})["snapshot_db_version"] = latest.get("version")
+    snapshot.setdefault("metadata", {})["snapshot_db_hash"] = latest.get("source_hash")
+    snapshot.setdefault("metadata", {})["snapshot_db_created_at"] = latest.get("created_at")
+    return snapshot
+
+
+def _snapshot_cliente(snapshot):
+    return dict((snapshot or {}).get("cliente") or {})
+
+
+def _snapshot_expediente(snapshot):
+    return dict((snapshot or {}).get("expediente") or {})
+
+
+def _snapshot_representante(snapshot):
+    return dict((snapshot or {}).get("representante") or {})
+
+def build_datos_cliente(expediente, snapshot=None):
+    cliente_snapshot = _snapshot_cliente(snapshot)
+    if cliente_snapshot:
+        return {
+            "id": cliente_snapshot.get("id") or "",
+            "nombre": cliente_snapshot.get("nombre") or "",
+            "primer_apellido": cliente_snapshot.get("primer_apellido") or "",
+            "segundo_apellido": cliente_snapshot.get("segundo_apellido") or "",
+            "nacionalidad": cliente_snapshot.get("nacionalidad") or "",
+            "nie": cliente_snapshot.get("nie") or "",
+            "pasaporte": cliente_snapshot.get("pasaporte") or "",
+            "dni": cliente_snapshot.get("dni") or "",
+            "fecha_nacimiento": cliente_snapshot.get("fecha_nacimiento") or "",
+            "localidad_nacimiento": cliente_snapshot.get("localidad_nacimiento") or "",
+            "pais_nacimiento": cliente_snapshot.get("pais_nacimiento") or "",
+            "estado_civil": cliente_snapshot.get("estado_civil") or "",
+            "sexo": cliente_snapshot.get("sexo") or "",
+            "telefono": cliente_snapshot.get("telefono") or "",
+            "email": cliente_snapshot.get("email") or "",
+            "domicilio_espana": cliente_snapshot.get("domicilio_espana") or "",
+            "localidad": cliente_snapshot.get("localidad") or "",
+            "codigo_postal": cliente_snapshot.get("codigo_postal") or "",
+            "provincia": cliente_snapshot.get("provincia") or "",
+            "numero": cliente_snapshot.get("numero") or "",
+            "piso": cliente_snapshot.get("piso") or "",
+            "nombre_padre": cliente_snapshot.get("nombre_padre") or "",
+            "nombre_madre": cliente_snapshot.get("nombre_madre") or "",
+        }
+
+    # Compatibilidad interna para pruebas unitarias antiguas.
+    # El flujo Mercurio real llama siempre con snapshot.
     return {
         "id": expediente.get("cliente_id_real") or expediente.get("cliente_id"),
         "nombre": expediente.get("cliente_nombre") or "",
@@ -378,7 +449,36 @@ def build_datos_cliente(expediente):
     }
 
 
-def build_datos_expediente(expediente):
+def build_datos_expediente(expediente, snapshot=None):
+    expediente_snapshot = _snapshot_expediente(snapshot)
+    cliente_snapshot = _snapshot_cliente(snapshot)
+
+    if expediente_snapshot:
+        provincia_codigo = map_provincia(first(
+            expediente_snapshot.get("mercurio_provincia_codigo"),
+            expediente_snapshot.get("provincia_codigo"),
+            expediente_snapshot.get("codigo_provincia"),
+            expediente_snapshot.get("provincia"),
+            cliente_snapshot.get("provincia"),
+        ))
+
+        return {
+            "id": expediente_snapshot.get("id"),
+            "numero_expediente": expediente_snapshot.get("numero_expediente") or "",
+            "numero_expediente_mercurio": expediente_snapshot.get("numero_expediente_mercurio") or "",
+            "tipo_expediente_id": expediente_snapshot.get("tipo_expediente_id"),
+            "tipo_expediente_nombre": expediente_snapshot.get("tipo_expediente_nombre") or "",
+            "tipo_expediente_codigo": expediente_snapshot.get("tipo_expediente_codigo") or "",
+            "subtipo_expediente_id": expediente_snapshot.get("subtipo_expediente_id"),
+            "subtipo_expediente": expediente_snapshot.get("subtipo_expediente") or expediente_snapshot.get("subtipo_expediente_nombre") or "",
+            "subtipo_expediente_codigo": expediente_snapshot.get("subtipo_expediente_codigo") or "",
+            "organo_presentacion": expediente_snapshot.get("organo_presentacion") or "",
+            "provincia": first(expediente_snapshot.get("provincia"), cliente_snapshot.get("provincia")),
+            "provincia_codigo_mercurio": provincia_codigo,
+            "box_folder_path": expediente_snapshot.get("box_folder_path") or "",
+        }
+
+    # Compatibilidad interna para pruebas unitarias antiguas.
     provincia_codigo = map_provincia(first(
         expediente.get("mercurio_provincia_codigo"),
         expediente.get("provincia_codigo"),
@@ -390,6 +490,7 @@ def build_datos_expediente(expediente):
     return {
         "id": expediente.get("id"),
         "numero_expediente": expediente.get("numero_expediente"),
+        "numero_expediente_mercurio": expediente.get("numero_expediente_mercurio") or "",
         "tipo_expediente_id": expediente.get("tipo_expediente_id"),
         "tipo_expediente_nombre": expediente.get("tipo_expediente_nombre"),
         "tipo_expediente_codigo": expediente.get("tipo_expediente_codigo"),
@@ -403,12 +504,13 @@ def build_datos_expediente(expediente):
     }
 
 
-def build_datos_representante():
+def build_datos_representante(snapshot=None):
     """
-    Lee la configuración global del representante/presentador desde Settings
-    y la transforma a IDs reales de Mercurio en la pestaña tab-datos_presentador.
+    Lee el representante desde el snapshot del expediente.
+
+    Fallback a Settings solo para compatibilidad interna si se llama sin snapshot.
     """
-    rep = config_service.get_representante_config()
+    rep = _snapshot_representante(snapshot) or config_service.get_representante_config()
 
     tipo_via = rep.get("representante_tipo_via") or ""
     piso = limpiar_piso(rep.get("representante_piso") or "")
@@ -465,9 +567,12 @@ def build_datos_representante():
         "representante_num_bis": rep.get("representante_num_bis") or "",
     }
 
-def build_datos_mercurio(expediente):
-    cliente = build_datos_cliente(expediente)
-    expediente_json = build_datos_expediente(expediente)
+def build_datos_mercurio(expediente, snapshot=None):
+    if snapshot is None:
+        snapshot = load_snapshot_for_mercurio(expediente.get("id"))
+
+    cliente = build_datos_cliente(expediente, snapshot=snapshot)
+    expediente_json = build_datos_expediente(expediente, snapshot=snapshot)
 
     domicilio = cliente["domicilio_espana"]
     domicilio_parts = parse_domicilio(
@@ -488,7 +593,11 @@ def build_datos_mercurio(expediente):
         "meta": {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "source": "Quesada Abogados ERP",
-            "version": 2,
+            "version": 3,
+            "source_model": "expediente_snapshot",
+            "snapshot_version": (snapshot.get("metadata") or {}).get("snapshot_db_version") or (snapshot.get("metadata") or {}).get("snapshot_version"),
+            "snapshot_hash": (snapshot.get("metadata") or {}).get("snapshot_db_hash") or (snapshot.get("metadata") or {}).get("source_hash"),
+            "snapshot_created_at": (snapshot.get("metadata") or {}).get("snapshot_db_created_at") or (snapshot.get("metadata") or {}).get("generated_at"),
         },
         "presentacion": {
             "portal": "MERCURIO",
@@ -549,7 +658,7 @@ def build_datos_mercurio(expediente):
             "notCodigoLocalidadNotificacion_text": cliente["localidad"],
             "notCodigoPostalNotificacion": cliente["codigo_postal"],
         },
-        "representante": build_datos_representante(),
+        "representante": build_datos_representante(snapshot=snapshot),
     }
 
 
@@ -565,17 +674,23 @@ def build_and_export(expediente_or_id):
     if not expediente:
         raise ValueError(f"No existe expediente id={expediente_id}")
 
+    snapshot = load_snapshot_for_mercurio(expediente_id)
+
     folder = get_presentacion_folder(expediente)
 
-    datos_cliente = build_datos_cliente(expediente)
-    datos_expediente = build_datos_expediente(expediente)
-    datos_mercurio = build_datos_mercurio(expediente)
+    datos_cliente = build_datos_cliente(expediente, snapshot=snapshot)
+    datos_expediente = build_datos_expediente(expediente, snapshot=snapshot)
+    datos_mercurio = build_datos_mercurio(expediente, snapshot=snapshot)
 
     session = {
         "expediente_id": expediente.get("id"),
-        "numero_expediente": expediente.get("numero_expediente"),
-        "cliente_id": expediente.get("cliente_id_real") or expediente.get("cliente_id"),
+        "numero_expediente": datos_expediente.get("numero_expediente") or expediente.get("numero_expediente"),
+        "numero_expediente_mercurio": datos_expediente.get("numero_expediente_mercurio") or "",
+        "cliente_id": datos_cliente.get("id") or expediente.get("cliente_id_real") or expediente.get("cliente_id"),
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "source_model": "expediente_snapshot",
+        "snapshot_version": (snapshot.get("metadata") or {}).get("snapshot_db_version") or (snapshot.get("metadata") or {}).get("snapshot_version"),
+        "snapshot_hash": (snapshot.get("metadata") or {}).get("snapshot_db_hash") or (snapshot.get("metadata") or {}).get("source_hash"),
         "folder": str(folder),
         "datos_mercurio_json": str(folder / "datos_mercurio.json"),
     }
