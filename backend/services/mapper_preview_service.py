@@ -5,6 +5,7 @@ from backend.services import expedient_service
 from backend.services import expedient_snapshot_service
 from backend.services import form_mapper_admin_service
 from backend.services import form_mapper_service
+from backend.services import document_template_service
 
 
 def _safe_int(value):
@@ -239,3 +240,60 @@ def preview_mapper_json(expediente_id, mapper_json, required_fields_json=None, a
         generated_in_memory,
         template,
     )
+
+def _get_active_mapper_template_by_code(codigo):
+    normalized = _normalize_destination(codigo)
+    for template in form_mapper_admin_service.list_mapper_templates(active_only=True):
+        if _normalize_destination(template.get("codigo")) == normalized:
+            return template
+    return None
+
+
+def preview_document_template_for_expedient(document_template_id, expediente_id, auto_build_snapshot=True):
+    """
+    Previsualiza el payload de una plantilla documental usando su mapper_destino.
+
+    No genera documentos, no escribe archivos y no modifica el expediente.
+    Solo resuelve:
+    Plantilla documental -> mapper_destino -> mapper_template.codigo -> payload.
+    """
+    document_template = document_template_service.get_document_template(document_template_id)
+    if not document_template:
+        raise ValueError(f"No existe document_template_id={document_template_id}")
+
+    mapper_code = document_template.get("mapper_destino") or document_template.get("codigo")
+    if not mapper_code:
+        raise ValueError("La plantilla documental no tiene mapper_destino ni código utilizable")
+
+    mapper_template = _get_active_mapper_template_by_code(mapper_code)
+    if not mapper_template:
+        raise ValueError(
+            f"No existe mapper activo con código={_normalize_destination(mapper_code)} "
+            "para esta plantilla documental."
+        )
+
+    result = preview_mapper_for_expedient(
+        expediente_id,
+        mapper_template["id"],
+        auto_build_snapshot=auto_build_snapshot,
+    )
+    result["document_template"] = {
+        "id": document_template.get("id"),
+        "codigo": document_template.get("codigo"),
+        "nombre": document_template.get("nombre"),
+        "categoria": document_template.get("categoria"),
+        "tipo_destino": document_template.get("tipo_destino"),
+        "template_type": document_template.get("template_type"),
+        "template_path": document_template.get("template_path"),
+        "fields_json_path": document_template.get("fields_json_path"),
+        "metadata_json_path": document_template.get("metadata_json_path"),
+        "mapper_destino": document_template.get("mapper_destino"),
+        "requiere_expediente": document_template.get("requiere_expediente"),
+    }
+    result["mapper_match"] = {
+        "mode": "mapper_codigo",
+        "mapper_template_id": mapper_template.get("id"),
+        "mapper_codigo": mapper_template.get("codigo"),
+    }
+    return result
+

@@ -1175,6 +1175,209 @@ def settings_view(page: ft.Page):
             if state.get("editing_document_template_id") == template_id:
                 state["editing_document_template_id"] = None
 
+        def open_test_document_template_dialog(template_id):
+            template = document_template_service.get_document_template(template_id)
+            if not template:
+                fail("Plantilla documental no encontrada")
+                refresh()
+                return
+
+            try:
+                expedientes = expedient_service.get_expedientes(active_only=True)
+            except Exception as exc:
+                fail(f"No se pudieron cargar expedientes: {exc}")
+                refresh()
+                return
+
+            expediente_options = []
+            for expediente in expedientes:
+                cliente_nombre = " ".join(
+                    part for part in [
+                        expediente.get("cliente_nombre"),
+                        expediente.get("cliente_primer_apellido"),
+                        expediente.get("cliente_segundo_apellido"),
+                    ] if part
+                ).strip()
+                expediente_options.append(
+                    f"{expediente['id']} - {expediente.get('numero_expediente') or 'SIN NÚMERO'} · {cliente_nombre or 'SIN CLIENTE'}"
+                )
+
+            expediente_selector = select_input(
+                "Expediente de prueba",
+                expediente_options,
+                value=expediente_options[0] if expediente_options else "",
+                width=680,
+            )
+
+            result_box = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Text(
+                    "Selecciona un expediente y pulsa Probar payload. No se genera ningún documento.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            )
+
+            def run_test(ev=None):
+                expediente_id = selected_id(expediente_selector.value)
+                if not expediente_id:
+                    result_box.content = error_alert("Selecciona un expediente de prueba")
+                    page.update()
+                    return
+
+                try:
+                    preview = mapper_preview_service.preview_document_template_for_expedient(
+                        template_id,
+                        expediente_id,
+                        auto_build_snapshot=True,
+                    )
+
+                    payload = preview.get("payload") or {}
+                    validation = preview.get("validation") or {}
+                    errors = validation.get("errors") or []
+                    empty_fields = preview.get("empty_fields") or []
+                    summary = preview.get("summary") or {}
+                    snapshot_info = preview.get("snapshot") or {}
+                    mapper_match = preview.get("mapper_match") or {}
+
+                    is_valid = bool(summary.get("valid"))
+                    status_color = "#027A48" if is_valid else "#B42318"
+                    status_text = "PAYLOAD CORRECTO" if is_valid else "PAYLOAD CON ERRORES"
+                    snapshot_text = (
+                        "Snapshot generado en memoria"
+                        if snapshot_info.get("generated_in_memory")
+                        else f"Snapshot v{snapshot_info.get('version') or '-'}"
+                    )
+
+                    result_box.content = ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(status_text, size=14, weight=ft.FontWeight.BOLD, color=status_color),
+                                    ft.Text(snapshot_text, size=12, color=Q_MUTED),
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text("Resumen", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            f"Mapper: {mapper_match.get('mapper_codigo') or '-'} · "
+                                            f"Campos payload: {summary.get('payload_fields', len(payload))} · "
+                                            f"Vacíos: {summary.get('empty_fields', len(empty_fields))} · "
+                                            f"Errores required: {summary.get('required_errors', len(errors))}",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            ft.Text(
+                                "Errores:\n- " + "\n- ".join(errors) if errors else "Sin errores de validación.",
+                                size=12,
+                                color="#B42318" if errors else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                "Campos vacíos:\n- " + "\n- ".join(empty_fields) if empty_fields else "Sin campos vacíos.",
+                                size=12,
+                                color="#B42318" if empty_fields else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text("Payload generado", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            json.dumps(payload, ensure_ascii=False, indent=2),
+                                            size=12,
+                                            color="#101828",
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=8,
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                    )
+                    page.update()
+
+                except Exception as exc:
+                    result_box.content = error_alert(str(exc))
+                    page.update()
+
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Probar payload de plantilla", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                content=ft.Container(
+                    width=940,
+                    height=650,
+                    bgcolor="#F8FAFC",
+                    border_radius=18,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Container(
+                                bgcolor="#EAF3FF",
+                                border=ft.border.all(1, "#B9D7FF"),
+                                border_radius=14,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(template.get("nombre") or template.get("codigo") or "Plantilla", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            f"Código: {template.get('codigo') or '-'} · Mapper destino: {template.get('mapper_destino') or '-'}",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(
+                                            "La prueba usa el mapper asociado por código y el último snapshot del expediente. No crea DOCX/PDF.",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            expediente_selector,
+                            ft.Row(
+                                controls=[
+                                    primary_button("Probar payload", run_test),
+                                    secondary_button("Cerrar", lambda ev: close_test_document_template_dialog(dialog)),
+                                ],
+                                spacing=8,
+                            ),
+                            result_box,
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+                actions=[],
+            )
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+
+        def close_test_document_template_dialog(dialog):
+            dialog.open = False
+            page.update()
+
         form = ft.Container(
             bgcolor="#FFFFFF",
             border=ft.border.all(1, Q_BORDER),
@@ -1263,6 +1466,7 @@ def settings_view(page: ft.Page):
             rows.append(
                 [
                     _mapper_actions_menu(
+                        on_test=lambda e, tid=template["id"]: open_test_document_template_dialog(tid),
                         on_edit=lambda e, tid=template["id"]: start_edit_template(tid),
                         on_delete=lambda e, tid=template["id"]: run_save(lambda tid=tid: delete_template(tid), "Plantilla eliminada"),
                     ),
