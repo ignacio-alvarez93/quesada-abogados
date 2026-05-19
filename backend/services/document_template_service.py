@@ -193,7 +193,7 @@ def update_document_template(template_id, data):
     initialize_document_templates_schema()
     item = normalize_template_data(data)
     with get_connection() as conn:
-        conn.execute(
+        cur = conn.execute(
             """
             UPDATE document_templates
             SET codigo = ?, nombre = ?, nombre_oficial = ?, descripcion = ?,
@@ -212,6 +212,9 @@ def update_document_template(template_id, data):
             ),
         )
         conn.commit()
+
+        if cur.rowcount == 0:
+            raise ValueError(f"No existe la plantilla documental id={template_id}")
 
 
 def upsert_document_template(data):
@@ -241,6 +244,26 @@ def set_document_template_active(template_id, active):
 def delete_document_template(template_id):
     """Borrado lógico para no romper histórico de generaciones futuras."""
     set_document_template_active(template_id, False)
+
+
+def hard_delete_document_template(template_id):
+    """
+    Borrado físico para plantillas documentales en fase de configuración.
+
+    Se usa desde Settings porque todavía no hay histórico de generaciones
+    dependiente de document_templates. Si en el futuro se crea histórico,
+    la UI podrá volver a usar delete_document_template().
+    """
+    initialize_document_templates_schema()
+    with get_connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM document_templates WHERE id = ?",
+            (int(template_id),),
+        )
+        conn.commit()
+
+        if cur.rowcount == 0:
+            raise ValueError(f"No existe la plantilla documental id={template_id}")
 
 
 def seed_document_templates(templates):

@@ -9,6 +9,7 @@ from backend.services import expedient_snapshot_service as snapshot_service
 from backend.services import form_mapper_service
 from backend.services import form_mapper_admin_service as mapper_admin_service
 from backend.services import mapper_preview_service
+from backend.services import document_template_service
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -106,6 +107,8 @@ def settings_view(page: ft.Page):
         "selected_formulario_id": None,
         "editing_mapper_id": None,
         "editing_mapper_block_id": None,
+        "editing_document_template_id": None,
+        "documentos_tab": "requeridos",
         "message": None,
     }
 
@@ -115,6 +118,7 @@ def settings_view(page: ft.Page):
         config_service.initialize_config_schema()
         dynamic_form_service.initialize_dynamic_forms_schema()
         mapper_admin_service.initialize_mapper_admin_schema()
+        document_template_service.initialize_document_templates_schema()
     except Exception as exc:
         content_area.content = error_alert(f"No se pudo inicializar configuración: {exc}")
 
@@ -137,6 +141,7 @@ def settings_view(page: ft.Page):
         state["selected_formulario_id"] = None
         state["editing_mapper_id"] = None
         state["editing_mapper_block_id"] = None
+        state["editing_document_template_id"] = None
         state["message"] = None
         refresh()
 
@@ -210,6 +215,7 @@ def settings_view(page: ft.Page):
         state["editing_campo_id"] = None
         state["editing_mapper_id"] = None
         state["editing_mapper_block_id"] = None
+        state["editing_document_template_id"] = None
         state["message"] = None
         refresh()
 
@@ -315,6 +321,7 @@ def settings_view(page: ft.Page):
         state["editing_campo_id"] = None
         state["editing_mapper_id"] = None
         state["editing_mapper_block_id"] = None
+        state["editing_document_template_id"] = None
         state["message"] = None
         refresh()
 
@@ -921,7 +928,49 @@ def settings_view(page: ft.Page):
             scroll=ft.ScrollMode.AUTO,
         )
 
-    def build_documentos():
+
+    def _documentos_tab_button(label, key, icon, subtitle):
+        selected = state.get("documentos_tab", "requeridos") == key
+        return ft.Container(
+            bgcolor="#EAF3FF" if selected else "#FFFFFF",
+            border=ft.border.all(1, "#B9D7FF" if selected else Q_BORDER),
+            border_radius=14,
+            padding=12,
+            ink=True,
+            on_click=lambda e, k=key: set_documentos_tab(k),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(icon, size=20, color=Q_PRIMARY if selected else Q_MUTED),
+                        bgcolor="#FFFFFF" if selected else "#F8FAFC",
+                        border_radius=20,
+                        width=40,
+                        height=40,
+                        alignment=ft.alignment.Alignment(0, 0),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(label, size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK if selected else "#101828"),
+                            ft.Text(subtitle, size=11, color=Q_MUTED),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def set_documentos_tab(tab):
+        state["documentos_tab"] = tab
+        state["editing_id"] = None
+        state["editing_document_template_id"] = None
+        state["message"] = None
+        refresh()
+
+
+    def build_documentos_requeridos():
         editing = config_service.get_record("config_documentos_requeridos", state["editing_id"]) if state["editing_id"] else {}
         tipos_opts = tipo_options()
         subtipos = config_service.get_subtipos_expediente(active_only=True)
@@ -1012,6 +1061,308 @@ def settings_view(page: ft.Page):
                 spacing=16,
             ),
         )
+
+
+    def build_plantillas_documentales():
+        try:
+            templates = document_template_service.list_document_templates(active_only=False)
+        except Exception as exc:
+            return config_section_card(
+                "Plantillas documentales",
+                "Catálogo general de plantillas EX, documentos internos y modelos generales.",
+                error_alert(f"No se pudieron cargar las plantillas documentales: {exc}"),
+            )
+
+        editing = (
+            document_template_service.get_document_template(state.get("editing_document_template_id"))
+            if state.get("editing_document_template_id")
+            else {}
+        )
+
+        codigo = required_text_input("Código", editing.get("codigo", ""), width=260)
+        nombre = required_text_input("Nombre", editing.get("nombre", ""), width=320)
+        nombre_oficial = text_input("Nombre oficial", editing.get("nombre_oficial", ""), width=520)
+        descripcion = multiline_input("Descripción", editing.get("descripcion", ""), width=760, height=80)
+
+        categoria = select_input(
+            "Categoría",
+            ["EX", "REPRESENTACION", "AUTORIZACION", "HOJA_ENCARGO", "ESCRITO", "CONTRATO", "GENERAL"],
+            value=editing.get("categoria", "GENERAL") if editing else "GENERAL",
+            width=220,
+        )
+        tipo_destino = select_input(
+            "Tipo destino",
+            ["EX", "DOCUMENTO", "PDF", "WORD", "OTRO"],
+            value=editing.get("tipo_destino", "DOCUMENTO") if editing else "DOCUMENTO",
+            width=180,
+        )
+        template_type = select_input(
+            "Tipo plantilla",
+            ["docx", "pdf_acroform", "pdf_overlay", "html", "json"],
+            value=editing.get("template_type", "docx") if editing else "docx",
+            width=180,
+        )
+        requiere_expediente = select_input(
+            "Requiere expediente",
+            _bool_options(),
+            value="Sí" if int(editing.get("requiere_expediente", 1)) else "No",
+            width=180,
+        )
+        activo = select_input(
+            "Activo",
+            _bool_options(),
+            value=_active_value(editing) if editing else "Sí",
+            width=120,
+        )
+        orden = text_input("Orden", str(editing.get("orden", 0)), width=100)
+        mapper_destino = text_input(
+            "Mapper destino",
+            editing.get("mapper_destino", ""),
+            width=320,
+        )
+        template_path = text_input("Ruta plantilla", editing.get("template_path", ""), width=760)
+        fields_json_path = text_input("Ruta fields.json", editing.get("fields_json_path", ""), width=760)
+        metadata_json_path = text_input("Ruta metadata.json", editing.get("metadata_json_path", ""), width=760)
+
+        def apply_default_paths(e=None):
+            paths = document_template_service.build_default_template_paths(
+                codigo.value,
+                categoria.value,
+                template_type.value,
+            )
+            template_path.value = paths.get("template_path", "")
+            fields_json_path.value = paths.get("fields_json_path", "")
+            metadata_json_path.value = paths.get("metadata_json_path", "")
+            if not mapper_destino.value:
+                mapper_destino.value = (codigo.value or "").strip().upper().replace(" ", "_")
+            page.update()
+
+        def save_template():
+            data = {
+                "codigo": codigo.value,
+                "nombre": nombre.value,
+                "nombre_oficial": nombre_oficial.value,
+                "descripcion": descripcion.value,
+                "categoria": categoria.value,
+                "tipo_destino": tipo_destino.value,
+                "template_type": template_type.value,
+                "template_path": template_path.value,
+                "fields_json_path": fields_json_path.value,
+                "metadata_json_path": metadata_json_path.value,
+                "mapper_destino": mapper_destino.value or codigo.value,
+                "requiere_expediente": _bool_to_int(requiere_expediente.value),
+                "activo": _bool_to_int(activo.value),
+                "orden": int(orden.value or 0),
+            }
+
+            template_id = state.get("editing_document_template_id")
+            if template_id:
+                document_template_service.update_document_template(template_id, data)
+            else:
+                document_template_service.create_document_template(data)
+
+            state["editing_document_template_id"] = None
+
+        def start_edit_template(template_id):
+            state["documentos_tab"] = "plantillas"
+            state["editing_id"] = None
+            state["editing_document_template_id"] = int(template_id)
+            state["message"] = None
+            refresh()
+
+        def delete_template(template_id):
+            document_template_service.hard_delete_document_template(template_id)
+            if state.get("editing_document_template_id") == template_id:
+                state["editing_document_template_id"] = None
+
+        form = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=16,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.ARTICLE, size=18, color=Q_PRIMARY),
+                                bgcolor="#EAF3FF",
+                                border_radius=18,
+                                width=36,
+                                height=36,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Editar plantilla documental" if state.get("editing_document_template_id") else "Alta de plantilla documental",
+                                        size=16,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        "Registra EX oficiales, designaciones, autorizaciones y modelos generales sin hardcodear documentos.",
+                                        size=12,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row([codigo, nombre, categoria, tipo_destino], wrap=True, spacing=10),
+                    nombre_oficial,
+                    descripcion,
+                    ft.Row([template_type, requiere_expediente, activo, orden], wrap=True, spacing=10),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Rutas y mapper", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(
+                                    "Usa rutas relativas. Ejemplo EX: templates/ex_forms/EX10/template.pdf. Ejemplo documento: templates/documents/DESIGNACION_REPRESENTANTE/template.docx.",
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
+                                mapper_destino,
+                                template_path,
+                                fields_json_path,
+                                metadata_json_path,
+                                ft.Row(
+                                    controls=[
+                                        secondary_button("Proponer rutas", apply_default_paths),
+                                    ],
+                                    spacing=8,
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    ft.Row(
+                        [
+                            primary_button("Guardar plantilla", lambda e: run_save(save_template, "Plantilla documental guardada")),
+                            secondary_button("Cancelar", lambda e: cancel_edit()),
+                        ],
+                        spacing=8,
+                    ),
+                ],
+                spacing=12,
+            ),
+        )
+
+        rows = []
+        for template in templates:
+            active_color = "#027A48" if int(template.get("activo") or 0) else "#B42318"
+            requiere_color = "#027A48" if int(template.get("requiere_expediente") or 0) else Q_MUTED
+            rows.append(
+                [
+                    _mapper_actions_menu(
+                        on_edit=lambda e, tid=template["id"]: start_edit_template(tid),
+                        on_delete=lambda e, tid=template["id"]: run_save(lambda tid=tid: delete_template(tid), "Plantilla eliminada"),
+                    ),
+                    template.get("codigo") or "-",
+                    template.get("nombre") or "-",
+                    ft.Text(template.get("categoria") or "-", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    template.get("tipo_destino") or "-",
+                    template.get("template_type") or "-",
+                    ft.Text("Sí" if template.get("requiere_expediente") else "No", color=requiere_color, weight=ft.FontWeight.W_600),
+                    ft.Text("Sí" if template.get("activo") else "No", color=active_color, weight=ft.FontWeight.W_600),
+                ]
+            )
+
+        metrics = [
+            _mini_metric("Plantillas", len(templates), ft.Icons.ARTICLE),
+            _mini_metric("EX", len([t for t in templates if t.get("categoria") == "EX"]), ft.Icons.DESCRIPTION),
+            _mini_metric("Generales", len([t for t in templates if not int(t.get("requiere_expediente") or 0)]), ft.Icons.PUBLIC),
+        ]
+
+        return _expediente_workspace(
+            "Plantillas documentales",
+            "Catálogo general para EX oficiales, designaciones, autorizaciones, hojas de encargo, escritos y modelos internos.",
+            ft.Column(
+                controls=[
+                    form,
+                    _table(["Acciones", "Código", "Nombre", "Categoría", "Destino", "Tipo plantilla", "Requiere exp.", "Activo"], rows, height=340),
+                ],
+                spacing=14,
+            ),
+            metrics=metrics,
+        )
+
+
+    def build_documentos():
+        try:
+            required_count = len(config_service.get_documentos_requeridos())
+        except Exception:
+            required_count = 0
+
+        try:
+            template_count = len(document_template_service.list_document_templates(active_only=False))
+        except Exception:
+            template_count = 0
+
+        tab = state.get("documentos_tab", "requeridos")
+        body = build_plantillas_documentales() if tab == "plantillas" else build_documentos_requeridos()
+
+        return ft.Column(
+            controls=[
+                ft.Container(
+                    bgcolor="#EAF3FF",
+                    border=ft.border.all(1, "#B9D7FF"),
+                    border_radius=18,
+                    padding=16,
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.DESCRIPTION, size=26, color=Q_PRIMARY),
+                                bgcolor="#FFFFFF",
+                                border_radius=24,
+                                width=48,
+                                height=48,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text("Documentación", size=24, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text("Configura documentos requeridos y plantillas documentales reutilizables.", size=13, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    _mini_metric("Requeridos", required_count, ft.Icons.CHECKLIST),
+                                    _mini_metric("Plantillas", template_count, ft.Icons.ARTICLE),
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
+                        ],
+                        spacing=14,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ),
+                ft.Row(
+                    controls=[
+                        _documentos_tab_button("Documentos requeridos", "requeridos", ft.Icons.CHECKLIST, "Reglas por expediente"),
+                        _documentos_tab_button("Plantillas documentales", "plantillas", ft.Icons.ARTICLE, "EX y modelos internos"),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                body,
+            ],
+            spacing=14,
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
 
     def build_catalog(title, subtitle, table, getter, create_fn, update_fn):
         editing = config_service.get_record(table, state["editing_id"]) if state["editing_id"] else {}
