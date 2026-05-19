@@ -9,6 +9,9 @@ from backend.services import expedient_snapshot_service as snapshot_service
 from backend.services import form_mapper_service
 from backend.services import form_mapper_admin_service as mapper_admin_service
 from backend.services import mapper_preview_service
+from backend.services import document_template_service
+from backend.services import document_generation_service
+from backend.services import document_docx_service
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -26,7 +29,7 @@ Q_MUTED = "#64748B"
 
 
 
-def _mapper_actions_menu(on_test=None, on_edit=None, on_delete=None):
+def _mapper_actions_menu(on_test=None, on_export=None, on_generate_docx=None, on_edit=None, on_delete=None):
     """
     Menú compacto para la columna Acciones de Mappers / Mapper Blocks.
 
@@ -41,6 +44,22 @@ def _mapper_actions_menu(on_test=None, on_edit=None, on_delete=None):
             ft.PopupMenuItem(
                 content=ft.Text("Probar"),
                 on_click=on_test,
+            )
+        )
+
+    if on_export:
+        items.append(
+            ft.PopupMenuItem(
+                content=ft.Text("Exportar payload"),
+                on_click=on_export,
+            )
+        )
+
+    if on_generate_docx:
+        items.append(
+            ft.PopupMenuItem(
+                content=ft.Text("Generar DOCX"),
+                on_click=on_generate_docx,
             )
         )
 
@@ -106,6 +125,8 @@ def settings_view(page: ft.Page):
         "selected_formulario_id": None,
         "editing_mapper_id": None,
         "editing_mapper_block_id": None,
+        "editing_document_template_id": None,
+        "documentos_tab": "requeridos",
         "message": None,
     }
 
@@ -115,6 +136,7 @@ def settings_view(page: ft.Page):
         config_service.initialize_config_schema()
         dynamic_form_service.initialize_dynamic_forms_schema()
         mapper_admin_service.initialize_mapper_admin_schema()
+        document_template_service.initialize_document_templates_schema()
     except Exception as exc:
         content_area.content = error_alert(f"No se pudo inicializar configuración: {exc}")
 
@@ -137,6 +159,7 @@ def settings_view(page: ft.Page):
         state["selected_formulario_id"] = None
         state["editing_mapper_id"] = None
         state["editing_mapper_block_id"] = None
+        state["editing_document_template_id"] = None
         state["message"] = None
         refresh()
 
@@ -210,6 +233,7 @@ def settings_view(page: ft.Page):
         state["editing_campo_id"] = None
         state["editing_mapper_id"] = None
         state["editing_mapper_block_id"] = None
+        state["editing_document_template_id"] = None
         state["message"] = None
         refresh()
 
@@ -315,6 +339,7 @@ def settings_view(page: ft.Page):
         state["editing_campo_id"] = None
         state["editing_mapper_id"] = None
         state["editing_mapper_block_id"] = None
+        state["editing_document_template_id"] = None
         state["message"] = None
         refresh()
 
@@ -921,7 +946,49 @@ def settings_view(page: ft.Page):
             scroll=ft.ScrollMode.AUTO,
         )
 
-    def build_documentos():
+
+    def _documentos_tab_button(label, key, icon, subtitle):
+        selected = state.get("documentos_tab", "requeridos") == key
+        return ft.Container(
+            bgcolor="#EAF3FF" if selected else "#FFFFFF",
+            border=ft.border.all(1, "#B9D7FF" if selected else Q_BORDER),
+            border_radius=14,
+            padding=12,
+            ink=True,
+            on_click=lambda e, k=key: set_documentos_tab(k),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(icon, size=20, color=Q_PRIMARY if selected else Q_MUTED),
+                        bgcolor="#FFFFFF" if selected else "#F8FAFC",
+                        border_radius=20,
+                        width=40,
+                        height=40,
+                        alignment=ft.alignment.Alignment(0, 0),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(label, size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK if selected else "#101828"),
+                            ft.Text(subtitle, size=11, color=Q_MUTED),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def set_documentos_tab(tab):
+        state["documentos_tab"] = tab
+        state["editing_id"] = None
+        state["editing_document_template_id"] = None
+        state["message"] = None
+        refresh()
+
+
+    def build_documentos_requeridos():
         editing = config_service.get_record("config_documentos_requeridos", state["editing_id"]) if state["editing_id"] else {}
         tipos_opts = tipo_options()
         subtipos = config_service.get_subtipos_expediente(active_only=True)
@@ -1012,6 +1079,899 @@ def settings_view(page: ft.Page):
                 spacing=16,
             ),
         )
+
+
+    def build_plantillas_documentales():
+        try:
+            templates = document_template_service.list_document_templates(active_only=False)
+        except Exception as exc:
+            return config_section_card(
+                "Plantillas documentales",
+                "Catálogo general de plantillas EX, documentos internos y modelos generales.",
+                error_alert(f"No se pudieron cargar las plantillas documentales: {exc}"),
+            )
+
+        editing = (
+            document_template_service.get_document_template(state.get("editing_document_template_id"))
+            if state.get("editing_document_template_id")
+            else {}
+        )
+
+        codigo = required_text_input("Código", editing.get("codigo", ""), width=260)
+        nombre = required_text_input("Nombre", editing.get("nombre", ""), width=320)
+        nombre_oficial = text_input("Nombre oficial", editing.get("nombre_oficial", ""), width=520)
+        descripcion = multiline_input("Descripción", editing.get("descripcion", ""), width=760, height=80)
+
+        categoria = select_input(
+            "Categoría",
+            ["EX", "REPRESENTACION", "AUTORIZACION", "HOJA_ENCARGO", "ESCRITO", "CONTRATO", "GENERAL"],
+            value=editing.get("categoria", "GENERAL") if editing else "GENERAL",
+            width=220,
+        )
+        tipo_destino = select_input(
+            "Tipo destino",
+            ["EX", "DOCUMENTO", "PDF", "WORD", "OTRO"],
+            value=editing.get("tipo_destino", "DOCUMENTO") if editing else "DOCUMENTO",
+            width=180,
+        )
+        template_type = select_input(
+            "Tipo plantilla",
+            ["docx", "pdf_acroform", "pdf_overlay", "html", "json"],
+            value=editing.get("template_type", "docx") if editing else "docx",
+            width=180,
+        )
+        requiere_expediente = select_input(
+            "Requiere expediente",
+            _bool_options(),
+            value="Sí" if int(editing.get("requiere_expediente", 1)) else "No",
+            width=180,
+        )
+        activo = select_input(
+            "Activo",
+            _bool_options(),
+            value=_active_value(editing) if editing else "Sí",
+            width=120,
+        )
+        orden = text_input("Orden", str(editing.get("orden", 0)), width=100)
+        mapper_destino = text_input(
+            "Mapper destino",
+            editing.get("mapper_destino", ""),
+            width=320,
+        )
+        template_path = text_input("Ruta plantilla", editing.get("template_path", ""), width=760)
+        fields_json_path = text_input("Ruta fields.json", editing.get("fields_json_path", ""), width=760)
+        metadata_json_path = text_input("Ruta metadata.json", editing.get("metadata_json_path", ""), width=760)
+
+        def apply_default_paths(e=None):
+            paths = document_template_service.build_default_template_paths(
+                codigo.value,
+                categoria.value,
+                template_type.value,
+            )
+            template_path.value = paths.get("template_path", "")
+            fields_json_path.value = paths.get("fields_json_path", "")
+            metadata_json_path.value = paths.get("metadata_json_path", "")
+            if not mapper_destino.value:
+                mapper_destino.value = (codigo.value or "").strip().upper().replace(" ", "_")
+            page.update()
+
+        def save_template():
+            data = {
+                "codigo": codigo.value,
+                "nombre": nombre.value,
+                "nombre_oficial": nombre_oficial.value,
+                "descripcion": descripcion.value,
+                "categoria": categoria.value,
+                "tipo_destino": tipo_destino.value,
+                "template_type": template_type.value,
+                "template_path": template_path.value,
+                "fields_json_path": fields_json_path.value,
+                "metadata_json_path": metadata_json_path.value,
+                "mapper_destino": mapper_destino.value or codigo.value,
+                "requiere_expediente": _bool_to_int(requiere_expediente.value),
+                "activo": _bool_to_int(activo.value),
+                "orden": int(orden.value or 0),
+            }
+
+            template_id = state.get("editing_document_template_id")
+            if template_id:
+                document_template_service.update_document_template(template_id, data)
+            else:
+                document_template_service.create_document_template(data)
+
+            state["editing_document_template_id"] = None
+
+        def start_edit_template(template_id):
+            state["documentos_tab"] = "plantillas"
+            state["editing_id"] = None
+            state["editing_document_template_id"] = int(template_id)
+            state["message"] = None
+            refresh()
+
+        def delete_template(template_id):
+            document_template_service.hard_delete_document_template(template_id)
+            if state.get("editing_document_template_id") == template_id:
+                state["editing_document_template_id"] = None
+
+        def open_test_document_template_dialog(template_id):
+            template = document_template_service.get_document_template(template_id)
+            if not template:
+                fail("Plantilla documental no encontrada")
+                refresh()
+                return
+
+            try:
+                expedientes = expedient_service.get_expedientes(active_only=True)
+            except Exception as exc:
+                fail(f"No se pudieron cargar expedientes: {exc}")
+                refresh()
+                return
+
+            expediente_options = []
+            for expediente in expedientes:
+                cliente_nombre = " ".join(
+                    part for part in [
+                        expediente.get("cliente_nombre"),
+                        expediente.get("cliente_primer_apellido"),
+                        expediente.get("cliente_segundo_apellido"),
+                    ] if part
+                ).strip()
+                expediente_options.append(
+                    f"{expediente['id']} - {expediente.get('numero_expediente') or 'SIN NÚMERO'} · {cliente_nombre or 'SIN CLIENTE'}"
+                )
+
+            expediente_selector = select_input(
+                "Expediente de prueba",
+                expediente_options,
+                value=expediente_options[0] if expediente_options else "",
+                width=680,
+            )
+
+            result_box = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Text(
+                    "Selecciona un expediente y pulsa Probar payload. No se genera ningún documento.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            )
+
+            def run_test(ev=None):
+                expediente_id = selected_id(expediente_selector.value)
+                if not expediente_id:
+                    result_box.content = error_alert("Selecciona un expediente de prueba")
+                    page.update()
+                    return
+
+                try:
+                    preview = mapper_preview_service.preview_document_template_for_expedient(
+                        template_id,
+                        expediente_id,
+                        auto_build_snapshot=True,
+                    )
+
+                    payload = preview.get("payload") or {}
+                    validation = preview.get("validation") or {}
+                    errors = validation.get("errors") or []
+                    empty_fields = preview.get("empty_fields") or []
+                    summary = preview.get("summary") or {}
+                    snapshot_info = preview.get("snapshot") or {}
+                    mapper_match = preview.get("mapper_match") or {}
+
+                    is_valid = bool(summary.get("valid"))
+                    status_color = "#027A48" if is_valid else "#B42318"
+                    status_text = "PAYLOAD CORRECTO" if is_valid else "PAYLOAD CON ERRORES"
+                    snapshot_text = (
+                        "Snapshot generado en memoria"
+                        if snapshot_info.get("generated_in_memory")
+                        else f"Snapshot v{snapshot_info.get('version') or '-'}"
+                    )
+
+                    result_box.content = ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(status_text, size=14, weight=ft.FontWeight.BOLD, color=status_color),
+                                    ft.Text(snapshot_text, size=12, color=Q_MUTED),
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text("Resumen", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            f"Mapper: {mapper_match.get('mapper_codigo') or '-'} · "
+                                            f"Campos payload: {summary.get('payload_fields', len(payload))} · "
+                                            f"Vacíos: {summary.get('empty_fields', len(empty_fields))} · "
+                                            f"Errores required: {summary.get('required_errors', len(errors))}",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            ft.Text(
+                                "Errores:\n- " + "\n- ".join(errors) if errors else "Sin errores de validación.",
+                                size=12,
+                                color="#B42318" if errors else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                "Campos vacíos:\n- " + "\n- ".join(empty_fields) if empty_fields else "Sin campos vacíos.",
+                                size=12,
+                                color="#B42318" if empty_fields else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text("Payload generado", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            json.dumps(payload, ensure_ascii=False, indent=2),
+                                            size=12,
+                                            color="#101828",
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=8,
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                    )
+                    page.update()
+
+                except Exception as exc:
+                    result_box.content = error_alert(str(exc))
+                    page.update()
+
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Probar payload de plantilla", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                content=ft.Container(
+                    width=940,
+                    height=650,
+                    bgcolor="#F8FAFC",
+                    border_radius=18,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Container(
+                                bgcolor="#EAF3FF",
+                                border=ft.border.all(1, "#B9D7FF"),
+                                border_radius=14,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(template.get("nombre") or template.get("codigo") or "Plantilla", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            f"Código: {template.get('codigo') or '-'} · Mapper destino: {template.get('mapper_destino') or '-'}",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(
+                                            "La prueba usa el mapper asociado por código y el último snapshot del expediente. No crea DOCX/PDF.",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            expediente_selector,
+                            ft.Row(
+                                controls=[
+                                    primary_button("Probar payload", run_test),
+                                    secondary_button("Cerrar", lambda ev: close_test_document_template_dialog(dialog)),
+                                ],
+                                spacing=8,
+                            ),
+                            result_box,
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+                actions=[],
+            )
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+
+        def close_test_document_template_dialog(dialog):
+            dialog.open = False
+            page.update()
+
+        def open_export_document_template_payload_dialog(template_id):
+            template = document_template_service.get_document_template(template_id)
+            if not template:
+                fail("Plantilla documental no encontrada")
+                refresh()
+                return
+
+            try:
+                expedientes = expedient_service.get_expedientes(active_only=True)
+            except Exception as exc:
+                fail(f"No se pudieron cargar expedientes: {exc}")
+                refresh()
+                return
+
+            requires_expediente = int(template.get("requiere_expediente") or 0) == 1
+            is_ex_template = str(template.get("categoria") or "").strip().upper() == "EX"
+
+            expediente_options = []
+            if not requires_expediente and not is_ex_template:
+                expediente_options.append("Sin expediente")
+
+            for expediente in expedientes:
+                cliente_nombre = " ".join(
+                    part for part in [
+                        expediente.get("cliente_nombre"),
+                        expediente.get("cliente_primer_apellido"),
+                        expediente.get("cliente_segundo_apellido"),
+                    ] if part
+                ).strip()
+                expediente_options.append(
+                    f"{expediente['id']} - {expediente.get('numero_expediente') or 'SIN NÚMERO'} · {cliente_nombre or 'SIN CLIENTE'}"
+                )
+
+            expediente_selector = select_input(
+                "Expediente",
+                expediente_options,
+                value=expediente_options[0] if expediente_options else "",
+                width=680,
+            )
+
+            help_text = (
+                "Esta plantilla requiere expediente para exportar el payload."
+                if requires_expediente or is_ex_template
+                else "Puedes exportar como general o asociarlo a un expediente concreto."
+            )
+
+            result_box = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Text(
+                    "Pulsa Exportar payload. Se generará únicamente un JSON; no se crea DOCX/PDF.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            )
+
+            def run_export(ev=None):
+                selected_value = expediente_selector.value or ""
+                expediente_id = None if selected_value == "Sin expediente" else selected_id(selected_value)
+
+                if (requires_expediente or is_ex_template) and not expediente_id:
+                    result_box.content = error_alert("Selecciona un expediente para esta plantilla")
+                    page.update()
+                    return
+
+                try:
+                    exported = document_generation_service.export_document_payload(
+                        template_id,
+                        expediente_id=expediente_id,
+                        auto_build_snapshot=True,
+                    )
+
+                    validation = exported.get("validation") or {}
+                    summary = exported.get("summary") or {}
+                    output = exported.get("output") or {}
+                    empty_fields = exported.get("empty_fields") or []
+                    errors = validation.get("errors") or []
+                    payload = exported.get("payload") or {}
+
+                    is_valid = bool(summary.get("valid", validation.get("valid")))
+                    status_color = "#027A48" if is_valid else "#B42318"
+                    status_text = "EXPORTACIÓN CORRECTA" if is_valid else "EXPORTACIÓN CON AVISOS"
+
+                    result_box.content = ft.Column(
+                        controls=[
+                            ft.Text(status_text, size=14, weight=ft.FontWeight.BOLD, color=status_color),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text("Archivo generado", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(output.get("json_path") or "-", size=12, color="#101828", selectable=True),
+                                        ft.Text(f"Directorio: {output.get('directory') or '-'}", size=12, color=Q_MUTED, selectable=True),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            ft.Text(
+                                f"Campos payload: {summary.get('payload_fields', len(payload))} · "
+                                f"Vacíos: {summary.get('empty_fields', len(empty_fields))} · "
+                                f"Errores required: {summary.get('required_errors', len(errors))}",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                "Errores:\n- " + "\n- ".join(errors) if errors else "Sin errores de validación.",
+                                size=12,
+                                color="#B42318" if errors else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                "Campos vacíos:\n- " + "\n- ".join(empty_fields) if empty_fields else "Sin campos vacíos.",
+                                size=12,
+                                color="#B42318" if empty_fields else "#027A48",
+                                selectable=True,
+                            ),
+                        ],
+                        spacing=10,
+                    )
+                    page.update()
+
+                except Exception as exc:
+                    result_box.content = error_alert(str(exc))
+                    page.update()
+
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Exportar payload documental", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                content=ft.Container(
+                    width=940,
+                    height=620,
+                    bgcolor="#F8FAFC",
+                    border_radius=18,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Container(
+                                bgcolor="#EAF3FF",
+                                border=ft.border.all(1, "#B9D7FF"),
+                                border_radius=14,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(template.get("nombre") or template.get("codigo") or "Plantilla", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            f"Código: {template.get('codigo') or '-'} · Mapper destino: {template.get('mapper_destino') or '-'}",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(help_text, size=12, color=Q_MUTED),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            expediente_selector,
+                            ft.Row(
+                                controls=[
+                                    primary_button("Exportar payload", run_export),
+                                    secondary_button("Cerrar", lambda ev: close_export_document_template_payload_dialog(dialog)),
+                                ],
+                                spacing=8,
+                            ),
+                            result_box,
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+                actions=[],
+            )
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+
+        def close_export_document_template_payload_dialog(dialog):
+            dialog.open = False
+            page.update()
+
+        def open_generate_document_template_docx_dialog(template_id):
+            template = document_template_service.get_document_template(template_id)
+            if not template:
+                fail("Plantilla documental no encontrada")
+                refresh()
+                return
+
+            if str(template.get("template_type") or "").strip().lower() != "docx":
+                fail("Solo las plantillas de tipo docx permiten generar DOCX")
+                refresh()
+                return
+
+            try:
+                expedientes = expedient_service.get_expedientes(active_only=True)
+            except Exception as exc:
+                fail(f"No se pudieron cargar expedientes: {exc}")
+                refresh()
+                return
+
+            requires_expediente = int(template.get("requiere_expediente") or 0) == 1
+            is_ex_template = str(template.get("categoria") or "").strip().upper() == "EX"
+
+            expediente_options = []
+            if not requires_expediente and not is_ex_template:
+                expediente_options.append("Sin expediente")
+
+            for expediente in expedientes:
+                cliente_nombre = " ".join(
+                    part for part in [
+                        expediente.get("cliente_nombre"),
+                        expediente.get("cliente_primer_apellido"),
+                        expediente.get("cliente_segundo_apellido"),
+                    ] if part
+                ).strip()
+                expediente_options.append(
+                    f"{expediente['id']} - {expediente.get('numero_expediente') or 'SIN NÚMERO'} · {cliente_nombre or 'SIN CLIENTE'}"
+                )
+
+            expediente_selector = select_input(
+                "Expediente",
+                expediente_options,
+                value=expediente_options[0] if expediente_options else "",
+                width=680,
+            )
+
+            help_text = (
+                "Esta plantilla requiere expediente para generar el DOCX."
+                if requires_expediente or is_ex_template
+                else "Puedes generar un documento general o asociarlo a un expediente concreto."
+            )
+
+            result_box = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Text(
+                    "Pulsa Generar DOCX. Se creará el JSON payload y el documento final desde la plantilla configurada.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            )
+
+            def run_generate(ev=None):
+                selected_value = expediente_selector.value or ""
+                expediente_id = None if selected_value == "Sin expediente" else selected_id(selected_value)
+
+                if (requires_expediente or is_ex_template) and not expediente_id:
+                    result_box.content = error_alert("Selecciona un expediente para esta plantilla")
+                    page.update()
+                    return
+
+                try:
+                    generated = document_docx_service.generate_docx_from_template(
+                        template_id,
+                        expediente_id=expediente_id,
+                        auto_build_snapshot=True,
+                    )
+
+                    validation = generated.get("validation") or {}
+                    summary = generated.get("summary") or {}
+                    output = generated.get("output") or {}
+                    docx_info = generated.get("docx") or {}
+                    empty_fields = generated.get("empty_fields") or []
+                    errors = validation.get("errors") or []
+                    unresolved = docx_info.get("unresolved_placeholders") or []
+                    payload = generated.get("payload") or {}
+
+                    is_valid = bool(summary.get("valid", validation.get("valid"))) and not unresolved
+                    status_color = "#027A48" if is_valid else "#B42318"
+                    status_text = "DOCX GENERADO CORRECTAMENTE" if is_valid else "DOCX GENERADO CON AVISOS"
+
+                    result_box.content = ft.Column(
+                        controls=[
+                            ft.Text(status_text, size=14, weight=ft.FontWeight.BOLD, color=status_color),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text("Archivos generados", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(f"DOCX: {output.get('docx_path') or docx_info.get('docx_path') or '-'}", size=12, color="#101828", selectable=True),
+                                        ft.Text(f"Payload JSON: {output.get('json_path') or '-'}", size=12, color="#101828", selectable=True),
+                                        ft.Text(f"Directorio: {output.get('directory') or '-'}", size=12, color=Q_MUTED, selectable=True),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            ft.Text(
+                                f"Campos payload: {summary.get('payload_fields', len(payload))} · "
+                                f"Vacíos: {summary.get('empty_fields', len(empty_fields))} · "
+                                f"Errores required: {summary.get('required_errors', len(errors))} · "
+                                f"Placeholders sin resolver: {docx_info.get('unresolved_count', len(unresolved))}",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                "Errores:\n- " + "\n- ".join(errors) if errors else "Sin errores de validación.",
+                                size=12,
+                                color="#B42318" if errors else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                "Campos vacíos:\n- " + "\n- ".join(empty_fields) if empty_fields else "Sin campos vacíos.",
+                                size=12,
+                                color="#B42318" if empty_fields else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                "Placeholders sin resolver:\n- " + "\n- ".join(unresolved) if unresolved else "Sin placeholders pendientes.",
+                                size=12,
+                                color="#B42318" if unresolved else "#027A48",
+                                selectable=True,
+                            ),
+                        ],
+                        spacing=10,
+                    )
+                    page.update()
+
+                except Exception as exc:
+                    result_box.content = error_alert(str(exc))
+                    page.update()
+
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Generar DOCX documental", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                content=ft.Container(
+                    width=940,
+                    height=620,
+                    bgcolor="#F8FAFC",
+                    border_radius=18,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Container(
+                                bgcolor="#EAF3FF",
+                                border=ft.border.all(1, "#B9D7FF"),
+                                border_radius=14,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(template.get("nombre") or template.get("codigo") or "Plantilla", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            f"Código: {template.get('codigo') or '-'} · Plantilla: {template.get('template_path') or '-'}",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(help_text, size=12, color=Q_MUTED),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            expediente_selector,
+                            ft.Row(
+                                controls=[
+                                    primary_button("Generar DOCX", run_generate),
+                                    secondary_button("Cerrar", lambda ev: close_generate_document_template_docx_dialog(dialog)),
+                                ],
+                                spacing=8,
+                            ),
+                            result_box,
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+                actions=[],
+            )
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+
+        def close_generate_document_template_docx_dialog(dialog):
+            dialog.open = False
+            page.update()
+
+        form = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=16,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.ARTICLE, size=18, color=Q_PRIMARY),
+                                bgcolor="#EAF3FF",
+                                border_radius=18,
+                                width=36,
+                                height=36,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Editar plantilla documental" if state.get("editing_document_template_id") else "Alta de plantilla documental",
+                                        size=16,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        "Registra EX oficiales, designaciones, autorizaciones y modelos generales sin hardcodear documentos.",
+                                        size=12,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row([codigo, nombre, categoria, tipo_destino], wrap=True, spacing=10),
+                    nombre_oficial,
+                    descripcion,
+                    ft.Row([template_type, requiere_expediente, activo, orden], wrap=True, spacing=10),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Rutas y mapper", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(
+                                    "Usa rutas relativas. Ejemplo EX: templates/ex_forms/EX10/template.pdf. Ejemplo documento: templates/documents/DESIGNACION_REPRESENTANTE/template.docx.",
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
+                                mapper_destino,
+                                template_path,
+                                fields_json_path,
+                                metadata_json_path,
+                                ft.Row(
+                                    controls=[
+                                        secondary_button("Proponer rutas", apply_default_paths),
+                                    ],
+                                    spacing=8,
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    ft.Row(
+                        [
+                            primary_button("Guardar plantilla", lambda e: run_save(save_template, "Plantilla documental guardada")),
+                            secondary_button("Cancelar", lambda e: cancel_edit()),
+                        ],
+                        spacing=8,
+                    ),
+                ],
+                spacing=12,
+            ),
+        )
+
+        rows = []
+        for template in templates:
+            active_color = "#027A48" if int(template.get("activo") or 0) else "#B42318"
+            requiere_color = "#027A48" if int(template.get("requiere_expediente") or 0) else Q_MUTED
+            rows.append(
+                [
+                    _mapper_actions_menu(
+                        on_test=lambda e, tid=template["id"]: open_test_document_template_dialog(tid),
+                        on_export=lambda e, tid=template["id"]: open_export_document_template_payload_dialog(tid),
+                        on_generate_docx=(
+                            (lambda e, tid=template["id"]: open_generate_document_template_docx_dialog(tid))
+                            if str(template.get("template_type") or "").strip().lower() == "docx"
+                            else None
+                        ),
+                        on_edit=lambda e, tid=template["id"]: start_edit_template(tid),
+                        on_delete=lambda e, tid=template["id"]: run_save(lambda tid=tid: delete_template(tid), "Plantilla eliminada"),
+                    ),
+                    template.get("codigo") or "-",
+                    template.get("nombre") or "-",
+                    ft.Text(template.get("categoria") or "-", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    template.get("tipo_destino") or "-",
+                    template.get("template_type") or "-",
+                    ft.Text("Sí" if template.get("requiere_expediente") else "No", color=requiere_color, weight=ft.FontWeight.W_600),
+                    ft.Text("Sí" if template.get("activo") else "No", color=active_color, weight=ft.FontWeight.W_600),
+                ]
+            )
+
+        metrics = [
+            _mini_metric("Plantillas", len(templates), ft.Icons.ARTICLE),
+            _mini_metric("EX", len([t for t in templates if t.get("categoria") == "EX"]), ft.Icons.DESCRIPTION),
+            _mini_metric("Generales", len([t for t in templates if not int(t.get("requiere_expediente") or 0)]), ft.Icons.PUBLIC),
+        ]
+
+        return _expediente_workspace(
+            "Plantillas documentales",
+            "Catálogo general para EX oficiales, designaciones, autorizaciones, hojas de encargo, escritos y modelos internos.",
+            ft.Column(
+                controls=[
+                    form,
+                    _table(["Acciones", "Código", "Nombre", "Categoría", "Destino", "Tipo plantilla", "Requiere exp.", "Activo"], rows, height=340),
+                ],
+                spacing=14,
+            ),
+            metrics=metrics,
+        )
+
+
+    def build_documentos():
+        try:
+            required_count = len(config_service.get_documentos_requeridos())
+        except Exception:
+            required_count = 0
+
+        try:
+            template_count = len(document_template_service.list_document_templates(active_only=False))
+        except Exception:
+            template_count = 0
+
+        tab = state.get("documentos_tab", "requeridos")
+        body = build_plantillas_documentales() if tab == "plantillas" else build_documentos_requeridos()
+
+        return ft.Column(
+            controls=[
+                ft.Container(
+                    bgcolor="#EAF3FF",
+                    border=ft.border.all(1, "#B9D7FF"),
+                    border_radius=18,
+                    padding=16,
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.DESCRIPTION, size=26, color=Q_PRIMARY),
+                                bgcolor="#FFFFFF",
+                                border_radius=24,
+                                width=48,
+                                height=48,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text("Documentación", size=24, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text("Configura documentos requeridos y plantillas documentales reutilizables.", size=13, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    _mini_metric("Requeridos", required_count, ft.Icons.CHECKLIST),
+                                    _mini_metric("Plantillas", template_count, ft.Icons.ARTICLE),
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
+                        ],
+                        spacing=14,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ),
+                ft.Row(
+                    controls=[
+                        _documentos_tab_button("Documentos requeridos", "requeridos", ft.Icons.CHECKLIST, "Reglas por expediente"),
+                        _documentos_tab_button("Plantillas documentales", "plantillas", ft.Icons.ARTICLE, "EX y modelos internos"),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                body,
+            ],
+            spacing=14,
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
 
     def build_catalog(title, subtitle, table, getter, create_fn, update_fn):
         editing = config_service.get_record(table, state["editing_id"]) if state["editing_id"] else {}
