@@ -13,6 +13,8 @@ from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
 from backend.services import expedient_dynamic_form_service as dynamic_form_service
 from backend.services import expedient_snapshot_service as snapshot_service
+from backend.services import document_template_service
+from backend.services import document_docx_service
 from backend.services import mapper_preview_service
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from frontend.components.app_button import primary_button, secondary_button, danger_button
@@ -174,6 +176,8 @@ def expedients_view(page: ft.Page):
         "specific_field_controls": {},
         "specific_formulario_id": None,
         "snapshot_status": {},
+        "expedient_docx_result": {},
+        "expedient_docx_error": {},
         "payload_preview_destination": "MERCURIO",
         "payload_preview_result": {},
         "payload_preview_error": {},
@@ -2232,6 +2236,169 @@ def expedients_view(page: ft.Page):
             ),
         )
 
+
+
+    def _load_docx_templates_for_expediente():
+        """Carga únicamente plantillas DOCX/Word activas sin tocar lógica de snapshot ni automatización."""
+        try:
+            templates = document_template_service.list_document_templates(active_only=True)
+        except Exception:
+            return []
+
+        return [
+            template for template in (templates or [])
+            if str(template.get("template_type") or "").strip().lower() in ("docx", "word")
+        ]
+
+    def generate_docx_from_expedient(template_id, e=None):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            show_form_error("Guarda primero el expediente antes de generar documentos")
+            return
+
+        try:
+            result = document_docx_service.generate_docx_from_template(
+                template_id,
+                expediente_id=expediente_id,
+                auto_build_snapshot=True,
+            )
+            state.setdefault("expedient_docx_result", {})[int(expediente_id)] = result
+            state.setdefault("expedient_docx_error", {}).pop(int(expediente_id), None)
+            clear_form_message()
+            set_message(success_alert("Documento generado correctamente"))
+        except Exception as exc:
+            state.setdefault("expedient_docx_result", {}).pop(int(expediente_id), None)
+            state.setdefault("expedient_docx_error", {})[int(expediente_id)] = str(exc)
+
+        state["dialog_section"] = "plantillas"
+        expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+        page.update()
+
+    def _docx_template_card(template):
+        template_id = template.get("id")
+        nombre = template.get("nombre") or template.get("codigo") or "Plantilla"
+        codigo = template.get("codigo") or "-"
+        categoria = template.get("categoria") or "-"
+        mapper = template.get("mapper_destino") or "-"
+        alcance = "Expediente" if int(template.get("requiere_expediente") or 0) else "General"
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.DESCRIPTION, size=20, color=Q_PRIMARY),
+                        bgcolor="#EAF3FF",
+                        border_radius=20,
+                        width=40,
+                        height=40,
+                        alignment=ft.alignment.Alignment(0, 0),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(nombre, size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(f"{codigo} · {categoria} · {alcance}", size=11, color=Q_MUTED),
+                            ft.Text(f"Mapper destino: {mapper}", size=11, color=Q_MUTED, selectable=True),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                    primary_button("Generar DOCX", lambda ev, tid=template_id: generate_docx_from_expedient(tid, ev)),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def build_expedient_templates_content(expediente_id):
+        if not expediente_id:
+            return ft.Container(
+                width=920,
+                height=620,
+                content=empty_state("Guarda el expediente para poder generar documentos"),
+            )
+
+        expediente_id = int(expediente_id)
+        templates = _load_docx_templates_for_expediente()
+        result = state.setdefault("expedient_docx_result", {}).get(expediente_id)
+        error = state.setdefault("expedient_docx_error", {}).get(expediente_id)
+
+        controls = [
+            ft.Container(
+                bgcolor="#EAF3FF",
+                border=ft.border.all(1, "#B9D7FF"),
+                border_radius=16,
+                padding=14,
+                content=ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.DESCRIPTION, size=24, color=Q_PRIMARY),
+                            bgcolor="#FFFFFF",
+                            border_radius=24,
+                            width=48,
+                            height=48,
+                            alignment=ft.alignment.Alignment(0, 0),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text("Plantillas documentales", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text("Genera DOCX desde plantillas registradas usando el payload del mapper.", size=13, color=Q_MUTED),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
+        ]
+
+        if error:
+            controls.append(error_alert(error))
+
+        if result:
+            output = result.get("output") or {}
+            docx = result.get("docx") or {}
+            unresolved = docx.get("unresolved_placeholders") or []
+            controls.append(
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=5,
+                        controls=[
+                            ft.Text("Último DOCX generado", size=14, weight=ft.FontWeight.BOLD, color="#027A48"),
+                            ft.Text(output.get("docx_path") or docx.get("docx_path") or "-", size=12, color=Q_PRIMARY_DARK, selectable=True),
+                            ft.Text(
+                                f"Placeholders pendientes: {len(unresolved)}" + (" · " + ", ".join(unresolved[:6]) if unresolved else ""),
+                                size=12,
+                                color="#B42318" if unresolved else Q_MUTED,
+                                selectable=True,
+                            ),
+                        ],
+                    ),
+                )
+            )
+
+        if not templates:
+            controls.append(empty_state("No hay plantillas DOCX activas configuradas"))
+        else:
+            controls.extend(_docx_template_card(template) for template in templates)
+
+        return ft.Column(
+            width=920,
+            height=620,
+            scroll=ft.ScrollMode.AUTO,
+            spacing=12,
+            controls=controls,
+        )
+
     def build_justificantes_content(expediente_id):
         if not expediente_id:
             return empty_state("Guarda el expediente para poder ver justificantes")
@@ -2368,6 +2535,9 @@ def expedients_view(page: ft.Page):
         if section == "automatizacion":
             return build_payload_preview_content(expediente_id)
 
+        if section == "plantillas":
+            return build_expedient_templates_content(expediente_id)
+
         return build_edit_content()
 
     def build_expediente_dialog_content(expediente_id=None):
@@ -2387,6 +2557,7 @@ def expedients_view(page: ft.Page):
             ("Ficha", "ficha", ft.Icons.ARTICLE, "Datos base"),
             ("Datos específicos", "datos_especificos", ft.Icons.DYNAMIC_FORM, "Formulario"),
             ("Documentación", "documentacion", ft.Icons.FOLDER_OPEN, "Box / PARA PRESENTAR"),
+            ("Plantillas", "plantillas", ft.Icons.DESCRIPTION, "Generar DOCX"),
             ("Diagnóstico", "diagnostico", ft.Icons.FACT_CHECK, "Estado documental"),
             ("Automatización", "automatizacion", ft.Icons.ROCKET_LAUNCH, "Payload mapper"),
             ("Trazabilidad", "trazabilidad", ft.Icons.TIMELINE, "Historial"),
