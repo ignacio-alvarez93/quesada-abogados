@@ -2,6 +2,7 @@ import copy
 
 
 STATIC_VALUE_PREFIX = "__static__:"
+EQUALS_VALUE_PREFIX = "__equals__:"
 
 
 def deep_get(data, path, default=""):
@@ -23,6 +24,43 @@ def normalize_string(value):
     return str(value or "").strip()
 
 
+def _normalize_equals_value(value):
+    """
+    Normaliza valores para comparaciones declarativas del mapper.
+
+    Evita que diferencias habituales de mayúsculas, espacios o acentos rompan
+    reglas tipo:
+        "__equals__:cliente.estado_civil:soltero"
+    """
+    text = str(value or "").strip().lower()
+    replacements = {
+        "á": "a",
+        "é": "e",
+        "í": "i",
+        "ó": "o",
+        "ú": "u",
+        "ü": "u",
+        "ñ": "n",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return " ".join(text.split())
+
+
+def _parse_equals_expression(expression):
+    """
+    Parsea:
+        __equals__:ruta.snapshot:valor esperado
+
+    Permite que el valor esperado contenga ":".
+    """
+    body = expression[len(EQUALS_VALUE_PREFIX):]
+    if ":" not in body:
+        return "", ""
+    source_path, expected_value = body.split(":", 1)
+    return source_path.strip(), expected_value.strip()
+
+
 def resolve_mapping_source(flat_snapshot, source_path):
     """
     Resuelve el origen de una regla de mapping.
@@ -30,7 +68,15 @@ def resolve_mapping_source(flat_snapshot, source_path):
     Soporta:
     - rutas del snapshot: "cliente.nombre"
     - valores estáticos: "__static__:Residencia"
+    - condiciones booleanas: "__equals__:cliente.estado_civil:soltero"
     - literales no string
+
+    __equals__ devuelve booleano:
+    - True si el valor del snapshot coincide con el esperado.
+    - False en caso contrario.
+
+    Esto permite marcar casillas PDF:
+        "Casilla de verificación7": "__equals__:cliente.estado_civil:soltero"
     """
     if source_path is None:
         return ""
@@ -40,6 +86,11 @@ def resolve_mapping_source(flat_snapshot, source_path):
 
     if source_path.startswith(STATIC_VALUE_PREFIX):
         return source_path[len(STATIC_VALUE_PREFIX):]
+
+    if source_path.startswith(EQUALS_VALUE_PREFIX):
+        compare_path, expected_value = _parse_equals_expression(source_path)
+        current_value = flat_snapshot.get(compare_path, "")
+        return _normalize_equals_value(current_value) == _normalize_equals_value(expected_value)
 
     return flat_snapshot.get(source_path, "")
 
