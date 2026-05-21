@@ -3031,6 +3031,11 @@ def settings_view(page: ft.Page):
         insert_key = text_input("Key destino", "", width=220)
         insert_value = text_input("Ruta origen snapshot", "", width=420)
         insert_static_value = text_input("Valor estático", "", width=420)
+        insert_equals_source = text_input("Ruta a comparar", "", width=300)
+        insert_equals_expected = text_input("Valor esperado", "", width=260)
+        insert_slice_source = text_input("Ruta a cortar", "", width=300)
+        insert_slice_start = text_input("Inicio", "", width=90)
+        insert_slice_end = text_input("Fin", "", width=90)
 
         def insert_mapping_pair(e=None):
             key = (insert_key.value or "").strip()
@@ -3088,6 +3093,84 @@ def settings_view(page: ft.Page):
             state["message"] = None
             page.update()
 
+        def insert_equals_pair(e=None):
+            key = (insert_key.value or "").strip()
+            source = (insert_equals_source.value or "").strip()
+            expected = (insert_equals_expected.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if not source:
+                fail("Indica la ruta origen que quieres comparar")
+                page.update()
+                return
+
+            if expected == "":
+                fail("Indica el valor esperado")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__equals__:{source}:{expected}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_equals_source.value = ""
+            insert_equals_expected.value = ""
+            state["message"] = None
+            page.update()
+
+        def insert_slice_pair(e=None):
+            key = (insert_key.value or "").strip()
+            source = (insert_slice_source.value or "").strip()
+            start = (insert_slice_start.value or "").strip()
+            end = (insert_slice_end.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if not source:
+                fail("Indica la ruta origen que quieres cortar")
+                page.update()
+                return
+
+            if start == "" and end == "":
+                fail("Indica al menos inicio o fin para el corte")
+                page.update()
+                return
+
+            for label, raw in (("inicio", start), ("fin", end)):
+                if raw and not raw.lstrip("-").isdigit():
+                    fail(f"El valor de {label} debe ser numérico")
+                    page.update()
+                    return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__slice__:{source}:{start}:{end}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_slice_source.value = ""
+            insert_slice_start.value = ""
+            insert_slice_end.value = ""
+            state["message"] = None
+            page.update()
+
         mapping_insert_card = ft.Container(
             bgcolor="#F8FAFC",
             border=ft.border.all(1, Q_BORDER),
@@ -3113,6 +3196,29 @@ def settings_view(page: ft.Page):
                             insert_static_value,
                             primary_button("Insertar estático", insert_static_pair),
                             ft.Text("Se guardará como __static__:valor", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_equals_source,
+                            insert_equals_expected,
+                            primary_button("Insertar equals", insert_equals_pair),
+                            ft.Text("Se guardará como __equals__:ruta:valor", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_slice_source,
+                            insert_slice_start,
+                            insert_slice_end,
+                            primary_button("Insertar slice", insert_slice_pair),
+                            ft.Text("Se guardará como __slice__:ruta:inicio:fin", size=12, color=Q_MUTED),
                         ],
                         wrap=True,
                         spacing=10,
@@ -3557,6 +3663,11 @@ def settings_view(page: ft.Page):
         insert_key = text_input("Key destino", "", width=220)
         insert_value = text_input("Ruta origen snapshot", "", width=420)
         insert_static_value = text_input("Valor estático", "", width=420)
+        insert_equals_source = text_input("Ruta a comparar", "", width=300)
+        insert_equals_expected = text_input("Valor esperado", "", width=260)
+        insert_slice_source = text_input("Ruta a cortar", "", width=300)
+        insert_slice_start = text_input("Inicio", "", width=90)
+        insert_slice_end = text_input("Fin", "", width=90)
 
         def insert_mapping_pair(e=None):
             key = (insert_key.value or "").strip()
@@ -3614,6 +3725,84 @@ def settings_view(page: ft.Page):
             state["message"] = None
             page.update()
 
+        def insert_equals_pair(e=None):
+            key = (insert_key.value or "").strip()
+            source = (insert_equals_source.value or "").strip()
+            expected = (insert_equals_expected.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if not source:
+                fail("Indica la ruta origen que quieres comparar")
+                page.update()
+                return
+
+            if expected == "":
+                fail("Indica el valor esperado")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__equals__:{source}:{expected}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_equals_source.value = ""
+            insert_equals_expected.value = ""
+            state["message"] = None
+            page.update()
+
+        def insert_slice_pair(e=None):
+            key = (insert_key.value or "").strip()
+            source = (insert_slice_source.value or "").strip()
+            start = (insert_slice_start.value or "").strip()
+            end = (insert_slice_end.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if not source:
+                fail("Indica la ruta origen que quieres cortar")
+                page.update()
+                return
+
+            if start == "" and end == "":
+                fail("Indica al menos inicio o fin para el corte")
+                page.update()
+                return
+
+            for label, raw in (("inicio", start), ("fin", end)):
+                if raw and not raw.lstrip("-").isdigit():
+                    fail(f"El valor de {label} debe ser numérico")
+                    page.update()
+                    return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__slice__:{source}:{start}:{end}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_slice_source.value = ""
+            insert_slice_start.value = ""
+            insert_slice_end.value = ""
+            state["message"] = None
+            page.update()
+
         mapping_insert_card = ft.Container(
             bgcolor="#F8FAFC",
             border=ft.border.all(1, Q_BORDER),
@@ -3639,6 +3828,29 @@ def settings_view(page: ft.Page):
                             insert_static_value,
                             primary_button("Insertar estático", insert_static_pair),
                             ft.Text("Se guardará como __static__:valor", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_equals_source,
+                            insert_equals_expected,
+                            primary_button("Insertar equals", insert_equals_pair),
+                            ft.Text("Se guardará como __equals__:ruta:valor", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_slice_source,
+                            insert_slice_start,
+                            insert_slice_end,
+                            primary_button("Insertar slice", insert_slice_pair),
+                            ft.Text("Se guardará como __slice__:ruta:inicio:fin", size=12, color=Q_MUTED),
                         ],
                         wrap=True,
                         spacing=10,
