@@ -12,6 +12,7 @@ from backend.services import mapper_preview_service
 from backend.services import document_template_service
 from backend.services import document_generation_service
 from backend.services import document_docx_service
+from backend.services import pdf_fill_service
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -29,7 +30,7 @@ Q_MUTED = "#64748B"
 
 
 
-def _mapper_actions_menu(on_test=None, on_export=None, on_generate_docx=None, on_edit=None, on_delete=None):
+def _mapper_actions_menu(on_test=None, on_export=None, on_generate_docx=None, on_generate_pdf=None, on_edit=None, on_delete=None):
     """
     Menú compacto para la columna Acciones de Mappers / Mapper Blocks.
 
@@ -60,6 +61,14 @@ def _mapper_actions_menu(on_test=None, on_export=None, on_generate_docx=None, on
             ft.PopupMenuItem(
                 content=ft.Text("Generar DOCX"),
                 on_click=on_generate_docx,
+            )
+        )
+
+    if on_generate_pdf:
+        items.append(
+            ft.PopupMenuItem(
+                content=ft.Text("Generar PDF"),
+                on_click=on_generate_pdf,
             )
         )
 
@@ -1777,6 +1786,211 @@ def settings_view(page: ft.Page):
             dialog.open = False
             page.update()
 
+        def open_generate_document_template_pdf_dialog(template_id):
+            template = document_template_service.get_document_template(template_id)
+            if not template:
+                fail("Plantilla documental no encontrada")
+                refresh()
+                return
+
+            if str(template.get("template_type") or "").strip().lower() != "pdf":
+                fail("Solo las plantillas de tipo pdf permiten generar PDF")
+                refresh()
+                return
+
+            try:
+                expedientes = expedient_service.get_expedientes(active_only=True)
+            except Exception as exc:
+                fail(f"No se pudieron cargar expedientes: {exc}")
+                refresh()
+                return
+
+            requires_expediente = int(template.get("requiere_expediente") or 0) == 1
+            is_ex_template = str(template.get("categoria") or "").strip().upper() == "EX"
+
+            expediente_options = []
+            if not requires_expediente and not is_ex_template:
+                expediente_options.append("Sin expediente")
+
+            for expediente in expedientes:
+                cliente_nombre = " ".join(
+                    part for part in [
+                        expediente.get("cliente_nombre"),
+                        expediente.get("cliente_primer_apellido"),
+                        expediente.get("cliente_segundo_apellido"),
+                    ] if part
+                ).strip()
+                expediente_options.append(
+                    f"{expediente['id']} - {expediente.get('numero_expediente') or 'SIN NÚMERO'} · {cliente_nombre or 'SIN CLIENTE'}"
+                )
+
+            expediente_selector = select_input(
+                "Expediente",
+                expediente_options,
+                value=expediente_options[0] if expediente_options else "",
+                width=680,
+            )
+            flatten = select_input("Aplanar PDF", _bool_options(), value="No", width=150)
+
+            help_text = (
+                "Esta plantilla requiere expediente para generar el PDF."
+                if requires_expediente or is_ex_template
+                else "Puedes generar un PDF general o asociarlo a un expediente concreto."
+            )
+
+            result_box = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Text(
+                    "Pulsa Generar PDF. Se creará el payload y el PDF rellenable desde la plantilla configurada.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            )
+
+            def selected_expediente_id_for_generation():
+                value = expediente_selector.value or ""
+                if value == "Sin expediente":
+                    return None
+                expediente_id = selected_id(value)
+                if not expediente_id and (requires_expediente or is_ex_template):
+                    raise ValueError("Selecciona un expediente")
+                return expediente_id
+
+            def run_generate(ev=None):
+                try:
+                    result_box.content = ft.Text("Generando PDF...", size=12, color=Q_MUTED)
+                    page.update()
+
+                    generated = pdf_fill_service.fill_pdf_from_template(
+                        template_id,
+                        expediente_id=selected_expediente_id_for_generation(),
+                        auto_build_snapshot=True,
+                        flatten=_bool_to_int(flatten.value) == 1,
+                    )
+
+                    output = generated.get("output") or {}
+                    pdf_info = generated.get("pdf") or {}
+                    validation = generated.get("validation") or {}
+                    summary = generated.get("summary") or {}
+                    empty_fields = generated.get("empty_fields") or []
+                    errors = validation.get("errors") or []
+                    skipped = pdf_info.get("skipped_payload_fields") or []
+                    page_errors = pdf_info.get("page_update_errors") or []
+                    payload = generated.get("payload") or {}
+
+                    is_valid = bool(summary.get("valid", validation.get("valid"))) and not page_errors
+                    status_color = "#027A48" if is_valid else "#B42318"
+                    status_text = "PDF GENERADO CORRECTAMENTE" if is_valid else "PDF GENERADO CON AVISOS"
+
+                    result_box.content = ft.Column(
+                        controls=[
+                            ft.Text(status_text, size=14, weight=ft.FontWeight.BOLD, color=status_color),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text("Archivos generados", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(f"PDF: {output.get('pdf_path') or pdf_info.get('pdf_path') or '-'}", size=12, color="#101828", selectable=True),
+                                        ft.Text(f"Payload JSON: {output.get('json_path') or '-'}", size=12, color="#101828", selectable=True),
+                                        ft.Text(f"Directorio: {output.get('directory') or '-'}", size=12, color=Q_MUTED, selectable=True),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            ft.Text(
+                                f"Campos payload: {summary.get('payload_fields', len(payload))} · "
+                                f"Campos PDF rellenados: {pdf_info.get('filled_count', 0)} · "
+                                f"Saltados: {pdf_info.get('skipped_payload_count', len(skipped))} · "
+                                f"Vacíos: {summary.get('empty_fields', len(empty_fields))}",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                "Errores:\n- " + "\n- ".join(errors) if errors else "Sin errores de validación.",
+                                size=12,
+                                color="#B42318" if errors else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                "Campos payload no presentes en PDF:\n- " + "\n- ".join(skipped) if skipped else "Sin campos payload saltados.",
+                                size=12,
+                                color="#B42318" if skipped else "#027A48",
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                "Avisos por página:\n- " + "\n- ".join(page_errors) if page_errors else "Sin errores de escritura por página.",
+                                size=12,
+                                color="#B42318" if page_errors else "#027A48",
+                                selectable=True,
+                            ),
+                        ],
+                        spacing=10,
+                    )
+                    page.update()
+
+                except Exception as exc:
+                    result_box.content = error_alert(str(exc))
+                    page.update()
+
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Generar PDF rellenable", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                content=ft.Container(
+                    width=940,
+                    height=620,
+                    bgcolor="#F8FAFC",
+                    border_radius=18,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Container(
+                                bgcolor="#EAF3FF",
+                                border=ft.border.all(1, "#B9D7FF"),
+                                border_radius=14,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(template.get("nombre") or template.get("codigo") or "Plantilla", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            f"Código: {template.get('codigo') or '-'} · PDF: {template.get('template_path') or '-'}",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(help_text, size=12, color=Q_MUTED),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            ft.Row([expediente_selector, flatten], wrap=True, spacing=10),
+                            ft.Row(
+                                controls=[
+                                    primary_button("Generar PDF", run_generate),
+                                    secondary_button("Cerrar", lambda ev: close_generate_document_template_pdf_dialog(dialog)),
+                                ],
+                                spacing=8,
+                            ),
+                            result_box,
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+                actions=[],
+            )
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+
+        def close_generate_document_template_pdf_dialog(dialog):
+            dialog.open = False
+            page.update()
+
         form = ft.Container(
             bgcolor="#FFFFFF",
             border=ft.border.all(1, Q_BORDER),
@@ -1870,6 +2084,11 @@ def settings_view(page: ft.Page):
                         on_generate_docx=(
                             (lambda e, tid=template["id"]: open_generate_document_template_docx_dialog(tid))
                             if str(template.get("template_type") or "").strip().lower() == "docx"
+                            else None
+                        ),
+                        on_generate_pdf=(
+                            (lambda e, tid=template["id"]: open_generate_document_template_pdf_dialog(tid))
+                            if str(template.get("template_type") or "").strip().lower() == "pdf"
                             else None
                         ),
                         on_edit=lambda e, tid=template["id"]: start_edit_template(tid),
@@ -2812,6 +3031,11 @@ def settings_view(page: ft.Page):
         insert_key = text_input("Key destino", "", width=220)
         insert_value = text_input("Ruta origen snapshot", "", width=420)
         insert_static_value = text_input("Valor estático", "", width=420)
+        insert_equals_source = text_input("Ruta a comparar", "", width=300)
+        insert_equals_expected = text_input("Valor esperado", "", width=260)
+        insert_slice_source = text_input("Ruta a cortar", "", width=300)
+        insert_slice_start = text_input("Inicio", "", width=90)
+        insert_slice_end = text_input("Fin", "", width=90)
 
         def insert_mapping_pair(e=None):
             key = (insert_key.value or "").strip()
@@ -2869,6 +3093,84 @@ def settings_view(page: ft.Page):
             state["message"] = None
             page.update()
 
+        def insert_equals_pair(e=None):
+            key = (insert_key.value or "").strip()
+            source = (insert_equals_source.value or "").strip()
+            expected = (insert_equals_expected.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if not source:
+                fail("Indica la ruta origen que quieres comparar")
+                page.update()
+                return
+
+            if expected == "":
+                fail("Indica el valor esperado")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__equals__:{source}:{expected}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_equals_source.value = ""
+            insert_equals_expected.value = ""
+            state["message"] = None
+            page.update()
+
+        def insert_slice_pair(e=None):
+            key = (insert_key.value or "").strip()
+            source = (insert_slice_source.value or "").strip()
+            start = (insert_slice_start.value or "").strip()
+            end = (insert_slice_end.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if not source:
+                fail("Indica la ruta origen que quieres cortar")
+                page.update()
+                return
+
+            if start == "" and end == "":
+                fail("Indica al menos inicio o fin para el corte")
+                page.update()
+                return
+
+            for label, raw in (("inicio", start), ("fin", end)):
+                if raw and not raw.lstrip("-").isdigit():
+                    fail(f"El valor de {label} debe ser numérico")
+                    page.update()
+                    return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__slice__:{source}:{start}:{end}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_slice_source.value = ""
+            insert_slice_start.value = ""
+            insert_slice_end.value = ""
+            state["message"] = None
+            page.update()
+
         mapping_insert_card = ft.Container(
             bgcolor="#F8FAFC",
             border=ft.border.all(1, Q_BORDER),
@@ -2894,6 +3196,29 @@ def settings_view(page: ft.Page):
                             insert_static_value,
                             primary_button("Insertar estático", insert_static_pair),
                             ft.Text("Se guardará como __static__:valor", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_equals_source,
+                            insert_equals_expected,
+                            primary_button("Insertar equals", insert_equals_pair),
+                            ft.Text("Se guardará como __equals__:ruta:valor", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_slice_source,
+                            insert_slice_start,
+                            insert_slice_end,
+                            primary_button("Insertar slice", insert_slice_pair),
+                            ft.Text("Se guardará como __slice__:ruta:inicio:fin", size=12, color=Q_MUTED),
                         ],
                         wrap=True,
                         spacing=10,
@@ -3338,6 +3663,11 @@ def settings_view(page: ft.Page):
         insert_key = text_input("Key destino", "", width=220)
         insert_value = text_input("Ruta origen snapshot", "", width=420)
         insert_static_value = text_input("Valor estático", "", width=420)
+        insert_equals_source = text_input("Ruta a comparar", "", width=300)
+        insert_equals_expected = text_input("Valor esperado", "", width=260)
+        insert_slice_source = text_input("Ruta a cortar", "", width=300)
+        insert_slice_start = text_input("Inicio", "", width=90)
+        insert_slice_end = text_input("Fin", "", width=90)
 
         def insert_mapping_pair(e=None):
             key = (insert_key.value or "").strip()
@@ -3395,6 +3725,84 @@ def settings_view(page: ft.Page):
             state["message"] = None
             page.update()
 
+        def insert_equals_pair(e=None):
+            key = (insert_key.value or "").strip()
+            source = (insert_equals_source.value or "").strip()
+            expected = (insert_equals_expected.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if not source:
+                fail("Indica la ruta origen que quieres comparar")
+                page.update()
+                return
+
+            if expected == "":
+                fail("Indica el valor esperado")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__equals__:{source}:{expected}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_equals_source.value = ""
+            insert_equals_expected.value = ""
+            state["message"] = None
+            page.update()
+
+        def insert_slice_pair(e=None):
+            key = (insert_key.value or "").strip()
+            source = (insert_slice_source.value or "").strip()
+            start = (insert_slice_start.value or "").strip()
+            end = (insert_slice_end.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if not source:
+                fail("Indica la ruta origen que quieres cortar")
+                page.update()
+                return
+
+            if start == "" and end == "":
+                fail("Indica al menos inicio o fin para el corte")
+                page.update()
+                return
+
+            for label, raw in (("inicio", start), ("fin", end)):
+                if raw and not raw.lstrip("-").isdigit():
+                    fail(f"El valor de {label} debe ser numérico")
+                    page.update()
+                    return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__slice__:{source}:{start}:{end}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_slice_source.value = ""
+            insert_slice_start.value = ""
+            insert_slice_end.value = ""
+            state["message"] = None
+            page.update()
+
         mapping_insert_card = ft.Container(
             bgcolor="#F8FAFC",
             border=ft.border.all(1, Q_BORDER),
@@ -3420,6 +3828,29 @@ def settings_view(page: ft.Page):
                             insert_static_value,
                             primary_button("Insertar estático", insert_static_pair),
                             ft.Text("Se guardará como __static__:valor", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_equals_source,
+                            insert_equals_expected,
+                            primary_button("Insertar equals", insert_equals_pair),
+                            ft.Text("Se guardará como __equals__:ruta:valor", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_slice_source,
+                            insert_slice_start,
+                            insert_slice_end,
+                            primary_button("Insertar slice", insert_slice_pair),
+                            ft.Text("Se guardará como __slice__:ruta:inicio:fin", size=12, color=Q_MUTED),
                         ],
                         wrap=True,
                         spacing=10,

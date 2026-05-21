@@ -1,0 +1,2909 @@
+{
+  "generated_at": "2026-05-19 22:53:32",
+  "pdf_path": "templates/ex_forms/EX02/template.pdf",
+  "page_count": 3,
+  "field_count": 129,
+  "fields": [
+    {
+      "order": 1,
+      "name": "Texto1",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        96.5798,
+        683.4387,
+        300.2336,
+        699.508
+      ]
+    },
+    {
+      "order": 2,
+      "name": "Texto2",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        326.1412,
+        683.4387,
+        355.6563,
+        700.4918
+      ]
+    },
+    {
+      "order": 3,
+      "name": "Texto3",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        366.8065,
+        683.7668,
+        503.8873,
+        699.5081
+      ]
+    },
+    {
+      "order": 4,
+      "name": "Texto4",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        510.4463,
+        684.0946,
+        541.601,
+        700.8198
+      ]
+    },
+    {
+      "order": 5,
+      "name": "Texto5",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        91.6606,
+        665.7297,
+        289.4114,
+        680.4872
+      ]
+    },
+    {
+      "order": 6,
+      "name": "Texto6",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        351.065,
+        664.4179,
+        558.9821,
+        680.1593
+      ]
+    },
+    {
+      "order": 7,
+      "name": "Texto7",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        80.8384,
+        647.3648,
+        290.3952,
+        662.1223
+      ]
+    },
+    {
+      "order": 8,
+      "name": "Texto8",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        129.3743,
+        628.6719,
+        148.0671,
+        643.4295
+      ]
+    },
+    {
+      "order": 9,
+      "name": "Texto9",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        156.2657,
+        628.6719,
+        175.6145,
+        643.1015
+      ]
+    },
+    {
+      "order": 10,
+      "name": "Texto10",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        186.7646,
+        628.3439,
+        221.1988,
+        643.7574
+      ]
+    },
+    {
+      "order": 11,
+      "name": "Texto11",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        247.4344,
+        628.3439,
+        422.557,
+        645.3971
+      ]
+    },
+    {
+      "order": 12,
+      "name": "Texto12",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        447.4808,
+        628.6719,
+        556.6865,
+        648.3486
+      ]
+    },
+    {
+      "order": 13,
+      "name": "Texto13",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        97.2357,
+        609.6511,
+        321.8779,
+        625.0645
+      ]
+    },
+    {
+      "order": 14,
+      "name": "Texto14",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        110.6814,
+        591.2862,
+        295.3144,
+        605.7158
+      ]
+    },
+    {
+      "order": 15,
+      "name": "Texto15",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        373.3653,
+        591.6141,
+        557.6703,
+        608.3393
+      ]
+    },
+    {
+      "order": 16,
+      "name": "Texto16",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        119.208,
+        573.9051,
+        475.3562,
+        589.6465
+      ]
+    },
+    {
+      "order": 17,
+      "name": "Texto17",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        492.0813,
+        573.9051,
+        513.3978,
+        587.3508
+      ]
+    },
+    {
+      "order": 18,
+      "name": "Texto18",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        532.4186,
+        574.561,
+        558.9821,
+        588.0067
+      ]
+    },
+    {
+      "order": 19,
+      "name": "Texto19",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        93.3003,
+        555.8682,
+        321.8779,
+        571.2816
+      ]
+    },
+    {
+      "order": 20,
+      "name": "Texto20",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        346.8017,
+        554.2284,
+        417.3099,
+        570.2977
+      ]
+    },
+    {
+      "order": 21,
+      "name": "Texto21",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        465.8457,
+        554.8843,
+        558.3262,
+        570.6256
+      ]
+    },
+    {
+      "order": 22,
+      "name": "Texto22",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        112.977,
+        536.5194,
+        272.3583,
+        553.2446
+      ]
+    },
+    {
+      "order": 23,
+      "name": "Texto23",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        307.7763,
+        537.5032,
+        557.3424,
+        552.2608
+      ]
+    },
+    {
+      "order": 24,
+      "name": "Texto24",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        167.4159,
+        515.5309,
+        377.6286,
+        531.9282
+      ]
+    },
+    {
+      "order": 25,
+      "name": "Texto25",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        430.0998,
+        516.8428,
+        490.1137,
+        533.24
+      ]
+    },
+    {
+      "order": 26,
+      "name": "Texto26",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        523.564,
+        516.1868,
+        557.9982,
+        535.8635
+      ]
+    },
+    {
+      "order": 27,
+      "name": "Texto27",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        169.3836,
+        486.0159,
+        305.8087,
+        498.1498
+      ]
+    },
+    {
+      "order": 28,
+      "name": "Texto28",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        354.6725,
+        486.3438,
+        419.6056,
+        499.7895
+      ]
+    },
+    {
+      "order": 29,
+      "name": "Texto29",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        451.4162,
+        486.0159,
+        557.0144,
+        502.7411
+      ]
+    },
+    {
+      "order": 30,
+      "name": "Texto30",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        98.2195,
+        426.9858,
+        280.8848,
+        442.0713
+      ]
+    },
+    {
+      "order": 31,
+      "name": "Texto31",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        307.4483,
+        426.6578,
+        334.9957,
+        443.0551
+      ]
+    },
+    {
+      "order": 32,
+      "name": "Texto32",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        349.4253,
+        426.9858,
+        482.243,
+        443.383
+      ]
+    },
+    {
+      "order": 33,
+      "name": "Texto33",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        493.3931,
+        426.3299,
+        532.0906,
+        443.383
+      ]
+    },
+    {
+      "order": 34,
+      "name": "Texto34",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        91.9886,
+        408.2929,
+        289.7393,
+        424.6902
+      ]
+    },
+    {
+      "order": 35,
+      "name": "Texto35",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        333.356,
+        407.965,
+        557.9982,
+        424.3622
+      ]
+    },
+    {
+      "order": 36,
+      "name": "Texto36",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        77.231,
+        390.584,
+        290.3952,
+        406.9812
+      ]
+    },
+    {
+      "order": 37,
+      "name": "Texto37",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        129.7022,
+        372.219,
+        149.7068,
+        386.9765
+      ]
+    },
+    {
+      "order": 38,
+      "name": "Texto38",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        158.8893,
+        371.2351,
+        180.5337,
+        386.3206
+      ]
+    },
+    {
+      "order": 39,
+      "name": "Texto39",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        190.7,
+        372.219,
+        229.7254,
+        385.9927
+      ]
+    },
+    {
+      "order": 40,
+      "name": "Texto40",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        253.6654,
+        372.219,
+        429.7718,
+        385.9927
+      ]
+    },
+    {
+      "order": 41,
+      "name": "Texto41",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        453.0559,
+        372.219,
+        557.3424,
+        387.9603
+      ]
+    },
+    {
+      "order": 42,
+      "name": "Texto42",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        96.9077,
+        351.8864,
+        328.1089,
+        367.6278
+      ]
+    },
+    {
+      "order": 43,
+      "name": "Texto43",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        111.9932,
+        333.1936,
+        293.3467,
+        348.607
+      ]
+    },
+    {
+      "order": 44,
+      "name": "Texto44",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        366.4784,
+        333.1936,
+        557.9982,
+        349.5908
+      ]
+    },
+    {
+      "order": 45,
+      "name": "Texto45",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        121.1756,
+        316.4683,
+        440.594,
+        330.57
+      ]
+    },
+    {
+      "order": 46,
+      "name": "Texto46",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        456.3353,
+        314.5007,
+        484.2107,
+        329.9141
+      ]
+    },
+    {
+      "order": 47,
+      "name": "Texto47",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        507.4948,
+        315.8125,
+        557.3424,
+        330.57
+      ]
+    },
+    {
+      "order": 48,
+      "name": "Texto48",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        88.0532,
+        298.7593,
+        313.3514,
+        313.1889
+      ]
+    },
+    {
+      "order": 49,
+      "name": "Texto49",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        332.3722,
+        298.7593,
+        399.6009,
+        314.1727
+      ]
+    },
+    {
+      "order": 50,
+      "name": "Texto50",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        436.0028,
+        298.1035,
+        557.3424,
+        312.8611
+      ]
+    },
+    {
+      "order": 51,
+      "name": "Texto51",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        127.7345,
+        240.0572,
+        416.3261,
+        255.4706
+      ]
+    },
+    {
+      "order": 52,
+      "name": "Texto52",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        467.1575,
+        241.6969,
+        557.9982,
+        256.4544
+      ]
+    },
+    {
+      "order": 53,
+      "name": "Texto53",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        122.8154,
+        223.004,
+        458.303,
+        237.4337
+      ]
+    },
+    {
+      "order": 54,
+      "name": "Texto54",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        471.7488,
+        223.66,
+        500.9359,
+        238.7454
+      ]
+    },
+    {
+      "order": 55,
+      "name": "Texto55",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        517.989,
+        224.3159,
+        558.3262,
+        239.0734
+      ]
+    },
+    {
+      "order": 56,
+      "name": "Texto56",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        87.0694,
+        205.9509,
+        265.1435,
+        220.3805
+      ]
+    },
+    {
+      "order": 57,
+      "name": "Texto57",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        283.8363,
+        206.6068,
+        337.6193,
+        220.3805
+      ]
+    },
+    {
+      "order": 58,
+      "name": "Texto58",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        375.6609,
+        206.6068,
+        555.0468,
+        221.3643
+      ]
+    },
+    {
+      "order": 59,
+      "name": "Texto59",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        103.4666,
+        188.5698,
+        237.5961,
+        202.3435
+      ]
+    },
+    {
+      "order": 60,
+      "name": "Texto60",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        268.7509,
+        188.8978,
+        557.6703,
+        203.6553
+      ]
+    },
+    {
+      "order": 61,
+      "name": "Texto61",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        162.4967,
+        171.5167,
+        337.9472,
+        186.6022
+      ]
+    },
+    {
+      "order": 62,
+      "name": "Texto62",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        386.1551,
+        172.8285,
+        446.497,
+        185.9463
+      ]
+    },
+    {
+      "order": 63,
+      "name": "Texto63",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        477.3238,
+        173.8123,
+        557.0144,
+        186.6022
+      ]
+    },
+    {
+      "order": 64,
+      "name": "Texto64",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        125.4389,
+        116.7499,
+        417.9658,
+        130.5236
+      ]
+    },
+    {
+      "order": 65,
+      "name": "Texto65",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        467.1575,
+        116.094,
+        555.7026,
+        131.8354
+      ]
+    },
+    {
+      "order": 66,
+      "name": "Texto66",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        118.2241,
+        99.3688,
+        463.5501,
+        113.1425
+      ]
+    },
+    {
+      "order": 67,
+      "name": "Texto67",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        478.9635,
+        98.385,
+        500.9359,
+        114.1263
+      ]
+    },
+    {
+      "order": 68,
+      "name": "Texto68",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        519.3008,
+        99.0409,
+        555.7026,
+        114.1263
+      ]
+    },
+    {
+      "order": 69,
+      "name": "Texto69",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        87.7253,
+        81.0039,
+        266.4552,
+        96.0894
+      ]
+    },
+    {
+      "order": 70,
+      "name": "Texto70",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        285.804,
+        81.6598,
+        338.9311,
+        95.1055
+      ]
+    },
+    {
+      "order": 71,
+      "name": "Texto71",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        377.3006,
+        81.6598,
+        557.0144,
+        97.0732
+      ]
+    },
+    {
+      "order": 72,
+      "name": "Texto72",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        105.4343,
+        64.9346,
+        240.8755,
+        77.3965
+      ]
+    },
+    {
+      "order": 73,
+      "name": "Texto73",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        269.7347,
+        63.6228,
+        555.3747,
+        77.7245
+      ]
+    },
+    {
+      "order": 74,
+      "name": "Texto74",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        256.289,
+        208.2465,
+        354.0166,
+        225.9555
+      ]
+    },
+    {
+      "order": 75,
+      "name": "Texto75",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        361.8872,
+        208.9025,
+        379.5962,
+        225.6277
+      ]
+    },
+    {
+      "order": 76,
+      "name": "Texto76",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        393.3699,
+        208.9024,
+        470.7649,
+        226.6114
+      ]
+    },
+    {
+      "order": 77,
+      "name": "Texto77",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        482.5709,
+        208.2466,
+        520.6126,
+        225.2997
+      ]
+    },
+    {
+      "order": 78,
+      "name": "Texto78",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        273.67,
+        113.7984,
+        497.3285,
+        158.3989
+      ]
+    },
+    {
+      "order": 79,
+      "name": "Texto79",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        71.0001,
+        29.8445,
+        343.8502,
+        53.7845
+      ]
+    },
+    {
+      "order": 80,
+      "name": "Texto80",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        389.7625,
+        29.8445,
+        437.6425,
+        52.4727
+      ]
+    },
+    {
+      "order": 81,
+      "name": "Texto81",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        487.1622,
+        29.1887,
+        539.3054,
+        50.1771
+      ]
+    },
+    {
+      "order": 82,
+      "name": "Casilla de verificación82",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        351.393,
+        647.0368,
+        365.8226,
+        661.7943
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 83,
+      "name": "Casilla de verificación83",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        381.236,
+        647.3649,
+        395.9935,
+        662.1224
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 84,
+      "name": "Casilla de verificación84",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        408.7833,
+        647.3648,
+        423.8688,
+        662.7782
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 85,
+      "name": "Casilla de verificación85",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        402.2244,
+        609.979,
+        419.2776,
+        624.4086
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 86,
+      "name": "Casilla de verificación86",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        430.4277,
+        610.307,
+        447.4808,
+        625.0645
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 87,
+      "name": "Casilla de verificación87",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        463.5501,
+        610.635,
+        477.9797,
+        625.0645
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 88,
+      "name": "Casilla de verificación88",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        491.4255,
+        610.9629,
+        507.8227,
+        625.0645
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 89,
+      "name": "Casilla de verificación89",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        522.9082,
+        609.979,
+        537.6657,
+        624.7366
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 90,
+      "name": "Casilla de verificación90",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        75.2634,
+        499.1337,
+        89.0371,
+        513.5632
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 91,
+      "name": "Casilla de verificación91",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        108.7137,
+        499.4616,
+        123.7992,
+        513.8912
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 92,
+      "name": "Casilla de verificación92",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        346.1459,
+        388.9442,
+        368.1182,
+        406.6532
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 93,
+      "name": "Casilla de verificación93",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        377.3006,
+        388.2883,
+        397.9611,
+        407.3091
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 94,
+      "name": "Casilla de verificación94",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        407.7995,
+        387.9603,
+        427.8041,
+        406.3253
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 95,
+      "name": "Casilla de verificación95",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        393.3699,
+        352.2144,
+        412.0628,
+        368.9396
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 96,
+      "name": "Casilla de verificación96",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        422.2291,
+        351.5585,
+        439.2822,
+        369.5954
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 97,
+      "name": "Casilla de verificación97",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        447.1529,
+        352.5423,
+        467.8134,
+        368.9396
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 98,
+      "name": "Casilla de verificación98",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        477.6517,
+        351.8865,
+        496.6726,
+        368.2837
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 99,
+      "name": "Casilla de verificación99",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        508.8065,
+        350.9026,
+        526.8435,
+        369.9234
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 100,
+      "name": "Casilla de verificación100",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        70.3442,
+        683.1108,
+        87.3973,
+        695.2447
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 101,
+      "name": "Casilla de verificación101",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        71.0001,
+        672.2886,
+        87.3973,
+        681.471
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 102,
+      "name": "Casilla de verificación102",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        71.0001,
+        660.4826,
+        87.0694,
+        670.3209
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 103,
+      "name": "Casilla de verificación103",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        71.0001,
+        649.3324,
+        87.0694,
+        658.187
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 104,
+      "name": "Casilla de verificación104",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        71.0001,
+        636.5426,
+        88.3812,
+        647.0368
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 105,
+      "name": "Casilla de verificación105",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        229.3975,
+        683.4387,
+        246.4506,
+        694.2609
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 106,
+      "name": "Casilla de verificación106",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        228.7416,
+        672.2886,
+        245.4668,
+        680.4872
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 107,
+      "name": "Casilla de verificación107",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        228.7416,
+        660.8105,
+        246.1226,
+        670.6489
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 108,
+      "name": "Casilla de verificación108",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        227.7577,
+        650.3163,
+        246.4506,
+        659.1708
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 109,
+      "name": "Casilla de verificación109",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        228.0857,
+        637.8544,
+        245.7947,
+        648.3486
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 110,
+      "name": "Casilla de verificación110",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        228.4136,
+        625.7205,
+        245.4667,
+        635.5588
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 111,
+      "name": "Casilla de verificación111",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        52.3072,
+        590.3024,
+        64.1132,
+        601.7804
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 112,
+      "name": "Casilla de verificación112",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        52.3072,
+        575.2169,
+        64.4412,
+        586.695
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 113,
+      "name": "Casilla de verificación113",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        52.3072,
+        547.6695,
+        66.0809,
+        559.8035
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 114,
+      "name": "Casilla de verificación114",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        50.3395,
+        508.3161,
+        65.0971,
+        522.4177
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 115,
+      "name": "Casilla de verificación115",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        49.6837,
+        492.2468,
+        65.0971,
+        504.7088
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 116,
+      "name": "Casilla de verificación116",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        50.3395,
+        457.4847,
+        64.4412,
+        472.5701
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 117,
+      "name": "Casilla de verificación117",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        57.5543,
+        440.4315,
+        74.2795,
+        449.614
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 118,
+      "name": "Casilla de verificación118",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        57.8823,
+        425.674,
+        73.2957,
+        436.1683
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 119,
+      "name": "Casilla de verificación119",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        57.8823,
+        412.2283,
+        72.3119,
+        422.7225
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 120,
+      "name": "Casilla de verificación120",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        57.8823,
+        399.1105,
+        74.2795,
+        409.2768
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 121,
+      "name": "Casilla de verificación121",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        58.5382,
+        385.9927,
+        74.2795,
+        395.5031
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 122,
+      "name": "Casilla de verificación122",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        59.522,
+        372.219,
+        75.5913,
+        382.0574
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 123,
+      "name": "Casilla de verificación123",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        59.1941,
+        357.1335,
+        75.5913,
+        367.6278
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 124,
+      "name": "Casilla de verificación124",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        52.6352,
+        313.5169,
+        64.1132,
+        325.6508
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 125,
+      "name": "Casilla de verificación125",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        84.7738,
+        299.4152,
+        98.2195,
+        312.533
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 126,
+      "name": "Casilla de verificación126",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        191.6838,
+        299.7432,
+        207.7531,
+        311.5492
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 127,
+      "name": "Casilla de verificación127",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        55.9146,
+        244.9764,
+        66.0809,
+        259.406
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 128,
+      "name": "Casilla de verificación128",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 2,
+      "rect": [
+        79.1987,
+        244.6484,
+        91.9886,
+        259.406
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 129,
+      "name": "Casilla de verificación129",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        43.7806,
+        48.8653,
+        56.5705,
+        58.3757
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    }
+  ]
+}

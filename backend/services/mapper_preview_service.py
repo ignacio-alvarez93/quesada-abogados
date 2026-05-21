@@ -5,7 +5,6 @@ from backend.services import expedient_service
 from backend.services import expedient_snapshot_service
 from backend.services import form_mapper_admin_service
 from backend.services import form_mapper_service
-from backend.services import document_template_service
 
 
 def _safe_int(value):
@@ -241,59 +240,150 @@ def preview_mapper_json(expediente_id, mapper_json, required_fields_json=None, a
         template,
     )
 
-def _get_active_mapper_template_by_code(codigo):
-    normalized = _normalize_destination(codigo)
-    for template in form_mapper_admin_service.list_mapper_templates(active_only=True):
-        if _normalize_destination(template.get("codigo")) == normalized:
-            return template
-    return None
-
-
-def preview_document_template_for_expedient(document_template_id, expediente_id, auto_build_snapshot=True):
+def preview_document_template_for_expedient(document_template_id, expediente_id=None, auto_build_snapshot=True):
     """
     Previsualiza el payload de una plantilla documental usando su mapper_destino.
 
-    No genera documentos, no escribe archivos y no modifica el expediente.
-    Solo resuelve:
-    Plantilla documental -> mapper_destino -> mapper_template.codigo -> payload.
+    Función de compatibilidad usada por Settings / generación documental:
+    - No modifica expedientes.
+    - No genera PDF/DOCX.
+    - No toca Box ni Mercurio.
+    - Solo resuelve document_template -> mapper_destino -> payload.
     """
+    from backend.services import document_template_service
+
+    document_template_service.initialize_document_templates_schema()
     document_template = document_template_service.get_document_template(document_template_id)
     if not document_template:
         raise ValueError(f"No existe document_template_id={document_template_id}")
 
-    mapper_code = document_template.get("mapper_destino") or document_template.get("codigo")
-    if not mapper_code:
-        raise ValueError("La plantilla documental no tiene mapper_destino ni código utilizable")
+    mapper_destino = str(
+        document_template.get("mapper_destino")
+        or document_template.get("codigo")
+        or ""
+    ).strip()
 
-    mapper_template = _get_active_mapper_template_by_code(mapper_code)
-    if not mapper_template:
+    if not mapper_destino:
+        raise ValueError("La plantilla documental no tiene mapper_destino configurado.")
+
+    requiere_expediente = int(document_template.get("requiere_expediente") or 0)
+
+    if expediente_id in (None, "", "None"):
+        if requiere_expediente:
+            raise ValueError("Esta plantilla requiere expediente para previsualizar el payload.")
+        return {
+            "preview_generated_at": datetime.now().isoformat(timespec="seconds"),
+            "expediente_id": None,
+            "document_template": {
+                "id": document_template.get("id"),
+                "codigo": document_template.get("codigo"),
+                "nombre": document_template.get("nombre"),
+                "tipo_destino": document_template.get("tipo_destino"),
+                "template_type": document_template.get("template_type"),
+                "mapper_destino": mapper_destino,
+                "requiere_expediente": document_template.get("requiere_expediente"),
+                "activo": document_template.get("activo"),
+            },
+            "payload": {},
+            "validation": {
+                "valid": False,
+                "errors": ["No hay expediente seleccionado; no se puede construir snapshot."],
+            },
+            "empty_fields": [],
+            "summary": {
+                "payload_fields": 0,
+                "empty_fields": 0,
+                "required_errors": 1,
+                "valid": False,
+            },
+        }
+
+    expediente = expedient_service.get_expediente(int(expediente_id))
+    if not expediente:
+        raise ValueError(f"No existe expediente id={expediente_id}")
+
+    snapshot, snapshot_record, generated_in_memory = _get_snapshot_for_preview(
+        int(expediente_id),
+        auto_build=auto_build_snapshot,
+    )
+
+    # En plantillas documentales, mapper_destino identifica el CÓDIGO del mapper
+    # (por ejemplo EX01), no necesariamente su tipo_destino/canal (PDF, DOCX, MERCURIO).
+    # Por eso no usamos preview_destination_for_expedient(mapper_destino), porque eso
+    # interpretaría EX01 como tipo_destino=EX01 y no encontraría mappers cuyo canal es PDF.
+    tipo_id = _safe_int(expediente.get("tipo_expediente_id"))
+    subtipo_id = _safe_int(expediente.get("subtipo_expediente_id"))
+
+    candidates = []
+    for template in form_mapper_admin_service.list_mapper_templates(active_only=True):
+        if _normalize_destination(template.get("codigo")) != _normalize_destination(mapper_destino):
+            continue
+        candidates.append(template)
+
+    def _score_template(template):
+        t_tipo = _safe_int(template.get("tipo_expediente_id"))
+        t_subtipo = _safe_int(template.get("subtipo_expediente_id"))
+
+        if t_tipo == tipo_id and t_subtipo == subtipo_id and t_subtipo is not None:
+            return 30
+        if t_tipo == tipo_id and t_subtipo is None:
+            return 20
+        if t_tipo is None and t_subtipo is None:
+            return 10
+        return -1
+
+    scored = [
+        (_score_template(template), template)
+        for template in candidates
+    ]
+    scored = [item for item in scored if item[0] >= 0]
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    if not scored:
         raise ValueError(
-            f"No existe mapper activo con código={_normalize_destination(mapper_code)} "
-            "para esta plantilla documental."
+            f"No existe mapper activo con código={mapper_destino} compatible con el expediente."
         )
 
-    result = preview_mapper_for_expedient(
-        expediente_id,
-        mapper_template["id"],
-        auto_build_snapshot=auto_build_snapshot,
+    match_score, mapper_template = scored[0]
+    result = _build_preview_result(
+        int(expediente_id),
+        snapshot,
+        snapshot_record,
+        generated_in_memory,
+        mapper_template,
     )
+    result["match_level"] = (
+        "specific_subtype" if match_score == 30 else
+        "specific_type" if match_score == 20 else
+        "general"
+    )
+    result["destination"] = _normalize_destination(document_template.get("tipo_destino"))
+    result["mapper_lookup"] = {
+        "mode": "code",
+        "mapper_destino": mapper_destino,
+        "mapper_template_id": mapper_template.get("id"),
+        "mapper_codigo": mapper_template.get("codigo"),
+        "mapper_tipo_destino": mapper_template.get("tipo_destino"),
+    }
+    result["expediente"] = {
+        "id": expediente.get("id"),
+        "numero_expediente": expediente.get("numero_expediente"),
+        "tipo_expediente_id": expediente.get("tipo_expediente_id"),
+        "tipo_expediente_nombre": expediente.get("tipo_expediente_nombre"),
+        "subtipo_expediente_id": expediente.get("subtipo_expediente_id"),
+        "subtipo_expediente_nombre": expediente.get("subtipo_expediente_nombre"),
+    }
     result["document_template"] = {
         "id": document_template.get("id"),
         "codigo": document_template.get("codigo"),
         "nombre": document_template.get("nombre"),
-        "categoria": document_template.get("categoria"),
         "tipo_destino": document_template.get("tipo_destino"),
         "template_type": document_template.get("template_type"),
         "template_path": document_template.get("template_path"),
         "fields_json_path": document_template.get("fields_json_path"),
-        "metadata_json_path": document_template.get("metadata_json_path"),
-        "mapper_destino": document_template.get("mapper_destino"),
+        "mapper_destino": mapper_destino,
         "requiere_expediente": document_template.get("requiere_expediente"),
-    }
-    result["mapper_match"] = {
-        "mode": "mapper_codigo",
-        "mapper_template_id": mapper_template.get("id"),
-        "mapper_codigo": mapper_template.get("codigo"),
+        "activo": document_template.get("activo"),
     }
     return result
 
