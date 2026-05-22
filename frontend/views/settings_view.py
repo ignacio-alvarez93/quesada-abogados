@@ -13,6 +13,7 @@ from backend.services import document_template_service
 from backend.services import document_generation_service
 from backend.services import document_docx_service
 from backend.services import pdf_fill_service
+from backend.services import pdf_template_service
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -30,7 +31,7 @@ Q_MUTED = "#64748B"
 
 
 
-def _mapper_actions_menu(on_test=None, on_export=None, on_generate_docx=None, on_generate_pdf=None, on_edit=None, on_delete=None):
+def _mapper_actions_menu(on_test=None, on_export=None, on_generate_docx=None, on_generate_pdf=None, on_export_pdf_fields=None, on_edit=None, on_delete=None):
     """
     Menú compacto para la columna Acciones de Mappers / Mapper Blocks.
 
@@ -69,6 +70,14 @@ def _mapper_actions_menu(on_test=None, on_export=None, on_generate_docx=None, on
             ft.PopupMenuItem(
                 content=ft.Text("Generar PDF"),
                 on_click=on_generate_pdf,
+            )
+        )
+
+    if on_export_pdf_fields:
+        items.append(
+            ft.PopupMenuItem(
+                content=ft.Text("Generar fields.json"),
+                on_click=on_export_pdf_fields,
             )
         )
 
@@ -1125,7 +1134,7 @@ def settings_view(page: ft.Page):
         )
         template_type = select_input(
             "Tipo plantilla",
-            ["docx", "pdf_acroform", "pdf_overlay", "html", "json"],
+            ["docx", "pdf", "pdf_acroform", "pdf_overlay", "html", "json"],
             value=editing.get("template_type", "docx") if editing else "docx",
             width=180,
         )
@@ -1786,6 +1795,107 @@ def settings_view(page: ft.Page):
             dialog.open = False
             page.update()
 
+        def open_export_pdf_fields_json_dialog(template_id):
+            template = document_template_service.get_document_template(template_id)
+            if not template:
+                fail("Plantilla documental no encontrada")
+                refresh()
+                return
+
+            if str(template.get("template_type") or "").strip().lower() not in ("pdf", "pdf_acroform"):
+                fail("Solo las plantillas de tipo pdf/pdf_acroform permiten generar fields.json")
+                refresh()
+                return
+
+            result_box = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Text(
+                    "Pulsa Generar fields.json para inspeccionar el PDF autorrellenable y guardar el catálogo de campos junto a la plantilla.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            )
+
+            def close_dialog(ev=None):
+                dialog.open = False
+                page.update()
+
+            def run_export(ev=None):
+                try:
+                    result_box.content = ft.Text("Generando fields.json...", size=12, color=Q_MUTED)
+                    page.update()
+
+                    result = pdf_template_service.export_document_template_pdf_fields(
+                        template_id,
+                        update_template=True,
+                    )
+
+                    result_box.content = ft.Column(
+                        controls=[
+                            success_alert("fields.json generado correctamente"),
+                            ft.Text(f"PDF: {result.get('pdf_path') or '-'}", size=12, color=Q_MUTED),
+                            ft.Text(f"fields.json: {result.get('fields_json_path') or template.get('fields_json_path') or '-'}", size=12, color=Q_MUTED),
+                            ft.Text(f"Páginas: {result.get('page_count') or 0} · Campos detectados: {result.get('field_count') or 0}", size=12, color=Q_MUTED),
+                            ft.Text(
+                                "Puedes usar estos nombres de campo en el mapper PDF. Ejemplo: Texto1, Texto2 o Casilla de verificación7.",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=6,
+                    )
+                    page.update()
+                except Exception as exc:
+                    result_box.content = error_alert(f"No se pudo generar fields.json: {exc}")
+                    page.update()
+
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Generar fields.json"),
+                content=ft.Container(
+                    width=780,
+                    bgcolor="#F8FAFC",
+                    border_radius=18,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Container(
+                                bgcolor="#EAF3FF",
+                                border=ft.border.all(1, "#B9D7FF"),
+                                border_radius=14,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(template.get("nombre") or template.get("codigo") or "Plantilla PDF", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(f"Código: {template.get('codigo') or '-'}", size=12, color=Q_MUTED),
+                                        ft.Text(f"PDF: {template.get('template_path') or '-'}", size=12, color=Q_MUTED),
+                                        ft.Text(f"fields_json_path actual: {template.get('fields_json_path') or 'Se generará automáticamente'}", size=12, color=Q_MUTED),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            ft.Row(
+                                controls=[
+                                    primary_button("Generar fields.json", run_export),
+                                    secondary_button("Cerrar", close_dialog),
+                                ],
+                                spacing=8,
+                            ),
+                            result_box,
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+                actions=[],
+            )
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+
         def open_generate_document_template_pdf_dialog(template_id):
             template = document_template_service.get_document_template(template_id)
             if not template:
@@ -1793,8 +1903,8 @@ def settings_view(page: ft.Page):
                 refresh()
                 return
 
-            if str(template.get("template_type") or "").strip().lower() != "pdf":
-                fail("Solo las plantillas de tipo pdf permiten generar PDF")
+            if str(template.get("template_type") or "").strip().lower() not in ("pdf", "pdf_acroform"):
+                fail("Solo las plantillas de tipo pdf/pdf_acroform permiten generar PDF")
                 refresh()
                 return
 
@@ -2088,7 +2198,12 @@ def settings_view(page: ft.Page):
                         ),
                         on_generate_pdf=(
                             (lambda e, tid=template["id"]: open_generate_document_template_pdf_dialog(tid))
-                            if str(template.get("template_type") or "").strip().lower() == "pdf"
+                            if str(template.get("template_type") or "").strip().lower() in ("pdf", "pdf_acroform")
+                            else None
+                        ),
+                        on_export_pdf_fields=(
+                            (lambda e, tid=template["id"]: open_export_pdf_fields_json_dialog(tid))
+                            if str(template.get("template_type") or "").strip().lower() in ("pdf", "pdf_acroform")
                             else None
                         ),
                         on_edit=lambda e, tid=template["id"]: start_edit_template(tid),

@@ -1,0 +1,973 @@
+{
+  "generated_at": "2026-05-22 06:14:43",
+  "pdf_path": "templates/documents/DESIGNACION_REPRESENTANTE/template.pdf",
+  "page_count": 2,
+  "field_count": 45,
+  "fields": [
+    {
+      "order": 1,
+      "name": "Texto1",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        62.484,
+        695.796,
+        209.756,
+        708.26
+      ]
+    },
+    {
+      "order": 2,
+      "name": "Texto2",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        253.38,
+        695.796,
+        416.724,
+        708.26
+      ]
+    },
+    {
+      "order": 3,
+      "name": "Texto3",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        459.036,
+        695.1401,
+        560.388,
+        707.6041
+      ]
+    },
+    {
+      "order": 4,
+      "name": "Texto4",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        77.572,
+        677.7561,
+        252.724,
+        690.22
+      ]
+    },
+    {
+      "order": 5,
+      "name": "Texto5",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        273.716,
+        677.4281,
+        408.524,
+        689.892
+      ]
+    },
+    {
+      "order": 6,
+      "name": "Texto6",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        456.74,
+        677.7561,
+        557.764,
+        690.22
+      ]
+    },
+    {
+      "order": 7,
+      "name": "Texto7",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        104.468,
+        659.3881,
+        133.332,
+        671.8521
+      ]
+    },
+    {
+      "order": 8,
+      "name": "Texto8",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        147.764,
+        659.7161,
+        174.988,
+        672.1801
+      ]
+    },
+    {
+      "order": 9,
+      "name": "Texto9",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        189.092,
+        659.7161,
+        216.972,
+        672.1801
+      ]
+    },
+    {
+      "order": 10,
+      "name": "Texto10",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        253.38,
+        659.7161,
+        407.54,
+        672.1801
+      ]
+    },
+    {
+      "order": 11,
+      "name": "Texto11",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        438.372,
+        659.3881,
+        556.124,
+        671.8521
+      ]
+    },
+    {
+      "order": 12,
+      "name": "Texto12",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        91.348,
+        641.676,
+        212.38,
+        654.14
+      ]
+    },
+    {
+      "order": 13,
+      "name": "Texto13",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        280.932,
+        641.348,
+        393.764,
+        653.812
+      ]
+    },
+    {
+      "order": 14,
+      "name": "Texto14",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        104.468,
+        625.6041,
+        469.86,
+        638.0681
+      ]
+    },
+    {
+      "order": 15,
+      "name": "Texto15",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        483.964,
+        625.604,
+        512.5,
+        638.068
+      ]
+    },
+    {
+      "order": 16,
+      "name": "Texto16",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        533.492,
+        624.948,
+        559.732,
+        637.4121
+      ]
+    },
+    {
+      "order": 17,
+      "name": "Texto17",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        65.764,
+        609.2041,
+        352.108,
+        621.6681
+      ]
+    },
+    {
+      "order": 18,
+      "name": "Texto18",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        376.708,
+        608.876,
+        415.412,
+        621.34
+      ]
+    },
+    {
+      "order": 19,
+      "name": "Texto19",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        452.804,
+        608.22,
+        562.0281,
+        620.684
+      ]
+    },
+    {
+      "order": 20,
+      "name": "Texto20",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        64.452,
+        592.1481,
+        262.564,
+        604.6121
+      ]
+    },
+    {
+      "order": 21,
+      "name": "Texto21",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        296.676,
+        592.804,
+        558.0921,
+        605.2681
+      ]
+    },
+    {
+      "order": 22,
+      "name": "Texto22",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        34.932,
+        519.332,
+        482.652,
+        531.796
+      ]
+    },
+    {
+      "order": 23,
+      "name": "Texto23",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        74.128,
+        453.896,
+        221.4,
+        466.36
+      ]
+    },
+    {
+      "order": 24,
+      "name": "Texto24",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        270.436,
+        453.732,
+        556.452,
+        466.1961
+      ]
+    },
+    {
+      "order": 25,
+      "name": "Texto25",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        74.448,
+        436.1921,
+        221.72,
+        448.656
+      ]
+    },
+    {
+      "order": 26,
+      "name": "Texto26",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        271.092,
+        436.676,
+        433.452,
+        449.1401
+      ]
+    },
+    {
+      "order": 27,
+      "name": "Texto27",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        476.092,
+        436.0201,
+        555.796,
+        448.4841
+      ]
+    },
+    {
+      "order": 28,
+      "name": "Texto28",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        114.636,
+        419.292,
+        472.484,
+        431.7561
+      ]
+    },
+    {
+      "order": 29,
+      "name": "Texto29",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        486.588,
+        419.292,
+        518.0761,
+        431.756
+      ]
+    },
+    {
+      "order": 30,
+      "name": "Texto30",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        535.46,
+        419.292,
+        555.796,
+        431.7561
+      ]
+    },
+    {
+      "order": 31,
+      "name": "Texto31",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        77.244,
+        403.548,
+        368.508,
+        416.012
+      ]
+    },
+    {
+      "order": 32,
+      "name": "Texto32",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        396.388,
+        403.548,
+        432.14,
+        416.012
+      ]
+    },
+    {
+      "order": 33,
+      "name": "Texto33",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        472.156,
+        403.22,
+        556.452,
+        415.684
+      ]
+    },
+    {
+      "order": 34,
+      "name": "Texto34",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        76.26,
+        387.4761,
+        280.604,
+        399.94
+      ]
+    },
+    {
+      "order": 35,
+      "name": "Texto35",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        313.076,
+        386.82,
+        556.124,
+        399.284
+      ]
+    },
+    {
+      "order": 36,
+      "name": "Texto36",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        215.004,
+        279.2361,
+        279.62,
+        291.7001
+      ]
+    },
+    {
+      "order": 37,
+      "name": "Texto37",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        291.428,
+        278.908,
+        305.86,
+        291.3721
+      ]
+    },
+    {
+      "order": 38,
+      "name": "Texto38",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        317.996,
+        278.908,
+        379.988,
+        291.372
+      ]
+    },
+    {
+      "order": 39,
+      "name": "Texto39",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        395.076,
+        278.908,
+        433.124,
+        291.372
+      ]
+    },
+    {
+      "order": 40,
+      "name": "Texto40",
+      "type": "/Tx",
+      "type_label": "text",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        237.964,
+        186.084,
+        394.748,
+        252.996
+      ]
+    },
+    {
+      "order": 41,
+      "name": "Casilla de verificación1",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        447.228,
+        641.6761,
+        457.724,
+        655.7801
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 42,
+      "name": "Casilla de verificación2",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        468.22,
+        642.1681,
+        478.716,
+        656.2721
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 43,
+      "name": "Casilla de verificación3",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        489.7,
+        642.0081,
+        500.196,
+        656.1121
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 44,
+      "name": "Casilla de verificación4",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        511.508,
+        641.8481,
+        522.004,
+        655.9521
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    },
+    {
+      "order": 45,
+      "name": "Casilla de verificación5",
+      "type": "/Btn",
+      "type_label": "button",
+      "value": null,
+      "default_value": null,
+      "alternate_name": null,
+      "mapping_hint": "",
+      "required": false,
+      "read_only": false,
+      "no_export": false,
+      "flags": 0,
+      "page": 1,
+      "rect": [
+        541.364,
+        642.0041,
+        553.828,
+        656.1081
+      ],
+      "states": [
+        "/Off",
+        "/Yes"
+      ]
+    }
+  ]
+}
