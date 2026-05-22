@@ -1,4 +1,5 @@
 import json
+import html
 from datetime import datetime
 from pathlib import Path
 
@@ -49,6 +50,212 @@ def _relative_path(path):
         return str(Path(path).resolve().relative_to(BASE_DIR)).replace("\\", "/")
     except Exception:
         return str(path).replace("\\", "/")
+
+
+
+
+PDF_TEMPLATE_TYPES = {"pdf", "pdf_acroform", "acroform"}
+
+
+def _is_pdf_template_type(value):
+    return str(value or "").strip().lower() in PDF_TEMPLATE_TYPES
+
+
+def _load_fields_json(fields_json_path):
+    if not fields_json_path:
+        return None
+    path = _resolve_project_path(fields_json_path)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _page_sizes(reader):
+    sizes = {}
+    for index, page in enumerate(reader.pages, start=1):
+        box = page.mediabox
+        sizes[index] = {
+            "width": float(box.width),
+            "height": float(box.height),
+        }
+    return sizes
+
+
+def _field_overlay_html(inspection, page_sizes, title="Mapa visual de campos PDF", scale=1.2):
+    """
+    Genera un HTML estático con cajas superpuestas por coordenadas PDF.
+
+    No modifica el PDF. Sirve para identificar visualmente campos tipo Texto1,
+    Casilla de verificación7, etc. cuando el PDF oficial no trae nombres claros.
+    """
+    safe_title = html.escape(str(title or "Mapa visual de campos PDF"))
+    fields = inspection.get("fields") or []
+    fields_by_page = {}
+    for field in fields:
+        page = field.get("page") or 1
+        fields_by_page.setdefault(int(page), []).append(field)
+
+    css = f"""
+    body {{ font-family: Arial, sans-serif; margin: 24px; background: #f5f7fb; color: #101828; }}
+    .header {{ margin-bottom: 18px; }}
+    .header h1 {{ margin: 0 0 6px 0; font-size: 22px; color: #003B7A; }}
+    .header p {{ margin: 2px 0; font-size: 13px; color: #64748B; }}
+    .page-wrap {{ margin: 22px 0; }}
+    .page-title {{ font-weight: 700; color: #003B7A; margin: 0 0 8px 0; }}
+    .page {{ position: relative; background: #ffffff; border: 1px solid #cbd5e1; box-shadow: 0 2px 10px rgba(15,23,42,.08); }}
+    .field {{ position: absolute; border: 1.5px solid #0057B8; background: rgba(0, 87, 184, .08); box-sizing: border-box; overflow: visible; }}
+    .field-label {{ position: absolute; left: 0; top: -18px; background: #0057B8; color: #fff; font-size: 10px; line-height: 14px; padding: 1px 4px; border-radius: 4px; white-space: nowrap; z-index: 2; }}
+    .field.button {{ border-color: #B54708; background: rgba(245, 158, 11, .16); }}
+    .field.choice {{ border-color: #047857; background: rgba(16, 185, 129, .12); }}
+    .legend {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; font-size:12px; color:#475467; }}
+    .chip {{ border:1px solid #e4e7ec; background:#fff; border-radius:999px; padding:4px 8px; }}
+    table {{ border-collapse: collapse; width: 100%; background: #fff; margin-top: 24px; }}
+    th, td {{ border: 1px solid #e4e7ec; padding: 6px 8px; font-size: 12px; text-align: left; }}
+    th {{ background: #f8fafc; color: #003B7A; }}
+    """
+
+    page_blocks = []
+    for page_num in sorted(page_sizes.keys()):
+        size = page_sizes[page_num]
+        page_w = size["width"] * scale
+        page_h = size["height"] * scale
+        boxes = []
+        for field in fields_by_page.get(page_num, []):
+            rect = field.get("rect") or []
+            if len(rect) != 4:
+                continue
+            try:
+                x0, y0, x1, y1 = [float(v) for v in rect]
+            except Exception:
+                continue
+            left = min(x0, x1) * scale
+            right = max(x0, x1) * scale
+            top = (size["height"] - max(y0, y1)) * scale
+            bottom = (size["height"] - min(y0, y1)) * scale
+            width = max(right - left, 2)
+            height = max(bottom - top, 2)
+            label = f"{field.get('order')}. {field.get('name')}"
+            type_label = str(field.get("type_label") or "")
+            cls = "field"
+            if type_label == "button":
+                cls += " button"
+            elif type_label == "choice":
+                cls += " choice"
+            boxes.append(
+                f'<div class="{cls}" style="left:{left:.2f}px;top:{top:.2f}px;width:{width:.2f}px;height:{height:.2f}px;">'
+                f'<div class="field-label">{html.escape(label)}</div></div>'
+            )
+        page_blocks.append(
+            f'<div class="page-wrap"><div class="page-title">Página {page_num}</div>'
+            f'<div class="page" style="width:{page_w:.2f}px;height:{page_h:.2f}px;">' + "\n".join(boxes) + "</div></div>"
+        )
+
+    rows = []
+    for field in fields:
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(field.get('order') or ''))}</td>"
+            f"<td>{html.escape(str(field.get('page') or ''))}</td>"
+            f"<td>{html.escape(str(field.get('name') or ''))}</td>"
+            f"<td>{html.escape(str(field.get('type_label') or ''))}</td>"
+            f"<td>{html.escape(str(field.get('alternate_name') or ''))}</td>"
+            f"<td>{html.escape(str(field.get('rect') or ''))}</td>"
+            "</tr>"
+        )
+
+    table = (
+        "<table><thead><tr><th>#</th><th>Página</th><th>Campo</th><th>Tipo</th>"
+        "<th>Nombre alternativo</th><th>Rect</th></tr></thead><tbody>"
+        + "\n".join(rows)
+        + "</tbody></table>"
+    )
+
+    return f"""<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><title>{safe_title}</title><style>{css}</style></head>
+<body>
+  <div class="header">
+    <h1>{safe_title}</h1>
+    <p>PDF: {html.escape(str(inspection.get('pdf_path') or ''))}</p>
+    <p>Campos detectados: {len(fields)} · Generado: {html.escape(str(inspection.get('generated_at') or _now()))}</p>
+    <div class="legend"><span class="chip">Azul: texto</span><span class="chip">Naranja: checkbox/botón</span><span class="chip">Verde: desplegable</span></div>
+  </div>
+  {''.join(page_blocks)}
+  {table}
+</body>
+</html>"""
+
+
+def export_pdf_fields_overlay_html(pdf_path, fields_json_path=None, output_html_path=None, scale=1.2):
+    """
+    Crea un HTML visual con los campos PDF sobre una hoja en blanco escalada.
+
+    Es intencionadamente HTML, no PDF, para que el usuario pueda abrirlo rápido,
+    hacer zoom y localizar campos con nombres genéricos como Texto1.
+    """
+    resolved_pdf_path = _resolve_project_path(pdf_path)
+    if not resolved_pdf_path.exists():
+        raise FileNotFoundError(f"No existe el PDF: {_relative_path(resolved_pdf_path)}")
+
+    inspection = _load_fields_json(fields_json_path) if fields_json_path else None
+    if not inspection:
+        inspection = inspect_pdf_fields(pdf_path)
+
+    reader = PdfReader(str(resolved_pdf_path))
+    html_text = _field_overlay_html(
+        inspection=inspection,
+        page_sizes=_page_sizes(reader),
+        title=f"Mapa visual de campos - {resolved_pdf_path.name}",
+        scale=scale,
+    )
+
+    if output_html_path:
+        output_path = _resolve_project_path(output_html_path)
+    else:
+        output_path = resolved_pdf_path.parent / "fields_overlay.html"
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(html_text, encoding="utf-8")
+
+    return {
+        "generated_at": _now(),
+        "pdf_path": _relative_path(resolved_pdf_path),
+        "fields_json_path": _relative_path(_resolve_project_path(fields_json_path)) if fields_json_path else "",
+        "overlay_html_path": _relative_path(output_path),
+        "field_count": len(inspection.get("fields") or []),
+        "page_count": len(reader.pages),
+    }
+
+
+def export_document_template_fields_overlay_html(document_template_id, scale=1.2):
+    template = document_template_service.get_document_template(document_template_id)
+    if not template:
+        raise ValueError(f"No existe plantilla documental id={document_template_id}")
+
+    if not _is_pdf_template_type(template.get("template_type")):
+        raise ValueError("La plantilla documental no es PDF / PDF AcroForm")
+
+    pdf_path = template.get("template_path")
+    fields_json_path = template.get("fields_json_path") or ""
+    output_html_path = str(Path(pdf_path).with_name("fields_overlay.html"))
+
+    return export_pdf_fields_overlay_html(
+        pdf_path=pdf_path,
+        fields_json_path=fields_json_path or None,
+        output_html_path=output_html_path,
+        scale=scale,
+    )
+
+
+def export_document_template_fields_overlay_html_by_code(codigo, scale=1.2):
+    template = document_template_service.get_document_template_by_code(
+        _normalize_code(codigo),
+        active_only=True,
+    )
+    if not template:
+        raise ValueError(f"No existe plantilla documental activa con código={codigo}")
+
+    return export_document_template_fields_overlay_html(template["id"], scale=scale)
 
 
 def _to_python(value):
@@ -281,8 +488,8 @@ def inspect_document_template_pdf_fields(document_template_id):
     if not template:
         raise ValueError(f"No existe plantilla documental id={document_template_id}")
 
-    if str(template.get("template_type") or "").strip().lower() != "pdf":
-        raise ValueError("La plantilla documental no es de tipo pdf")
+    if not _is_pdf_template_type(template.get("template_type")):
+        raise ValueError("La plantilla documental no es de tipo pdf/pdf_acroform")
 
     return inspect_pdf_fields(template.get("template_path"))
 
@@ -298,8 +505,8 @@ def export_document_template_pdf_fields(document_template_id, update_template=Tr
     if not template:
         raise ValueError(f"No existe plantilla documental id={document_template_id}")
 
-    if str(template.get("template_type") or "").strip().lower() != "pdf":
-        raise ValueError("La plantilla documental no es de tipo pdf")
+    if not _is_pdf_template_type(template.get("template_type")):
+        raise ValueError("La plantilla documental no es de tipo pdf/pdf_acroform")
 
     pdf_path = template.get("template_path")
     fields_json_path = template.get("fields_json_path") or ""
