@@ -1056,10 +1056,10 @@ def clients_view(page: ft.Page):
         estado_cliente.value = cliente.get("estado_cliente") or "Asesoramiento inicial"
 
         tipo, via, numero, piso_value = descomponer_domicilio(cliente.get("domicilio_espana"))
-        set_dropdown_options(tipo_via, tipo_via_options, tipo)
-        nombre_via.value = via
-        numero_via.value = numero
-        piso.value = piso_value
+        set_dropdown_options(tipo_via, tipo_via_options, cliente.get("tipo_via") or tipo)
+        nombre_via.value = cliente.get("nombre_via") or via
+        numero_via.value = cliente.get("numero") or numero
+        piso.value = cliente.get("piso") or piso_value
         domicilio_espana.value = cliente.get("domicilio_espana") or ""
 
         provincia_value = cliente.get("provincia") or ""
@@ -1093,6 +1093,10 @@ def clients_view(page: ft.Page):
             "telefono": telefono.value,
             "email": email.value,
             "estado_cliente": estado_cliente.value,
+            "tipo_via": tipo_via.value,
+            "nombre_via": nombre_via.value,
+            "numero": numero_via.value,
+            "piso": piso.value,
             "domicilio_espana": componer_domicilio(
                 tipo_via.value,
                 nombre_via.value,
@@ -2145,7 +2149,7 @@ def clients_view(page: ft.Page):
                         ("Ficha completada", f"{porcentaje_ficha(cliente)}%"),
                     ],
                 ),
-                detail_section("Dirección", [("Domicilio", cliente.get("domicilio_espana")), ("Localidad", cliente.get("localidad")), ("Provincia", cliente.get("provincia")), ("Código postal", cliente.get("codigo_postal"))]),
+                detail_section("Dirección", [("Domicilio", cliente.get("domicilio_espana")), ("Tipo de vía", cliente.get("tipo_via")), ("Nombre de vía", cliente.get("nombre_via")), ("Número", cliente.get("numero")), ("Piso", cliente.get("piso")), ("Localidad", cliente.get("localidad")), ("Provincia", cliente.get("provincia")), ("Código postal", cliente.get("codigo_postal"))]),
                 detail_section("Datos personales", [("Localidad nacimiento", cliente.get("localidad_nacimiento")), ("País nacimiento", cliente.get("pais_nacimiento")), ("Nombre padre", cliente.get("nombre_padre")), ("Nombre madre", cliente.get("nombre_madre")), ("Estado civil", cliente.get("estado_civil"))]),
                 detail_section("Observaciones", [("Observaciones", cliente.get("observaciones")), ("Observaciones internas", cliente.get("observaciones_internas"))]),
             ],
