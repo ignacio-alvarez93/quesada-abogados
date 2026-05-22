@@ -31,7 +31,7 @@ Q_MUTED = "#64748B"
 
 
 
-def _mapper_actions_menu(on_test=None, on_export=None, on_generate_docx=None, on_generate_pdf=None, on_export_pdf_fields=None, on_edit=None, on_delete=None):
+def _mapper_actions_menu(on_test=None, on_export=None, on_generate_docx=None, on_generate_pdf=None, on_export_pdf_fields=None, on_export_pdf_overlay=None, on_edit=None, on_delete=None):
     """
     Menú compacto para la columna Acciones de Mappers / Mapper Blocks.
 
@@ -78,6 +78,14 @@ def _mapper_actions_menu(on_test=None, on_export=None, on_generate_docx=None, on
             ft.PopupMenuItem(
                 content=ft.Text("Generar fields.json"),
                 on_click=on_export_pdf_fields,
+            )
+        )
+
+    if on_export_pdf_overlay:
+        items.append(
+            ft.PopupMenuItem(
+                content=ft.Text("Generar overlay campos"),
+                on_click=on_export_pdf_overlay,
             )
         )
 
@@ -1896,6 +1904,107 @@ def settings_view(page: ft.Page):
             dialog.open = True
             page.update()
 
+        def open_export_pdf_fields_overlay_dialog(template_id):
+            template = document_template_service.get_document_template(template_id)
+            if not template:
+                fail("Plantilla documental no encontrada")
+                refresh()
+                return
+
+            if str(template.get("template_type") or "").strip().lower() not in ("pdf", "pdf_acroform"):
+                fail("Solo las plantillas de tipo pdf/pdf_acroform permiten generar el overlay de campos")
+                refresh()
+                return
+
+            result_box = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Text(
+                    "Pulsa Generar overlay para crear un HTML visual con los nombres de campos encima del PDF. Sirve para mapear PDFs con campos tipo Texto1 o Casilla de verificación7.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            )
+
+            def close_dialog(ev=None):
+                dialog.open = False
+                page.update()
+
+            def run_export(ev=None):
+                try:
+                    result_box.content = ft.Text("Generando overlay visual de campos...", size=12, color=Q_MUTED)
+                    page.update()
+
+                    result = pdf_template_service.export_document_template_fields_overlay_html(
+                        template_id,
+                    )
+
+                    result_box.content = ft.Column(
+                        controls=[
+                            success_alert("Overlay de campos generado correctamente"),
+                            ft.Text(f"PDF: {result.get('pdf_path') or '-'}", size=12, color=Q_MUTED, selectable=True),
+                            ft.Text(f"fields.json: {result.get('fields_json_path') or template.get('fields_json_path') or '-'}", size=12, color=Q_MUTED, selectable=True),
+                            ft.Text(f"HTML overlay: {result.get('overlay_html_path') or '-'}", size=12, color="#101828", selectable=True),
+                            ft.Text(f"Páginas: {result.get('page_count') or 0} · Campos: {result.get('field_count') or 0}", size=12, color=Q_MUTED),
+                            ft.Text(
+                                "Abre el HTML generado en el navegador para identificar cada campo antes de crear el mapper.",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=6,
+                    )
+                    page.update()
+                except Exception as exc:
+                    result_box.content = error_alert(f"No se pudo generar el overlay de campos: {exc}")
+                    page.update()
+
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Generar overlay visual de campos"),
+                content=ft.Container(
+                    width=820,
+                    bgcolor="#F8FAFC",
+                    border_radius=18,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Container(
+                                bgcolor="#EAF3FF",
+                                border=ft.border.all(1, "#B9D7FF"),
+                                border_radius=14,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(template.get("nombre") or template.get("codigo") or "Plantilla PDF", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(f"Código: {template.get('codigo') or '-'}", size=12, color=Q_MUTED),
+                                        ft.Text(f"PDF: {template.get('template_path') or '-'}", size=12, color=Q_MUTED, selectable=True),
+                                        ft.Text(f"fields.json: {template.get('fields_json_path') or 'Se usará/generará junto a la plantilla'}", size=12, color=Q_MUTED, selectable=True),
+                                    ],
+                                    spacing=4,
+                                ),
+                            ),
+                            ft.Row(
+                                controls=[
+                                    primary_button("Generar overlay", run_export),
+                                    secondary_button("Cerrar", close_dialog),
+                                ],
+                                spacing=8,
+                            ),
+                            result_box,
+                        ],
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+                actions=[],
+            )
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+
         def open_generate_document_template_pdf_dialog(template_id):
             template = document_template_service.get_document_template(template_id)
             if not template:
@@ -2203,6 +2312,11 @@ def settings_view(page: ft.Page):
                         ),
                         on_export_pdf_fields=(
                             (lambda e, tid=template["id"]: open_export_pdf_fields_json_dialog(tid))
+                            if str(template.get("template_type") or "").strip().lower() in ("pdf", "pdf_acroform")
+                            else None
+                        ),
+                        on_export_pdf_overlay=(
+                            (lambda e, tid=template["id"]: open_export_pdf_fields_overlay_dialog(tid))
                             if str(template.get("template_type") or "").strip().lower() in ("pdf", "pdf_acroform")
                             else None
                         ),
