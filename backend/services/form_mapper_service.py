@@ -1,6 +1,7 @@
 import copy
 import json
 import re
+from datetime import datetime
 import sqlite3
 import unicodedata
 from pathlib import Path
@@ -11,6 +12,8 @@ DB_PATH = BASE_DIR / "database" / "quesada.db"
 STATIC_PREFIX = "__static__:"
 EQUALS_PREFIX = "__equals__:"
 SLICE_PREFIX = "__slice__:"
+JOIN_PREFIX = "__join__:"
+TODAY_PREFIX = "__today__"
 
 
 def _connect():
@@ -150,6 +153,63 @@ def _parse_slice_expression(expression):
     return source_path, start, end
 
 
+
+def _parse_join_expression(expression):
+    """
+    Sintaxis:
+      __join__:SEPARADOR:ruta1:ruta2:ruta3
+
+    Ejemplos:
+      __join__: :cliente.tipo_via:cliente.via_nombre
+      __join__:, :cliente.nombre:cliente.primer_apellido:cliente.segundo_apellido
+
+    El separador puede estar vacío. Las rutas vacías se ignoran.
+    """
+    body = str(expression or "")[len(JOIN_PREFIX):]
+    parts = body.split(":")
+    if not parts:
+        return "", []
+    separator = parts[0]
+    paths = [part.strip() for part in parts[1:] if str(part or "").strip()]
+    return separator, paths
+
+
+def _resolve_join_expression(snapshot, expression):
+    separator, paths = _parse_join_expression(expression)
+    values = []
+    for path in paths:
+        value = resolve_mapping_value(snapshot, path)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            values.append(text)
+    return separator.join(values)
+
+
+def _resolve_today_expression(expression):
+    """
+    Sintaxis:
+      __today__              -> YYYY-MM-DD
+      __today__:%d/%m/%Y    -> 23/05/2026
+      __today__:%d          -> día
+      __today__:%m          -> mes
+      __today__:%Y          -> año
+    """
+    expression = str(expression or "").strip()
+    today = datetime.now().date()
+    if expression == TODAY_PREFIX:
+        return today.isoformat()
+    if expression.startswith(TODAY_PREFIX + ":"):
+        date_format = expression[len(TODAY_PREFIX) + 1:]
+        if not date_format:
+            return today.isoformat()
+        try:
+            return today.strftime(date_format)
+        except Exception:
+            return today.isoformat()
+    return today.isoformat()
+
 def resolve_mapping_value(snapshot, source_expression):
     if source_expression is None:
         return ""
@@ -171,6 +231,12 @@ def resolve_mapping_value(snapshot, source_expression):
         source_path, start, end = _parse_slice_expression(expression)
         value = deep_get(snapshot, source_path, "")
         return str(value or "")[start:end]
+
+    if expression.startswith(JOIN_PREFIX):
+        return _resolve_join_expression(snapshot, expression)
+
+    if expression == TODAY_PREFIX or expression.startswith(TODAY_PREFIX + ":"):
+        return _resolve_today_expression(expression)
 
     return deep_get(snapshot, expression, "")
 
