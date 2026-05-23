@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS clientes (
     telefono TEXT,
     email TEXT,
 
+    tipo_via TEXT,
+    nombre_via TEXT,
     domicilio_espana TEXT,
     localidad TEXT,
     codigo_postal TEXT,

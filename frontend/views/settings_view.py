@@ -3265,6 +3265,9 @@ def settings_view(page: ft.Page):
         insert_slice_source = text_input("Ruta a cortar", "", width=300)
         insert_slice_start = text_input("Inicio", "", width=90)
         insert_slice_end = text_input("Fin", "", width=90)
+        insert_join_sources = multiline_input("Rutas a unir (una por línea)", "", width=420, height=82)
+        insert_join_separator = text_input("Separador", " ", width=120)
+        insert_today_format = text_input("Formato fecha", "%d/%m/%Y", width=180)
 
         def insert_mapping_pair(e=None):
             key = (insert_key.value or "").strip()
@@ -3400,6 +3403,67 @@ def settings_view(page: ft.Page):
             state["message"] = None
             page.update()
 
+        def insert_join_pair(e=None):
+            key = (insert_key.value or "").strip()
+            raw_sources = (insert_join_sources.value or "").replace(",", "\n")
+            sources = [item.strip() for item in raw_sources.splitlines() if item.strip()]
+            separator = insert_join_separator.value
+            if separator is None or separator == "":
+                separator = " "
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if not sources:
+                fail("Indica al menos una ruta para unir")
+                page.update()
+                return
+
+            if ":" in separator:
+                fail("El separador de join no puede contener ':'")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__join__:{separator}:{':'.join(sources)}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_join_sources.value = ""
+            insert_join_separator.value = " "
+            state["message"] = None
+            page.update()
+
+        def insert_today_pair(e=None):
+            key = (insert_key.value or "").strip()
+            fmt = (insert_today_format.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__today__:{fmt}" if fmt else "__today__"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_today_format.value = "%d/%m/%Y"
+            state["message"] = None
+            page.update()
+
         mapping_insert_card = ft.Container(
             bgcolor="#F8FAFC",
             border=ft.border.all(1, Q_BORDER),
@@ -3448,6 +3512,27 @@ def settings_view(page: ft.Page):
                             insert_slice_end,
                             primary_button("Insertar slice", insert_slice_pair),
                             ft.Text("Se guardará como __slice__:ruta:inicio:fin", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_join_sources,
+                            insert_join_separator,
+                            primary_button("Insertar join", insert_join_pair),
+                            ft.Text("Se guardará como __join__:separador:ruta1:ruta2", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_today_format,
+                            primary_button("Insertar hoy", insert_today_pair),
+                            ft.Text("Se guardará como __today__:formato", size=12, color=Q_MUTED),
                         ],
                         wrap=True,
                         spacing=10,
@@ -3897,6 +3982,9 @@ def settings_view(page: ft.Page):
         insert_slice_source = text_input("Ruta a cortar", "", width=300)
         insert_slice_start = text_input("Inicio", "", width=90)
         insert_slice_end = text_input("Fin", "", width=90)
+        insert_join_sources = multiline_input("Rutas a unir (una por línea)", "", width=420, height=82)
+        insert_join_separator = text_input("Separador", " ", width=120)
+        insert_today_format = text_input("Formato fecha", "%d/%m/%Y", width=180)
 
         def insert_mapping_pair(e=None):
             key = (insert_key.value or "").strip()
@@ -4032,6 +4120,67 @@ def settings_view(page: ft.Page):
             state["message"] = None
             page.update()
 
+        def insert_join_pair(e=None):
+            key = (insert_key.value or "").strip()
+            raw_sources = (insert_join_sources.value or "").replace(",", "\n")
+            sources = [item.strip() for item in raw_sources.splitlines() if item.strip()]
+            separator = insert_join_separator.value
+            if separator is None or separator == "":
+                separator = " "
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            if not sources:
+                fail("Indica al menos una ruta para unir")
+                page.update()
+                return
+
+            if ":" in separator:
+                fail("El separador de join no puede contener ':'")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__join__:{separator}:{':'.join(sources)}"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_join_sources.value = ""
+            insert_join_separator.value = " "
+            state["message"] = None
+            page.update()
+
+        def insert_today_pair(e=None):
+            key = (insert_key.value or "").strip()
+            fmt = (insert_today_format.value or "").strip()
+
+            if not key:
+                fail("Indica la key destino")
+                page.update()
+                return
+
+            try:
+                current = json.loads(mapper_json.value or "{}")
+                if not isinstance(current, dict):
+                    raise ValueError("Mapper JSON debe ser un objeto JSON")
+            except Exception:
+                current = {}
+
+            current[key] = f"__today__:{fmt}" if fmt else "__today__"
+            mapper_json.value = json.dumps(current, ensure_ascii=False, indent=2)
+            insert_key.value = ""
+            insert_today_format.value = "%d/%m/%Y"
+            state["message"] = None
+            page.update()
+
         mapping_insert_card = ft.Container(
             bgcolor="#F8FAFC",
             border=ft.border.all(1, Q_BORDER),
@@ -4080,6 +4229,27 @@ def settings_view(page: ft.Page):
                             insert_slice_end,
                             primary_button("Insertar slice", insert_slice_pair),
                             ft.Text("Se guardará como __slice__:ruta:inicio:fin", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_join_sources,
+                            insert_join_separator,
+                            primary_button("Insertar join", insert_join_pair),
+                            ft.Text("Se guardará como __join__:separador:ruta1:ruta2", size=12, color=Q_MUTED),
+                        ],
+                        wrap=True,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    ft.Row(
+                        controls=[
+                            insert_today_format,
+                            primary_button("Insertar hoy", insert_today_pair),
+                            ft.Text("Se guardará como __today__:formato", size=12, color=Q_MUTED),
                         ],
                         wrap=True,
                         spacing=10,
