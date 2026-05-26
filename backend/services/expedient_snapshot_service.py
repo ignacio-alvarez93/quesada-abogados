@@ -64,8 +64,6 @@ def _fetch_expediente(expediente_id):
                 c.sexo AS cliente_sexo,
                 c.telefono AS cliente_telefono,
                 c.email AS cliente_email,
-                c.tipo_via AS cliente_tipo_via,
-                c.nombre_via AS cliente_nombre_via,
                 c.domicilio_espana AS cliente_domicilio_espana,
                 c.localidad AS cliente_localidad,
                 c.codigo_postal AS cliente_codigo_postal,
@@ -92,24 +90,7 @@ def _fetch_expediente(expediente_id):
     return expediente
 
 
-def _join_parts(*parts):
-    return " ".join(str(part).strip() for part in parts if str(part or "").strip())
-
-
 def _build_cliente(expediente):
-    tipo_via = expediente.get("cliente_tipo_via") or ""
-    nombre_via = expediente.get("cliente_nombre_via") or ""
-    numero = expediente.get("cliente_numero") or ""
-    piso = expediente.get("cliente_piso") or ""
-
-    # Criterio de nomenclatura:
-    # - via_nombre: solo el nombre de la vía, sin tipo de vía. Ej.: REYES CATOLICOS
-    # - via_completa: tipo + nombre de vía. Ej.: CALLE REYES CATOLICOS
-    # - domicilio_estructurado: tipo + nombre + número + piso. Ej.: CALLE REYES CATOLICOS 11 2 D
-    via_nombre = nombre_via
-    via_completa = _join_parts(tipo_via, nombre_via)
-    domicilio_estructurado = _join_parts(tipo_via, nombre_via, numero, piso)
-
     return {
         "id": expediente.get("cliente_id_real") or expediente.get("cliente_id"),
         "nombre": expediente.get("cliente_nombre") or "",
@@ -128,26 +109,12 @@ def _build_cliente(expediente):
         "sexo": expediente.get("cliente_sexo") or "",
         "telefono": expediente.get("cliente_telefono") or "",
         "email": expediente.get("cliente_email") or "",
-        "tipo_via": tipo_via,
-        "nombre_via": nombre_via,
-        "via_nombre": via_nombre,
-        "via_completa": via_completa,
-        "domicilio_estructurado": domicilio_estructurado,
         "domicilio_espana": expediente.get("cliente_domicilio_espana") or "",
         "localidad": expediente.get("cliente_localidad") or "",
         "codigo_postal": expediente.get("cliente_codigo_postal") or "",
         "provincia": expediente.get("cliente_provincia") or "",
-        "numero": numero,
-        "piso": piso,
-        "domicilio_componentes": {
-            "tipo_via": tipo_via,
-            "nombre_via": nombre_via,
-            "via_nombre": via_nombre,
-            "via_completa": via_completa,
-            "numero": numero,
-            "piso": piso,
-            "domicilio_estructurado": domicilio_estructurado,
-        },
+        "numero": expediente.get("cliente_numero") or "",
+        "piso": expediente.get("cliente_piso") or "",
     }
 
 
