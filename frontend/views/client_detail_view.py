@@ -47,6 +47,20 @@ CONTACT_RELATIONSHIPS = [
     "Otro familiar",
 ]
 
+VIA_TYPES = [
+    "CALLE",
+    "AVENIDA",
+    "PLAZA",
+    "PASEO",
+    "CARRETERA",
+    "CAMINO",
+    "TRAVESÍA",
+    "RONDA",
+    "URBANIZACIÓN",
+    "POLÍGONO",
+    "OTRO",
+]
+
 
 FICHA_FIELDS = [
     "nombre",
@@ -150,6 +164,17 @@ def _text_input_erp(label, width):
         border_radius=10,
         border_color=Q_BORDER,
         focused_border_color="#18BFEA",
+    )
+
+
+def _via_type_dropdown(label="Tipo de vía", width=170):
+    return ft.Dropdown(
+        label=label,
+        width=width,
+        border_radius=10,
+        border_color=Q_BORDER,
+        focused_border_color="#18BFEA",
+        options=[ft.dropdown.Option(item) for item in VIA_TYPES],
     )
 
 
@@ -351,6 +376,10 @@ def _copy_client_to_contact_data(cliente):
         "email": cliente.get("email") or "",
         "estado_cliente": cliente.get("estado_cliente") or "",
         "domicilio_espana": cliente.get("domicilio_espana") or "",
+        "tipo_via": cliente.get("tipo_via") or "",
+        "nombre_via": cliente.get("nombre_via") or "",
+        "numero": cliente.get("numero") or "",
+        "piso": cliente.get("piso") or "",
         "localidad": cliente.get("localidad") or "",
         "provincia": cliente.get("provincia") or "",
         "codigo_postal": cliente.get("codigo_postal") or "",
@@ -395,7 +424,8 @@ def _save_client_contact(data):
         "cliente_id", "tipo_contacto", "parentesco", "cliente_referenciado_id",
         "nombre", "primer_apellido", "segundo_apellido", "nie", "pasaporte", "dni",
         "nacionalidad", "fecha_nacimiento", "telefono", "email", "estado_cliente",
-        "domicilio_espana", "localidad", "provincia", "codigo_postal",
+        "domicilio_espana", "tipo_via", "nombre_via", "numero", "piso", "puerta", "escalera",
+        "localidad", "provincia", "codigo_postal",
         "localidad_nacimiento", "pais_nacimiento", "nombre_padre", "nombre_madre",
         "estado_civil", "sexo", "actividad", "cnae", "cno_sepe",
         "observaciones", "observaciones_internas",
@@ -1101,6 +1131,12 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         )
 
         domicilio_espana = _text_input_erp("Domicilio en España", 420)
+        tipo_via = _via_type_dropdown("Tipo de vía", 170)
+        nombre_via = _text_input_erp("Nombre de vía", 300)
+        numero = _text_input_erp("Número", 110)
+        piso = _text_input_erp("Piso", 110)
+        puerta = _text_input_erp("Puerta", 110)
+        escalera = _text_input_erp("Escalera", 110)
         codigo_postal = _text_input_erp("Código postal", 180)
         localidad_nacimiento = _text_input_erp("Localidad nacimiento", 260)
         nombre_padre = _text_input_erp("Nombre del padre", 320)
@@ -1171,6 +1207,12 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             "estado_cliente": estado_cliente,
             "sexo": sexo,
             "domicilio_espana": domicilio_espana,
+            "tipo_via": tipo_via,
+            "nombre_via": nombre_via,
+            "numero": numero,
+            "piso": piso,
+            "puerta": puerta,
+            "escalera": escalera,
             "codigo_postal": codigo_postal,
             "localidad_nacimiento": localidad_nacimiento,
             "nombre_padre": nombre_padre,
@@ -1282,6 +1324,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         ft.Icons.HOME,
                         [
                             domicilio_espana,
+                            ft.Row([tipo_via, nombre_via, numero, piso, puerta, escalera], wrap=True, spacing=10),
                             ft.Row([provincia_autocomplete.control, localidad_autocomplete.control, codigo_postal], wrap=True, spacing=10),
                         ],
                     ),
@@ -1351,6 +1394,12 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         telefono = _text_input_erp("Teléfono", 220)
         email = _text_input_erp("Email", 320)
         domicilio = _text_input_erp("Domicilio", 520)
+        tipo_via = _via_type_dropdown("Tipo de vía", 170)
+        nombre_via = _text_input_erp("Nombre de vía", 300)
+        numero = _text_input_erp("Número", 110)
+        piso = _text_input_erp("Piso", 110)
+        puerta = _text_input_erp("Puerta", 110)
+        escalera = _text_input_erp("Escalera", 110)
         localidad = _text_input_erp("Localidad", 220)
         provincia = _text_input_erp("Provincia", 220)
         codigo_postal = _text_input_erp("Código postal", 160)
@@ -1402,7 +1451,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             page.update()
 
         def clear_employer_form():
-            for control in [empresa, cif, telefono, email, domicilio, localidad, provincia, codigo_postal, cnae, cno_sepe_codigo, observaciones]:
+            for control in [empresa, cif, telefono, email, domicilio, tipo_via, nombre_via, numero, piso, puerta, escalera, localidad, provincia, codigo_postal, cnae, cno_sepe_codigo, observaciones]:
                 control.value = ""
             actividad_autocomplete.set_value("", update=False)
             cno_sepe_autocomplete.set_value("", update=False)
@@ -1435,6 +1484,12 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                     "email": email.value or "",
                     "estado_cliente": "",
                     "domicilio_espana": domicilio.value or "",
+                    "tipo_via": tipo_via.value or "",
+                    "nombre_via": nombre_via.value or "",
+                    "numero": numero.value or "",
+                    "piso": piso.value or "",
+                    "puerta": puerta.value or "",
+                    "escalera": escalera.value or "",
                     "localidad": localidad.value or "",
                     "provincia": provincia.value or "",
                     "codigo_postal": codigo_postal.value or "",
@@ -1484,6 +1539,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         ft.Icons.HOME_WORK,
                         [
                             domicilio,
+                            ft.Row([tipo_via, nombre_via, numero, piso, puerta, escalera], wrap=True, spacing=10),
                             ft.Row([provincia, localidad, codigo_postal], wrap=True, spacing=10),
                         ],
                     ),
