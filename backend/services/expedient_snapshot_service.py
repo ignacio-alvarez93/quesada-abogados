@@ -65,6 +65,8 @@ def _fetch_expediente(expediente_id):
                 c.telefono AS cliente_telefono,
                 c.email AS cliente_email,
                 c.domicilio_espana AS cliente_domicilio_espana,
+                c.tipo_via AS cliente_tipo_via,
+                c.nombre_via AS cliente_nombre_via,
                 c.localidad AS cliente_localidad,
                 c.codigo_postal AS cliente_codigo_postal,
                 c.provincia AS cliente_provincia,
@@ -90,8 +92,62 @@ def _fetch_expediente(expediente_id):
     return expediente
 
 
+
+def _clean_value(value):
+    return str(value or "").strip()
+
+
+def _join_parts(*parts):
+    return " ".join(_clean_value(part) for part in parts if _clean_value(part))
+
+
+def _with_domicilio_calculado(data):
+    """Añade campos calculados de domicilio sin eliminar los campos originales.
+
+    Convención de snapshot:
+    - via_nombre: solo nombre de la vía. Ej.: REYES CATOLICOS
+    - via_completa: tipo + nombre de vía. Ej.: CALLE REYES CATOLICOS
+    - domicilio_estructurado: tipo + nombre + número + piso/puerta/escalera cuando existan.
+    """
+    item = dict(data or {})
+
+    tipo_via = _clean_value(item.get("tipo_via"))
+    nombre_via = _clean_value(item.get("nombre_via"))
+    numero = _clean_value(item.get("numero"))
+    piso = _clean_value(item.get("piso"))
+    puerta = _clean_value(item.get("puerta"))
+    escalera = _clean_value(item.get("escalera"))
+
+    via_nombre = nombre_via
+    via_completa = _join_parts(tipo_via, nombre_via)
+    domicilio_estructurado = _join_parts(tipo_via, nombre_via, numero, piso, puerta, escalera)
+
+    item["tipo_via"] = tipo_via
+    item["nombre_via"] = nombre_via
+    item["via_nombre"] = via_nombre
+    item["via_completa"] = via_completa
+    item["numero"] = numero
+    item["piso"] = piso
+    item["puerta"] = puerta
+    item["escalera"] = escalera
+    item["domicilio_estructurado"] = domicilio_estructurado
+    item["domicilio_componentes"] = {
+        "tipo_via": tipo_via,
+        "nombre_via": nombre_via,
+        "via_nombre": via_nombre,
+        "via_completa": via_completa,
+        "numero": numero,
+        "piso": piso,
+        "puerta": puerta,
+        "escalera": escalera,
+        "domicilio_estructurado": domicilio_estructurado,
+    }
+
+    return item
+
+
 def _build_cliente(expediente):
-    return {
+    cliente = {
         "id": expediente.get("cliente_id_real") or expediente.get("cliente_id"),
         "nombre": expediente.get("cliente_nombre") or "",
         "primer_apellido": expediente.get("cliente_primer_apellido") or "",
@@ -109,6 +165,8 @@ def _build_cliente(expediente):
         "sexo": expediente.get("cliente_sexo") or "",
         "telefono": expediente.get("cliente_telefono") or "",
         "email": expediente.get("cliente_email") or "",
+        "tipo_via": expediente.get("cliente_tipo_via") or "",
+        "nombre_via": expediente.get("cliente_nombre_via") or "",
         "domicilio_espana": expediente.get("cliente_domicilio_espana") or "",
         "localidad": expediente.get("cliente_localidad") or "",
         "codigo_postal": expediente.get("cliente_codigo_postal") or "",
@@ -116,6 +174,8 @@ def _build_cliente(expediente):
         "numero": expediente.get("cliente_numero") or "",
         "piso": expediente.get("cliente_piso") or "",
     }
+
+    return _with_domicilio_calculado(cliente)
 
 
 def _build_expediente(expediente):
@@ -161,7 +221,7 @@ def _fetch_contactos(cliente_id):
             (int(cliente_id),),
         ).fetchall()
 
-    return [_dict(row) for row in rows]
+    return [_with_domicilio_calculado(_dict(row)) for row in rows]
 
 
 def _split_contactos(contactos):
