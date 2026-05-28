@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from backend.services import config_service
+from backend.services import presentation_config_service
 from backend.services import expedient_snapshot_service as snapshot_service
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
@@ -572,10 +573,11 @@ def resolve_tipo_formulario_objetivo(expediente_json):
     """
     Resuelve el formulario Mercurio objetivo sin tocar SeleniumBase.
 
-    Parche quirúrgico:
-    - Si el tipo/subtipo ya contiene un código EX explícito, lo respeta.
-    - Si no, aplica equivalencias mínimas conocidas del proyecto.
-    - Fallback conservador: EX32, para no romper el flujo que ya funciona.
+    Prioridad:
+    1. Configuración explícita en config_presentaciones_asistidas.reglas_json.
+    2. Si el tipo/subtipo ya contiene un código EX explícito, lo respeta.
+    3. Si no, aplica equivalencias mínimas conocidas del proyecto.
+    4. Fallback conservador: EX32, para no romper el flujo que ya funciona.
     """
     expediente_json = expediente_json or {}
 
@@ -589,6 +591,19 @@ def resolve_tipo_formulario_objetivo(expediente_json):
 
     normalized_values = [normalize(value) for value in raw_values if value]
     joined = " ".join(normalized_values)
+
+    # 1. Configuración explícita en config_presentaciones_asistidas.
+    tipo_id = expediente_json.get("tipo_expediente_id")
+    subtipo_id = expediente_json.get("subtipo_expediente_id")
+
+    if tipo_id:
+        reglas = presentation_config_service.get_presentacion_reglas(
+            tipo_id,
+            subtipo_id=subtipo_id,
+        )
+        configured_form = str(reglas.get("tipo_formulario_objetivo") or "").strip().upper()
+        if configured_form:
+            return configured_form
 
     # Si la configuración ya trae un código EX explícito, lo usamos.
     match = re.search(r"\bEX[\s\-_]?(\d{2})\b", joined)
