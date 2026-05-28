@@ -9,6 +9,45 @@ def _connect():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+def _row_to_dict(row):
+    return dict(row) if row else None
+
+
+def _int_or_none(value):
+    if value in (None, "", "None"):
+        return None
+    return int(value)
+
+
+def _safe_json_dict(raw):
+    if not str(raw or "").strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _build_reglas_json(data):
+    reglas = _safe_json_dict(data.get("reglas_json"))
+
+    tipo_formulario = str(data.get("tipo_formulario_objetivo") or "").strip().upper()
+    mapper_codigo = str(data.get("mapper_codigo") or "").strip().upper()
+
+    if tipo_formulario:
+        reglas["tipo_formulario_objetivo"] = tipo_formulario
+    else:
+        reglas.pop("tipo_formulario_objetivo", None)
+
+    if mapper_codigo:
+        reglas["mapper_codigo"] = mapper_codigo
+    else:
+        reglas.pop("mapper_codigo", None)
+
+    return json.dumps(reglas, ensure_ascii=False) if reglas else None
+
 def get_presentacion_config(tipo_id, subtipo_id=None):
     with _connect() as conn:
         if subtipo_id:
@@ -49,23 +88,127 @@ def get_presentacion_reglas(tipo_id, subtipo_id=None):
     except Exception:
         return {}
 
-def save_presentacion_config(data):
+def list_presentacion_configs(active_only=False):
+    sql = """
+        SELECT
+            p.*,
+            t.nombre AS tipo_expediente_nombre,
+            t.codigo AS tipo_expediente_codigo,
+            s.nombre AS subtipo_expediente_nombre,
+            s.codigo AS subtipo_expediente_codigo
+        FROM config_presentaciones_asistidas p
+        JOIN config_tipos_expediente t ON t.id = p.tipo_expediente_id
+        LEFT JOIN config_subtipos_expediente s ON s.id = p.subtipo_expediente_id
+    """
+    params = []
+    if active_only:
+        sql += " WHERE p.activo = ?"
+        params.append(1)
+    sql += " ORDER BY t.nombre ASC, s.orden ASC, s.nombre ASC, p.nombre_configuracion ASC"
+
     with _connect() as conn:
-        conn.execute(
+        rows = [_row_to_dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    for row in rows:
+        reglas = _safe_json_dict(row.get("reglas_json"))
+        row["tipo_formulario_objetivo"] = reglas.get("tipo_formulario_objetivo") or ""
+        row["mapper_codigo"] = reglas.get("mapper_codigo") or ""
+
+    return rows
+
+
+def get_presentacion_config_by_id(config_id):
+    with _connect() as conn:
+        row = _row_to_dict(
+            conn.execute(
+                "SELECT * FROM config_presentaciones_asistidas WHERE id = ?",
+                (int(config_id),),
+            ).fetchone()
+        )
+
+    if row:
+        reglas = _safe_json_dict(row.get("reglas_json"))
+        row["tipo_formulario_objetivo"] = reglas.get("tipo_formulario_objetivo") or ""
+        row["mapper_codigo"] = reglas.get("mapper_codigo") or ""
+
+    return row
+
+
+def create_presentacion_config(data):
+    reglas_json = _build_reglas_json(data)
+    with _connect() as conn:
+        cur = conn.execute(
             """
-            INSERT INTO config_presentaciones_asistidas
-            (tipo_expediente_id, subtipo_expediente_id, nombre_configuracion, url_presentacion, flujo)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO config_presentaciones_asistidas (
+                tipo_expediente_id,
+                subtipo_expediente_id,
+                nombre_configuracion,
+                url_presentacion,
+                portal,
+                flujo,
+                reglas_json,
+                activo
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                data["tipo_expediente_id"],
-                data.get("subtipo_expediente_id"),
-                data["nombre_configuracion"],
-                data.get("url_presentacion"),
-                data.get("flujo"),
+                int(data["tipo_expediente_id"]),
+                _int_or_none(data.get("subtipo_expediente_id")),
+                str(data.get("nombre_configuracion") or "").strip(),
+                str(data.get("url_presentacion") or "").strip(),
+                str(data.get("portal") or "MERCURIO").strip().upper(),
+                str(data.get("flujo") or "").strip(),
+                reglas_json,
+                int(data.get("activo", 1)),
             ),
         )
         conn.commit()
+        return cur.lastrowid
+
+
+def update_presentacion_config(config_id, data):
+    reglas_json = _build_reglas_json(data)
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE config_presentaciones_asistidas
+            SET tipo_expediente_id = ?,
+                subtipo_expediente_id = ?,
+                nombre_configuracion = ?,
+                url_presentacion = ?,
+                portal = ?,
+                flujo = ?,
+                reglas_json = ?,
+                activo = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(data["tipo_expediente_id"]),
+                _int_or_none(data.get("subtipo_expediente_id")),
+                str(data.get("nombre_configuracion") or "").strip(),
+                str(data.get("url_presentacion") or "").strip(),
+                str(data.get("portal") or "MERCURIO").strip().upper(),
+                str(data.get("flujo") or "").strip(),
+                reglas_json,
+                int(data.get("activo", 1)),
+                int(config_id),
+            ),
+        )
+        conn.commit()
+
+
+def delete_presentacion_config(config_id):
+    with _connect() as conn:
+        conn.execute(
+            "DELETE FROM config_presentaciones_asistidas WHERE id = ?",
+            (int(config_id),),
+        )
+        conn.commit()
+
+
+def save_presentacion_config(data):
+    return create_presentacion_config(data)
 
 
 def seed_presentaciones_asistidas_defaults():

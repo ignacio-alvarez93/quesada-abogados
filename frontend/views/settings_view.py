@@ -9,6 +9,7 @@ from backend.services import expedient_snapshot_service as snapshot_service
 from backend.services import form_mapper_service
 from backend.services import form_mapper_admin_service as mapper_admin_service
 from backend.services import mapper_preview_service
+from backend.services import presentation_config_service
 from backend.services import document_template_service
 from backend.services import document_generation_service
 from backend.services import document_docx_service
@@ -151,6 +152,7 @@ def settings_view(page: ft.Page):
         "selected_formulario_id": None,
         "editing_mapper_id": None,
         "editing_mapper_block_id": None,
+        "editing_presentacion_config_id": None,
         "editing_document_template_id": None,
         "documentos_tab": "requeridos",
         "message": None,
@@ -185,6 +187,7 @@ def settings_view(page: ft.Page):
         state["selected_formulario_id"] = None
         state["editing_mapper_id"] = None
         state["editing_mapper_block_id"] = None
+        state["editing_presentacion_config_id"] = None
         state["editing_document_template_id"] = None
         state["message"] = None
         refresh()
@@ -259,6 +262,7 @@ def settings_view(page: ft.Page):
         state["editing_campo_id"] = None
         state["editing_mapper_id"] = None
         state["editing_mapper_block_id"] = None
+        state["editing_presentacion_config_id"] = None
         state["editing_document_template_id"] = None
         state["message"] = None
         refresh()
@@ -365,6 +369,7 @@ def settings_view(page: ft.Page):
         state["editing_campo_id"] = None
         state["editing_mapper_id"] = None
         state["editing_mapper_block_id"] = None
+        state["editing_presentacion_config_id"] = None
         state["editing_document_template_id"] = None
         state["message"] = None
         refresh()
@@ -631,6 +636,223 @@ def settings_view(page: ft.Page):
         if not value or " - " not in value:
             return None
         return int(value.split(" - ", 1)[0])
+
+
+    def build_presentaciones_asistidas():
+        tipos = config_service.get_tipos_expediente(active_only=True)
+        configs = presentation_config_service.list_presentacion_configs()
+        editing_id = state.get("editing_presentacion_config_id")
+        editing = presentation_config_service.get_presentacion_config_by_id(editing_id) if editing_id else None
+
+        def numeric_id(value):
+            raw = str(value or "").strip()
+            if not raw:
+                return None
+            try:
+                return int(raw)
+            except ValueError:
+                return None
+
+        if editing:
+            selected_tipo_id = editing.get("tipo_expediente_id")
+            selected_subtipo_id = editing.get("subtipo_expediente_id")
+        else:
+            selected_tipo_id = numeric_id(state.get("presentacion_selected_tipo_id"))
+            selected_subtipo_id = numeric_id(state.get("presentacion_selected_subtipo_id"))
+
+        if not selected_tipo_id and tipos:
+            selected_tipo_id = tipos[0].get("id")
+
+        subtipos = config_service.get_subtipos_expediente(selected_tipo_id, active_only=True) if selected_tipo_id else []
+
+        nombre = text_input("Nombre configuración", (editing or {}).get("nombre_configuracion") or "", width=420)
+
+        tipo_id_field = ft.TextField(
+            label="Tipo expediente ID",
+            value=str(selected_tipo_id or ""),
+            width=170,
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color=Q_PRIMARY,
+            content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
+        )
+        subtipo_id_field = ft.TextField(
+            label="Subtipo ID (opcional)",
+            value=str(selected_subtipo_id or ""),
+            width=170,
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color=Q_PRIMARY,
+            content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
+        )
+
+        def reload_tipo(e=None):
+            state["presentacion_selected_tipo_id"] = tipo_id_field.value
+            state["presentacion_selected_subtipo_id"] = ""
+            state["editing_presentacion_config_id"] = None
+            state["message"] = None
+            refresh()
+
+        def catalog_card(title, items, width=360):
+            controls = [ft.Text(title, size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)]
+            if not items:
+                controls.append(ft.Text("Sin registros", size=12, color=Q_MUTED))
+            else:
+                for item in items[:10]:
+                    controls.append(ft.Text(item, size=12, color=Q_MUTED, selectable=True))
+                if len(items) > 10:
+                    controls.append(ft.Text(f"... y {len(items) - 10} más", size=12, color=Q_MUTED))
+            return ft.Container(
+                bgcolor="#F8FAFC",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=10,
+                width=width,
+                content=ft.Column(controls=controls, spacing=4),
+            )
+
+        tipos_help = catalog_card(
+            "Tipos activos disponibles",
+            [f"{t['id']} - {t['nombre']}" for t in tipos],
+            width=420,
+        )
+        subtipos_help = catalog_card(
+            "Subtipos activos del tipo seleccionado",
+            [f"{s['id']} - {s['nombre']}" for s in subtipos],
+            width=420,
+        )
+
+        portal = text_input("Portal", (editing or {}).get("portal") or "MERCURIO", width=180)
+        flujo = text_input("Flujo", (editing or {}).get("flujo") or "BI_PRESENTAR_NUEVA_SOLICITUD", width=280)
+        url_presentacion = text_input("URL presentación", (editing or {}).get("url_presentacion") or "", width=620)
+        tipo_formulario = text_input("Formulario Mercurio objetivo", (editing or {}).get("tipo_formulario_objetivo") or "", width=240)
+        mapper_codigo = text_input("Mapper código", (editing or {}).get("mapper_codigo") or "", width=240)
+        activo = select_input("Activo", _bool_options(), value=_active_value(editing) if editing else "Sí", width=120)
+
+        def save(e=None):
+            tipo_id = numeric_id(tipo_id_field.value)
+            subtipo_id = numeric_id(subtipo_id_field.value)
+            if not tipo_id:
+                fail("Introduce un tipo de expediente ID válido")
+                refresh()
+                return
+            payload = {
+                "tipo_expediente_id": tipo_id,
+                "subtipo_expediente_id": subtipo_id,
+                "nombre_configuracion": nombre.value,
+                "url_presentacion": url_presentacion.value,
+                "portal": portal.value or "MERCURIO",
+                "flujo": flujo.value,
+                "tipo_formulario_objetivo": tipo_formulario.value,
+                "mapper_codigo": mapper_codigo.value,
+                "activo": _bool_to_int(activo.value),
+            }
+            if editing_id:
+                run_save(
+                    lambda: presentation_config_service.update_presentacion_config(editing_id, payload),
+                    "Configuración de presentación actualizada",
+                )
+            else:
+                run_save(
+                    lambda: presentation_config_service.create_presentacion_config(payload),
+                    "Configuración de presentación creada",
+                )
+            state["editing_presentacion_config_id"] = None
+
+        def edit_config(config_id):
+            state["editing_presentacion_config_id"] = config_id
+            state["message"] = None
+            refresh()
+
+        rows = []
+        for config in configs:
+            subtipo_label = config.get("subtipo_expediente_nombre") or "General"
+            formulario_label = config.get("tipo_formulario_objetivo") or "—"
+            mapper_label = config.get("mapper_codigo") or "—"
+            estado_label = "Activo" if int(config.get("activo") or 0) else "Inactivo"
+            rows.append(
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=14,
+                    padding=12,
+                    content=ft.Row(
+                        controls=[
+                            ft.Column(
+                                controls=[
+                                    ft.Text(config.get("nombre_configuracion") or "Sin nombre", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(f"{config.get('tipo_expediente_nombre') or 'Tipo'} · {subtipo_label}", size=12, color=Q_MUTED),
+                                    ft.Text(f"Formulario: {formulario_label} · Mapper: {mapper_label} · {estado_label}", size=12, color=Q_MUTED),
+                                ],
+                                spacing=3,
+                                expand=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    secondary_button("Editar", on_click=lambda e, rid=config["id"]: edit_config(rid)),
+                                    danger_button(
+                                        "Eliminar",
+                                        on_click=lambda e, rid=config["id"]: run_save(
+                                            lambda: presentation_config_service.delete_presentacion_config(rid),
+                                            "Configuración de presentación eliminada",
+                                        ),
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                )
+            )
+
+        form = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=18,
+            padding=16,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Configurar Presentación Asistida Mercurio", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text("Define qué EX, mapper y flujo usará cada tipo/subtipo sin tocar SeleniumBase.", size=12, color=Q_MUTED),
+                    ft.Row([nombre, tipo_id_field, subtipo_id_field, secondary_button("Cargar subtipos", on_click=reload_tipo)], spacing=10, wrap=True),
+                    ft.Row([tipos_help, subtipos_help], spacing=10, wrap=True),
+                    ft.Row([portal, flujo, activo], spacing=10, wrap=True),
+                    ft.Row([tipo_formulario, mapper_codigo], spacing=10, wrap=True),
+                    url_presentacion,
+                    ft.Row(
+                        controls=[
+                            primary_button("Guardar", on_click=save),
+                            secondary_button("Cancelar", on_click=cancel_edit) if editing_id else ft.Container(),
+                        ],
+                        spacing=10,
+                    ),
+                ],
+                spacing=10,
+            ),
+        )
+
+        if not rows:
+            rows = [
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=14,
+                    padding=14,
+                    content=ft.Text("No hay configuraciones de presentación asistida.", color=Q_MUTED),
+                )
+            ]
+
+        return ft.Column(
+            controls=[
+                form,
+                ft.Text("Configuraciones existentes", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                *rows,
+            ],
+            spacing=12,
+        )
+
 
     def build_tipos():
         """
@@ -899,6 +1121,10 @@ def settings_view(page: ft.Page):
             mapper_blocks_count = len(mapper_admin_service.list_mapper_blocks())
         except Exception:
             mapper_blocks_count = 0
+        try:
+            presentaciones_count = len(presentation_config_service.list_presentacion_configs())
+        except Exception:
+            presentaciones_count = 0
 
         tab = state.get("expediente_tab") or "tipos"
         if tab == "subtipos":
@@ -909,6 +1135,8 @@ def settings_view(page: ft.Page):
             body = build_mappers_expediente()
         elif tab == "mapper_blocks":
             body = build_mapper_blocks_expediente()
+        elif tab == "presentaciones":
+            body = build_presentaciones_asistidas()
         else:
             body = build_tipos_tab()
 
@@ -944,6 +1172,7 @@ def settings_view(page: ft.Page):
                                     _mini_metric("Formularios", formularios_count, ft.Icons.DYNAMIC_FORM),
                                     _mini_metric("Mappers", mappers_count, ft.Icons.HUB),
                                     _mini_metric("Blocks", mapper_blocks_count, ft.Icons.VIEW_MODULE),
+                                    _mini_metric("Presentaciones", presentaciones_count, ft.Icons.PLAY_CIRCLE),
                                 ],
                                 spacing=8,
                                 wrap=True,
@@ -959,6 +1188,7 @@ def settings_view(page: ft.Page):
                         _expediente_tab_button("Subtipos", "subtipos", ft.Icons.ACCOUNT_TREE, "Variantes por trámite"),
                         _expediente_tab_button("Formularios", "formularios", ft.Icons.DYNAMIC_FORM, "Campos específicos"),
                         _expediente_tab_button("Representante", "representante", ft.Icons.VERIFIED_USER, "Datos Mercurio"),
+                        _expediente_tab_button("Presentaciones", "presentaciones", ft.Icons.PLAY_CIRCLE, "Mercurio por EX"),
                         _expediente_tab_button("Mappers", "mappers", ft.Icons.HUB, "Snapshot → destino"),
                         _expediente_tab_button("Mapper Blocks", "mapper_blocks", ft.Icons.VIEW_MODULE, "Bloques reutilizables"),
                     ],
@@ -1017,7 +1247,7 @@ def settings_view(page: ft.Page):
     def build_documentos_requeridos():
         editing = config_service.get_record("config_documentos_requeridos", state["editing_id"]) if state["editing_id"] else {}
         tipos_opts = tipo_options()
-        subtipos = config_service.get_subtipos_expediente(active_only=True)
+        subtipos = []
         subtipo_opts = ["Sin subtipo"] + [
             f"{s['id']} - {s['tipo_expediente_nombre']} - {s['nombre']}"
             for s in subtipos
