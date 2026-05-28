@@ -567,6 +567,44 @@ def build_datos_representante(snapshot=None):
         "representante_num_bis": rep.get("representante_num_bis") or "",
     }
 
+
+def resolve_tipo_formulario_objetivo(expediente_json):
+    """
+    Resuelve el formulario Mercurio objetivo sin tocar SeleniumBase.
+
+    Parche quirúrgico:
+    - Si el tipo/subtipo ya contiene un código EX explícito, lo respeta.
+    - Si no, aplica equivalencias mínimas conocidas del proyecto.
+    - Fallback conservador: EX32, para no romper el flujo que ya funciona.
+    """
+    expediente_json = expediente_json or {}
+
+    raw_values = [
+        expediente_json.get("tipo_expediente_codigo"),
+        expediente_json.get("tipo_expediente_nombre"),
+        expediente_json.get("subtipo_expediente_codigo"),
+        expediente_json.get("subtipo_expediente_nombre"),
+        expediente_json.get("subtipo_expediente"),
+    ]
+
+    normalized_values = [normalize(value) for value in raw_values if value]
+    joined = " ".join(normalized_values)
+
+    # Si la configuración ya trae un código EX explícito, lo usamos.
+    match = re.search(r"\bEX[\s\-_]?(\d{2})\b", joined)
+    if match:
+        return f"EX{match.group(1)}"
+
+    # Equivalencias mínimas conocidas del proyecto.
+    if "REAGRUPACION FAMILIAR" in joined:
+        return "EX02"
+
+    if "NO LUCRATIVA" in joined or "NO_LUCRATIVA" in joined:
+        return "EX01"
+
+    # Fallback conservador: mantiene el comportamiento actual.
+    return "EX32"
+
 def build_datos_mercurio(expediente, snapshot=None):
     if snapshot is None:
         snapshot = load_snapshot_for_mercurio(expediente.get("id"))
@@ -603,7 +641,7 @@ def build_datos_mercurio(expediente, snapshot=None):
             "portal": "MERCURIO",
             "flujo": "BI_PRESENTAR_NUEVA_SOLICITUD",
             "provincia_codigo": expediente_json["provincia_codigo_mercurio"],
-            "tipo_formulario_objetivo": "EX32",
+            "tipo_formulario_objetivo": resolve_tipo_formulario_objetivo(expediente_json),
         },
         "expediente": expediente_json,
         "cliente": cliente,
