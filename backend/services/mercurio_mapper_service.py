@@ -353,6 +353,76 @@ def get_presentacion_folder(expediente):
 
 
 
+def _id_or_none(value):
+    """Normaliza IDs para comparar expediente actual vs snapshot."""
+    if value in (None, "", "None"):
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return str(value).strip()
+
+
+def _identity_label(expediente_like):
+    expediente_like = expediente_like or {}
+    tipo = first(
+        expediente_like.get("tipo_expediente_codigo"),
+        expediente_like.get("tipo_expediente_nombre"),
+    )
+    subtipo = first(
+        expediente_like.get("subtipo_expediente_codigo"),
+        expediente_like.get("subtipo_expediente"),
+        expediente_like.get("subtipo_expediente_nombre"),
+    )
+    return f"{tipo or 'SIN_TIPO'} / {subtipo or 'SIN_SUBTIPO'}"
+
+
+def validate_snapshot_matches_current_expediente(expediente_id, snapshot):
+    """
+    Bloquea snapshots obsoletos antes de generar datos Mercurio.
+
+    Mercurio consume el snapshot congelado, no la ficha viva. Por seguridad,
+    si alguien reutiliza o modifica un expediente después de crear snapshot,
+    no se permite generar/exportar datos con tipo, subtipo o cliente antiguos.
+    """
+    current = get_expediente_full(expediente_id)
+    if not current:
+        raise ValueError(f"No existe expediente id={expediente_id}")
+
+    snapshot = snapshot or {}
+    snap_exp = _snapshot_expediente(snapshot)
+    snap_cli = _snapshot_cliente(snapshot)
+
+    checks = [
+        ("expediente_id", _id_or_none(current.get("id")), _id_or_none(snap_exp.get("id"))),
+        ("cliente_id", _id_or_none(current.get("cliente_id_real") or current.get("cliente_id")), _id_or_none(snap_cli.get("id"))),
+        ("tipo_expediente_id", _id_or_none(current.get("tipo_expediente_id")), _id_or_none(snap_exp.get("tipo_expediente_id"))),
+        ("subtipo_expediente_id", _id_or_none(current.get("subtipo_expediente_id")), _id_or_none(snap_exp.get("subtipo_expediente_id"))),
+    ]
+
+    mismatches = [(field, actual, frozen) for field, actual, frozen in checks if actual != frozen]
+
+    if not mismatches:
+        return True
+
+    details = "; ".join(
+        f"{field}: actual={actual!r}, snapshot={frozen!r}"
+        for field, actual, frozen in mismatches
+    )
+    metadata = snapshot.get("metadata") or {}
+
+    raise ValueError(
+        "Snapshot Mercurio obsoleto para expediente "
+        f"{expediente_id}. "
+        f"Actual: {_identity_label(current)}. "
+        f"Snapshot: {_identity_label(snap_exp)}. "
+        f"Diferencias: {details}. "
+        f"Snapshot versión: {metadata.get('snapshot_db_version') or metadata.get('snapshot_version') or 'N/D'}, "
+        f"creado: {metadata.get('snapshot_db_created_at') or metadata.get('generated_at') or 'N/D'}. "
+        "Regenera un snapshot validado antes de lanzar Presentación Asistida."
+    )
+
+
 def load_snapshot_for_mercurio(expediente_id):
     """
     Carga el último snapshot validado para Mercurio.
@@ -378,6 +448,9 @@ def load_snapshot_for_mercurio(expediente_id):
     snapshot.setdefault("metadata", {})["snapshot_db_version"] = latest.get("version")
     snapshot.setdefault("metadata", {})["snapshot_db_hash"] = latest.get("source_hash")
     snapshot.setdefault("metadata", {})["snapshot_db_created_at"] = latest.get("created_at")
+
+    validate_snapshot_matches_current_expediente(expediente_id, snapshot)
+
     return snapshot
 
 
