@@ -425,22 +425,32 @@ def validate_snapshot_matches_current_expediente(expediente_id, snapshot):
 
 def load_snapshot_for_mercurio(expediente_id):
     """
-    Carga el último snapshot validado para Mercurio.
+    Carga un snapshot validado y vigente para Mercurio.
 
-    A partir de esta fase, Mercurio NO consume directamente la ficha cliente.
-    El mapper usa el snapshot congelado del expediente como fuente estable.
+    Mercurio consume snapshot congelado, pero no debe quedarse anclado a una
+    versión antigua si el expediente o los datos dinámicos han cambiado. Por eso
+    antes de exportar se garantiza una versión actual, igual que en el flujo de
+    formularios/previews.
     """
-    latest = snapshot_service.load_latest_snapshot(expediente_id)
+    latest = snapshot_service.ensure_current_snapshot(
+        expediente_id,
+        created_by="MERCURIO_AUTO_REFRESH",
+    )
+
     if not latest:
         raise ValueError(
-            "No existe snapshot para este expediente. "
-            "Genera primero el snapshot desde la ficha del expediente."
+            "No se pudo generar snapshot para este expediente. "
+            "Revisa la ficha y vuelve a intentarlo."
         )
 
     if int(latest.get("validated") or 0) != 1:
+        result = latest.get("generation_result") or {}
+        errors = result.get("errors") or []
+        details = "\n- " + "\n- ".join(errors) if errors else ""
         raise ValueError(
-            "El último snapshot del expediente tiene advertencias. "
-            "Corrige los datos y genera un nuevo snapshot validado antes de iniciar Mercurio."
+            "El snapshot actual del expediente tiene advertencias. "
+            "Corrige los datos antes de iniciar Mercurio."
+            + details
         )
 
     snapshot = latest.get("snapshot") or {}
@@ -448,7 +458,9 @@ def load_snapshot_for_mercurio(expediente_id):
     snapshot.setdefault("metadata", {})["snapshot_db_version"] = latest.get("version")
     snapshot.setdefault("metadata", {})["snapshot_db_hash"] = latest.get("source_hash")
     snapshot.setdefault("metadata", {})["snapshot_db_created_at"] = latest.get("created_at")
+    snapshot.setdefault("metadata", {})["snapshot_generated_now"] = bool(latest.get("generated_now"))
 
+    # Defensa final: si incluso tras refrescar no coincide, se bloquea.
     validate_snapshot_matches_current_expediente(expediente_id, snapshot)
 
     return snapshot

@@ -399,6 +399,58 @@ def load_latest_snapshot(expediente_id):
     return item
 
 
+
+
+def _snapshot_business_payload(snapshot):
+    """
+    Devuelve la parte funcional del snapshot para comparar vigencia.
+
+    Excluye metadata porque contiene generated_at/versiones y cambiaría aunque
+    los datos reales del expediente no hayan cambiado.
+    """
+    snapshot = dict(snapshot or {})
+    snapshot.pop("metadata", None)
+    return snapshot
+
+
+def snapshot_business_hash(snapshot):
+    return _stable_hash(_snapshot_business_payload(snapshot))
+
+
+def snapshot_matches_current(expediente_id, snapshot):
+    """Comprueba si un snapshot guardado coincide con la ficha viva actual."""
+    if not snapshot:
+        return False
+    current_snapshot = build_snapshot(expediente_id)
+    return snapshot_business_hash(snapshot) == snapshot_business_hash(current_snapshot)
+
+
+def ensure_current_snapshot(expediente_id, created_by="ERP_AUTO_REFRESH"):
+    """
+    Garantiza que existe un snapshot validado y actualizado para el expediente.
+
+    Si no hay snapshot, o el último ya no coincide con la ficha/datos dinámicos
+    actuales, crea una nueva versión persistida. Esto permite que Mercurio use
+    el mismo criterio que los formularios: siempre partir del snapshot vigente.
+    """
+    latest = load_latest_snapshot(expediente_id)
+
+    if latest and int(latest.get("validated") or 0) == 1:
+        try:
+            if snapshot_matches_current(expediente_id, latest.get("snapshot") or {}):
+                latest["generated_now"] = False
+                return latest
+        except Exception:
+            pass
+
+    result = save_snapshot(expediente_id, created_by=created_by)
+    latest = load_latest_snapshot(expediente_id)
+    if latest:
+        latest["generated_now"] = True
+        latest["generation_result"] = result
+    return latest
+
+
 def list_snapshots(expediente_id):
     initialize_snapshot_schema()
 
