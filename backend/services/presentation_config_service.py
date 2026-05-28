@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 
@@ -24,6 +25,29 @@ def get_presentacion_config(tipo_id, subtipo_id=None):
         ).fetchone()
 
         return dict(row) if row else None
+
+
+def get_presentacion_reglas(tipo_id, subtipo_id=None):
+    """
+    Devuelve reglas_json de config_presentaciones_asistidas como dict.
+
+    Busca primero configuración específica tipo+subtipo.
+    Si no existe, usa configuración general del tipo.
+    Si no hay reglas_json válido, devuelve {}.
+    """
+    config = get_presentacion_config(tipo_id, subtipo_id=subtipo_id)
+    if not config:
+        return {}
+
+    raw = config.get("reglas_json") or ""
+    if not str(raw).strip():
+        return {}
+
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
 
 def save_presentacion_config(data):
     with _connect() as conn:
