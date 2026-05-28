@@ -66,3 +66,124 @@ def save_presentacion_config(data):
             ),
         )
         conn.commit()
+
+
+def seed_presentaciones_asistidas_defaults():
+    """
+    Inserta configuraciones base de presentación asistida Mercurio.
+
+    No borra configuraciones existentes.
+    No toca expedientes.
+    No toca SeleniumBase.
+    Solo garantiza mínimos conocidos para que el mapper pueda resolver
+    formulario Mercurio objetivo desde config_presentaciones_asistidas.
+    """
+    defaults = [
+        {
+            "tipo_codigo": "REAGRUPACION_FAMILIAR",
+            "subtipo_codigo": "CONYUGE",
+            "nombre_configuracion": "Mercurio EX02 - Reagrupación familiar cónyuge",
+            "portal": "MERCURIO",
+            "flujo": "BI_PRESENTAR_NUEVA_SOLICITUD",
+            "reglas": {
+                "tipo_formulario_objetivo": "EX02",
+                "mapper_codigo": "MERCURIO_EX02",
+            },
+        },
+    ]
+
+    with _connect() as conn:
+        for item in defaults:
+            tipo = conn.execute(
+                """
+                SELECT id
+                FROM config_tipos_expediente
+                WHERE codigo = ?
+                   OR REPLACE(UPPER(nombre), ' ', '_') = ?
+                LIMIT 1
+                """,
+                (item["tipo_codigo"], item["tipo_codigo"]),
+            ).fetchone()
+
+            if not tipo:
+                continue
+
+            subtipo = conn.execute(
+                """
+                SELECT id
+                FROM config_subtipos_expediente
+                WHERE tipo_expediente_id = ?
+                  AND (
+                    codigo = ?
+                    OR REPLACE(UPPER(nombre), ' ', '_') = ?
+                  )
+                LIMIT 1
+                """,
+                (tipo["id"], item["subtipo_codigo"], item["subtipo_codigo"]),
+            ).fetchone()
+
+            subtipo_id = subtipo["id"] if subtipo else None
+            reglas_json = json.dumps(item["reglas"], ensure_ascii=False)
+
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM config_presentaciones_asistidas
+                WHERE tipo_expediente_id = ?
+                  AND (
+                    subtipo_expediente_id = ?
+                    OR (
+                        subtipo_expediente_id IS NULL
+                        AND ? IS NULL
+                    )
+                  )
+                LIMIT 1
+                """,
+                (tipo["id"], subtipo_id, subtipo_id),
+            ).fetchone()
+
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE config_presentaciones_asistidas
+                    SET nombre_configuracion = ?,
+                        portal = ?,
+                        flujo = ?,
+                        reglas_json = ?,
+                        activo = 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        item["nombre_configuracion"],
+                        item["portal"],
+                        item["flujo"],
+                        reglas_json,
+                        existing["id"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO config_presentaciones_asistidas (
+                        tipo_expediente_id,
+                        subtipo_expediente_id,
+                        nombre_configuracion,
+                        portal,
+                        flujo,
+                        reglas_json,
+                        activo
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        tipo["id"],
+                        subtipo_id,
+                        item["nombre_configuracion"],
+                        item["portal"],
+                        item["flujo"],
+                        reglas_json,
+                    ),
+                )
+
+        conn.commit()
