@@ -300,6 +300,32 @@ def load_datos_mercurio(path):
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+FORMULARIO_OBJETIVO_LABELS = {
+    "EX01": "EX01 - Residencia temporal no lucrativa",
+    "EX02": "EX02 - Reagrupación familiar",
+    "EX32": "EX32 - Residencia de familiar de ciudadano de la Unión",
+}
+
+
+def get_tipo_formulario_objetivo(datos_mercurio):
+    """
+    Lee el formulario objetivo desde datos_mercurio.json.
+
+    No automatiza clicks sobre el supuesto porque Mercurio cambia el DOM y
+    una selección errónea podría iniciar un formulario incorrecto.
+    El runner lo usa para guiar la pausa humana y dejar trazabilidad en log.
+    """
+    presentacion = datos_mercurio.get("presentacion", {}) if isinstance(datos_mercurio, dict) else {}
+    tipo = str(presentacion.get("tipo_formulario_objetivo") or "").strip().upper()
+    return tipo or "EX32"
+
+
+def describe_tipo_formulario_objetivo(tipo_formulario_objetivo):
+    tipo = str(tipo_formulario_objetivo or "").strip().upper()
+    label = FORMULARIO_OBJETIVO_LABELS.get(tipo, "")
+    return f"{tipo} ({label})" if label else (tipo or "NO DEFINIDO")
+
+
 def step_continuar_inicial(browser, session_dir):
     print("[1] Pantalla inicial -> Continuar")
     write_log(session_dir, "Pantalla inicial -> continuar('INI')")
@@ -324,8 +350,11 @@ def pause_certificado(session_dir):
     input("Pulsa ENTER para continuar...")
 
 
-def step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir):
+def step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=""):
+    tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
     print("[3] Opciones disponibles -> Continuar presentación")
+    print(f"Formulario Mercurio objetivo: {tipo_desc}")
+    write_log(session_dir, f"Formulario Mercurio objetivo: {tipo_desc}")
     write_log(session_dir, "Opciones disponibles -> mostrarOpcion()")
     wait_for_js(browser, "typeof mostrarOpcion === 'function'")
     js(browser, "mostrarOpcion();")
@@ -354,14 +383,27 @@ def step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir):
     wait_for_js(browser, "document.querySelector('.mdCer')")
     click_js(browser, ".mdCer")
 
+    try:
+        html_path = save_page_source(browser, session_dir, label="despues_aviso_mercurio")
+        write_log(session_dir, f"HTML guardado tras aviso Mercurio: {html_path}")
+    except Exception as exc:
+        write_log(session_dir, f"No se pudo guardar HTML tras aviso Mercurio: {repr(exc)}")
 
-def pause_supuesto(session_dir):
+
+def pause_supuesto(session_dir, tipo_formulario_objetivo=""):
+    tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
     print()
     print("=" * 80)
     print("PAUSA HUMANA: selecciona manualmente el supuesto concreto.")
+    print(f"FORMULARIO OBJETIVO SEGÚN ERP: {tipo_desc}")
+    print()
+    print("Regla de seguridad:")
+    print("- Selecciona en Mercurio el supuesto/formulario que corresponda a ese objetivo.")
+    print("- Si Mercurio muestra otra cosa o tienes dudas, NO continúes y guarda HTML.")
+    print()
     print("Cuando estés en la pantalla de 'Datos del extranjero/a', pulsa ENTER.")
     print("=" * 80)
-    write_log(session_dir, "Pausa humana supuesto")
+    write_log(session_dir, f"Pausa humana supuesto. Formulario objetivo={tipo_desc}")
     input("Pulsa ENTER para continuar...")
 
 
@@ -1272,11 +1314,12 @@ def open_url(browser, url):
 
 
 def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
+    tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
     step_continuar_inicial(browser, session_dir)
     step_continuar_abogacia(browser, session_dir)
     pause_certificado(session_dir)
-    step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir)
-    pause_supuesto(session_dir)
+    step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
+    pause_supuesto(session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
     if datos_mercurio:
         fill_datos_extranjero(browser, datos_mercurio, session_dir)
         click_continuar(browser, session_dir)
@@ -1300,6 +1343,7 @@ def main():
 
     session_dir = get_session_dir(args.session_dir, args.expediente_id)
     datos_mercurio = load_datos_mercurio(args.datos_mercurio_json)
+    tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
     documentos_dir = resolve_para_presentar_dir(args, datos_mercurio, session_dir)
 
     url = (args.url or "").strip()
@@ -1313,13 +1357,14 @@ def main():
     print(f"Número expediente: {args.numero_expediente or '-'}")
     print(f"Tipo: {args.tipo or '-'}")
     print(f"Provincia código Mercurio: {args.provincia_codigo}")
+    print(f"Formulario Mercurio objetivo: {describe_tipo_formulario_objetivo(tipo_formulario_objetivo)}")
     print(f"Carpeta sesión: {session_dir}")
     print(f"datos_mercurio.json: {args.datos_mercurio_json or '-'}")
     print(f"Documentos PARA PRESENTAR: {documentos_dir or '-'}")
     print(f"URL: {url}")
     print("=" * 80)
 
-    write_log(session_dir, "Iniciando Chrome sb_cdp")
+    write_log(session_dir, f"Iniciando Chrome sb_cdp. Formulario objetivo={describe_tipo_formulario_objetivo(tipo_formulario_objetivo)}")
     from seleniumbase import sb_cdp
 
     browser = sb_cdp.Chrome(headless=False)
