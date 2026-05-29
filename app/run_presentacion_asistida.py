@@ -15,11 +15,6 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
-try:
-    from app.mercurio_dom_diagnostics import save_dom_diagnostics
-except ModuleNotFoundError:
-    from mercurio_dom_diagnostics import save_dom_diagnostics
-
 
 def normalize(value):
     value = "" if value is None else str(value)
@@ -395,27 +390,8 @@ def step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_
         write_log(session_dir, f"No se pudo guardar HTML tras aviso Mercurio: {repr(exc)}")
 
 
-def pause_supuesto(browser, session_dir, tipo_formulario_objetivo=""):
+def pause_supuesto(session_dir, tipo_formulario_objetivo=""):
     tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
-    try:
-        diag = save_dom_diagnostics(
-            browser,
-            session_dir,
-            tipo_formulario_objetivo=tipo_formulario_objetivo,
-            label="dom_supuesto",
-        )
-        print()
-        print("Diagnóstico DOM de supuesto guardado:")
-        print(f"- HTML: {diag.get('html_path')}")
-        if diag.get("screenshot_path"):
-            print(f"- Captura: {diag.get('screenshot_path')}")
-        print(f"- JSON: {diag.get('json_path')}")
-        print(f"- Candidatos: {diag.get('candidates_count')} | Matches objetivo: {diag.get('matches_count')}")
-        write_log(session_dir, f"Diagnóstico DOM supuesto guardado: {diag}")
-    except Exception as exc:
-        print(f"AVISO: no se pudo guardar diagnóstico DOM de supuesto: {exc}")
-        write_log(session_dir, f"ERROR diagnóstico DOM supuesto: {repr(exc)}")
-
     print()
     print("=" * 80)
     print("PAUSA HUMANA: selecciona manualmente el supuesto concreto.")
@@ -740,7 +716,13 @@ def fill_datos_extranjero(browser, datos_mercurio, session_dir):
 def select_municipio_localidad_presentador(browser, values, session_dir):
     """
     Cascada provincia -> municipio -> localidad para Datos del presentador.
-    No modifica la función genérica existente para extranjero/notificación.
+
+    Mercurio vincula estos tres selects mediante JS/AJAX:
+    - preCodigoProvinciaPresentador -> preCodigoMunicipioPresentador
+    - preCodigoMunicipioPresentador -> preCodigoLocalidadPresentador
+
+    Por eso no basta con escribir valores en bloque. Se selecciona en orden,
+    se disparan input/change/jQuery change y se espera a que carguen opciones.
     """
     prov_id = "preCodigoProvinciaPresentador"
     mun_id = "preCodigoMunicipioPresentador"
@@ -748,27 +730,98 @@ def select_municipio_localidad_presentador(browser, values, session_dir):
 
     provincia_value = values.get(prov_id, "")
     provincia_text = values.get(prov_id + "_text", "")
+    municipio_value = values.get(mun_id, "")
     municipio_text = values.get(mun_id + "_text", "")
+    localidad_value = values.get(loc_id, "")
     localidad_text = values.get(loc_id + "_text", "") or municipio_text
 
+    def fire_presentador_cascade(field_id):
+        script = f"""
+        (function(){{
+            const el = document.getElementById({json.dumps(field_id)});
+            if (!el) return {{ ok: false, reason: 'NO_EXISTE', field: {json.dumps(field_id)} }};
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            if (window.jQuery) window.jQuery(el).trigger('change');
+            if ({json.dumps(field_id)} === 'preCodigoProvinciaPresentador' && typeof controlaProvinciaPRE === 'function') {{
+                try {{ controlaProvinciaPRE(); }} catch(e) {{}}
+            }}
+            return {{ ok: true, field: {json.dumps(field_id)}, value: el.value }};
+        }})();
+        """
+        result = js(browser, script)
+        write_log(session_dir, f"cascade presentador fire {field_id} -> {result}")
+        return result
+
+    def log_selected(field_id):
+        script = f"""
+        (function(){{
+            const el = document.getElementById({json.dumps(field_id)});
+            if (!el) return {{ exists: false }};
+            const opt = el.options ? el.options[el.selectedIndex] : null;
+            return {{
+                exists: true,
+                value: el.value,
+                text: opt ? (opt.textContent || opt.innerText || '') : '',
+                options: el.options ? el.options.length : null
+            }};
+        }})();
+        """
+        result = js(browser, script)
+        write_log(session_dir, f"selected presentador {field_id} -> {result}")
+        return result
+
     if provincia_value or provincia_text:
-        select_by_text_or_value(browser, prov_id, value=provincia_value, text=provincia_text or provincia_value, session_dir=session_dir)
-        time.sleep(1.2)
-
-    if municipio_text and field_exists(browser, mun_id):
-        try:
-            wait_select_options(browser, mun_id, min_options=2, timeout=4)
-        except Exception as exc:
-            write_log(session_dir, f"WAIT_FAIL municipio presentador {mun_id}: {exc}")
-        select_by_text_or_value(browser, mun_id, text=municipio_text, session_dir=session_dir)
+        select_by_text_or_value(
+            browser,
+            prov_id,
+            value=provincia_value,
+            text=provincia_text or provincia_value,
+            session_dir=session_dir,
+        )
+        fire_presentador_cascade(prov_id)
         time.sleep(1.5)
-
-    if localidad_text and field_exists(browser, loc_id):
         try:
-            wait_select_options(browser, loc_id, min_options=2, timeout=2)
+            wait_select_options(browser, mun_id, min_options=2, timeout=6)
         except Exception as exc:
-            write_log(session_dir, f"WAIT_FAIL localidad presentador {loc_id}: {exc}")
-        select_by_text_or_value(browser, loc_id, text=localidad_text, session_dir=session_dir)
+            write_log(session_dir, f"WAIT_FAIL municipio presentador tras provincia {mun_id}: {exc}")
+        log_selected(prov_id)
+
+    if (municipio_value or municipio_text) and field_exists(browser, mun_id):
+        select_by_text_or_value(
+            browser,
+            mun_id,
+            value=municipio_value,
+            text=municipio_text or municipio_value,
+            session_dir=session_dir,
+        )
+        fire_presentador_cascade(mun_id)
+        time.sleep(1.5)
+        try:
+            wait_select_options(browser, loc_id, min_options=2, timeout=6)
+        except Exception as exc:
+            write_log(session_dir, f"WAIT_FAIL localidad presentador tras municipio {loc_id}: {exc}")
+        log_selected(mun_id)
+
+    if (localidad_value or localidad_text) and field_exists(browser, loc_id):
+        select_by_text_or_value(
+            browser,
+            loc_id,
+            value=localidad_value,
+            text=localidad_text or localidad_value,
+            session_dir=session_dir,
+        )
+        fire_presentador_cascade(loc_id)
+        time.sleep(0.4)
+        log_selected(loc_id)
+
+    result = {
+        "provincia": log_selected(prov_id),
+        "municipio": log_selected(mun_id),
+        "localidad": log_selected(loc_id),
+    }
+    write_log(session_dir, f"Resultado cascada presentador dinámica -> {result}")
+    return result
 
 
 
@@ -875,7 +928,8 @@ def hardcode_presentador_asturias_oviedo(browser, session_dir):
 
 def fill_datos_presentador(browser, datos_mercurio, session_dir):
     """
-    Vuelca datos_mercurio['representante'] y fuerza ASTURIAS/OVIEDO.
+    Vuelca datos_mercurio['representante'] y rellena dinámicamente
+    provincia/municipio/localidad del presentador.
     """
     print("[9] Rellenando DATOS DEL PRESENTADOR")
     write_log(session_dir, "Rellenando datos del presentador")
@@ -889,7 +943,7 @@ def fill_datos_presentador(browser, datos_mercurio, session_dir):
     wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=15, interval=0.5)
 
     fill_section(browser, representante, session_dir)
-    hardcode_presentador_asturias_oviedo(browser, session_dir)
+    select_municipio_localidad_presentador(browser, representante, session_dir)
 
     print("Datos del presentador rellenados.")
     write_log(session_dir, "Datos del presentador rellenados")
@@ -1343,7 +1397,7 @@ def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
     step_continuar_abogacia(browser, session_dir)
     pause_certificado(session_dir)
     step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
-    pause_supuesto(browser, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
+    pause_supuesto(session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
     if datos_mercurio:
         fill_datos_extranjero(browser, datos_mercurio, session_dir)
         click_continuar(browser, session_dir)
@@ -1406,7 +1460,6 @@ def main():
     print("  fillpre    -> rellenar solo datos del presentador")
     print("  human      -> pausa humana final sin disconnect")
     print("  docs       -> subida documental asistida")
-    print("  diag       -> guardar diagnóstico DOM actual")
     print("  q          -> salir")
     print()
 
@@ -1445,25 +1498,6 @@ def main():
             else:
                 print(f"Usando carpeta PARA PRESENTAR: {documentos_dir}")
                 safe_execute("docs", lambda: upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir), session_dir)
-
-        elif cmd in ("diag", "diagnostico", "diagnóstico", "dom"):
-            try:
-                diag = save_dom_diagnostics(
-                    browser,
-                    session_dir,
-                    tipo_formulario_objetivo=tipo_formulario_objetivo,
-                    label="dom_manual",
-                )
-                print("Diagnóstico DOM guardado:")
-                print(f"- HTML: {diag.get('html_path')}")
-                if diag.get("screenshot_path"):
-                    print(f"- Captura: {diag.get('screenshot_path')}")
-                print(f"- JSON: {diag.get('json_path')}")
-                print(f"- Candidatos: {diag.get('candidates_count')} | Matches objetivo: {diag.get('matches_count')}")
-                write_log(session_dir, f"Diagnóstico DOM manual guardado: {diag}")
-            except Exception as exc:
-                print(f"ERROR guardando diagnóstico DOM: {exc}")
-                write_log(session_dir, f"ERROR diagnóstico DOM manual: {repr(exc)}")
 
         elif cmd in ("q", "quit", "exit", "salir"):
             print("Cerrando presentación asistida...")
