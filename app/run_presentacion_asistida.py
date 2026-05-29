@@ -15,6 +15,11 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
+try:
+    from app.mercurio_dom_diagnostics import save_dom_diagnostics
+except ModuleNotFoundError:
+    from mercurio_dom_diagnostics import save_dom_diagnostics
+
 
 def normalize(value):
     value = "" if value is None else str(value)
@@ -390,8 +395,27 @@ def step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_
         write_log(session_dir, f"No se pudo guardar HTML tras aviso Mercurio: {repr(exc)}")
 
 
-def pause_supuesto(session_dir, tipo_formulario_objetivo=""):
+def pause_supuesto(browser, session_dir, tipo_formulario_objetivo=""):
     tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
+    try:
+        diag = save_dom_diagnostics(
+            browser,
+            session_dir,
+            tipo_formulario_objetivo=tipo_formulario_objetivo,
+            label="dom_supuesto",
+        )
+        print()
+        print("Diagnóstico DOM de supuesto guardado:")
+        print(f"- HTML: {diag.get('html_path')}")
+        if diag.get("screenshot_path"):
+            print(f"- Captura: {diag.get('screenshot_path')}")
+        print(f"- JSON: {diag.get('json_path')}")
+        print(f"- Candidatos: {diag.get('candidates_count')} | Matches objetivo: {diag.get('matches_count')}")
+        write_log(session_dir, f"Diagnóstico DOM supuesto guardado: {diag}")
+    except Exception as exc:
+        print(f"AVISO: no se pudo guardar diagnóstico DOM de supuesto: {exc}")
+        write_log(session_dir, f"ERROR diagnóstico DOM supuesto: {repr(exc)}")
+
     print()
     print("=" * 80)
     print("PAUSA HUMANA: selecciona manualmente el supuesto concreto.")
@@ -1319,7 +1343,7 @@ def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
     step_continuar_abogacia(browser, session_dir)
     pause_certificado(session_dir)
     step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
-    pause_supuesto(session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
+    pause_supuesto(browser, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
     if datos_mercurio:
         fill_datos_extranjero(browser, datos_mercurio, session_dir)
         click_continuar(browser, session_dir)
@@ -1382,6 +1406,7 @@ def main():
     print("  fillpre    -> rellenar solo datos del presentador")
     print("  human      -> pausa humana final sin disconnect")
     print("  docs       -> subida documental asistida")
+    print("  diag       -> guardar diagnóstico DOM actual")
     print("  q          -> salir")
     print()
 
@@ -1420,6 +1445,25 @@ def main():
             else:
                 print(f"Usando carpeta PARA PRESENTAR: {documentos_dir}")
                 safe_execute("docs", lambda: upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir), session_dir)
+
+        elif cmd in ("diag", "diagnostico", "diagnóstico", "dom"):
+            try:
+                diag = save_dom_diagnostics(
+                    browser,
+                    session_dir,
+                    tipo_formulario_objetivo=tipo_formulario_objetivo,
+                    label="dom_manual",
+                )
+                print("Diagnóstico DOM guardado:")
+                print(f"- HTML: {diag.get('html_path')}")
+                if diag.get("screenshot_path"):
+                    print(f"- Captura: {diag.get('screenshot_path')}")
+                print(f"- JSON: {diag.get('json_path')}")
+                print(f"- Candidatos: {diag.get('candidates_count')} | Matches objetivo: {diag.get('matches_count')}")
+                write_log(session_dir, f"Diagnóstico DOM manual guardado: {diag}")
+            except Exception as exc:
+                print(f"ERROR guardando diagnóstico DOM: {exc}")
+                write_log(session_dir, f"ERROR diagnóstico DOM manual: {repr(exc)}")
 
         elif cmd in ("q", "quit", "exit", "salir"):
             print("Cerrando presentación asistida...")
