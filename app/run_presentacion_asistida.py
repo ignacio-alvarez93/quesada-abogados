@@ -307,6 +307,14 @@ FORMULARIO_OBJETIVO_LABELS = {
 }
 
 
+MAPPER_CODIGO_LABELS = {
+    "MERCURIO_EX01": "EX01 - Titular",
+    "MERCURIO_EX01_FAMILIAR": "EX01 - Familiar",
+    "MERCURIO_EX02": "EX02 - Reagrupación familiar",
+    "MERCURIO_EX32": "EX32 - Familiar de ciudadano UE",
+}
+
+
 def get_tipo_formulario_objetivo(datos_mercurio):
     """
     Lee el formulario objetivo desde datos_mercurio.json.
@@ -324,6 +332,52 @@ def describe_tipo_formulario_objetivo(tipo_formulario_objetivo):
     tipo = str(tipo_formulario_objetivo or "").strip().upper()
     label = FORMULARIO_OBJETIVO_LABELS.get(tipo, "")
     return f"{tipo} ({label})" if label else (tipo or "NO DEFINIDO")
+
+
+def get_mapper_codigo(datos_mercurio):
+    """
+    Lee el mapper interno desde datos_mercurio.json.
+
+    Diferencia el modo de volcado sin alterar la selección humana del
+    formulario/supuesto en Mercurio. Ejemplo:
+    - tipo_formulario_objetivo=EX01
+    - mapper_codigo=MERCURIO_EX01_FAMILIAR
+    """
+    presentacion = datos_mercurio.get("presentacion", {}) if isinstance(datos_mercurio, dict) else {}
+    mapper_codigo = str(presentacion.get("mapper_codigo") or "").strip().upper()
+    if mapper_codigo:
+        return mapper_codigo
+
+    # Fallback conservador para exports antiguos sin mapper_codigo.
+    tipo = get_tipo_formulario_objetivo(datos_mercurio)
+    return {
+        "EX01": "MERCURIO_EX01",
+        "EX02": "MERCURIO_EX02",
+        "EX32": "MERCURIO_EX32",
+    }.get(tipo, "")
+
+
+def describe_mapper_codigo(mapper_codigo):
+    mapper = str(mapper_codigo or "").strip().upper()
+    label = MAPPER_CODIGO_LABELS.get(mapper, "")
+    return f"{mapper} ({label})" if label else (mapper or "NO DEFINIDO")
+
+
+def get_mercurio_mapper_mode(datos_mercurio):
+    """
+    Punto único de enrutamiento interno del runner.
+
+    No decide ni selecciona el supuesto Mercurio. Solo informa al código
+    qué variante de volcado debe aplicar después de la selección humana.
+    """
+    mapper_codigo = get_mapper_codigo(datos_mercurio)
+    return {
+        "mapper_codigo": mapper_codigo,
+        "is_ex01": mapper_codigo == "MERCURIO_EX01",
+        "is_ex01_familiar": mapper_codigo == "MERCURIO_EX01_FAMILIAR",
+        "is_ex02": mapper_codigo == "MERCURIO_EX02",
+        "is_ex32": mapper_codigo == "MERCURIO_EX32",
+    }
 
 
 def step_continuar_inicial(browser, session_dir):
@@ -716,13 +770,7 @@ def fill_datos_extranjero(browser, datos_mercurio, session_dir):
 def select_municipio_localidad_presentador(browser, values, session_dir):
     """
     Cascada provincia -> municipio -> localidad para Datos del presentador.
-
-    Mercurio vincula estos tres selects mediante JS/AJAX:
-    - preCodigoProvinciaPresentador -> preCodigoMunicipioPresentador
-    - preCodigoMunicipioPresentador -> preCodigoLocalidadPresentador
-
-    Por eso no basta con escribir valores en bloque. Se selecciona en orden,
-    se disparan input/change/jQuery change y se espera a que carguen opciones.
+    No modifica la función genérica existente para extranjero/notificación.
     """
     prov_id = "preCodigoProvinciaPresentador"
     mun_id = "preCodigoMunicipioPresentador"
@@ -730,98 +778,27 @@ def select_municipio_localidad_presentador(browser, values, session_dir):
 
     provincia_value = values.get(prov_id, "")
     provincia_text = values.get(prov_id + "_text", "")
-    municipio_value = values.get(mun_id, "")
     municipio_text = values.get(mun_id + "_text", "")
-    localidad_value = values.get(loc_id, "")
     localidad_text = values.get(loc_id + "_text", "") or municipio_text
 
-    def fire_presentador_cascade(field_id):
-        script = f"""
-        (function(){{
-            const el = document.getElementById({json.dumps(field_id)});
-            if (!el) return {{ ok: false, reason: 'NO_EXISTE', field: {json.dumps(field_id)} }};
-            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            if (window.jQuery) window.jQuery(el).trigger('change');
-            if ({json.dumps(field_id)} === 'preCodigoProvinciaPresentador' && typeof controlaProvinciaPRE === 'function') {{
-                try {{ controlaProvinciaPRE(); }} catch(e) {{}}
-            }}
-            return {{ ok: true, field: {json.dumps(field_id)}, value: el.value }};
-        }})();
-        """
-        result = js(browser, script)
-        write_log(session_dir, f"cascade presentador fire {field_id} -> {result}")
-        return result
-
-    def log_selected(field_id):
-        script = f"""
-        (function(){{
-            const el = document.getElementById({json.dumps(field_id)});
-            if (!el) return {{ exists: false }};
-            const opt = el.options ? el.options[el.selectedIndex] : null;
-            return {{
-                exists: true,
-                value: el.value,
-                text: opt ? (opt.textContent || opt.innerText || '') : '',
-                options: el.options ? el.options.length : null
-            }};
-        }})();
-        """
-        result = js(browser, script)
-        write_log(session_dir, f"selected presentador {field_id} -> {result}")
-        return result
-
     if provincia_value or provincia_text:
-        select_by_text_or_value(
-            browser,
-            prov_id,
-            value=provincia_value,
-            text=provincia_text or provincia_value,
-            session_dir=session_dir,
-        )
-        fire_presentador_cascade(prov_id)
-        time.sleep(1.5)
+        select_by_text_or_value(browser, prov_id, value=provincia_value, text=provincia_text or provincia_value, session_dir=session_dir)
+        time.sleep(1.2)
+
+    if municipio_text and field_exists(browser, mun_id):
         try:
-            wait_select_options(browser, mun_id, min_options=2, timeout=6)
+            wait_select_options(browser, mun_id, min_options=2, timeout=4)
         except Exception as exc:
-            write_log(session_dir, f"WAIT_FAIL municipio presentador tras provincia {mun_id}: {exc}")
-        log_selected(prov_id)
-
-    if (municipio_value or municipio_text) and field_exists(browser, mun_id):
-        select_by_text_or_value(
-            browser,
-            mun_id,
-            value=municipio_value,
-            text=municipio_text or municipio_value,
-            session_dir=session_dir,
-        )
-        fire_presentador_cascade(mun_id)
+            write_log(session_dir, f"WAIT_FAIL municipio presentador {mun_id}: {exc}")
+        select_by_text_or_value(browser, mun_id, text=municipio_text, session_dir=session_dir)
         time.sleep(1.5)
+
+    if localidad_text and field_exists(browser, loc_id):
         try:
-            wait_select_options(browser, loc_id, min_options=2, timeout=6)
+            wait_select_options(browser, loc_id, min_options=2, timeout=2)
         except Exception as exc:
-            write_log(session_dir, f"WAIT_FAIL localidad presentador tras municipio {loc_id}: {exc}")
-        log_selected(mun_id)
-
-    if (localidad_value or localidad_text) and field_exists(browser, loc_id):
-        select_by_text_or_value(
-            browser,
-            loc_id,
-            value=localidad_value,
-            text=localidad_text or localidad_value,
-            session_dir=session_dir,
-        )
-        fire_presentador_cascade(loc_id)
-        time.sleep(0.4)
-        log_selected(loc_id)
-
-    result = {
-        "provincia": log_selected(prov_id),
-        "municipio": log_selected(mun_id),
-        "localidad": log_selected(loc_id),
-    }
-    write_log(session_dir, f"Resultado cascada presentador dinámica -> {result}")
-    return result
+            write_log(session_dir, f"WAIT_FAIL localidad presentador {loc_id}: {exc}")
+        select_by_text_or_value(browser, loc_id, text=localidad_text, session_dir=session_dir)
 
 
 
@@ -928,8 +905,7 @@ def hardcode_presentador_asturias_oviedo(browser, session_dir):
 
 def fill_datos_presentador(browser, datos_mercurio, session_dir):
     """
-    Vuelca datos_mercurio['representante'] y rellena dinámicamente
-    provincia/municipio/localidad del presentador.
+    Vuelca datos_mercurio['representante'] y fuerza ASTURIAS/OVIEDO.
     """
     print("[9] Rellenando DATOS DEL PRESENTADOR")
     write_log(session_dir, "Rellenando datos del presentador")
@@ -943,7 +919,7 @@ def fill_datos_presentador(browser, datos_mercurio, session_dir):
     wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=15, interval=0.5)
 
     fill_section(browser, representante, session_dir)
-    select_municipio_localidad_presentador(browser, representante, session_dir)
+    hardcode_presentador_asturias_oviedo(browser, session_dir)
 
     print("Datos del presentador rellenados.")
     write_log(session_dir, "Datos del presentador rellenados")
@@ -1393,6 +1369,8 @@ def open_url(browser, url):
 
 def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
     tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
+    mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
+    write_log(session_dir, f"Mapper interno Mercurio: {describe_mapper_codigo(mapper_mode.get('mapper_codigo'))}")
     step_continuar_inicial(browser, session_dir)
     step_continuar_abogacia(browser, session_dir)
     pause_certificado(session_dir)
@@ -1422,6 +1400,8 @@ def main():
     session_dir = get_session_dir(args.session_dir, args.expediente_id)
     datos_mercurio = load_datos_mercurio(args.datos_mercurio_json)
     tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
+    mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
+    mapper_codigo = mapper_mode.get("mapper_codigo")
     documentos_dir = resolve_para_presentar_dir(args, datos_mercurio, session_dir)
 
     url = (args.url or "").strip()
@@ -1436,13 +1416,19 @@ def main():
     print(f"Tipo: {args.tipo or '-'}")
     print(f"Provincia código Mercurio: {args.provincia_codigo}")
     print(f"Formulario Mercurio objetivo: {describe_tipo_formulario_objetivo(tipo_formulario_objetivo)}")
+    print(f"Mapper interno de volcado: {describe_mapper_codigo(mapper_codigo)}")
     print(f"Carpeta sesión: {session_dir}")
     print(f"datos_mercurio.json: {args.datos_mercurio_json or '-'}")
     print(f"Documentos PARA PRESENTAR: {documentos_dir or '-'}")
     print(f"URL: {url}")
     print("=" * 80)
 
-    write_log(session_dir, f"Iniciando Chrome sb_cdp. Formulario objetivo={describe_tipo_formulario_objetivo(tipo_formulario_objetivo)}")
+    write_log(
+        session_dir,
+        "Iniciando Chrome sb_cdp. "
+        f"Formulario objetivo={describe_tipo_formulario_objetivo(tipo_formulario_objetivo)}. "
+        f"Mapper interno={describe_mapper_codigo(mapper_codigo)}"
+    )
     from seleniumbase import sb_cdp
 
     browser = sb_cdp.Chrome(headless=False)
