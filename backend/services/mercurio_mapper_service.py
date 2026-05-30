@@ -654,6 +654,18 @@ def build_datos_representante(snapshot=None):
     }
 
 
+def get_presentacion_reglas_for_expediente(expediente_json):
+    expediente_json = expediente_json or {}
+    tipo_id = expediente_json.get("tipo_expediente_id")
+    if not tipo_id:
+        return {}
+
+    return presentation_config_service.get_presentacion_reglas(
+        tipo_id,
+        subtipo_id=expediente_json.get("subtipo_expediente_id"),
+    )
+
+
 def resolve_tipo_formulario_objetivo(expediente_json):
     """
     Resuelve el formulario Mercurio objetivo sin tocar SeleniumBase.
@@ -678,17 +690,10 @@ def resolve_tipo_formulario_objetivo(expediente_json):
     joined = " ".join(normalized_values)
 
     # 1. Configuración explícita en config_presentaciones_asistidas.
-    tipo_id = expediente_json.get("tipo_expediente_id")
-    subtipo_id = expediente_json.get("subtipo_expediente_id")
-
-    if tipo_id:
-        reglas = presentation_config_service.get_presentacion_reglas(
-            tipo_id,
-            subtipo_id=subtipo_id,
-        )
-        configured_form = str(reglas.get("tipo_formulario_objetivo") or "").strip().upper()
-        if configured_form:
-            return configured_form
+    reglas = get_presentacion_reglas_for_expediente(expediente_json)
+    configured_form = str(reglas.get("tipo_formulario_objetivo") or "").strip().upper()
+    if configured_form:
+        return configured_form
 
     # Si la configuración ya trae un código EX explícito, lo usamos.
     match = re.search(r"\bEX[\s\-_]?(\d{2})\b", joined)
@@ -704,6 +709,27 @@ def resolve_tipo_formulario_objetivo(expediente_json):
 
     # Fallback conservador: mantiene el comportamiento actual.
     return "EX32"
+
+
+def resolve_mapper_codigo(expediente_json, tipo_formulario_objetivo=None):
+    """
+    Resuelve el mapper interno de Mercurio desde reglas_json.
+
+    El formulario objetivo es lo que selecciona el abogado en Mercurio
+    (EX01, EX02, EX32...). El mapper_codigo permite distinguir variantes
+    internas del ERP, como MERCURIO_EX01_FAMILIAR, sin inventar modelos
+    Mercurio que no existen.
+    """
+    reglas = get_presentacion_reglas_for_expediente(expediente_json)
+    configured_mapper = str(reglas.get("mapper_codigo") or "").strip().upper()
+    if configured_mapper:
+        return configured_mapper
+
+    tipo = str(tipo_formulario_objetivo or resolve_tipo_formulario_objetivo(expediente_json) or "").strip().upper()
+    if tipo:
+        return f"MERCURIO_{tipo}"
+
+    return ""
 
 def build_datos_mercurio(expediente, snapshot=None):
     if snapshot is None:
@@ -727,6 +753,9 @@ def build_datos_mercurio(expediente, snapshot=None):
     pais_nacimiento_texto = cliente["pais_nacimiento"]
     nacionalidad_texto = cliente["nacionalidad"]
 
+    tipo_formulario_objetivo = resolve_tipo_formulario_objetivo(expediente_json)
+    mapper_codigo = resolve_mapper_codigo(expediente_json, tipo_formulario_objetivo)
+
     return {
         "meta": {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -741,7 +770,8 @@ def build_datos_mercurio(expediente, snapshot=None):
             "portal": "MERCURIO",
             "flujo": "BI_PRESENTAR_NUEVA_SOLICITUD",
             "provincia_codigo": expediente_json["provincia_codigo_mercurio"],
-            "tipo_formulario_objetivo": resolve_tipo_formulario_objetivo(expediente_json),
+            "tipo_formulario_objetivo": tipo_formulario_objetivo,
+            "mapper_codigo": mapper_codigo,
         },
         "expediente": expediente_json,
         "cliente": cliente,
