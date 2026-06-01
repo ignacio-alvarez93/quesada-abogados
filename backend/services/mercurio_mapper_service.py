@@ -590,13 +590,181 @@ def build_datos_expediente(expediente, snapshot=None):
     }
 
 
+
+def _snapshot_datos_especificos(snapshot):
+    if not isinstance(snapshot, dict):
+        return {}
+    datos = snapshot.get("datos_especificos") or {}
+    return datos if isinstance(datos, dict) else {}
+
+
+def _first_dynamic_value(datos_especificos, *keys):
+    for key in keys:
+        value = datos_especificos.get(key)
+        if str(value or "").strip():
+            return str(value).strip()
+    return ""
+
+
+def _extract_leading_id(value):
+    """Extrae el id inicial de valores tipo '11 - Nombre · Documento'."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = re.match(r"^\s*(\d+)\s*(?:[-·|:]|$)", text)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _get_cliente_contacto(contacto_id):
+    if not contacto_id:
+        return None
+    with _connect() as conn:
+        return _dict(conn.execute(
+            """
+            SELECT *
+            FROM cliente_contactos
+            WHERE id = ?
+              AND COALESCE(activo, 1) = 1
+            LIMIT 1
+            """,
+            (int(contacto_id),),
+        ).fetchone())
+
+
+def _full_name_from_contacto(contacto):
+    contacto = contacto or {}
+    return " ".join([
+        str(contacto.get("nombre") or "").strip(),
+        str(contacto.get("primer_apellido") or "").strip(),
+        str(contacto.get("segundo_apellido") or "").strip(),
+    ]).strip()
+
+
+def _documento_from_contacto(contacto):
+    contacto = contacto or {}
+    return first(
+        contacto.get("nie"),
+        contacto.get("dni"),
+        contacto.get("pasaporte"),
+    )
+
+
+def _tipo_documento_from_contacto(contacto):
+    contacto = contacto or {}
+    if str(contacto.get("nie") or "").strip():
+        return "TU"
+    if str(contacto.get("dni") or "").strip():
+        return "NI"
+    if str(contacto.get("pasaporte") or "").strip():
+        return "PA"
+    return ""
+
+
+def _fill_missing(merged, key, value):
+    if str(merged.get(key) or "").strip():
+        return
+    if str(value or "").strip():
+        merged[key] = str(value).strip()
+
+
+def _overlay_representante_legal_from_contacto_autocomplete(merged, datos):
+    """
+    Si el formulario dinámico solo guarda el valor visible del autocomplete
+    representante_legal = '11 - Nombre · Documento', resuelve el contacto
+    asociado y completa los campos estructurados que Mercurio necesita.
+    """
+    autocomplete_value = _first_dynamic_value(
+        datos,
+        "representante_legal",
+        "rep_legal",
+        "representante_legal_contacto",
+        "representante_legal_contacto_id",
+    )
+    contacto_id = _extract_leading_id(autocomplete_value)
+    contacto = _get_cliente_contacto(contacto_id)
+    if not contacto:
+        return merged
+
+    _fill_missing(merged, "representante_legal_contacto_id", contacto.get("id"))
+    _fill_missing(merged, "representante_legal_nombre", _full_name_from_contacto(contacto))
+    _fill_missing(merged, "representante_legal_tipo_documento", _tipo_documento_from_contacto(contacto))
+    _fill_missing(merged, "representante_legal_documento", _documento_from_contacto(contacto))
+    _fill_missing(merged, "representante_legal_titulo", contacto.get("parentesco"))
+    _fill_missing(merged, "representante_legal_telefono_movil", contacto.get("telefono"))
+    _fill_missing(merged, "representante_legal_email", contacto.get("email"))
+
+    # Datos auxiliares para diagnóstico/exportación, sin interferir en Mercurio.
+    _fill_missing(merged, "representante_legal_nie", contacto.get("nie"))
+    _fill_missing(merged, "representante_legal_dni", contacto.get("dni"))
+    _fill_missing(merged, "representante_legal_pasaporte", contacto.get("pasaporte"))
+    _fill_missing(merged, "representante_legal_parentesco", contacto.get("parentesco"))
+
+    return merged
+
+
+def _overlay_representante_legal_from_datos_especificos(rep, snapshot):
+    """
+    Permite que los formularios dinámicos alimenten los campos Mercurio
+    del representante legal sin endurecer un bloque fijo en la UI.
+
+    Convención recomendada de códigos en formulario dinámico:
+    representante_legal_nombre, representante_legal_documento,
+    representante_legal_tipo_documento, representante_legal_titulo,
+    representante_legal_telefono_movil, representante_legal_email.
+    """
+    datos = _snapshot_datos_especificos(snapshot)
+    if not datos:
+        return rep
+
+    merged = dict(rep or {})
+
+    nombre = _first_dynamic_value(
+        datos,
+        "representante_legal_nombre",
+        "representante_legal_nombre_completo",
+        "rep_legal_nombre",
+        "rep_legal_nombre_completo",
+    )
+    if not nombre:
+        nombre_parts = [
+            _first_dynamic_value(datos, "representante_legal_nombre_pila", "rep_legal_nombre_pila"),
+            _first_dynamic_value(datos, "representante_legal_primer_apellido", "rep_legal_primer_apellido"),
+            _first_dynamic_value(datos, "representante_legal_segundo_apellido", "rep_legal_segundo_apellido"),
+        ]
+        nombre = " ".join(part for part in nombre_parts if part).strip()
+
+    explicit_values = {
+        "representante_legal_nombre": nombre,
+        "representante_legal_tipo_documento": _first_dynamic_value(datos, "representante_legal_tipo_documento", "rep_legal_tipo_documento"),
+        "representante_legal_documento": _first_dynamic_value(datos, "representante_legal_documento", "rep_legal_documento", "representante_legal_nie", "rep_legal_nie"),
+        "representante_legal_titulo": _first_dynamic_value(datos, "representante_legal_titulo", "rep_legal_titulo", "representante_legal_parentesco", "rep_legal_parentesco"),
+        "representante_legal_telefono_movil": _first_dynamic_value(datos, "representante_legal_telefono_movil", "rep_legal_telefono_movil", "representante_legal_telefono", "rep_legal_telefono"),
+        "representante_legal_email": _first_dynamic_value(datos, "representante_legal_email", "rep_legal_email"),
+    }
+
+    for key, value in explicit_values.items():
+        if value:
+            merged[key] = value
+
+    # Fallback quirúrgico: si solo existe el valor visible del autocomplete
+    # representante_legal = "11 - Nombre · Documento", resolver el contacto.
+    return _overlay_representante_legal_from_contacto_autocomplete(merged, datos)
+
 def build_datos_representante(snapshot=None):
     """
     Lee el representante desde el snapshot del expediente.
 
     Fallback a Settings solo para compatibilidad interna si se llama sin snapshot.
     """
-    rep = _snapshot_representante(snapshot) or config_service.get_representante_config()
+    rep = _overlay_representante_legal_from_datos_especificos(
+        _snapshot_representante(snapshot) or config_service.get_representante_config(),
+        snapshot,
+    )
 
     tipo_via = rep.get("representante_tipo_via") or ""
     piso = limpiar_piso(rep.get("representante_piso") or "")
@@ -641,6 +809,15 @@ def build_datos_representante(snapshot=None):
         "preTituloRepresentantePresentador": rep.get("representante_legal_titulo") or "",
         "preTelefonoMovilRepLegalPresentador": rep.get("representante_legal_telefono_movil") or "",
         "preEmailRepLegalPresentador": rep.get("representante_legal_email") or "",
+
+        # Representante legal estructurado resuelto desde formulario dinámico/autocomplete
+        "representante_legal_contacto_id": rep.get("representante_legal_contacto_id") or "",
+        "representante_legal_nombre": rep.get("representante_legal_nombre") or "",
+        "representante_legal_tipo_documento": rep.get("representante_legal_tipo_documento") or "",
+        "representante_legal_documento": rep.get("representante_legal_documento") or "",
+        "representante_legal_titulo": rep.get("representante_legal_titulo") or "",
+        "representante_legal_telefono_movil": rep.get("representante_legal_telefono_movil") or "",
+        "representante_legal_email": rep.get("representante_legal_email") or "",
 
         # Datos auxiliares ERP / Box para fases posteriores
         "ruta_box_dni_representante": rep.get("representante_ruta_box_dni") or "",
@@ -773,6 +950,7 @@ def build_datos_mercurio(expediente, snapshot=None):
             "tipo_formulario_objetivo": tipo_formulario_objetivo,
             "mapper_codigo": mapper_codigo,
         },
+        "datos_especificos": _snapshot_datos_especificos(snapshot),
         "expediente": expediente_json,
         "cliente": cliente,
         "extranjero": {
