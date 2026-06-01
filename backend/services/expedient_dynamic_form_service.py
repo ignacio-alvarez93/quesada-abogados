@@ -49,6 +49,85 @@ def parse_field_options(value):
     return [item.strip() for item in raw.split("|") if item.strip()]
 
 
+def parse_autocomplete_fill_config(value):
+    """
+    Interpreta opciones_json para autocompletes con autorrelleno.
+
+    Formato recomendado:
+    {
+      "source": "contactos_cliente",
+      "campos": {
+        "nombre": "nombre",
+        "primer_apellido": "primer_apellido",
+        "nie": "nie"
+      }
+    }
+
+    Compatibilidad: si recibe un JSON plano {"campo_destino": "campo_origen"},
+    se interpreta como campos derivados usando source=contactos_cliente.
+    """
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        parsed = value
+    else:
+        raw = str(value or "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return {}
+
+    if not isinstance(parsed, dict):
+        return {}
+
+    if "campos" in parsed or "source" in parsed:
+        campos = parsed.get("campos") or {}
+        return {
+            "source": str(parsed.get("source") or "contactos_cliente").strip(),
+            "campos": campos if isinstance(campos, dict) else {},
+        }
+
+    return {
+        "source": "contactos_cliente",
+        "campos": parsed,
+    }
+
+
+def list_autocomplete_source_fields(source="contactos_cliente"):
+    """Catálogo orientativo de campos origen disponibles para Settings."""
+    source = str(source or "contactos_cliente").strip().lower()
+
+    cliente_fields = [
+        "id", "nombre", "primer_apellido", "segundo_apellido", "nombre_completo",
+        "nacionalidad", "nie", "pasaporte", "dni", "documento",
+        "fecha_nacimiento", "localidad_nacimiento", "pais_nacimiento",
+        "nombre_padre", "nombre_madre", "estado_civil", "sexo",
+        "telefono", "email", "tipo_via", "nombre_via", "domicilio_espana",
+        "localidad", "codigo_postal", "provincia", "numero", "piso",
+        "estado_cliente", "origen_cliente", "responsable_interno",
+        "observaciones", "observaciones_internas",
+    ]
+
+    contacto_fields = [
+        "id", "tipo_contacto", "parentesco", "titulo",
+        "nombre", "primer_apellido", "segundo_apellido", "nombre_completo",
+        "nie", "dni", "pasaporte", "documento", "email", "telefono",
+        "nacionalidad", "fecha_nacimiento", "sexo", "observaciones",
+    ]
+
+    if source in ("cliente", "cliente_expediente", "clientes", "datos_cliente"):
+        return cliente_fields
+    if source in ("empleadores_cliente", "empleador", "empleadores"):
+        return contacto_fields + ["empresa", "actividad", "cnae", "cno"]
+    if source in ("catalogo_cnae", "actividad_cnae"):
+        return ["valor", "codigo", "descripcion"]
+    if source in ("catalogo_cno", "cno_sepe"):
+        return ["valor", "codigo", "descripcion"]
+    return contacto_fields
+
+
 def get_formulario_for_context(tipo_expediente_id=None, subtipo_expediente_id=None):
     initialize_dynamic_forms_schema()
 
