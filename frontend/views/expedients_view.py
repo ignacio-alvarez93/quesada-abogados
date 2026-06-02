@@ -819,6 +819,266 @@ def expedients_view(page: ft.Page):
 
         return options
 
+    def _row_document(row):
+        if not row:
+            return ""
+        for key in ("nie", "dni", "pasaporte", "documento"):
+            try:
+                value = row[key]
+            except Exception:
+                value = None
+            if value:
+                return value
+        return ""
+
+    def _row_nombre_completo(row):
+        if not row:
+            return ""
+        parts = []
+        for key in ("nombre", "primer_apellido", "segundo_apellido"):
+            try:
+                value = row[key]
+            except Exception:
+                value = None
+            if value:
+                parts.append(str(value).strip())
+        return " ".join(part for part in parts if part).strip()
+
+    def _row_to_autofill_details(row, extra=None):
+        if not row:
+            return {}
+        details = {key: (row[key] if row[key] is not None else "") for key in row.keys()}
+        details["nombre_completo"] = _row_nombre_completo(row)
+        details["documento"] = _row_document(row)
+        if extra:
+            details.update(extra)
+        return details
+
+    def _fetch_cliente_details(cliente_id):
+        if not cliente_id:
+            return {}
+        db_path = _database_path()
+        if not db_path.exists():
+            return {}
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM clientes
+                    WHERE id = ?
+                      AND COALESCE(activo, 1) = 1
+                    LIMIT 1
+                    """,
+                    (int(cliente_id),),
+                ).fetchone()
+        except Exception:
+            return {}
+
+        return _row_to_autofill_details(row)
+
+    def _fetch_cliente_contact_details(contacto_id):
+        if not contacto_id:
+            return {}
+        db_path = _database_path()
+        if not db_path.exists():
+            return {}
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM cliente_contactos
+                    WHERE id = ?
+                      AND COALESCE(activo, 1) = 1
+                    LIMIT 1
+                    """,
+                    (int(contacto_id),),
+                ).fetchone()
+        except Exception:
+            return {}
+
+        titulo = ""
+        if row:
+            titulo = row["parentesco"] if "parentesco" in row.keys() and row["parentesco"] else ""
+            if not titulo and "tipo_contacto" in row.keys():
+                titulo = row["tipo_contacto"] or ""
+
+        return _row_to_autofill_details(row, {"titulo": titulo})
+
+
+    def _autocomplete_source_options(source):
+        source = (source or "contactos_cliente").lower()
+        cliente_id = _option_id(cliente.get_value())
+
+        if source in ("cliente", "cliente_expediente", "clientes", "datos_cliente"):
+            return cliente_options, _fetch_cliente_details
+
+        if source in ("empleadores_cliente", "empleador", "empleadores"):
+            return _fetch_cliente_contact_options(cliente_id, only_employers=True), _fetch_cliente_contact_details
+
+        if source in ("catalogo_cnae", "actividad_cnae"):
+            return _load_catalog_options("actividades_cnae.csv"), lambda selected_id: {}
+
+        if source in ("catalogo_cno", "cno_sepe"):
+            return _load_catalog_options("cno_sepe_2011.csv"), lambda selected_id: {}
+
+        return _fetch_cliente_contact_options(cliente_id, only_employers=False), _fetch_cliente_contact_details
+
+
+    def _detail_value(details, source_key):
+        if not details:
+            return ""
+        key = str(source_key or "").strip()
+        if not key:
+            return ""
+
+        # Alias útiles para evitar que el mapper dependa de nombres exactos.
+        aliases = {
+            "nombre_apellidos": "nombre_completo",
+            "nombre_y_apellidos": "nombre_completo",
+            "documento_identidad": "documento",
+            "num_documento": "documento",
+            "numero_documento": "documento",
+            "telefono_movil": "telefono",
+            "movil": "telefono",
+            "mail": "email",
+            "correo": "email",
+        }
+
+        candidates = [key, key.lower(), aliases.get(key.lower())]
+        for candidate in candidates:
+            if candidate and details.get(candidate) not in (None, ""):
+                return details.get(candidate) or ""
+        return ""
+
+
+    def _build_mapped_autocomplete_field(campo, saved_values, required_suffix, config, default_help=""):
+        codigo = campo.get("codigo")
+        label = campo.get("etiqueta") or codigo
+        ayuda = campo.get("ayuda") or default_help or "Selecciona un valor. Los campos derivados configurados se completarán automáticamente."
+        source = (config or {}).get("source") or "contactos_cliente"
+        mappings = (config or {}).get("campos") or {}
+
+        selected_value = saved_values.get(codigo, campo.get("valor_defecto") or "")
+        selected_id = saved_values.get(f"{codigo}_id", "")
+        id_control = text_input("ID seleccionado", selected_id, width=160)
+        id_control.visible = False
+        state.setdefault("specific_field_controls", {})[f"{codigo}_id"] = id_control
+
+        derived_controls = []
+        for target_key, source_key in mappings.items():
+            full_code = f"{codigo}_{target_key}"
+            label_text = target_key.replace("_", " ").capitalize()
+            control = text_input(label_text, saved_values.get(full_code, ""), width=260)
+            state.setdefault("specific_field_controls", {})[full_code] = control
+            derived_controls.append((control, source_key))
+
+        options, detail_loader = _autocomplete_source_options(source)
+
+        def apply_selected(selected):
+            selected_id_value = _option_id(selected)
+            id_control.value = str(selected_id_value or "")
+            details = detail_loader(selected_id_value) if selected_id_value else {}
+            for control, source_key in derived_controls:
+                control.value = _detail_value(details, source_key)
+            page.update()
+
+        autocomplete = AppAutocomplete(
+            page=page,
+            label=label + required_suffix,
+            options=options,
+            value=selected_value or "",
+            width=620,
+            max_results=10,
+            allow_free_text=True,
+            on_select=apply_selected if derived_controls else None,
+        )
+        state.setdefault("specific_field_controls", {})[codigo] = autocomplete
+
+        controls = [autocomplete.control]
+        if derived_controls:
+            controls.append(ft.Row([item[0] for item in derived_controls] + [id_control], wrap=True, spacing=10))
+        else:
+            controls.append(id_control)
+        controls.append(ft.Text(ayuda, size=11, color=Q_MUTED))
+
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(controls=controls, spacing=8),
+        )
+
+
+    def _build_representante_legal_field(campo, saved_values, required_suffix):
+        codigo = campo.get("codigo")
+        label = campo.get("etiqueta") or codigo or "Representante legal"
+        ayuda = campo.get("ayuda") or "Selecciona un contacto del cliente. El nombre, documento y título se copiarán a datos específicos y al snapshot."
+
+        selected_value = saved_values.get(codigo, campo.get("valor_defecto") or "")
+        selected_id = saved_values.get(f"{codigo}_id", "")
+        nombre_value = saved_values.get(f"{codigo}_nombre", "")
+        documento_value = saved_values.get(f"{codigo}_documento", "")
+        titulo_value = saved_values.get(f"{codigo}_titulo", "")
+
+        nombre_control = text_input("Nombre representante legal", nombre_value, width=360)
+        documento_control = text_input("Documento representante legal", documento_value, width=240)
+        titulo_control = text_input("Título / parentesco", titulo_value, width=240)
+        id_control = text_input("ID contacto representante legal", selected_id, width=160)
+        id_control.visible = False
+
+        state.setdefault("specific_field_controls", {})[f"{codigo}_id"] = id_control
+        state.setdefault("specific_field_controls", {})[f"{codigo}_nombre"] = nombre_control
+        state.setdefault("specific_field_controls", {})[f"{codigo}_documento"] = documento_control
+        state.setdefault("specific_field_controls", {})[f"{codigo}_titulo"] = titulo_control
+
+        def apply_contact(selected):
+            contacto_id = _option_id(selected)
+            id_control.value = str(contacto_id or "")
+            if not contacto_id:
+                return
+            details = _fetch_cliente_contact_details(contacto_id)
+            if not details:
+                return
+            nombre_control.value = details.get("nombre_completo") or details.get("nombre") or ""
+            documento_control.value = details.get("documento") or ""
+            titulo_control.value = details.get("titulo") or ""
+            page.update()
+
+        options = _fetch_cliente_contact_options(_option_id(cliente.get_value()), only_employers=False)
+        autocomplete = AppAutocomplete(
+            page=page,
+            label=label + required_suffix,
+            options=options,
+            value=selected_value or "",
+            width=620,
+            max_results=10,
+            allow_free_text=True,
+            on_select=apply_contact,
+        )
+        state.setdefault("specific_field_controls", {})[codigo] = autocomplete
+
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    autocomplete.control,
+                    ft.Row([nombre_control, documento_control, titulo_control, id_control], wrap=True, spacing=10),
+                    ft.Text(ayuda, size=11, color=Q_MUTED),
+                ],
+                spacing=8,
+            ),
+        )
+
     def _load_catalog_options(filename, limit=2500):
         path = Path(__file__).resolve().parents[2] / "database" / "catalogos_mercurio" / "csv" / filename
         if not path.exists():
@@ -862,6 +1122,10 @@ def expedients_view(page: ft.Page):
         placeholder = campo.get("placeholder") or ""
         ayuda = campo.get("ayuda") or ""
         required_suffix = " *" if int(campo.get("obligatorio") or 0) else ""
+        autocomplete_config = dynamic_form_service.parse_autocomplete_fill_config(campo.get("opciones_json"))
+
+        if tipo.startswith("autocomplete_") and autocomplete_config.get("campos"):
+            return _build_mapped_autocomplete_field(campo, saved_values, required_suffix, autocomplete_config, ayuda)
 
         if tipo in ("dato_cliente", "autocomplete_cliente"):
             return _autocomplete_field(
@@ -874,6 +1138,9 @@ def expedients_view(page: ft.Page):
                 width=560,
                 allow_free_text=True,
             )
+
+        if tipo in ("representante_legal", "autocomplete_representante_legal"):
+            return _build_representante_legal_field(campo, saved_values, required_suffix)
 
         if tipo in ("contacto_cliente", "autocomplete_familiar"):
             options = _fetch_cliente_contact_options(_option_id(cliente.get_value()), only_employers=False)
