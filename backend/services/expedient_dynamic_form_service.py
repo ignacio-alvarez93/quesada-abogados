@@ -49,84 +49,53 @@ def parse_field_options(value):
     return [item.strip() for item in raw.split("|") if item.strip()]
 
 
+
+
 def parse_autocomplete_fill_config(value):
     """
-    Interpreta opciones_json para autocompletes con autorrelleno.
+    Parsea la configuración JSON de autocompletado/auto-relleno de un campo dinámico.
 
-    Formato recomendado:
-    {
-      "source": "contactos_cliente",
-      "campos": {
-        "nombre": "nombre",
-        "primer_apellido": "primer_apellido",
-        "nie": "nie"
-      }
-    }
-
-    Compatibilidad: si recibe un JSON plano {"campo_destino": "campo_origen"},
-    se interpreta como campos derivados usando source=contactos_cliente.
+    Compatibilidad quirúrgica:
+    - expedients_view.py ya llama a esta función.
+    - Si opciones_json contiene un dict JSON, se devuelve ese dict.
+    - Si contiene una lista de opciones clásica o texto simple, devuelve {}.
+    - Nunca lanza excepción hacia la vista.
     """
     if not value:
         return {}
     if isinstance(value, dict):
-        parsed = value
-    else:
-        raw = str(value or "").strip()
-        if not raw:
-            return {}
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            return {}
+        return value
 
-    if not isinstance(parsed, dict):
+    raw = str(value or "").strip()
+    if not raw:
         return {}
 
-    if "campos" in parsed or "source" in parsed:
-        campos = parsed.get("campos") or {}
-        return {
-            "source": str(parsed.get("source") or "contactos_cliente").strip(),
-            "campos": campos if isinstance(campos, dict) else {},
-        }
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
 
-    return {
-        "source": "contactos_cliente",
-        "campos": parsed,
-    }
+    return parsed if isinstance(parsed, dict) else {}
 
 
-def list_autocomplete_source_fields(source="contactos_cliente"):
-    """Catálogo orientativo de campos origen disponibles para Settings."""
-    source = str(source or "contactos_cliente").strip().lower()
+def _is_contact_autocomplete_type(tipo):
+    tipo = str(tipo or "").strip().lower()
+    return tipo in (
+        "contacto_cliente",
+        "autocomplete_familiar",
+        "empleador_empresa",
+        "autocomplete_empleador",
+        "representante_legal",
+        "autocomplete_representante_legal",
+    )
 
-    cliente_fields = [
-        "id", "nombre", "primer_apellido", "segundo_apellido", "nombre_completo",
-        "nacionalidad", "nie", "pasaporte", "dni", "documento",
-        "fecha_nacimiento", "localidad_nacimiento", "pais_nacimiento",
-        "nombre_padre", "nombre_madre", "estado_civil", "sexo",
-        "telefono", "email", "tipo_via", "nombre_via", "domicilio_espana",
-        "localidad", "codigo_postal", "provincia", "numero", "piso",
-        "estado_cliente", "origen_cliente", "responsable_interno",
-        "observaciones", "observaciones_internas",
-    ]
 
-    contacto_fields = [
-        "id", "tipo_contacto", "parentesco", "titulo",
-        "nombre", "primer_apellido", "segundo_apellido", "nombre_completo",
-        "nie", "dni", "pasaporte", "documento", "email", "telefono",
-        "nacionalidad", "fecha_nacimiento", "sexo", "observaciones",
-    ]
-
-    if source in ("cliente", "cliente_expediente", "clientes", "datos_cliente"):
-        return cliente_fields
-    if source in ("empleadores_cliente", "empleador", "empleadores"):
-        return contacto_fields + ["empresa", "actividad", "cnae", "cno"]
-    if source in ("catalogo_cnae", "actividad_cnae"):
-        return ["valor", "codigo", "descripcion"]
-    if source in ("catalogo_cno", "cno_sepe"):
-        return ["valor", "codigo", "descripcion"]
-    return contacto_fields
-
+def _is_cliente_autocomplete_type(tipo):
+    tipo = str(tipo or "").strip().lower()
+    return tipo in (
+        "dato_cliente",
+        "autocomplete_cliente",
+    )
 
 def get_formulario_for_context(tipo_expediente_id=None, subtipo_expediente_id=None):
     initialize_dynamic_forms_schema()
@@ -208,6 +177,210 @@ def load_datos_especificos(expediente_id):
     return {row["codigo"]: row["valor"] for row in rows}
 
 
+def _parse_autocomplete_record_id(value):
+    """Extrae el id inicial de un valor AppAutocomplete: '11 - Nombre · NIE'."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    token = raw.split(" - ", 1)[0].strip()
+    if token.isdigit():
+        return int(token)
+    return None
+
+
+def _clean_derived_value(value):
+    return str(value or "").strip()
+
+
+def _full_name(row):
+    return " ".join(
+        _clean_derived_value(row.get(key))
+        for key in ("nombre", "primer_apellido", "segundo_apellido")
+        if _clean_derived_value(row.get(key))
+    ).strip()
+
+
+def _document_value(row):
+    return (
+        _clean_derived_value(row.get("nie"))
+        or _clean_derived_value(row.get("dni"))
+        or _clean_derived_value(row.get("pasaporte"))
+    )
+
+
+def _fetch_row_by_id(conn, table_name, record_id):
+    if not record_id:
+        return None
+    try:
+        row = conn.execute(
+            f"SELECT * FROM {table_name} WHERE id = ? LIMIT 1",
+            (int(record_id),),
+        ).fetchone()
+        return _dict(row)
+    except Exception:
+        return None
+
+
+def _build_prefixed_row_values(prefix, row, id_suffix):
+    """
+    Convierte una fila cliente/contacto en datos específicos derivados.
+
+    Ejemplo para representante_legal:
+    - representante_legal_contacto_id
+    - representante_legal_nombre
+    - representante_legal_primer_apellido
+    - representante_legal_nombre_completo
+    - representante_legal_documento
+    - representante_legal_parentesco
+
+    Además expone cualquier columna escalar disponible con el prefijo del campo,
+    para poder usarla después en snapshots, Mercurio o mappers sin nuevos parches.
+    """
+    if not prefix or not row:
+        return {}
+
+    derived = {
+        f"{prefix}_{id_suffix}": _clean_derived_value(row.get("id")),
+        f"{prefix}_nombre_completo": _full_name(row),
+        f"{prefix}_documento": _document_value(row),
+    }
+
+    for key, value in row.items():
+        if isinstance(value, (dict, list, tuple, set, bytes, bytearray)):
+            continue
+        derived[f"{prefix}_{_normalize_code(key)}"] = _clean_derived_value(value)
+
+    return {key: value for key, value in derived.items() if value != ""}
+
+
+def _build_autocomplete_derived_values(conn, campos, values):
+    """Genera datos derivados de campos autocomplete dinámicos."""
+    derived = {}
+
+    for campo in campos:
+        codigo = campo.get("codigo")
+        tipo = str(campo.get("tipo_campo") or "").lower().strip()
+        if not codigo or codigo not in values:
+            continue
+
+        record_id = _parse_autocomplete_record_id(values.get(codigo))
+        if not record_id:
+            continue
+
+        if _is_contact_autocomplete_type(tipo):
+            row = _fetch_row_by_id(conn, "cliente_contactos", record_id)
+            derived.update(_build_prefixed_row_values(codigo, row, "contacto_id"))
+
+        elif _is_cliente_autocomplete_type(tipo):
+            row = _fetch_row_by_id(conn, "clientes", record_id)
+            derived.update(_build_prefixed_row_values(codigo, row, "cliente_id"))
+
+    return derived
+
+
+def _delete_previous_autocomplete_derivatives(conn, expediente_id, formulario_id, campos):
+    """
+    Borra derivados antiguos de los autocompletes del formulario antes de regenerarlos.
+    Solo borra registros técnicos con campo_id NULL, nunca valores manuales configurados.
+    """
+    for campo in campos:
+        codigo = campo.get("codigo")
+        tipo = str(campo.get("tipo_campo") or "").lower().strip()
+        if not codigo:
+            continue
+        if not (_is_contact_autocomplete_type(tipo) or _is_cliente_autocomplete_type(tipo)):
+            continue
+
+        conn.execute(
+            """
+            DELETE FROM expediente_datos_especificos
+            WHERE expediente_id = ?
+              AND formulario_id = ?
+              AND codigo LIKE ?
+            """,
+            (int(expediente_id), int(formulario_id), f"{codigo}_%"),
+        )
+
+
+
+def _get_or_create_derived_campo_id(conn, formulario_id, codigo):
+    """
+    Garantiza un campo técnico para un dato derivado de autocomplete.
+
+    La tabla expediente_datos_especificos exige campo_id NOT NULL y además
+    usa ON CONFLICT(expediente_id, campo_id). Por eso cada derivado necesita
+    su propio campo_id técnico, no puede guardarse con NULL ni reutilizar el
+    campo_id del autocomplete principal.
+    """
+    codigo = str(codigo or "").strip()
+    if not codigo:
+        return None
+
+    row = conn.execute(
+        """
+        SELECT id
+        FROM config_campos_formulario_expediente
+        WHERE formulario_id = ?
+          AND codigo = ?
+        LIMIT 1
+        """,
+        (int(formulario_id), codigo),
+    ).fetchone()
+    if row:
+        return int(row["id"])
+
+    cur = conn.execute(
+        """
+        INSERT INTO config_campos_formulario_expediente (
+            formulario_id, codigo, etiqueta, tipo_campo, obligatorio,
+            opciones_json, placeholder, ayuda, valor_defecto, orden, activo
+        )
+        VALUES (?, ?, ?, ?, 0, '', '', ?, '', 9999, 0)
+        """,
+        (
+            int(formulario_id),
+            codigo,
+            codigo,
+            "derivado_autocomplete",
+            "Campo técnico generado desde autocomplete dinámico. No mostrar en formulario.",
+        ),
+    )
+    return int(cur.lastrowid)
+
+def _insert_autocomplete_derivatives(conn, expediente_id, formulario_id, derived_values):
+    """Persiste derivados técnicos con campo_id propio para que entren en snapshot."""
+    for codigo, valor in (derived_values or {}).items():
+        codigo = str(codigo or "").strip()
+        if not codigo:
+            continue
+
+        campo_id = _get_or_create_derived_campo_id(conn, formulario_id, codigo)
+        if not campo_id:
+            continue
+
+        conn.execute(
+            """
+            INSERT INTO expediente_datos_especificos (
+                expediente_id, formulario_id, campo_id, codigo, valor, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(expediente_id, campo_id)
+            DO UPDATE SET
+                valor = excluded.valor,
+                codigo = excluded.codigo,
+                formulario_id = excluded.formulario_id,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                int(expediente_id),
+                int(formulario_id),
+                int(campo_id),
+                codigo,
+                str(valor or ""),
+            ),
+        )
+
 def save_datos_especificos(expediente_id, formulario_id, values):
     initialize_dynamic_forms_schema()
 
@@ -221,7 +394,7 @@ def save_datos_especificos(expediente_id, formulario_id, values):
             _dict(row)
             for row in conn.execute(
                 """
-                SELECT id, codigo
+                SELECT id, codigo, tipo_campo, opciones_json
                 FROM config_campos_formulario_expediente
                 WHERE formulario_id = ?
                   AND activo = 1
@@ -254,6 +427,10 @@ def save_datos_especificos(expediente_id, formulario_id, values):
                     str(valor or ""),
                 ),
             )
+
+        _delete_previous_autocomplete_derivatives(conn, expediente_id, formulario_id, campos)
+        derived_values = _build_autocomplete_derived_values(conn, campos, values)
+        _insert_autocomplete_derivatives(conn, expediente_id, formulario_id, derived_values)
 
         conn.commit()
 
