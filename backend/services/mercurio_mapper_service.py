@@ -698,6 +698,20 @@ def _overlay_representante_legal_from_contacto_autocomplete(merged, datos):
     _fill_missing(merged, "representante_legal_telefono_movil", contacto.get("telefono"))
     _fill_missing(merged, "representante_legal_email", contacto.get("email"))
 
+    # Domicilio/localización del representante legal.
+    # Importante para EX01 familiar y para diagnóstico de volcado Mercurio.
+    _fill_missing(merged, "representante_legal_domicilio_espana", contacto.get("domicilio_espana"))
+    _fill_missing(merged, "representante_legal_tipo_via", contacto.get("tipo_via"))
+    _fill_missing(merged, "representante_legal_nombre_via", contacto.get("nombre_via"))
+    _fill_missing(merged, "representante_legal_numero", contacto.get("numero"))
+    _fill_missing(merged, "representante_legal_piso", contacto.get("piso"))
+    _fill_missing(merged, "representante_legal_puerta", contacto.get("puerta"))
+    _fill_missing(merged, "representante_legal_escalera", contacto.get("escalera"))
+    _fill_missing(merged, "representante_legal_provincia", contacto.get("provincia"))
+    _fill_missing(merged, "representante_legal_localidad", contacto.get("localidad"))
+    _fill_missing(merged, "representante_legal_municipio", contacto.get("localidad"))
+    _fill_missing(merged, "representante_legal_codigo_postal", contacto.get("codigo_postal"))
+
     # Datos auxiliares para diagnóstico/exportación, sin interferir en Mercurio.
     _fill_missing(merged, "representante_legal_nie", contacto.get("nie"))
     _fill_missing(merged, "representante_legal_dni", contacto.get("dni"))
@@ -723,12 +737,14 @@ def _overlay_representante_legal_from_datos_especificos(rep, snapshot):
 
     merged = dict(rep or {})
 
+    # Prioridad correcta: si existe nombre_completo derivado del autocomplete,
+    # debe ganar sobre nombre para no perder apellidos al guardar derivados.
     nombre = _first_dynamic_value(
         datos,
-        "representante_legal_nombre",
         "representante_legal_nombre_completo",
-        "rep_legal_nombre",
         "rep_legal_nombre_completo",
+        "representante_legal_nombre",
+        "rep_legal_nombre",
     )
     if not nombre:
         nombre_parts = [
@@ -745,6 +761,11 @@ def _overlay_representante_legal_from_datos_especificos(rep, snapshot):
         "representante_legal_titulo": _first_dynamic_value(datos, "representante_legal_titulo", "rep_legal_titulo", "representante_legal_parentesco", "rep_legal_parentesco"),
         "representante_legal_telefono_movil": _first_dynamic_value(datos, "representante_legal_telefono_movil", "rep_legal_telefono_movil", "representante_legal_telefono", "rep_legal_telefono"),
         "representante_legal_email": _first_dynamic_value(datos, "representante_legal_email", "rep_legal_email"),
+        "representante_legal_provincia": _first_dynamic_value(datos, "representante_legal_provincia", "rep_legal_provincia"),
+        "representante_legal_municipio": _first_dynamic_value(datos, "representante_legal_municipio", "rep_legal_municipio", "representante_legal_localidad", "rep_legal_localidad"),
+        "representante_legal_localidad": _first_dynamic_value(datos, "representante_legal_localidad", "rep_legal_localidad", "representante_legal_municipio", "rep_legal_municipio"),
+        "representante_legal_codigo_postal": _first_dynamic_value(datos, "representante_legal_codigo_postal", "rep_legal_codigo_postal"),
+        "representante_legal_domicilio_espana": _first_dynamic_value(datos, "representante_legal_domicilio_espana", "rep_legal_domicilio_espana"),
     }
 
     for key, value in explicit_values.items():
@@ -818,6 +839,11 @@ def build_datos_representante(snapshot=None):
         "representante_legal_titulo": rep.get("representante_legal_titulo") or "",
         "representante_legal_telefono_movil": rep.get("representante_legal_telefono_movil") or "",
         "representante_legal_email": rep.get("representante_legal_email") or "",
+        "representante_legal_provincia": rep.get("representante_legal_provincia") or "",
+        "representante_legal_municipio": rep.get("representante_legal_municipio") or rep.get("representante_legal_localidad") or "",
+        "representante_legal_localidad": rep.get("representante_legal_localidad") or rep.get("representante_legal_municipio") or "",
+        "representante_legal_codigo_postal": rep.get("representante_legal_codigo_postal") or "",
+        "representante_legal_domicilio_espana": rep.get("representante_legal_domicilio_espana") or "",
 
         # Datos auxiliares ERP / Box para fases posteriores
         "ruta_box_dni_representante": rep.get("representante_ruta_box_dni") or "",
