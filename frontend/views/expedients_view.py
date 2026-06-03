@@ -174,6 +174,7 @@ def expedients_view(page: ft.Page):
         "para_presentar_documents": {},
         "para_presentar_documents_error": {},
         "specific_field_controls": {},
+        "specific_live_values": {},
         "specific_formulario_id": None,
         "snapshot_status": {},
         "expedient_docx_result": {},
@@ -1016,6 +1017,204 @@ def expedients_view(page: ft.Page):
         )
 
 
+
+    def _is_dynamic_autocomplete_type(tipo):
+        tipo = str(tipo or "").strip().lower()
+        return tipo in (
+            "dato_cliente",
+            "autocomplete_cliente",
+            "contacto_cliente",
+            "autocomplete_familiar",
+            "representante_legal",
+            "autocomplete_representante_legal",
+            "empleador_empresa",
+            "autocomplete_empleador",
+        )
+
+    def _autocomplete_has_derived_fields(config):
+        if not isinstance(config, dict):
+            return False
+        fields = config.get("derived_fields")
+        return isinstance(fields, list) and bool(fields)
+
+    def _autocomplete_is_employer(tipo, config):
+        tipo = str(tipo or "").strip().lower()
+        profile = str((config or {}).get("profile") or "").strip().upper()
+        contact_filter = str((config or {}).get("contact_filter") or "").strip().upper()
+        source = str((config or {}).get("source") or "").strip().lower()
+
+        if tipo in ("empleador_empresa", "autocomplete_empleador"):
+            return True
+        if "EMPLEADOR" in profile or "EMPRESA" in profile:
+            return True
+        if any(token in contact_filter for token in ("EMPLEADOR", "EMPRESA", "TRABAJO")):
+            return True
+        if source in ("empleadores_cliente", "empleador", "empleadores"):
+            return True
+        return False
+
+    def _autocomplete_options_and_loader_for_config(campo, config):
+        tipo = str((campo or {}).get("tipo_campo") or "").strip().lower()
+        source = str((config or {}).get("source") or "").strip().lower()
+        cliente_id = _option_id(cliente.get_value())
+
+        if source in ("cliente", "cliente_expediente", "clientes", "datos_cliente") or tipo in ("dato_cliente", "autocomplete_cliente"):
+            return cliente_options, _fetch_cliente_details
+
+        if source in ("catalogo_cnae", "actividad_cnae") or tipo == "actividad_cnae":
+            return _load_catalog_options("actividades_cnae.csv"), lambda selected_id: {}
+
+        if source in ("catalogo_cno", "cno_sepe") or tipo == "cno_sepe":
+            return _load_catalog_options("cno_sepe_2011.csv"), lambda selected_id: {}
+
+        return (
+            _fetch_cliente_contact_options(
+                cliente_id,
+                only_employers=_autocomplete_is_employer(tipo, config),
+            ),
+            _fetch_cliente_contact_details,
+        )
+
+    def _source_key_for_derived_field(field_name):
+        field_name = str(field_name or "").strip()
+        lowered = field_name.lower()
+
+        if lowered in ("id", "contacto_id", "cliente_id", "empleador_id", "empresa_id", "record_id"):
+            return "id"
+
+        aliases = {
+            "nombre_completo": "nombre_completo",
+            "documento": "documento",
+            "documento_identidad": "documento",
+            "num_documento": "documento",
+            "numero_documento": "documento",
+            "telefono_movil": "telefono",
+            "movil": "telefono",
+            "mail": "email",
+            "correo": "email",
+            "titulo": "titulo",
+        }
+        return aliases.get(lowered, field_name)
+
+    def _remember_specific_value(codigo, value):
+        if not codigo:
+            return
+        state.setdefault("specific_live_values", {})[str(codigo)] = str(value or "")
+
+    def _set_specific_control_value(codigo, value):
+        value = str(value or "")
+        _remember_specific_value(codigo, value)
+        control = state.setdefault("specific_field_controls", {}).get(codigo)
+        if control is None:
+            return
+        try:
+            if hasattr(control, "set_value"):
+                control.set_value(value, update=False)
+            else:
+                control.value = value
+        except Exception:
+            try:
+                control.value = value
+            except Exception:
+                pass
+
+    def _current_specific_values():
+        """Lee los controles visibles y mezcla los valores volcados en vivo.
+
+        No puede llamarse a sí misma: esta función es la fuente única de
+        valores que se guardan en expediente_datos_especificos.
+        """
+        values = {
+            codigo: _dynamic_value(control)
+            for codigo, control in state.get("specific_field_controls", {}).items()
+        }
+        values.update(state.get("specific_live_values") or {})
+        return values
+
+    def _autosave_specific_values_silent():
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        formulario_id = state.get("specific_formulario_id")
+        if not expediente_id or not formulario_id:
+            return
+        try:
+            dynamic_form_service.save_datos_especificos(
+                expediente_id,
+                formulario_id,
+                _current_specific_values(),
+            )
+        except Exception:
+            # No bloquea la selección. El botón Guardar mostrará el error si persiste.
+            pass
+
+    def _apply_autocomplete_derived_fields(codigo, config, selected, detail_loader):
+        """
+        Vuelca en pantalla los derived_fields materializados.
+
+        Ejemplo:
+        campo principal: representante_legal
+        derived_fields: ["nombre", "nie"]
+        controles destino:
+        - representante_legal_nombre
+        - representante_legal_nie
+        """
+        selected_id_value = _option_id(selected)
+        details = detail_loader(selected_id_value) if selected_id_value else {}
+
+        fields = (config or {}).get("derived_fields") or []
+        controls = state.setdefault("specific_field_controls", {})
+
+        # Compatibilidad: si existe un campo técnico prefix_id, también se rellena.
+        _set_specific_control_value(f"{codigo}_id", str(selected_id_value or ""))
+
+        for field_name in fields:
+            field_name = str(field_name or "").strip()
+            if not field_name:
+                continue
+
+            target_code = f"{codigo}_{field_name}"
+            source_key = _source_key_for_derived_field(field_name)
+            if source_key == "id":
+                value = str(selected_id_value or "")
+            else:
+                value = _detail_value(details, source_key)
+
+            _set_specific_control_value(target_code, value)
+
+    def _build_autocomplete_derivatives_field(campo, saved_values, required_suffix, config, default_help=""):
+        codigo = campo.get("codigo")
+        label = campo.get("etiqueta") or codigo
+        value = saved_values.get(codigo, campo.get("valor_defecto") or "")
+        ayuda = campo.get("ayuda") or default_help or "Selecciona y se rellenan los derivados."
+
+        options, detail_loader = _autocomplete_options_and_loader_for_config(campo, config)
+
+        def apply_selected(selected):
+            _remember_specific_value(codigo, selected)
+            _apply_autocomplete_derived_fields(codigo, config, selected, detail_loader)
+            _autosave_specific_values_silent()
+            page.update()
+
+        autocomplete = AppAutocomplete(
+            page=page,
+            label=label + required_suffix,
+            options=options or [],
+            value=value or "",
+            width=620,
+            max_results=10,
+            allow_free_text=True,
+            on_select=apply_selected,
+        )
+        state.setdefault("specific_field_controls", {})[codigo] = autocomplete
+
+        return ft.Column(
+            controls=[
+                autocomplete.control,
+                ft.Text(ayuda, size=11, color=Q_MUTED),
+            ],
+            spacing=3,
+        )
+
+
     def _build_representante_legal_field(campo, saved_values, required_suffix):
         codigo = campo.get("codigo")
         label = campo.get("etiqueta") or codigo or "Representante legal"
@@ -1127,6 +1326,9 @@ def expedients_view(page: ft.Page):
         if tipo.startswith("autocomplete_") and autocomplete_config.get("campos"):
             return _build_mapped_autocomplete_field(campo, saved_values, required_suffix, autocomplete_config, ayuda)
 
+        if _is_dynamic_autocomplete_type(tipo) and _autocomplete_has_derived_fields(autocomplete_config):
+            return _build_autocomplete_derivatives_field(campo, saved_values, required_suffix, autocomplete_config, ayuda)
+
         if tipo in ("dato_cliente", "autocomplete_cliente"):
             return _autocomplete_field(
                 codigo,
@@ -1227,10 +1429,7 @@ def expedients_view(page: ft.Page):
             show_form_error("No hay formulario específico configurado para este expediente")
             return
 
-        values = {
-            codigo: _dynamic_value(control)
-            for codigo, control in state.get("specific_field_controls", {}).items()
-        }
+        values = _current_specific_values()
 
         try:
             dynamic_form_service.save_datos_especificos(expediente_id, formulario_id, values)
@@ -1870,6 +2069,7 @@ def expedients_view(page: ft.Page):
         saved_values = dynamic_form_service.load_datos_especificos(expediente_id) if expediente_id else {}
 
         state["specific_field_controls"] = {}
+        state["specific_live_values"] = {}
         state["specific_formulario_id"] = formulario.get("id") if formulario else None
 
         controls = [

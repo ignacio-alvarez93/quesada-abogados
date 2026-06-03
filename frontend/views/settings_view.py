@@ -3043,7 +3043,138 @@ def settings_view(page: ft.Page):
             width=220,
         )
         campo_obligatorio = select_input("Obligatorio", _bool_options(), value="Sí" if int(campo_editing.get("obligatorio", 0)) else "No", width=140)
-        campo_opciones = text_input("Opciones select separadas por |", campo_editing.get("opciones_json", ""), width=520)
+
+        campo_opciones = multiline_input(
+            "Opciones / JSON de configuración",
+            campo_editing.get("opciones_json", ""),
+            width=720,
+            height=118,
+        )
+
+        def _json_template_for_current_tipo():
+            profile = dynamic_form_service.get_autocomplete_derivative_profile(campo_tipo.value or "")
+            if not profile:
+                return ""
+
+            return json.dumps(
+                {
+                    "mode": "autocomplete_derivatives",
+                    "source": profile.get("source"),
+                    "profile": campo_tipo.value,
+                    "contact_filter": profile.get("contact_filter", ""),
+                    "derived_enabled": True,
+                    "derived_fields": [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        def insertar_json_autocomplete(e=None):
+            template = _json_template_for_current_tipo()
+            if not template:
+                page.snack_bar = ft.SnackBar(ft.Text("El tipo seleccionado no tiene plantilla JSON de autocomplete"))
+                page.snack_bar.open = True
+                page.update()
+                return
+            campo_opciones.value = template
+            page.update()
+
+        def validar_json_opciones(e=None):
+            raw = (campo_opciones.value or "").strip()
+            if not raw:
+                page.snack_bar = ft.SnackBar(ft.Text("El campo de opciones está vacío"))
+                page.snack_bar.open = True
+                page.update()
+                return
+            if "|" in raw and not raw.startswith("{") and not raw.startswith("["):
+                page.snack_bar = ft.SnackBar(ft.Text("Formato de opciones select correcto"))
+                page.snack_bar.open = True
+                page.update()
+                return
+            try:
+                json.loads(raw)
+                page.snack_bar = ft.SnackBar(ft.Text("JSON válido"))
+            except Exception as exc:
+                page.snack_bar = ft.SnackBar(ft.Text(f"JSON inválido: {exc}"))
+            page.snack_bar.open = True
+            page.update()
+
+        def crear_campos_derivados(visible=True):
+            if not state.get("editing_campo_id"):
+                page.snack_bar = ft.SnackBar(ft.Text("Primero guarda el campo autocomplete y vuelve a editarlo para crear sus derivados"))
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            try:
+                # Guarda primero el JSON actual del editor para que el backend materialice
+                # exactamente la configuración que se ve en pantalla.
+                dynamic_form_service.update_campo_formulario(
+                    state["editing_campo_id"],
+                    {
+                        "formulario_id": state["selected_formulario_id"],
+                        "codigo": campo_codigo.value,
+                        "etiqueta": campo_etiqueta.value,
+                        "tipo_campo": campo_tipo.value,
+                        "obligatorio": _bool_to_int(campo_obligatorio.value),
+                        "opciones": build_campo_opciones_value(),
+                        "placeholder": campo_placeholder.value,
+                        "ayuda": campo_ayuda.value,
+                        "valor_defecto": campo_valor_defecto.value,
+                        "orden": int(campo_orden.value or 0),
+                        "activo": _bool_to_int(campo_activo.value),
+                    },
+                )
+                result = dynamic_form_service.materialize_autocomplete_derived_fields(
+                    state["editing_campo_id"],
+                    visible=visible,
+                )
+                creados = len(result.get("created") or [])
+                actualizados = len(result.get("updated") or [])
+                omitidos = result.get("skipped") or []
+                modo = "visibles" if visible else "técnicos ocultos"
+                msg = f"Campos derivados {modo}: {creados} creados, {actualizados} actualizados"
+                if omitidos:
+                    msg += f". Omitidos no válidos: {', '.join(omitidos)}"
+                notify(msg)
+                state["editing_campo_id"] = None
+                refresh()
+            except Exception as exc:
+                fail(str(exc))
+                refresh()
+
+        opciones_help_box = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Opciones del campo", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text(
+                        "Select: usa |. Autocomplete: usa JSON.",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Row(
+                        [
+                            secondary_button("Insertar JSON autocomplete", insertar_json_autocomplete),
+                            secondary_button("Validar JSON", validar_json_opciones),
+                            primary_button("Crear campos visibles", lambda e: crear_campos_derivados(visible=True)),
+                            secondary_button("Crear técnicos ocultos", lambda e: crear_campos_derivados(visible=False)),
+                        ],
+                        wrap=True,
+                        spacing=8,
+                    ),
+                    campo_opciones,
+                ],
+                spacing=8,
+            ),
+        )
+
+        def build_campo_opciones_value():
+            return campo_opciones.value
+
         campo_placeholder = text_input("Placeholder", campo_editing.get("placeholder", ""), width=320)
         campo_ayuda = text_input("Ayuda", campo_editing.get("ayuda", ""), width=420)
         campo_valor_defecto = text_input("Valor defecto", campo_editing.get("valor_defecto", ""), width=240)
@@ -3059,7 +3190,7 @@ def settings_view(page: ft.Page):
                 "etiqueta": campo_etiqueta.value,
                 "tipo_campo": campo_tipo.value,
                 "obligatorio": _bool_to_int(campo_obligatorio.value),
-                "opciones": campo_opciones.value,
+                "opciones": build_campo_opciones_value(),
                 "placeholder": campo_placeholder.value,
                 "ayuda": campo_ayuda.value,
                 "valor_defecto": campo_valor_defecto.value,
@@ -3161,7 +3292,7 @@ def settings_view(page: ft.Page):
                     ),
                     ft.Text("Los códigos técnicos se usarán después para mapear Mercurio/PDF.", size=12, color=Q_MUTED),
                     ft.Row([campo_codigo, campo_etiqueta, campo_tipo, campo_obligatorio], wrap=True, spacing=10),
-                    campo_opciones,
+                    opciones_help_box,
                     ft.Row([campo_placeholder, campo_ayuda, campo_valor_defecto], wrap=True, spacing=10),
                     ft.Row([campo_orden, campo_activo], wrap=True, spacing=10),
                     ft.Row(
