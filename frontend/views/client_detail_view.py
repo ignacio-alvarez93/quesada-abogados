@@ -491,6 +491,25 @@ def _get_client_snapshot_for_contact(conn, client_id):
     return dict(row) if row else None
 
 
+def _get_client_for_navigation(client_id):
+    if not client_id:
+        return None
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM clientes
+                WHERE id = ?
+                  AND COALESCE(activo, 1) = 1
+                """,
+                (int(client_id),),
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception:
+        return None
+
+
 def _contact_data_from_client(cliente):
     data = _copy_client_to_contact_data(cliente or {})
     data.setdefault("tipo_via", (cliente or {}).get("tipo_via") or "")
@@ -1270,7 +1289,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             if (item.get("tipo_contacto") or "") == tipo_contacto
         ]
 
-    def _render_contact_table(items, empty_message, open_new_callback, open_edit_callback=None, delete_callback=None, is_employer=False):
+    def _render_contact_table(items, empty_message, open_new_callback, open_edit_callback=None, delete_callback=None, open_ref_client_callback=None, is_employer=False):
         if not items:
             return ft.Column(
                 controls=[
@@ -1278,6 +1297,43 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                     primary_button("Nuevo empleador" if is_employer else "Nuevo contacto", open_new_callback),
                 ],
                 spacing=12,
+            )
+
+        def _contact_actions_menu(item):
+            menu_items = []
+
+            ref_id = item.get("cliente_referenciado_id")
+            if ref_id and open_ref_client_callback:
+                menu_items.append(
+                    ft.PopupMenuItem(
+                        content=ft.Text("Ver cliente"),
+                        icon=ft.Icons.PERSON_SEARCH,
+                        on_click=lambda e, rid=ref_id: open_ref_client_callback(rid),
+                    )
+                )
+
+            if open_edit_callback:
+                menu_items.append(
+                    ft.PopupMenuItem(
+                        content=ft.Text("Modificar"),
+                        icon=ft.Icons.EDIT,
+                        on_click=lambda e, contact=item: open_edit_callback(contact),
+                    )
+                )
+
+            if delete_callback:
+                menu_items.append(
+                    ft.PopupMenuItem(
+                        content=ft.Text("Eliminar"),
+                        icon=ft.Icons.DELETE_OUTLINE,
+                        on_click=lambda e, cid=item.get("id"): delete_callback(cid),
+                    )
+                )
+
+            return ft.PopupMenuButton(
+                icon=ft.Icons.MORE_VERT,
+                tooltip="Acciones",
+                items=menu_items,
             )
 
         rows = []
@@ -1304,6 +1360,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             else:
                 rows.append(
                     [
+                        _contact_actions_menu(item),
                         item.get("parentesco") or "-",
                         _nombre_completo(item),
                         item.get("nie") or item.get("pasaporte") or item.get("dni") or "-",
@@ -1311,14 +1368,6 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         item.get("email") or "-",
                         "Sí" if item.get("cliente_referenciado_id") else "No",
                         ref_nombre or "-",
-                        ft.Row(
-                            controls=[
-                                secondary_button("Editar", lambda e, contact=item: open_edit_callback(contact)) if open_edit_callback else ft.Container(),
-                                secondary_button("Eliminar", lambda e, cid=item.get("id"): delete_callback(cid)) if delete_callback else ft.Container(),
-                            ],
-                            spacing=6,
-                            wrap=True,
-                        ),
                     ]
                 )
 
@@ -1344,7 +1393,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                 ),
                 app_table(
                     ["Empresa", "CIF/NIF", "Teléfono", "Email", "Domicilio", "Localidad"] if is_employer else
-                    ["Parentesco", "Nombre", "Documento", "Teléfono", "Email", "Es cliente", "Cliente referenciado", "Acciones"],
+                    ["", "Parentesco", "Nombre", "Documento", "Teléfono", "Email", "Es cliente", "Cliente referenciado"],
                     rows,
                     height=390,
                 ),
@@ -1604,6 +1653,21 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             page.snack_bar.open = True
             page.update()
 
+        def open_referenced_client(ref_id):
+            referenced_client = _get_client_for_navigation(ref_id)
+            if not referenced_client:
+                page.snack_bar = ft.SnackBar(ft.Text("No se encontró el cliente referenciado"))
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            content_container.content = client_detail_view(
+                page,
+                referenced_client,
+                on_back=lambda e=None: set_section("contactos"),
+            )
+            page.update()
+
         contacto_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Nuevo contacto"),
@@ -1680,6 +1744,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         open_new_contact,
                         open_edit_callback=open_edit_contact,
                         delete_callback=delete_contact,
+                        open_ref_client_callback=open_referenced_client,
                         is_employer=False,
                     ),
                 ),
