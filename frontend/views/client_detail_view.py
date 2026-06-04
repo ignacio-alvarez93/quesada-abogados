@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import sqlite3
+import uuid
 from pathlib import Path
 from datetime import date, datetime
 
@@ -44,8 +45,35 @@ CONTACT_RELATIONSHIPS = [
     "Hermano/a",
     "Abuelo/a",
     "Nieto/a",
+    "Tutor/a",
+    "Tutelado/a",
+    "Representante legal",
+    "Representado/a",
+    "Ascendiente",
+    "Descendiente",
     "Otro familiar",
 ]
+
+RELATIONSHIP_INVERSES = {
+    "Cónyuge": "Cónyuge",
+    "Pareja": "Pareja",
+    "Padre": "Hijo/a",
+    "Madre": "Hijo/a",
+    "Hijo/a": "Padre",
+    "Hermano/a": "Hermano/a",
+    "Abuelo/a": "Nieto/a",
+    "Nieto/a": "Abuelo/a",
+    "Tutor/a": "Tutelado/a",
+    "Tutelado/a": "Tutor/a",
+    "Representante legal": "Representado/a",
+    "Representado/a": "Representante legal",
+    "Ascendiente": "Descendiente",
+    "Descendiente": "Ascendiente",
+    "Otro familiar": "Otro familiar",
+}
+
+def _inverse_parentesco(parentesco):
+    return RELATIONSHIP_INVERSES.get(str(parentesco or "").strip(), "")
 
 VIA_TYPES = [
     "CALLE",
@@ -293,6 +321,9 @@ def _ensure_client_contacts_schema():
                 cno_sepe TEXT,
                 observaciones TEXT,
                 observaciones_internas TEXT,
+                relacion_uuid TEXT,
+                relacion_origen TEXT DEFAULT 'manual',
+                sincronizar_bidireccional INTEGER DEFAULT 1,
                 activo INTEGER DEFAULT 1,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -301,12 +332,19 @@ def _ensure_client_contacts_schema():
             )
             """
         )
-        for column in ["actividad", "cnae", "cno_sepe"]:
+        for column in ["actividad", "cnae", "cno_sepe", "puerta", "escalera", "relacion_uuid", "relacion_origen"]:
             _ensure_column(conn, "cliente_contactos", column, "TEXT")
+        _ensure_column(conn, "cliente_contactos", "sincronizar_bidireccional", "INTEGER DEFAULT 1")
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_cliente_contactos_cliente
             ON cliente_contactos(cliente_id, activo, tipo_contacto)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_cliente_contactos_relacion_uuid
+            ON cliente_contactos(relacion_uuid, activo)
             """
         )
         conn.commit()
@@ -418,26 +456,240 @@ def _get_client_contacts(cliente_id):
         return []
 
 
-def _save_client_contact(data):
-    _ensure_client_contacts_schema()
-    fields = [
-        "cliente_id", "tipo_contacto", "parentesco", "cliente_referenciado_id",
-        "nombre", "primer_apellido", "segundo_apellido", "nie", "pasaporte", "dni",
-        "nacionalidad", "fecha_nacimiento", "telefono", "email", "estado_cliente",
-        "domicilio_espana", "tipo_via", "nombre_via", "numero", "piso", "puerta", "escalera",
-        "localidad", "provincia", "codigo_postal",
-        "localidad_nacimiento", "pais_nacimiento", "nombre_padre", "nombre_madre",
-        "estado_civil", "sexo", "actividad", "cnae", "cno_sepe",
-        "observaciones", "observaciones_internas",
-    ]
-    with _connect() as conn:
+CONTACT_FIELDS = [
+    "cliente_id", "tipo_contacto", "parentesco", "cliente_referenciado_id",
+    "nombre", "primer_apellido", "segundo_apellido", "nie", "pasaporte", "dni",
+    "nacionalidad", "fecha_nacimiento", "telefono", "email", "estado_cliente",
+    "domicilio_espana", "tipo_via", "nombre_via", "numero", "piso", "puerta", "escalera",
+    "localidad", "provincia", "codigo_postal",
+    "localidad_nacimiento", "pais_nacimiento", "nombre_padre", "nombre_madre",
+    "estado_civil", "sexo", "actividad", "cnae", "cno_sepe",
+    "observaciones", "observaciones_internas",
+    "relacion_uuid", "relacion_origen", "sincronizar_bidireccional",
+]
+
+
+def _get_client_snapshot_for_contact(conn, client_id):
+    if not client_id:
+        return None
+    row = conn.execute(
+        """
+        SELECT
+            id, nombre, primer_apellido, segundo_apellido, nie, pasaporte, dni,
+            nacionalidad, fecha_nacimiento, telefono, email, estado_cliente,
+            domicilio_espana, tipo_via, nombre_via, numero, piso,
+            localidad, provincia, codigo_postal,
+            localidad_nacimiento, pais_nacimiento,
+            nombre_padre, nombre_madre, estado_civil, sexo,
+            observaciones, observaciones_internas
+        FROM clientes
+        WHERE id = ?
+          AND COALESCE(activo, 1) = 1
+        """,
+        (int(client_id),),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _contact_data_from_client(cliente):
+    data = _copy_client_to_contact_data(cliente or {})
+    data.setdefault("tipo_via", (cliente or {}).get("tipo_via") or "")
+    data.setdefault("nombre_via", (cliente or {}).get("nombre_via") or "")
+    data.setdefault("numero", (cliente or {}).get("numero") or "")
+    data.setdefault("piso", (cliente or {}).get("piso") or "")
+    data["puerta"] = ""
+    data["escalera"] = ""
+    data["actividad"] = ""
+    data["cnae"] = ""
+    data["cno_sepe"] = ""
+    return data
+
+
+def _get_contact_by_id(conn, contact_id):
+    if not contact_id:
+        return None
+    row = conn.execute(
+        "SELECT * FROM cliente_contactos WHERE id = ?",
+        (int(contact_id),),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _find_inverse_contact(conn, relacion_uuid, exclude_id=None):
+    if not relacion_uuid:
+        return None
+
+    params = [relacion_uuid]
+    exclude_sql = ""
+    if exclude_id:
+        exclude_sql = "AND id != ?"
+        params.append(int(exclude_id))
+
+    row = conn.execute(
+        f"""
+        SELECT *
+        FROM cliente_contactos
+        WHERE relacion_uuid = ?
+          {exclude_sql}
+          AND COALESCE(activo, 1) = 1
+        ORDER BY id ASC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _insert_contact_row(conn, data):
+    payload = dict(data)
+    payload.setdefault("sincronizar_bidireccional", 1)
+    fields = [field for field in CONTACT_FIELDS if field in payload]
+    cursor = conn.execute(
+        f"""
+        INSERT INTO cliente_contactos ({", ".join(fields)}, updated_at)
+        VALUES ({", ".join("?" for _ in fields)}, CURRENT_TIMESTAMP)
+        """,
+        [payload.get(field) for field in fields],
+    )
+    return cursor.lastrowid
+
+
+def _update_contact_row(conn, contact_id, data):
+    payload = dict(data)
+    fields = [field for field in CONTACT_FIELDS if field in payload and field != "cliente_id"]
+    if not fields:
+        return
+    conn.execute(
+        f"""
+        UPDATE cliente_contactos
+        SET {", ".join(f"{field} = ?" for field in fields)},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        [payload.get(field) for field in fields] + [int(contact_id)],
+    )
+
+
+def _build_inverse_contact_data(conn, data, relacion_uuid):
+    origen_id = data.get("cliente_id")
+    destino_id = data.get("cliente_referenciado_id")
+    origen_cliente = _get_client_snapshot_for_contact(conn, origen_id)
+    if not origen_cliente or not destino_id:
+        return None
+
+    inverse = _contact_data_from_client(origen_cliente)
+    inverse.update({
+        "cliente_id": int(destino_id),
+        "tipo_contacto": data.get("tipo_contacto") or "Familiar",
+        "parentesco": _inverse_parentesco(data.get("parentesco")) or "",
+        "cliente_referenciado_id": int(origen_id),
+        "relacion_uuid": relacion_uuid,
+        "relacion_origen": "inverse",
+        "sincronizar_bidireccional": 1,
+    })
+    return inverse
+
+
+def _sync_inverse_contact(conn, contact_id, data):
+    if (data.get("tipo_contacto") or "") != "Familiar":
+        return
+    if not data.get("cliente_id") or not data.get("cliente_referenciado_id"):
+        return
+    if int(data.get("cliente_id")) == int(data.get("cliente_referenciado_id")):
+        return
+    if int(data.get("sincronizar_bidireccional", 1) or 0) != 1:
+        return
+
+    relacion_uuid = data.get("relacion_uuid") or uuid.uuid4().hex
+    if not data.get("relacion_uuid"):
         conn.execute(
-            f"""
-            INSERT INTO cliente_contactos ({", ".join(fields)}, updated_at)
-            VALUES ({", ".join("?" for _ in fields)}, CURRENT_TIMESTAMP)
+            """
+            UPDATE cliente_contactos
+            SET relacion_uuid = ?,
+                relacion_origen = COALESCE(NULLIF(relacion_origen, ''), 'direct'),
+                sincronizar_bidireccional = 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
             """,
-            [data.get(field) for field in fields],
+            (relacion_uuid, int(contact_id)),
         )
+
+    inverse_data = _build_inverse_contact_data(conn, data, relacion_uuid)
+    if not inverse_data:
+        return
+
+    inverse = _find_inverse_contact(conn, relacion_uuid, exclude_id=contact_id)
+    if inverse:
+        _update_contact_row(conn, inverse["id"], inverse_data)
+        return
+
+    _insert_contact_row(conn, inverse_data)
+
+
+def _archive_inverse_contact(conn, contact):
+    if not contact:
+        return
+    relacion_uuid = contact.get("relacion_uuid")
+    if relacion_uuid:
+        conn.execute(
+            """
+            UPDATE cliente_contactos
+            SET activo = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE relacion_uuid = ?
+              AND id != ?
+            """,
+            (relacion_uuid, int(contact.get("id"))),
+        )
+
+
+def _save_client_contact(data, contact_id=None):
+    _ensure_client_contacts_schema()
+    payload = dict(data)
+    payload["sincronizar_bidireccional"] = int(payload.get("sincronizar_bidireccional", 1) or 0)
+
+    with _connect() as conn:
+        existing = _get_contact_by_id(conn, contact_id) if contact_id else None
+        previous_ref = existing.get("cliente_referenciado_id") if existing else None
+        previous_uuid = existing.get("relacion_uuid") if existing else None
+
+        if payload.get("cliente_referenciado_id"):
+            payload["relacion_uuid"] = previous_uuid or payload.get("relacion_uuid") or uuid.uuid4().hex
+            payload.setdefault("relacion_origen", existing.get("relacion_origen") if existing else "direct")
+        else:
+            payload["relacion_uuid"] = previous_uuid or payload.get("relacion_uuid") or ""
+            payload.setdefault("relacion_origen", existing.get("relacion_origen") if existing else "manual")
+
+        if existing:
+            _update_contact_row(conn, contact_id, payload)
+            saved_id = int(contact_id)
+        else:
+            saved_id = _insert_contact_row(conn, payload)
+
+        if payload.get("cliente_referenciado_id"):
+            _sync_inverse_contact(conn, saved_id, payload)
+        elif previous_ref:
+            _archive_inverse_contact(conn, {**existing, "id": saved_id})
+
+        conn.commit()
+
+
+def _archive_client_contact(contact_id):
+    _ensure_client_contacts_schema()
+    with _connect() as conn:
+        contact = _get_contact_by_id(conn, contact_id)
+        if not contact:
+            return
+        conn.execute(
+            """
+            UPDATE cliente_contactos
+            SET activo = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (int(contact_id),),
+        )
+        _archive_inverse_contact(conn, contact)
         conn.commit()
 
 
@@ -1018,7 +1270,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             if (item.get("tipo_contacto") or "") == tipo_contacto
         ]
 
-    def _render_contact_table(items, empty_message, open_new_callback, is_employer=False):
+    def _render_contact_table(items, empty_message, open_new_callback, open_edit_callback=None, delete_callback=None, is_employer=False):
         if not items:
             return ft.Column(
                 controls=[
@@ -1059,6 +1311,14 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         item.get("email") or "-",
                         "Sí" if item.get("cliente_referenciado_id") else "No",
                         ref_nombre or "-",
+                        ft.Row(
+                            controls=[
+                                secondary_button("Editar", lambda e, contact=item: open_edit_callback(contact)) if open_edit_callback else ft.Container(),
+                                secondary_button("Eliminar", lambda e, cid=item.get("id"): delete_callback(cid)) if delete_callback else ft.Container(),
+                            ],
+                            spacing=6,
+                            wrap=True,
+                        ),
                     ]
                 )
 
@@ -1084,7 +1344,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                 ),
                 app_table(
                     ["Empresa", "CIF/NIF", "Teléfono", "Email", "Domicilio", "Localidad"] if is_employer else
-                    ["Parentesco", "Nombre", "Documento", "Teléfono", "Email", "Es cliente", "Cliente referenciado"],
+                    ["Parentesco", "Nombre", "Documento", "Teléfono", "Email", "Es cliente", "Cliente referenciado", "Acciones"],
                     rows,
                     height=390,
                 ),
@@ -1223,6 +1483,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         }
 
         referencia_cliente = None
+        contact_form_state = {"editing_id": None}
 
         def fill_from_referenced_client(value=None):
             ref_id = _id_from_reference_label(value or referencia_cliente.get_value())
@@ -1257,11 +1518,18 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             allow_free_text=True,
         )
 
+        def _reference_label_for_id(ref_id):
+            if not ref_id:
+                return ""
+            ref = next((item for item in available_clients if int(item.get("id") or 0) == int(ref_id)), None)
+            return _contact_reference_label(ref) if ref else ""
+
         def close_contact_dialog(e=None):
             contacto_dialog.open = False
             page.update()
 
         def clear_contact_form():
+            contact_form_state["editing_id"] = None
             parentesco.value = None
             referencia_cliente.set_value("", update=False)
             nacionalidad_autocomplete.set_value("", update=False)
@@ -1271,6 +1539,27 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             localidad_autocomplete.input.label = "Localidad"
             for control in controls.values():
                 control.value = ""
+
+        def load_contact_form(contact):
+            contact_form_state["editing_id"] = contact.get("id")
+            parentesco.value = contact.get("parentesco") or None
+            referencia_cliente.set_value(_reference_label_for_id(contact.get("cliente_referenciado_id")), update=False)
+
+            for key, control in controls.items():
+                control.value = contact.get(key) or ""
+
+            nacionalidad_autocomplete.set_value(contact.get("nacionalidad") or "", update=False)
+            pais_nacimiento_autocomplete.set_value(contact.get("pais_nacimiento") or "", update=False)
+            provincia_autocomplete.set_value(contact.get("provincia") or "", update=False)
+
+            provincia_value = contact.get("provincia") or ""
+            try:
+                locs = get_localidades_by_provincia(provincia_value) if provincia_value else []
+            except Exception:
+                locs = []
+            localidad_autocomplete.set_options(locs, clear_value=False)
+            localidad_autocomplete.input.label = f"Localidad ({len(locs)})" if locs else "Localidad"
+            localidad_autocomplete.set_value(contact.get("localidad") or "", update=False)
 
         def save_contact(e=None):
             if not nombre.value and not referencia_cliente.get_value():
@@ -1284,6 +1573,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                 "tipo_contacto": "Familiar",
                 "parentesco": parentesco.value or "",
                 "cliente_referenciado_id": _id_from_reference_label(referencia_cliente.get_value()),
+                "sincronizar_bidireccional": 1,
             }
             for key, control in controls.items():
                 data[key] = control.value or ""
@@ -1296,9 +1586,22 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             data["cnae"] = ""
             data["cno_sepe"] = ""
 
-            _save_client_contact(data)
+            _save_client_contact(data, contact_id=contact_form_state.get("editing_id"))
             close_contact_dialog()
             content_container.content = build_contactos_section()
+            page.update()
+
+        def open_edit_contact(contact):
+            load_contact_form(contact)
+            contacto_dialog.title = ft.Text("Editar contacto")
+            contacto_dialog.open = True
+            page.update()
+
+        def delete_contact(contact_id):
+            _archive_client_contact(contact_id)
+            content_container.content = build_contactos_section()
+            page.snack_bar = ft.SnackBar(ft.Text("Contacto eliminado"))
+            page.snack_bar.open = True
             page.update()
 
         contacto_dialog = ft.AlertDialog(
@@ -1357,6 +1660,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
 
         def open_new_contact(e=None):
             clear_contact_form()
+            contacto_dialog.title = ft.Text("Nuevo contacto")
             contacto_dialog.open = True
             page.update()
 
@@ -1374,6 +1678,8 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         contactos,
                         "Este cliente no tiene contactos familiares relacionados",
                         open_new_contact,
+                        open_edit_callback=open_edit_contact,
+                        delete_callback=delete_contact,
                         is_employer=False,
                     ),
                 ),
