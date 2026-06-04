@@ -11,6 +11,8 @@ from backend.services import expedient_service
 from backend.services import expedient_document_state_service as document_state_service
 from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
+from backend.services import presentation_config_service
+from backend.services import config_service
 from backend.services import expedient_dynamic_form_service as dynamic_form_service
 from backend.services import expedient_snapshot_service as snapshot_service
 from backend.services import document_template_service
@@ -176,6 +178,8 @@ def expedients_view(page: ft.Page):
         "specific_field_controls": {},
         "specific_live_values": {},
         "specific_formulario_id": None,
+        "specific_view_mode": None,
+        "specific_data_step": 0,
         "snapshot_status": {},
         "expedient_docx_result": {},
         "expedient_docx_error": {},
@@ -1137,11 +1141,18 @@ def expedients_view(page: ft.Page):
         if not expediente_id or not formulario_id:
             return
         try:
-            dynamic_form_service.save_datos_especificos(
-                expediente_id,
-                formulario_id,
-                _current_specific_values(),
-            )
+            if state.get("specific_view_mode") == "EX01_FAMILIAR" and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
+                dynamic_form_service.save_datos_especificos_patch(
+                    expediente_id,
+                    formulario_id,
+                    _current_specific_values(),
+                )
+            else:
+                dynamic_form_service.save_datos_especificos(
+                    expediente_id,
+                    formulario_id,
+                    _current_specific_values(),
+                )
         except Exception:
             # No bloquea la selección. El botón Guardar mostrará el error si persiste.
             pass
@@ -1432,7 +1443,10 @@ def expedients_view(page: ft.Page):
         values = _current_specific_values()
 
         try:
-            dynamic_form_service.save_datos_especificos(expediente_id, formulario_id, values)
+            if state.get("specific_view_mode") == "EX01_FAMILIAR" and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
+                dynamic_form_service.save_datos_especificos_patch(expediente_id, formulario_id, values)
+            else:
+                dynamic_form_service.save_datos_especificos(expediente_id, formulario_id, values)
             clear_form_message()
             set_message(success_alert("Datos específicos guardados"))
             page.update()
@@ -2057,21 +2071,531 @@ def expedients_view(page: ft.Page):
         except Exception as exc:
             show_form_error(str(exc))
 
-    def build_specific_data_content(expediente_id):
-        tipo_id = _selected_tipo_id()
-        subtipo_id = _selected_subtipo_id()
-        tipo_label = _selected_option_label(tipo_expediente.get_value())
-        subtipo_label = _selected_subtipo_label()
+    def _specific_mapper_codigo(tipo_id, subtipo_id, tipo_label="", subtipo_label=""):
+        try:
+            reglas = presentation_config_service.get_presentacion_reglas(tipo_id, subtipo_id=subtipo_id) if tipo_id else {}
+        except Exception:
+            reglas = {}
 
-        context = dynamic_form_service.get_formulario_for_context(tipo_id, subtipo_id)
-        formulario = context.get("formulario")
-        campos = context.get("campos") or []
-        saved_values = dynamic_form_service.load_datos_especificos(expediente_id) if expediente_id else {}
+        mapper = str((reglas or {}).get("mapper_codigo") or "").strip().upper()
+        if mapper:
+            return mapper
 
-        state["specific_field_controls"] = {}
-        state["specific_live_values"] = {}
+        joined = _norm(f"{tipo_label} {subtipo_label}")
+        if "NO LUCRATIVA" in joined and "FAMILIAR" in joined:
+            return "MERCURIO_EX01_FAMILIAR"
+        if "EX01" in joined and "FAMILIAR" in joined:
+            return "MERCURIO_EX01_FAMILIAR"
+        return ""
+
+    def _specific_data_stepper(steps, current_step):
+        controls = []
+        for index, (title, _subtitle) in enumerate(steps):
+            active = index == current_step
+            completed = index < current_step
+            controls.append(
+                ft.Container(
+                    bgcolor=Q_PRIMARY if active else ("#EAF3FF" if completed else "#FFFFFF"),
+                    border=ft.border.all(1, Q_PRIMARY if active else "#B9D7FF" if completed else Q_BORDER),
+                    border_radius=12,
+                    padding=ft.padding.symmetric(horizontal=10, vertical=8),
+                    content=ft.Row(
+                        tight=True,
+                        spacing=6,
+                        controls=[
+                            ft.Container(
+                                width=22,
+                                height=22,
+                                border_radius=11,
+                                bgcolor="#FFFFFF" if active else ("#D1FADF" if completed else "#F8FAFC"),
+                                alignment=ft.alignment.Alignment(0, 0),
+                                content=ft.Text(
+                                    "✓" if completed else str(index + 1),
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#027A48" if completed else Q_PRIMARY_DARK,
+                                ),
+                            ),
+                            ft.Text(
+                                title,
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color="#FFFFFF" if active else Q_PRIMARY_DARK,
+                            ),
+                        ],
+                    ),
+                    ink=True,
+                    on_click=lambda e, i=index: _set_specific_data_step(i),
+                )
+            )
+
+        return ft.Row(controls=controls, spacing=8, wrap=True)
+
+    def _set_specific_data_step(step):
+        steps_count = 5
+        try:
+            step = max(0, min(int(step), steps_count - 1))
+        except Exception:
+            step = 0
+        state["specific_data_step"] = step
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        if expediente_id:
+            expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+            page.update()
+
+    def _specific_field_value(saved_values, codigo, default=""):
+        value = saved_values.get(codigo)
+        if value in (None, ""):
+            return default
+        return value
+
+    def _register_hidden_specific_control(codigo, value=""):
+        control = text_input(codigo, str(value or ""), width=10)
+        control.visible = False
+        state.setdefault("specific_field_controls", {})[codigo] = control
+        return control
+
+    def _specific_info_row(label, value):
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=10,
+            padding=10,
+            content=ft.Column(
+                spacing=2,
+                controls=[
+                    ft.Text(label, size=11, color=Q_MUTED),
+                    ft.Text(str(value or "-"), size=13, weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
+                ],
+            ),
+        )
+
+    def _specific_card(title, subtitle, controls, icon=ft.Icons.ARTICLE):
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=14,
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    ft.Row(
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Container(
+                                content=ft.Icon(icon, size=20, color=Q_PRIMARY),
+                                bgcolor="#EAF3FF",
+                                border_radius=20,
+                                width=40,
+                                height=40,
+                                alignment=ft.alignment.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                spacing=2,
+                                expand=True,
+                                controls=[
+                                    ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(subtitle, size=12, color=Q_MUTED),
+                                ],
+                            ),
+                        ],
+                    ),
+                    *controls,
+                ],
+            ),
+        )
+
+    def _specific_value_text(codigo, label, saved_values, width=320, multiline=False):
+        value = _specific_field_value(saved_values, codigo, "")
+        if multiline:
+            control = multiline_input(label, value, width=width, height=90)
+        else:
+            control = text_input(label, value, width=width)
+        state.setdefault("specific_field_controls", {})[codigo] = control
+        return control
+
+    def _specific_value_select(codigo, label, options, saved_values, width=260, default=None):
+        value = _specific_field_value(saved_values, codigo, default if default is not None else (options[0] if options else ""))
+        control = select_input(label, options, value=value if value in options else (default if default is not None else (options[0] if options else "")), width=width)
+        state.setdefault("specific_field_controls", {})[codigo] = control
+        return control
+
+    def _remember_contact_specific_values(prefix, selected_value, details):
+        selected_id_value = _option_id(selected_value)
+        _set_specific_control_value(prefix, selected_value)
+        _set_specific_control_value(f"{prefix}_contacto_id", str(selected_id_value or ""))
+        _set_specific_control_value(f"{prefix}_id", str(selected_id_value or ""))
+
+        detail_map = {
+            "tipo_contacto": "tipo_contacto",
+            "parentesco": "parentesco",
+            "nombre": "nombre",
+            "primer_apellido": "primer_apellido",
+            "segundo_apellido": "segundo_apellido",
+            "nombre_completo": "nombre_completo",
+            "documento": "documento",
+            "nie": "nie",
+            "dni": "dni",
+            "pasaporte": "pasaporte",
+            "nacionalidad": "nacionalidad",
+            "fecha_nacimiento": "fecha_nacimiento",
+            "sexo": "sexo",
+            "telefono": "telefono",
+            "email": "email",
+            "estado_cliente": "estado_cliente",
+            "domicilio_espana": "domicilio_espana",
+            "tipo_via": "tipo_via",
+            "nombre_via": "nombre_via",
+            "numero": "numero",
+            "piso": "piso",
+            "puerta": "puerta",
+            "escalera": "escalera",
+            "localidad": "localidad",
+            "provincia": "provincia",
+            "codigo_postal": "codigo_postal",
+            "localidad_nacimiento": "localidad_nacimiento",
+            "pais_nacimiento": "pais_nacimiento",
+            "nombre_padre": "nombre_padre",
+            "nombre_madre": "nombre_madre",
+            "estado_civil": "estado_civil",
+            "cliente_referenciado_id": "cliente_referenciado_id",
+        }
+
+        for target, source in detail_map.items():
+            _set_specific_control_value(f"{prefix}_{target}", _detail_value(details, source) if source not in details else details.get(source))
+
+    def _build_ex01_familiar_specific_content(expediente_id, formulario, saved_values, tipo_label, subtipo_label):
+        state["specific_view_mode"] = "EX01_FAMILIAR"
         state["specific_formulario_id"] = formulario.get("id") if formulario else None
 
+        steps = [
+            ("Solicitante", "Cliente del expediente"),
+            ("Familiar titular", "Medios económicos"),
+            ("Representación", "Presentador profesional"),
+            ("Checks", "Datos del trámite"),
+            ("Revisión", "Snapshot y EX"),
+        ]
+        current_step = max(0, min(int(state.get("specific_data_step") or 0), len(steps) - 1))
+
+        cliente_id = _option_id(cliente.get_value())
+        cliente_details = _fetch_cliente_details(cliente_id) if cliente_id else {}
+        presentador = {}
+        try:
+            presentador = config_service.get_representante_config() or {}
+        except Exception:
+            presentador = {}
+
+        # El bloque familiar/titular usa las claves actuales para no romper snapshot ni Mercurio.
+        familiar_value = _specific_field_value(saved_values, "representante_legal", "")
+        familiar_options = _fetch_cliente_contact_options(cliente_id, only_employers=False)
+
+        hidden_codes = [
+            "representante_legal_contacto_id", "representante_legal_id",
+            "representante_legal_tipo_contacto", "representante_legal_parentesco",
+            "representante_legal_nombre", "representante_legal_primer_apellido",
+            "representante_legal_segundo_apellido", "representante_legal_nombre_completo",
+            "representante_legal_documento", "representante_legal_nie",
+            "representante_legal_dni", "representante_legal_pasaporte",
+            "representante_legal_nacionalidad", "representante_legal_fecha_nacimiento",
+            "representante_legal_telefono", "representante_legal_email",
+            "representante_legal_estado_cliente", "representante_legal_domicilio_espana",
+            "representante_legal_tipo_via", "representante_legal_nombre_via",
+            "representante_legal_numero", "representante_legal_piso",
+            "representante_legal_puerta", "representante_legal_escalera",
+            "representante_legal_localidad", "representante_legal_provincia",
+            "representante_legal_codigo_postal", "representante_legal_localidad_nacimiento",
+            "representante_legal_pais_nacimiento", "representante_legal_nombre_padre",
+            "representante_legal_nombre_madre", "representante_legal_estado_civil",
+            "representante_legal_sexo", "representante_legal_cliente_referenciado_id",
+        ]
+        hidden_controls = [_register_hidden_specific_control(code, saved_values.get(code, "")) for code in hidden_codes]
+
+        def apply_familiar_contact(selected):
+            selected_id_value = _option_id(selected)
+            details = _fetch_cliente_contact_details(selected_id_value) if selected_id_value else {}
+            _remember_contact_specific_values("representante_legal", selected or "", details or {})
+            _autosave_specific_values_silent()
+            page.update()
+
+        familiar_autocomplete = AppAutocomplete(
+            page=page,
+            label="Familiar / titular de medios económicos",
+            options=familiar_options,
+            value=familiar_value,
+            width=620,
+            max_results=10,
+            allow_free_text=True,
+            on_select=apply_familiar_contact,
+        )
+        state.setdefault("specific_field_controls", {})["representante_legal"] = familiar_autocomplete
+
+        propietario = _specific_value_select(
+            "propietario_medios_economicos",
+            "Origen de medios económicos",
+            ["CLIENTE", "FAMILIAR", "OTRO"],
+            saved_values,
+            width=300,
+            default="FAMILIAR",
+        )
+        hijos_menores = _specific_value_select(
+            "hijos_menores_edad_escolarizacion",
+            "Hijos menores en edad escolar",
+            ["Sí", "No"],
+            saved_values,
+            width=300,
+            default="No",
+        )
+        parentesco_manual = _specific_value_text(
+            "parentesco_mercurio_manual",
+            "Parentesco jurídico manual, si procede",
+            saved_values,
+            width=380,
+        )
+        observaciones_especificas = _specific_value_text(
+            "observaciones_ex01_familiar",
+            "Observaciones EX01 familiar",
+            saved_values,
+            width=720,
+            multiline=True,
+        )
+
+        hidden_bucket = ft.Column(controls=hidden_controls, visible=False)
+
+        def _name_from_details(details):
+            return details.get("nombre_completo") or " ".join(
+                str(details.get(k) or "").strip()
+                for k in ("nombre", "primer_apellido", "segundo_apellido")
+                if str(details.get(k) or "").strip()
+            ).strip()
+
+        def _presentador_nombre(rep):
+            return rep.get("representante_nombre_razon_social") or " ".join(
+                str(rep.get(k) or "").strip()
+                for k in ("representante_nombre", "representante_apellido1", "representante_apellido2")
+                if str(rep.get(k) or "").strip()
+            ).strip()
+
+        def _solicitante_rows():
+            return [
+                _specific_info_row("Nombre", _name_from_details(cliente_details)),
+                _specific_info_row("Documento", _row_document(cliente_details)),
+                _specific_info_row("Nacionalidad", cliente_details.get("nacionalidad")),
+                _specific_info_row("Nacimiento", cliente_details.get("fecha_nacimiento")),
+                _specific_info_row("Estado civil", cliente_details.get("estado_civil")),
+                _specific_info_row("Domicilio", cliente_details.get("domicilio_espana")),
+                _specific_info_row("Provincia", cliente_details.get("provincia")),
+                _specific_info_row("Localidad", cliente_details.get("localidad")),
+                _specific_info_row("Teléfono", cliente_details.get("telefono")),
+                _specific_info_row("Email", cliente_details.get("email")),
+            ]
+
+        def current_step_controls():
+            values = _current_specific_values()
+            familiar_nombre = values.get("representante_legal_nombre_completo") or saved_values.get("representante_legal_nombre_completo") or "-"
+            familiar_doc = values.get("representante_legal_documento") or saved_values.get("representante_legal_documento") or "-"
+            familiar_parentesco = values.get("representante_legal_parentesco") or saved_values.get("representante_legal_parentesco") or "-"
+            familiar_domicilio = values.get("representante_legal_domicilio_espana") or saved_values.get("representante_legal_domicilio_espana") or "-"
+            familiar_localidad = values.get("representante_legal_localidad") or saved_values.get("representante_legal_localidad") or "-"
+            familiar_provincia = values.get("representante_legal_provincia") or saved_values.get("representante_legal_provincia") or "-"
+
+            if current_step == 0:
+                return [
+                    _specific_card(
+                        "Solicitante · cliente del expediente",
+                        "Datos del cliente que se volcarán en Mercurio y quedarán congelados en el snapshot.",
+                        [
+                            ft.Row(controls=_solicitante_rows(), spacing=10, wrap=True),
+                            ft.Text(
+                                "Estos datos vienen de la ficha del cliente. Si están mal, corrige la ficha antes de generar snapshot.",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        ft.Icons.PERSON,
+                    )
+                ]
+
+            if current_step == 1:
+                return [
+                    _specific_card(
+                        "Familiar / titular de medios económicos",
+                        "Selecciona el familiar o contacto que alimentará el bloque familiar/titular en Mercurio.",
+                        [
+                            familiar_autocomplete.control,
+                            ft.Row(
+                                controls=[
+                                    _specific_info_row("Nombre", familiar_nombre),
+                                    _specific_info_row("Documento", familiar_doc),
+                                    _specific_info_row("Parentesco CRM", familiar_parentesco),
+                                    _specific_info_row("Domicilio", familiar_domicilio),
+                                    _specific_info_row("Provincia", familiar_provincia),
+                                    _specific_info_row("Localidad", familiar_localidad),
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                            ft.Row([propietario, parentesco_manual], wrap=True, spacing=10),
+                            ft.Text(
+                                "El parentesco jurídico de Mercurio puede decidirlo el abogado si el supuesto no coincide con el parentesco CRM.",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        ft.Icons.ACCOUNT_BALANCE,
+                    )
+                ]
+
+            if current_step == 2:
+                return [
+                    _specific_card(
+                        "Representación / presentador profesional",
+                        "Datos del presentador configurado en Settings. En este caso debe ser Ana Belén, no el familiar del solicitante.",
+                        [
+                            ft.Row(
+                                controls=[
+                                    _specific_info_row("Presentador", _presentador_nombre(presentador)),
+                                    _specific_info_row("Documento", presentador.get("representante_documento")),
+                                    _specific_info_row("Tipo documento", presentador.get("representante_tipo_documento")),
+                                    _specific_info_row("Provincia", presentador.get("representante_provincia")),
+                                    _specific_info_row("Municipio", presentador.get("representante_municipio")),
+                                    _specific_info_row("Email", presentador.get("representante_email")),
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                            ft.Text(
+                                "Este bloque es informativo: se toma de Configuración y el mapper lo envía a Datos del presentador.",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        ft.Icons.GAVEL,
+                    )
+                ]
+
+            if current_step == 3:
+                return [
+                    _specific_card(
+                        "Checks del trámite",
+                        "Campos operativos del expediente. Se guardan en datos específicos y entran en el snapshot.",
+                        [
+                            ft.Row([hijos_menores], wrap=True, spacing=10),
+                            observaciones_especificas,
+                        ],
+                        ft.Icons.CHECKLIST,
+                    )
+                ]
+
+            return [
+                _specific_card(
+                    "Revisión y generación",
+                    "Guarda los datos, genera snapshot y después genera el EX/formulario referenciado para revisión.",
+                    [
+                        ft.Row(
+                            controls=[
+                                _specific_info_row("Solicitante", _name_from_details(cliente_details)),
+                                _specific_info_row("Familiar/titular", familiar_nombre),
+                                _specific_info_row("Parentesco CRM", familiar_parentesco),
+                                _specific_info_row("Medios", values.get("propietario_medios_economicos") or propietario.value),
+                                _specific_info_row("Escolarización", values.get("hijos_menores_edad_escolarizacion") or hijos_menores.value),
+                                _specific_info_row("Presentador", _presentador_nombre(presentador)),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                        build_snapshot_status_content(expediente_id),
+                        ft.Row(
+                            controls=[
+                                primary_button("Guardar datos", save_specific_data),
+                                secondary_button("Generar snapshot", generate_snapshot),
+                                secondary_button("Generar EX referenciado", volcar_datos_formulario),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                    ],
+                    ft.Icons.FACT_CHECK,
+                )
+            ]
+
+        nav_controls = []
+        if current_step > 0:
+            nav_controls.append(secondary_button("Anterior", lambda e: _set_specific_data_step(current_step - 1)))
+        nav_controls.append(primary_button("Guardar", save_specific_data))
+        if current_step < len(steps) - 1:
+            nav_controls.append(secondary_button("Siguiente", lambda e: _set_specific_data_step(current_step + 1)))
+        else:
+            nav_controls.extend([
+                secondary_button("Generar snapshot", generate_snapshot),
+                secondary_button("Generar EX referenciado", volcar_datos_formulario),
+            ])
+
+        controls = [
+            ft.Container(
+                bgcolor="#EAF3FF",
+                border=ft.border.all(1, "#B9D7FF"),
+                border_radius=16,
+                padding=14,
+                content=ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.VIEW_WEEK, size=24, color=Q_PRIMARY),
+                            bgcolor="#FFFFFF",
+                            border_radius=24,
+                            width=48,
+                            height=48,
+                            alignment=ft.alignment.Alignment(0, 0),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text("EX01 familiar · Datos específicos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(f"Tipo/Subtipo: {tipo_label} / {subtipo_label}", size=13, color=Q_MUTED),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
+            _specific_data_stepper(steps, current_step),
+            hidden_bucket,
+            *current_step_controls(),
+            ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=14,
+                padding=10,
+                content=ft.Row(
+                    controls=nav_controls + [
+                        ft.Text(
+                            "Pantalla específica. Guarda en datos específicos y respeta snapshot.",
+                            size=12,
+                            color=Q_MUTED,
+                            expand=True,
+                        )
+                    ],
+                    spacing=10,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
+        ]
+
+        return ft.Container(
+            width=920,
+            bgcolor="#FFFFFF",
+            content=ft.Column(
+                controls=controls,
+                spacing=12,
+                scroll=None,
+            ),
+        )
+
+    def build_dynamic_specific_data_content(expediente_id, formulario, campos, saved_values, tipo_label, subtipo_label):
+        state["specific_view_mode"] = "DYNAMIC"
         controls = [
             ft.Container(
                 bgcolor="#EAF3FF",
@@ -2125,22 +2649,20 @@ def expedients_view(page: ft.Page):
                 )
             )
         else:
-            controls.extend(
-                [
-                    ft.Container(
-                        bgcolor="#EAF3FF",
-                        border=ft.border.all(1, "#B9D7FF"),
-                        border_radius=12,
-                        padding=12,
-                        content=ft.Column(
-                            spacing=4,
-                            controls=[
-                                ft.Text(formulario.get("nombre") or "Formulario específico", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                ft.Text(formulario.get("descripcion") or "Campos dinámicos configurados para este trámite.", size=12, color=Q_MUTED),
-                            ],
-                        ),
+            controls.append(
+                ft.Container(
+                    bgcolor="#EAF3FF",
+                    border=ft.border.all(1, "#B9D7FF"),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=4,
+                        controls=[
+                            ft.Text(formulario.get("nombre") or "Formulario específico", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(formulario.get("descripcion") or "Campos dinámicos configurados para este trámite.", size=12, color=Q_MUTED),
+                        ],
                     ),
-                ]
+                )
             )
 
             if campos:
@@ -2193,6 +2715,41 @@ def expedients_view(page: ft.Page):
                 spacing=14,
                 scroll=ft.ScrollMode.AUTO,
             ),
+        )
+
+    def build_specific_data_content(expediente_id):
+        tipo_id = _selected_tipo_id()
+        subtipo_id = _selected_subtipo_id()
+        tipo_label = _selected_option_label(tipo_expediente.get_value())
+        subtipo_label = _selected_subtipo_label()
+
+        context = dynamic_form_service.get_formulario_for_context(tipo_id, subtipo_id)
+        formulario = context.get("formulario")
+        campos = context.get("campos") or []
+        saved_values = dynamic_form_service.load_datos_especificos(expediente_id) if expediente_id else {}
+
+        state["specific_field_controls"] = {}
+        state["specific_live_values"] = {}
+        state["specific_formulario_id"] = formulario.get("id") if formulario else None
+
+        mapper_codigo = _specific_mapper_codigo(tipo_id, subtipo_id, tipo_label, subtipo_label)
+
+        if formulario and mapper_codigo == "MERCURIO_EX01_FAMILIAR":
+            return _build_ex01_familiar_specific_content(
+                expediente_id,
+                formulario,
+                saved_values,
+                tipo_label,
+                subtipo_label,
+            )
+
+        return build_dynamic_specific_data_content(
+            expediente_id,
+            formulario,
+            campos,
+            saved_values,
+            tipo_label,
+            subtipo_label,
         )
 
     def _form_card(title, subtitle, controls, icon=ft.Icons.EDIT_DOCUMENT):

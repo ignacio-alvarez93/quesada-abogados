@@ -795,6 +795,61 @@ def save_datos_especificos(expediente_id, formulario_id, values):
         conn.commit()
 
 
+
+def save_datos_especificos_patch(expediente_id, formulario_id, values):
+    """
+    Guarda un parche de datos específicos sin exigir que todos los códigos
+    estén activos como campos visibles del formulario dinámico.
+
+    Uso previsto:
+    - pantallas específicas de trámites frecuentes;
+    - campos técnicos/derivados necesarios para snapshot y mappers;
+    - mantener expediente_datos_especificos como contrato único.
+
+    No borra derivados anteriores ni altera la configuración del formulario.
+    """
+    initialize_dynamic_forms_schema()
+
+    if not expediente_id or not formulario_id:
+        return
+
+    values = values or {}
+
+    with _connect() as conn:
+        for codigo, valor in values.items():
+            codigo = str(codigo or "").strip()
+            if not codigo:
+                continue
+
+            campo_id = _get_or_create_derived_campo_id(conn, formulario_id, codigo)
+            if not campo_id:
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO expediente_datos_especificos (
+                    expediente_id, formulario_id, campo_id, codigo, valor, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(expediente_id, campo_id)
+                DO UPDATE SET
+                    valor = excluded.valor,
+                    codigo = excluded.codigo,
+                    formulario_id = excluded.formulario_id,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    int(expediente_id),
+                    int(formulario_id),
+                    int(campo_id),
+                    codigo,
+                    str(valor or ""),
+                ),
+            )
+
+        conn.commit()
+
+
 def create_formulario(data):
     initialize_dynamic_forms_schema()
     with _connect() as conn:
