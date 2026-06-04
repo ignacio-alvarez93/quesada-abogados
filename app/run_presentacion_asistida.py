@@ -682,20 +682,28 @@ def fill_section(browser, values, session_dir):
         processed.add(field_id)
         text_value = values.get(field_id + "_text", "")
 
-        if field_id.startswith("extCodigoPais") or field_id.startswith("extCodigoNacionalidad"):
+        if (
+            field_id.startswith("extCodigoPais") or field_id.startswith("extCodigoNacionalidad")
+            or field_id.startswith("reaCodigoPais") or field_id.startswith("reaCodigoNacionalidad")
+        ):
             select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
         elif field_id.startswith("extCodigoMunicipio") or field_id.startswith("extCodigoLocalidad"):
             # Se gestiona en cascada aparte.
             continue
         elif field_id.startswith("notCodigoMunicipio") or field_id.startswith("notCodigoLocalidad"):
             continue
-        elif field_id.startswith("extCodigoProvincia") or field_id.startswith("notCodigoProvincia"):
+        elif field_id.startswith("reaCodigoMunicipio") or field_id.startswith("reaCodigoLocalidad"):
+            continue
+        elif (
+            field_id.startswith("extCodigoProvincia") or field_id.startswith("notCodigoProvincia")
+            or field_id.startswith("reaCodigoProvincia")
+        ):
             # Provincia/municipio/localidad se gestiona en cascada aparte.
             continue
         elif field_id.startswith("preCodigoProvincia") or field_id.startswith("preCodigoMunicipio") or field_id.startswith("preCodigoLocalidad"):
             # Provincia/municipio/localidad del presentador se gestiona en cascada aparte.
             continue
-        elif field_id in ("extPiso", "notPisoNotificacion", "prePisoPresentador"):
+        elif field_id in ("extPiso", "notPisoNotificacion", "prePisoPresentador", "reaPisoReagrupante"):
             set_piso_mercurio(browser, field_id, value=value, session_dir=session_dir)
         elif field_id.startswith("preTipoVia"):
             # Presentador: NO usar variables externas tipo tipo_via.
@@ -707,7 +715,7 @@ def fill_section(browser, values, session_dir):
                 text=resolve_tipo_via_text(value, text_value),
                 session_dir=session_dir,
             )
-        elif field_id.startswith("extTipoVia") or field_id.startswith("notTipoVia"):
+        elif field_id.startswith("extTipoVia") or field_id.startswith("notTipoVia") or field_id.startswith("reaTipoVia"):
             select_by_text_or_value(
                 browser,
                 field_id,
@@ -715,9 +723,16 @@ def fill_section(browser, values, session_dir):
                 text=resolve_tipo_via_text(value, text_value),
                 session_dir=session_dir,
             )
-        elif field_id.startswith("extEstadoCivil") or field_id.startswith("extSexo"):
+        elif (
+            field_id.startswith("extEstadoCivil") or field_id.startswith("extSexo")
+            or field_id.startswith("reaEstadoCivil") or field_id.startswith("reaSexo")
+            or field_id.startswith("reaParentesco")
+        ):
             select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
-        elif field_id.startswith("notTipodocumento") or field_id.startswith("preTipodocumento"):
+        elif (
+            field_id.startswith("notTipodocumento") or field_id.startswith("preTipodocumento")
+            or field_id.startswith("reaTipoDocumento")
+        ):
             select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
         else:
             set_value(browser, field_id, value, session_dir=session_dir, trigger_change=True)
@@ -735,7 +750,9 @@ def fill_section(browser, values, session_dir):
             continue
         if base_id.startswith("notCodigoMunicipio") or base_id.startswith("notCodigoLocalidad"):
             continue
-        if base_id.startswith("extCodigoProvincia") or base_id.startswith("notCodigoProvincia"):
+        if base_id.startswith("reaCodigoMunicipio") or base_id.startswith("reaCodigoLocalidad"):
+            continue
+        if base_id.startswith("extCodigoProvincia") or base_id.startswith("notCodigoProvincia") or base_id.startswith("reaCodigoProvincia"):
             continue
         if base_id.startswith("preCodigoProvincia") or base_id.startswith("preCodigoMunicipio") or base_id.startswith("preCodigoLocalidad"):
             continue
@@ -799,6 +816,118 @@ def select_municipio_localidad_presentador(browser, values, session_dir):
         except Exception as exc:
             write_log(session_dir, f"WAIT_FAIL localidad presentador {loc_id}: {exc}")
         select_by_text_or_value(browser, loc_id, text=localidad_text, session_dir=session_dir)
+
+
+
+def select_municipio_localidad_reagrupante(browser, values, session_dir):
+    """
+    Cascada provincia -> municipio -> localidad para la pestaña Datos del familiar
+    de EX01 familiar. Mercurio usa prefijo rea*Reagrupante.
+    """
+    prov_id = "reaCodigoProvinciaReagrupante"
+    mun_id = "reaCodigoMunicipioReagrupante"
+    loc_id = "reaCodigoLocalidadReagrupante"
+
+    provincia_value = values.get(prov_id, "")
+    provincia_text = values.get(prov_id + "_text", "")
+    municipio_text = values.get(mun_id + "_text", "")
+    localidad_text = values.get(loc_id + "_text", "") or municipio_text
+
+    if provincia_value or provincia_text:
+        select_by_text_or_value(browser, prov_id, value=provincia_value, text=provincia_text or provincia_value, session_dir=session_dir)
+        time.sleep(1.2)
+
+    if municipio_text and field_exists(browser, mun_id):
+        try:
+            wait_select_options(browser, mun_id, min_options=2, timeout=4)
+        except Exception as exc:
+            write_log(session_dir, f"WAIT_FAIL municipio familiar {mun_id}: {exc}")
+        select_by_text_or_value(browser, mun_id, text=municipio_text, session_dir=session_dir)
+        time.sleep(1.5)
+
+    if localidad_text and field_exists(browser, loc_id):
+        try:
+            wait_select_options(browser, loc_id, min_options=2, timeout=2)
+        except Exception as exc:
+            write_log(session_dir, f"WAIT_FAIL localidad familiar {loc_id}: {exc}")
+        select_by_text_or_value(browser, loc_id, text=localidad_text, session_dir=session_dir)
+
+
+def fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
+    """
+    Rellena la pestaña Datos del familiar de EX01 familiar.
+
+    En MERCURIO_EX01_FAMILIAR:
+    - Datos del extranjero/a = familiar extranjero solicitante.
+    - Datos del familiar = titular de los medios económicos / familiar que da derecho.
+    """
+    print("[8] Rellenando DATOS DEL FAMILIAR")
+    write_log(session_dir, "Rellenando datos del familiar EX01")
+
+    familiar = datos_mercurio.get("familiar", {}) or {}
+    if not familiar:
+        write_log(session_dir, "Familiar vacío en datos_mercurio.json")
+        print("No hay bloque familiar en datos_mercurio.json")
+        return False
+
+    wait_for_js(browser, "document.getElementById('reaNombreReagrupante') || document.getElementById('reaDocumentoReagrupante')", timeout=15, interval=0.5)
+
+    fill_section(browser, familiar, session_dir)
+    select_municipio_localidad_reagrupante(browser, familiar, session_dir)
+
+    print("Datos del familiar rellenados.")
+    write_log(session_dir, "Datos del familiar rellenados")
+    return True
+
+
+def click_continuar_extranjero_to_familiar(browser, session_dir):
+    """
+    Avance humano desde Datos del extranjero/a a Datos del familiar en EX01 familiar.
+    """
+    print("[8] PAUSA HUMANA - CONTINUAR a DATOS DEL FAMILIAR")
+    write_log(session_dir, "Pausa humana obligatoria: continuar extranjero -> familiar")
+
+    print()
+    print("=" * 80)
+    print("PAUSA HUMANA")
+    print("Pulsa MANUALMENTE CONTINUAR para pasar a Datos del familiar.")
+    print("Cuando estés en Datos del familiar, vuelve aquí y pulsa ENTER.")
+    print("=" * 80)
+
+    input("Pulsa ENTER cuando estés en Datos del familiar...")
+
+    try:
+        wait_for_js(browser, "document.getElementById('reaNombreReagrupante') || document.getElementById('reaDocumentoReagrupante')", timeout=10, interval=0.5)
+        write_log(session_dir, "Continuar humano confirmado: pestaña familiar visible")
+        return {"ok": True, "mode": "human_required"}
+    except Exception as exc:
+        write_log(session_dir, f"Continuar a familiar no confirmado: {repr(exc)}")
+        return {"ok": False, "mode": "human_required_not_confirmed", "error": repr(exc)}
+
+
+def click_continuar_familiar_to_presentador(browser, session_dir):
+    """
+    Avance humano desde Datos del familiar a Datos del presentador en EX01 familiar.
+    """
+    print("[9] PAUSA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
+    write_log(session_dir, "Pausa humana obligatoria: continuar familiar -> presentador")
+
+    print()
+    print("=" * 80)
+    print("PAUSA HUMANA")
+    print("Pulsa MANUALMENTE CONTINUAR para pasar desde Datos del familiar a Datos del presentador.")
+    print("Cuando estés en Datos del presentador, vuelve aquí y pulsa ENTER.")
+    print("=" * 80)
+
+    input("Pulsa ENTER cuando estés en Datos del presentador...")
+
+    try:
+        wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=10, interval=0.5)
+        write_log(session_dir, "Continuar humano confirmado: preNombrePresentador visible")
+        return {"ok": True, "mode": "human_required"}
+    except Exception as exc:
+        write_log(session_dir, f"Continuar a presentador no confirmado: {repr(exc)}")
+        return {"ok": False, "mode": "human_required_not_confirmed", "error": repr(exc)}
 
 
 
@@ -919,7 +1048,7 @@ def fill_datos_presentador(browser, datos_mercurio, session_dir):
     wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=15, interval=0.5)
 
     fill_section(browser, representante, session_dir)
-    hardcode_presentador_asturias_oviedo(browser, session_dir)
+    select_municipio_localidad_presentador(browser, representante, session_dir)
 
     print("Datos del presentador rellenados.")
     write_log(session_dir, "Datos del presentador rellenados")
@@ -1378,7 +1507,12 @@ def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
     pause_supuesto(session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
     if datos_mercurio:
         fill_datos_extranjero(browser, datos_mercurio, session_dir)
-        click_continuar(browser, session_dir)
+        if mapper_mode.get("is_ex01_familiar"):
+            click_continuar_extranjero_to_familiar(browser, session_dir)
+            fill_datos_familiar_ex01(browser, datos_mercurio, session_dir)
+            click_continuar_familiar_to_presentador(browser, session_dir)
+        else:
+            click_continuar(browser, session_dir)
         fill_datos_presentador(browser, datos_mercurio, session_dir)
         click_continuar_presentador(browser, session_dir)
         pause_humana_final_presentacion(browser, session_dir)
@@ -1444,6 +1578,7 @@ def main():
     print("  auto       -> ejecutar flujo parcial")
     print("  fill       -> rellenar datos completos con datos_mercurio.json")
     print("  fillpre    -> rellenar solo datos del presentador")
+    print("  fillfam    -> rellenar solo datos del familiar EX01")
     print("  human      -> pausa humana final sin disconnect")
     print("  docs       -> subida documental asistida")
     print("  q          -> salir")
@@ -1473,6 +1608,12 @@ def main():
                 print("No hay datos_mercurio.json cargado.")
             else:
                 fill_datos_presentador(browser, datos_mercurio, session_dir)
+
+        elif cmd in ("fillfam", "familiar"):
+            if not datos_mercurio:
+                print("No hay datos_mercurio.json cargado.")
+            else:
+                fill_datos_familiar_ex01(browser, datos_mercurio, session_dir)
 
         elif cmd in ("human", "humano", "pausa"):
             pause_humana_final_presentacion(browser, session_dir)

@@ -225,6 +225,50 @@ def map_estado_civil_mercurio(value):
     return mapped or "S"
 
 
+def map_estado_civil_reagrupante(value):
+    """
+    La pestaña Datos del familiar de EX01 usa X para SEPARADO/A,
+    mientras otros bloques históricos usan P.
+    """
+    text = normalize(value)
+    if text in {"SEPARADO", "SEPARADO/A", "SEPARADA", "P"}:
+        return "X"
+    return map_estado_civil_mercurio(value)
+
+
+def map_parentesco_ex01_familiar(value):
+    text = normalize(value)
+    if not text:
+        return ""
+    if text in {"CO", "CONYUGE", "CONYUGE", "CONYUGE/PAREJA", "ESPOSO", "ESPOSA"}:
+        return "CO"
+    if "CONYUGE" in text or "CONYUGE" in text or "ESPOS" in text:
+        return "CO"
+    if "PAREJA" in text:
+        return "P1"
+    if "HIJO" in text or "HIJA" in text or "DESCEND" in text:
+        return "AS"
+    if "PADRE" in text or "MADRE" in text or "ASCEND" in text:
+        return "HI"
+    if "TUTEL" in text:
+        return "TU"
+    return ""
+
+
+def map_tipo_documento_reagrupante(cliente):
+    cliente = cliente or {}
+    if str(cliente.get("nie") or "").strip():
+        return "TU"
+    if str(cliente.get("dni") or "").strip():
+        return "NF"
+    return ""
+
+
+def map_documento_reagrupante(cliente):
+    cliente = cliente or {}
+    return first(cliente.get("nie"), cliente.get("dni"))
+
+
 def map_sexo(value):
     value = first(value)
     if not value:
@@ -857,6 +901,76 @@ def build_datos_representante(snapshot=None):
     }
 
 
+def build_datos_familiar_ex01(cliente, snapshot=None):
+    """
+    Construye la pestaña Mercurio "Datos del familiar" para EX01 familiar.
+
+    En esta variante:
+    - extranjero = familiar solicitante seleccionado en datos específicos.
+    - familiar = titular de los medios económicos / cliente principal del expediente.
+    """
+    cliente = cliente or {}
+    datos = _snapshot_datos_especificos(snapshot)
+
+    domicilio_parts = parse_domicilio(
+        cliente.get("domicilio_espana") or "",
+        numero=cliente.get("numero") or "",
+        piso=cliente.get("piso") or "",
+    )
+    tipo_via_codigo = domicilio_parts["tipo_via_codigo"]
+    tipo_via_text = CODIGO_A_TIPO_VIA.get(tipo_via_codigo, tipo_via_codigo)
+
+    parentesco = _first_dynamic_value(
+        datos,
+        "representante_legal_parentesco",
+        "familiar_parentesco",
+        "parentesco",
+    )
+
+    return {
+        "reaPasaporteReagrupante": cliente.get("pasaporte") or "",
+        "reaTipoDocumentoReagrupante": map_tipo_documento_reagrupante(cliente),
+        "reaDocumentoReagrupante": map_documento_reagrupante(cliente),
+        "reaApellido1Reagrupante": cliente.get("primer_apellido") or "",
+        "reaApellido2Reagrupante": cliente.get("segundo_apellido") or "",
+        "reaNombreReagrupante": cliente.get("nombre") or "",
+        "reaSexoReagrupante": map_sexo(cliente.get("sexo")),
+        "reaFechaNacimientoReagrupante": format_date_es(cliente.get("fecha_nacimiento")),
+        "reaEstadoCivilReagrupante": map_estado_civil_reagrupante(cliente.get("estado_civil")),
+        "reaEstadoCivilReagrupante_text": cliente.get("estado_civil") or "",
+        "reaLugarNacimientoReagrupante": cliente.get("localidad_nacimiento") or "",
+        "reaCodigoPaisNacimientoReagrupante_text": cliente.get("pais_nacimiento") or "",
+        "reaCodigoNacionalidadReagrupante_text": cliente.get("nacionalidad") or "",
+        "reaPadreReagrupante": cliente.get("nombre_padre") or "",
+        "reaMadreReagrupante": cliente.get("nombre_madre") or "",
+        "reaTipoViaReagrupante": tipo_via_codigo,
+        "reaTipoViaReagrupante_text": tipo_via_text,
+        "reaDomicilioReagrupante": domicilio_parts["domicilio"],
+        "reaNumeroReagrupante": domicilio_parts["numero"],
+        "reaPisoReagrupante": domicilio_parts["piso"],
+        "reaLetraReagrupante": "",
+        "reaEscaleraReagrupante": "",
+        "reaBloqueReagrupante": "",
+        "reaKilometroReagrupante": "",
+        "reaHectometroReagrupante": "",
+        "reaCodigoProvinciaReagrupante": map_provincia(cliente.get("provincia")),
+        "reaCodigoProvinciaReagrupante_text": cliente.get("provincia") or "",
+        "reaCodigoMunicipioReagrupante_text": cliente.get("localidad") or "",
+        "reaCodigoLocalidadReagrupante_text": cliente.get("localidad") or "",
+        "reaCodigoPostalReagrupante": cliente.get("codigo_postal") or "",
+        "reaTelefonoReagrupante": cliente.get("telefono") or "",
+        "reaTelefonoMovilReagrupante": cliente.get("telefono") or "",
+        "reaEmailReagrupante": cliente.get("email") or "",
+        "reaNombreRepresentanteReagrupante": "",
+        "reaTipodocumentoRepresentanteReagrupante": "",
+        "reaNieRepresentanteReagrupante": "",
+        "reaTituloRepresentanteReagrupante": "",
+        "reaParentescoReagrupante": map_parentesco_ex01_familiar(parentesco),
+        "reaParentescoReagrupante_text": parentesco,
+    }
+
+
+
 def get_presentacion_reglas_for_expediente(expediente_json):
     expediente_json = expediente_json or {}
     tipo_id = expediente_json.get("tipo_expediente_id")
@@ -979,6 +1093,7 @@ def build_datos_mercurio(expediente, snapshot=None):
         "datos_especificos": _snapshot_datos_especificos(snapshot),
         "expediente": expediente_json,
         "cliente": cliente,
+        "familiar": build_datos_familiar_ex01(cliente, snapshot=snapshot) if mapper_codigo == "MERCURIO_EX01_FAMILIAR" else {},
         "extranjero": {
             "extPasaporte": cliente["pasaporte"],
             "extNie": cliente["nie"],
