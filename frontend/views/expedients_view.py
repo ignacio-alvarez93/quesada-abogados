@@ -2782,6 +2782,7 @@ def expedients_view(page: ft.Page):
         state["specific_view_mode"] = "EX01_FAMILIAR"
         state["specific_formulario_id"] = formulario.get("id") if formulario else None
         saved_values = _refresh_saved_values_from_live_contact(saved_values, "representante_legal")
+        saved_values = _refresh_saved_values_from_live_contact(saved_values, "solicitante_representante_legal")
 
         steps = [
             ("Solicitante", "Cliente del expediente"),
@@ -2822,6 +2823,27 @@ def expedients_view(page: ft.Page):
             "representante_legal_pais_nacimiento", "representante_legal_nombre_padre",
             "representante_legal_nombre_madre", "representante_legal_estado_civil",
             "representante_legal_sexo", "representante_legal_cliente_referenciado_id",
+
+            # Representante legal real del solicitante.
+            # Se selecciona entre los contactos del cliente del expediente,
+            # no desde todos los contactos globales del CRM.
+            "solicitante_representante_legal_contacto_id", "solicitante_representante_legal_id",
+            "solicitante_representante_legal_tipo_contacto", "solicitante_representante_legal_parentesco",
+            "solicitante_representante_legal_nombre", "solicitante_representante_legal_primer_apellido",
+            "solicitante_representante_legal_segundo_apellido", "solicitante_representante_legal_nombre_completo",
+            "solicitante_representante_legal_documento", "solicitante_representante_legal_nie",
+            "solicitante_representante_legal_dni", "solicitante_representante_legal_pasaporte",
+            "solicitante_representante_legal_nacionalidad", "solicitante_representante_legal_fecha_nacimiento",
+            "solicitante_representante_legal_telefono", "solicitante_representante_legal_email",
+            "solicitante_representante_legal_estado_cliente", "solicitante_representante_legal_domicilio_espana",
+            "solicitante_representante_legal_tipo_via", "solicitante_representante_legal_nombre_via",
+            "solicitante_representante_legal_numero", "solicitante_representante_legal_piso",
+            "solicitante_representante_legal_puerta", "solicitante_representante_legal_escalera",
+            "solicitante_representante_legal_localidad", "solicitante_representante_legal_provincia",
+            "solicitante_representante_legal_codigo_postal", "solicitante_representante_legal_localidad_nacimiento",
+            "solicitante_representante_legal_pais_nacimiento", "solicitante_representante_legal_nombre_padre",
+            "solicitante_representante_legal_nombre_madre", "solicitante_representante_legal_estado_civil",
+            "solicitante_representante_legal_sexo", "solicitante_representante_legal_cliente_referenciado_id",
         ]
         hidden_controls = [_register_hidden_specific_control(code, saved_values.get(code, "")) for code in hidden_codes]
 
@@ -2847,6 +2869,32 @@ def expedients_view(page: ft.Page):
             on_select=apply_familiar_contact,
         )
         state.setdefault("specific_field_controls", {})["representante_legal"] = familiar_autocomplete
+
+        solicitante_rep_value = _specific_field_value(saved_values, "solicitante_representante_legal", "")
+        solicitante_rep_options = _fetch_cliente_contact_options(cliente_id, only_employers=False)
+
+        def apply_solicitante_representante_contact(selected):
+            selected_id_value = _option_id(selected)
+            details = _fetch_cliente_contact_details(selected_id_value) if selected_id_value else {}
+            _remember_contact_specific_values("solicitante_representante_legal", selected or "", details or {})
+            _autosave_specific_values_silent()
+            # Reconstruye la sección para que las tarjetas resumen reflejen
+            # el representante legal inmediatamente, sin cambiar de pestaña.
+            if expediente_id:
+                expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+            page.update()
+
+        solicitante_rep_autocomplete = AppAutocomplete(
+            page=page,
+            label="Representante legal del solicitante",
+            options=solicitante_rep_options,
+            value=solicitante_rep_value,
+            width=620,
+            max_results=10,
+            allow_free_text=True,
+            on_select=apply_solicitante_representante_contact,
+        )
+        state.setdefault("specific_field_controls", {})["solicitante_representante_legal"] = solicitante_rep_autocomplete
 
         propietario = _specific_value_select(
             "propietario_medios_economicos",
@@ -2916,6 +2964,11 @@ def expedients_view(page: ft.Page):
             familiar_domicilio = values.get("representante_legal_domicilio_espana") or saved_values.get("representante_legal_domicilio_espana") or "-"
             familiar_localidad = values.get("representante_legal_localidad") or saved_values.get("representante_legal_localidad") or "-"
             familiar_provincia = values.get("representante_legal_provincia") or saved_values.get("representante_legal_provincia") or "-"
+            solicitante_rep_nombre = values.get("solicitante_representante_legal_nombre_completo") or saved_values.get("solicitante_representante_legal_nombre_completo") or "-"
+            solicitante_rep_doc = values.get("solicitante_representante_legal_documento") or saved_values.get("solicitante_representante_legal_documento") or "-"
+            solicitante_rep_parentesco = values.get("solicitante_representante_legal_parentesco") or saved_values.get("solicitante_representante_legal_parentesco") or "-"
+            solicitante_rep_telefono = values.get("solicitante_representante_legal_telefono") or saved_values.get("solicitante_representante_legal_telefono") or "-"
+            solicitante_rep_email = values.get("solicitante_representante_legal_email") or saved_values.get("solicitante_representante_legal_email") or "-"
 
             if current_step == 0:
                 return [
@@ -2924,8 +2977,37 @@ def expedients_view(page: ft.Page):
                         "Datos del cliente que se volcarán en Mercurio y quedarán congelados en el snapshot.",
                         [
                             ft.Row(controls=_solicitante_rows(), spacing=10, wrap=True),
+                            ft.Container(
+                                bgcolor="#FFFFFF",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=12,
+                                padding=12,
+                                content=ft.Column(
+                                    spacing=8,
+                                    controls=[
+                                        ft.Text("Representante legal del solicitante", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            "Opcional. Selecciona uno de los contactos vinculados a este cliente.",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                        solicitante_rep_autocomplete.control,
+                                        ft.Row(
+                                            controls=[
+                                                _specific_info_row("Nombre", solicitante_rep_nombre),
+                                                _specific_info_row("Documento", solicitante_rep_doc),
+                                                _specific_info_row("Vínculo / título", solicitante_rep_parentesco),
+                                                _specific_info_row("Teléfono", solicitante_rep_telefono),
+                                                _specific_info_row("Email", solicitante_rep_email),
+                                            ],
+                                            spacing=10,
+                                            wrap=True,
+                                        ),
+                                    ],
+                                ),
+                            ),
                             ft.Text(
-                                "Estos datos vienen de la ficha del cliente. Si están mal, corrige la ficha antes de generar snapshot.",
+                                "Los datos del solicitante vienen de la ficha del cliente. El representante legal se guarda aparte y se vuelca en Mercurio como representante del extranjero/solicitante.",
                                 size=12,
                                 color=Q_MUTED,
                             ),
@@ -3017,6 +3099,7 @@ def expedients_view(page: ft.Page):
                                 _specific_info_row("Parentesco CRM", familiar_parentesco),
                                 _specific_info_row("Medios", values.get("propietario_medios_economicos") or propietario.value),
                                 _specific_info_row("Escolarización", values.get("hijos_menores_edad_escolarizacion") or hijos_menores.value),
+                                _specific_info_row("Representante legal", solicitante_rep_nombre),
                                 _specific_info_row("Presentador", _presentador_nombre(presentador)),
                             ],
                             spacing=10,

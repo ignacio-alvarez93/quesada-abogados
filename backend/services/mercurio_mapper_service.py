@@ -932,6 +932,109 @@ def build_datos_representante(snapshot=None):
     }
 
 
+
+def _contacto_id_from_prefixed_datos(datos, prefix, *extra_value_keys):
+    """Resuelve el id de un contacto guardado con un prefijo técnico."""
+    datos = datos or {}
+    candidates = [
+        f"{prefix}_contacto_id",
+        f"{prefix}_id",
+        *extra_value_keys,
+    ]
+    explicit_id = _first_dynamic_value(datos, *candidates)
+    if explicit_id:
+        try:
+            return int(str(explicit_id).strip())
+        except Exception:
+            pass
+
+    autocomplete_value = _first_dynamic_value(datos, prefix, f"{prefix}_contacto")
+    return _extract_leading_id(autocomplete_value)
+
+
+def _get_contacto_from_prefixed_datos(datos, prefix, *extra_value_keys):
+    return _get_cliente_contacto(_contacto_id_from_prefixed_datos(datos, prefix, *extra_value_keys))
+
+
+def _overlay_prefixed_contact_as_representante_legal(merged, datos, prefix):
+    """Convierte un contacto seleccionado con prefijo propio en campos representante_legal_*."""
+    contacto = _get_contacto_from_prefixed_datos(datos, prefix)
+    if not contacto:
+        return merged
+
+    merged["representante_legal_contacto_id"] = str(contacto.get("id") or "")
+    merged["representante_legal_nombre"] = _full_name_from_contacto(contacto)
+    merged["representante_legal_tipo_documento"] = _tipo_documento_from_contacto(contacto)
+    merged["representante_legal_documento"] = _documento_from_contacto(contacto)
+    merged["representante_legal_titulo"] = str(contacto.get("parentesco") or contacto.get("tipo_contacto") or "").strip()
+    merged["representante_legal_parentesco"] = str(contacto.get("parentesco") or "").strip()
+    merged["representante_legal_telefono_movil"] = str(contacto.get("telefono") or "").strip()
+    merged["representante_legal_email"] = str(contacto.get("email") or "").strip()
+    merged["representante_legal_provincia"] = str(contacto.get("provincia") or "").strip()
+    merged["representante_legal_municipio"] = str(contacto.get("localidad") or "").strip()
+    merged["representante_legal_localidad"] = str(contacto.get("localidad") or "").strip()
+    merged["representante_legal_codigo_postal"] = str(contacto.get("codigo_postal") or "").strip()
+    merged["representante_legal_domicilio_espana"] = str(contacto.get("domicilio_espana") or "").strip()
+    merged["representante_legal_nie"] = str(contacto.get("nie") or "").strip()
+    merged["representante_legal_dni"] = str(contacto.get("dni") or "").strip()
+    merged["representante_legal_pasaporte"] = str(contacto.get("pasaporte") or "").strip()
+
+    return merged
+
+
+def _overlay_solicitante_representante_legal_from_datos_especificos(rep, snapshot):
+    """
+    Lee el representante legal real del solicitante.
+
+    Nuevo bloque independiente:
+    solicitante_representante_legal_*
+
+    No usa representante_legal_* porque ese prefijo histórico ya alimenta el
+    familiar/titular de medios económicos de EX01 familiar.
+    """
+    datos = _snapshot_datos_especificos(snapshot)
+    if not datos:
+        return rep
+
+    merged = dict(rep or {})
+
+    prefix = "solicitante_representante_legal"
+    nombre = _first_dynamic_value(
+        datos,
+        f"{prefix}_nombre_completo",
+        f"{prefix}_nombre",
+    )
+    if not nombre:
+        nombre_parts = [
+            _first_dynamic_value(datos, f"{prefix}_nombre_pila"),
+            _first_dynamic_value(datos, f"{prefix}_primer_apellido"),
+            _first_dynamic_value(datos, f"{prefix}_segundo_apellido"),
+        ]
+        nombre = " ".join(part for part in nombre_parts if part).strip()
+
+    explicit_values = {
+        "representante_legal_nombre": nombre,
+        "representante_legal_tipo_documento": _first_dynamic_value(datos, f"{prefix}_tipo_documento"),
+        "representante_legal_documento": _first_dynamic_value(datos, f"{prefix}_documento", f"{prefix}_nie", f"{prefix}_dni", f"{prefix}_pasaporte"),
+        "representante_legal_titulo": _first_dynamic_value(datos, f"{prefix}_titulo", f"{prefix}_parentesco", f"{prefix}_tipo_contacto"),
+        "representante_legal_parentesco": _first_dynamic_value(datos, f"{prefix}_parentesco"),
+        "representante_legal_telefono_movil": _first_dynamic_value(datos, f"{prefix}_telefono_movil", f"{prefix}_telefono"),
+        "representante_legal_email": _first_dynamic_value(datos, f"{prefix}_email"),
+        "representante_legal_provincia": _first_dynamic_value(datos, f"{prefix}_provincia"),
+        "representante_legal_municipio": _first_dynamic_value(datos, f"{prefix}_municipio", f"{prefix}_localidad"),
+        "representante_legal_localidad": _first_dynamic_value(datos, f"{prefix}_localidad", f"{prefix}_municipio"),
+        "representante_legal_codigo_postal": _first_dynamic_value(datos, f"{prefix}_codigo_postal"),
+        "representante_legal_domicilio_espana": _first_dynamic_value(datos, f"{prefix}_domicilio_espana"),
+    }
+
+    for key, value in explicit_values.items():
+        if value:
+            merged[key] = value
+
+    # Si existe contacto seleccionado, manda el contacto vivo de BD.
+    return _overlay_prefixed_contact_as_representante_legal(merged, datos, prefix)
+
+
 def build_representante_legal_extranjero(snapshot=None):
     """
     Construye los campos de representante legal del extranjero/a.
@@ -939,8 +1042,11 @@ def build_representante_legal_extranjero(snapshot=None):
     En EX01 familiar estos campos pertenecen a la primera pestaña
     "Datos del extranjero/a" (prefijo ext*), no a "Datos del presentador"
     (prefijo pre*).
+
+    Usa el bloque nuevo solicitante_representante_legal_* para no mezclarlo
+    con el familiar/titular de medios económicos.
     """
-    rep = _overlay_representante_legal_from_datos_especificos({}, snapshot)
+    rep = _overlay_solicitante_representante_legal_from_datos_especificos({}, snapshot)
     if not rep:
         return {}
 
