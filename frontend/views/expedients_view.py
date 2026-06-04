@@ -3102,14 +3102,15 @@ def expedients_view(page: ft.Page):
         ]
 
         return ft.Container(
-            expand=True,
+            width=860,
+            height=660,
             bgcolor="#FFFFFF",
             border_radius=0,
             padding=0,
-            clip_behavior=ft.ClipBehavior.NONE,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
             content=ft.Column(
                 controls=controls,
-                spacing=12,
+                spacing=10,
                 scroll=None,
             ),
         )
@@ -4127,14 +4128,17 @@ def expedients_view(page: ft.Page):
             height=740,
             bgcolor="#FFFFFF",
             padding=0,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
             content=ft.Row(
                 controls=[
                     ft.Container(
                         width=260,
+                        height=710,
                         bgcolor="#FFFFFF",
                         border=ft.border.all(1, Q_BORDER),
                         border_radius=18,
                         padding=14,
+                        clip_behavior=ft.ClipBehavior.HARD_EDGE,
                         content=ft.Column(
                             controls=[
                                 ft.Container(
@@ -4157,14 +4161,17 @@ def expedients_view(page: ft.Page):
                     ),
                     ft.Container(
                         expand=True,
+                        height=710,
                         bgcolor="#FFFFFF",
                         border=ft.border.all(1, Q_BORDER),
                         border_radius=18,
                         padding=16,
-                        clip_behavior=ft.ClipBehavior.NONE,
+                        clip_behavior=ft.ClipBehavior.HARD_EDGE,
                         content=ft.Container(
-                            expand=True,
+                            width=860,
+                            height=678,
                             bgcolor="#FFFFFF",
+                            clip_behavior=ft.ClipBehavior.HARD_EDGE,
                             content=build_dialog_section_content(expediente_id),
                         ),
                     ),
