@@ -901,6 +901,50 @@ def build_datos_representante(snapshot=None):
     }
 
 
+def build_representante_legal_extranjero(snapshot=None):
+    """
+    Construye los campos de representante legal del extranjero/a.
+
+    En EX01 familiar estos campos pertenecen a la primera pestaña
+    "Datos del extranjero/a" (prefijo ext*), no a "Datos del presentador"
+    (prefijo pre*).
+    """
+    rep = _overlay_representante_legal_from_datos_especificos({}, snapshot)
+    if not rep:
+        return {}
+
+    titulo = first(
+        rep.get("representante_legal_titulo"),
+        rep.get("representante_legal_parentesco"),
+    )
+
+    return {
+        "extNombreRepresentante": rep.get("representante_legal_nombre") or "",
+        "extTipodocumentoRepresentante": rep.get("representante_legal_tipo_documento") or "",
+        "extNieRepresentante": rep.get("representante_legal_documento") or "",
+        "extTituloRepresentante": titulo,
+        "extVinculoRepresentante": titulo,
+    }
+
+
+def sanitize_presentador_for_ex01_familiar(representante):
+    """
+    Evita que el representante legal del solicitante se vuelque en la pestaña
+    del presentador profesional.
+    """
+    representante = dict(representante or {})
+    for key in (
+        "preNombreRepresentantePresentador",
+        "preTipodocumentoRepresentantePresentador",
+        "preNieRepresentantePresentador",
+        "preTituloRepresentantePresentador",
+        "preTelefonoMovilRepLegalPresentador",
+        "preEmailRepLegalPresentador",
+    ):
+        representante[key] = ""
+    return representante
+
+
 def build_datos_familiar_ex01(cliente, snapshot=None):
     """
     Construye la pestaña Mercurio "Datos del familiar" para EX01 familiar.
@@ -1072,6 +1116,31 @@ def build_datos_mercurio(expediente, snapshot=None):
 
     tipo_formulario_objetivo = resolve_tipo_formulario_objetivo(expediente_json)
     mapper_codigo = resolve_mapper_codigo(expediente_json, tipo_formulario_objetivo)
+    is_ex01_familiar = mapper_codigo == "MERCURIO_EX01_FAMILIAR"
+
+    extranjero = {
+        "extPasaporte": cliente["pasaporte"],
+        "extNie": cliente["nie"],
+        "extApellido1": cliente["primer_apellido"],
+        "extApellido2": cliente["segundo_apellido"],
+        "extNombre": cliente["nombre"],
+        "extSexo": map_sexo(first(cliente.get("sexo"), expediente.get("cliente_sexo"), expediente.get("sexo"))),
+        "extFechaNacimiento": format_date_es(cliente["fecha_nacimiento"]),
+        "extEstadoCivil": map_estado_civil_mercurio(cliente["estado_civil"]),
+        "extLugarNacimiento": cliente["localidad_nacimiento"],
+        "extCodigoPaisNacimiento_text": pais_nacimiento_texto,
+        "extCodigoNacionalidad_text": nacionalidad_texto,
+        "extPadre": cliente["nombre_padre"],
+        "extMadre": cliente["nombre_madre"],
+    }
+
+    representante = build_datos_representante(snapshot=snapshot)
+
+    if is_ex01_familiar:
+        # En EX01 familiar el representante legal del solicitante pertenece
+        # a Datos del extranjero/a (ext*), no a Datos del presentador (pre*).
+        extranjero.update(build_representante_legal_extranjero(snapshot=snapshot))
+        representante = sanitize_presentador_for_ex01_familiar(representante)
 
     return {
         "meta": {
@@ -1093,22 +1162,8 @@ def build_datos_mercurio(expediente, snapshot=None):
         "datos_especificos": _snapshot_datos_especificos(snapshot),
         "expediente": expediente_json,
         "cliente": cliente,
-        "familiar": build_datos_familiar_ex01(cliente, snapshot=snapshot) if mapper_codigo == "MERCURIO_EX01_FAMILIAR" else {},
-        "extranjero": {
-            "extPasaporte": cliente["pasaporte"],
-            "extNie": cliente["nie"],
-            "extApellido1": cliente["primer_apellido"],
-            "extApellido2": cliente["segundo_apellido"],
-            "extNombre": cliente["nombre"],
-            "extSexo": map_sexo(first(cliente.get("sexo"), expediente.get("cliente_sexo"), expediente.get("sexo"))),
-            "extFechaNacimiento": format_date_es(cliente["fecha_nacimiento"]),
-            "extEstadoCivil": map_estado_civil_mercurio(cliente["estado_civil"]),
-            "extLugarNacimiento": cliente["localidad_nacimiento"],
-            "extCodigoPaisNacimiento_text": pais_nacimiento_texto,
-            "extCodigoNacionalidad_text": nacionalidad_texto,
-            "extPadre": cliente["nombre_padre"],
-            "extMadre": cliente["nombre_madre"],
-        },
+        "familiar": build_datos_familiar_ex01(cliente, snapshot=snapshot) if is_ex01_familiar else {},
+        "extranjero": extranjero,
         "domicilio_extranjero": {
             "extTipoVia": tipo_via_codigo,
             "extTipoVia_text": tipo_via_text,
@@ -1145,7 +1200,7 @@ def build_datos_mercurio(expediente, snapshot=None):
             "notCodigoLocalidadNotificacion_text": cliente["localidad"],
             "notCodigoPostalNotificacion": cliente["codigo_postal"],
         },
-        "representante": build_datos_representante(snapshot=snapshot),
+        "representante": representante,
     }
 
 
