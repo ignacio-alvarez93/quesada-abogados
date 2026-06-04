@@ -19,6 +19,7 @@ from backend.services import document_template_service
 from backend.services import document_docx_service
 from backend.services import mapper_preview_service
 from backend.services import pdf_fill_service
+from backend.services import form_mapper_admin_service
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
@@ -181,6 +182,8 @@ def expedients_view(page: ft.Page):
         "specific_formulario_id": None,
         "specific_view_mode": None,
         "specific_data_step": 0,
+        "specific_generation_result": {},
+        "specific_refresh_counter": 0,
         "snapshot_status": {},
         "expedient_docx_result": {},
         "expedient_docx_error": {},
@@ -2185,6 +2188,242 @@ def expedients_view(page: ft.Page):
 
         return None
 
+    def _compatible_mapper_codes_for_current_expedient():
+        """Códigos de mapper compatibles con el tipo/subtipo actual.
+
+        document_templates no guarda tipo_expediente_id ni subtipo_expediente_id.
+        La asignación por trámite vive en form_mapper_templates, y la plantilla
+        documental se conecta por mapper_destino/codigo. Por eso el menú de tres
+        puntos debe cruzar ambas tablas.
+        """
+        tipo_id = _selected_tipo_id()
+        subtipo_id = _selected_subtipo_id()
+        codes = []
+
+        try:
+            mapper_templates = form_mapper_admin_service.list_mapper_templates(active_only=True)
+        except Exception:
+            mapper_templates = []
+
+        for mapper in mapper_templates or []:
+            code = _normalize_template_lookup(mapper.get("codigo"))
+            if not code:
+                continue
+
+            mapper_tipo_id = mapper.get("tipo_expediente_id")
+            mapper_subtipo_id = mapper.get("subtipo_expediente_id")
+
+            try:
+                mapper_tipo_id = int(mapper_tipo_id) if mapper_tipo_id not in (None, "", "None") else None
+            except Exception:
+                mapper_tipo_id = None
+            try:
+                mapper_subtipo_id = int(mapper_subtipo_id) if mapper_subtipo_id not in (None, "", "None") else None
+            except Exception:
+                mapper_subtipo_id = None
+
+            # 1) Mapper específico del subtipo actual.
+            if tipo_id and subtipo_id and mapper_tipo_id == int(tipo_id) and mapper_subtipo_id == int(subtipo_id):
+                codes.append(code)
+                continue
+
+            # 2) Mapper específico del tipo, sin subtipo.
+            if tipo_id and mapper_tipo_id == int(tipo_id) and mapper_subtipo_id is None:
+                codes.append(code)
+                continue
+
+            # 3) Mapper general sin tipo/subtipo: aquí entran plantillas como
+            # DESIGNACIÓN DE REPRESENTANTE si se han configurado como generales.
+            if mapper_tipo_id is None and mapper_subtipo_id is None:
+                codes.append(code)
+                continue
+
+        # Refuerzo para EX01 familiar cuando la presentación tiene reglas Mercurio.
+        ex_code = _resolve_ex_template_code(
+            tipo_id,
+            subtipo_id,
+            _selected_option_label(tipo_expediente.get_value()),
+            _selected_subtipo_label(),
+        )
+        codes.extend(_ex_template_candidates(ex_code))
+
+        return list(dict.fromkeys(code for code in codes if code))
+
+    def _list_ex_document_templates_for_menu():
+        """Devuelve plantillas PDF compatibles para el menú contextual.
+
+        Criterio:
+        - plantilla cuyo mapper_destino/codigo coincida con mapper específico del subtipo;
+        - plantilla cuyo mapper sea del tipo sin subtipo;
+        - plantilla general sin tipo/subtipo, como Designación de representante.
+        """
+        try:
+            templates = document_template_service.list_document_templates(active_only=True)
+        except Exception:
+            templates = []
+
+        compatible_codes = set(_compatible_mapper_codes_for_current_expedient())
+        result = []
+
+        for template in templates or []:
+            categoria = _normalize_template_lookup(template.get("categoria"))
+            template_type = str(template.get("template_type") or "").strip().lower()
+            codigo = _normalize_template_lookup(template.get("codigo"))
+            mapper = _normalize_template_lookup(template.get("mapper_destino"))
+            nombre = _normalize_template_lookup(template.get("nombre"))
+            nombre_oficial = _normalize_template_lookup(template.get("nombre_oficial"))
+
+            is_pdf = template_type in ("pdf", "fillable_pdf", "ex", "")
+            if not is_pdf:
+                continue
+
+            values = {codigo, mapper, nombre, nombre_oficial}
+            values = {v for v in values if v}
+
+            # EX asignado al subtipo/tipo o formulario general compatible.
+            if compatible_codes and values.intersection(compatible_codes):
+                result.append(template)
+                continue
+
+            # Fallback explícito para designación/representante general si no hay
+            # mapper enlazado pero sí se nombró claramente la plantilla.
+            joined = " ".join(values)
+            if "DESIGNACION" in joined or "DESIGNACIÓN" in joined or "REPRESENTANTE" in joined:
+                result.append(template)
+                continue
+
+            # Fallback conservador para EX/PDF con categoria EX cuando coincide por candidato.
+            if categoria == "EX" and any(candidate in joined for candidate in compatible_codes):
+                result.append(template)
+
+        def sort_key(item):
+            code = _normalize_template_lookup(item.get("codigo") or item.get("mapper_destino") or item.get("nombre"))
+            if "EX01_FAMILIAR" in code:
+                return (0, code)
+            if "EX01" in code:
+                return (1, code)
+            if "DESIGN" in code or "REPRESENTANTE" in code:
+                return (2, code)
+            return (3, code)
+
+        # Deduplicamos por id por si entra por varios criterios.
+        deduped = []
+        seen = set()
+        for item in sorted(result, key=sort_key):
+            item_id = item.get("id")
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            deduped.append(item)
+        return deduped
+
+    def _set_specific_generation_success(expediente_id, title, path="", extra=""):
+        if not expediente_id:
+            return
+        state.setdefault("specific_generation_result", {})[int(expediente_id)] = {
+            "status": "ok",
+            "title": title,
+            "path": path or "",
+            "extra": extra or "",
+            "at": datetime.now().strftime("%d/%m/%Y %H:%M"),
+        }
+
+    def _specific_generation_status_card(expediente_id):
+        result = state.setdefault("specific_generation_result", {}).get(int(expediente_id)) if expediente_id else None
+        if not result:
+            return ft.Container(visible=False)
+
+        return ft.Container(
+            bgcolor="#ECFDF3",
+            border=ft.border.all(1, "#ABEFC6"),
+            border_radius=12,
+            padding=12,
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.CHECK_CIRCLE, color="#027A48", size=20),
+                    ft.Column(
+                        expand=True,
+                        spacing=2,
+                        controls=[
+                            ft.Text(result.get("title") or "Formulario generado", size=13, weight=ft.FontWeight.BOLD, color="#027A48"),
+                            ft.Text(result.get("path") or result.get("extra") or "", size=11, color=Q_PRIMARY_DARK, selectable=True),
+                            ft.Text(f"Realizado: {result.get('at') or '-'}", size=10, color=Q_MUTED),
+                        ],
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def _generate_ex_from_template(template, expediente_id):
+        if not template:
+            raise ValueError("No se ha seleccionado una plantilla EX")
+
+        generated = pdf_fill_service.fill_pdf_from_template(
+            template.get("id"),
+            expediente_id=int(expediente_id),
+            auto_build_snapshot=True,
+            flatten=False,
+        )
+        output = generated.get("output") or {}
+        pdf_info = generated.get("pdf") or {}
+        pdf_path = output.get("pdf_path") or pdf_info.get("pdf_path") or ""
+        json_path = output.get("json_path") or output.get("payload_path") or ""
+        return generated, pdf_path, json_path
+
+    def generate_specific_ex_template(template, e=None):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        formulario_id = state.get("specific_formulario_id")
+        if not expediente_id:
+            show_form_error("Guarda primero el expediente antes de generar formularios")
+            return
+        try:
+            if formulario_id:
+                values = _current_specific_values()
+                if state.get("specific_view_mode") == "EX01_FAMILIAR" and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
+                    dynamic_form_service.save_datos_especificos_patch(expediente_id, formulario_id, values)
+                else:
+                    dynamic_form_service.save_datos_especificos(expediente_id, formulario_id, values)
+
+            generated, pdf_path, json_path = _generate_ex_from_template(template, expediente_id)
+            label = template.get("nombre") or template.get("codigo") or "Formulario"
+            title = f"{label} realizado"
+            _set_specific_generation_success(expediente_id, title, pdf_path or json_path)
+            clear_form_message()
+            set_message(success_alert(title + (f"\nArchivo: {pdf_path or json_path}" if (pdf_path or json_path) else "")))
+            state["dialog_section"] = "datos_especificos"
+            expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+            page.update()
+        except Exception as exc:
+            show_form_error(str(exc))
+
+    def _forms_popup_menu():
+        templates = _list_ex_document_templates_for_menu()
+        items = []
+        for template in templates[:12]:
+            label = template.get("nombre") or template.get("codigo") or template.get("mapper_destino") or "Formulario"
+            items.append(
+                ft.PopupMenuItem(
+                    content=ft.Text(label),
+                    on_click=lambda e, t=template: generate_specific_ex_template(t, e),
+                )
+            )
+
+        if not items:
+            items.append(
+                ft.PopupMenuItem(
+                    content=ft.Text("No hay plantillas EX activas"),
+                    disabled=True,
+                )
+            )
+
+        return ft.PopupMenuButton(
+            icon=ft.Icons.MORE_VERT,
+            tooltip="Generar otros formularios",
+            items=items,
+        )
+
     def _write_ex_payload_fallback(expediente_id, ex_code):
         """
         Export mínimo siempre disponible para que el botón Genere EX deje rastro
@@ -2245,26 +2484,21 @@ def expedients_view(page: ft.Page):
             template = _find_ex_document_template(ex_code)
 
             if template:
-                generated = pdf_fill_service.fill_pdf_from_template(
-                    template.get("id"),
-                    expediente_id=int(expediente_id),
-                    auto_build_snapshot=True,
-                    flatten=False,
-                )
-
-                output = generated.get("output") or {}
-                pdf_info = generated.get("pdf") or {}
-                pdf_path = output.get("pdf_path") or pdf_info.get("pdf_path") or ""
-                json_path = output.get("json_path") or output.get("payload_path") or ""
+                generated, pdf_path, json_path = _generate_ex_from_template(template, expediente_id)
+                label = template.get("nombre") or template.get("codigo") or ex_code
+                title = f"{label} realizado"
+                _set_specific_generation_success(expediente_id, title, pdf_path or json_path)
                 clear_form_message()
                 set_message(success_alert(
-                    "EX generado correctamente"
+                    title
                     + (f"\nPDF: {pdf_path}" if pdf_path else "")
                     + (f"\nPayload: {json_path}" if json_path else "")
                 ))
             else:
                 # Fallback útil: exporta payload EX a exports/ex_forms para que haya artefacto revisable.
                 fallback = _write_ex_payload_fallback(int(expediente_id), ex_code)
+                title = f"{ex_code} payload realizado"
+                _set_specific_generation_success(expediente_id, title, fallback.get("path"))
                 clear_form_message()
                 set_message(success_alert(
                     f"No hay plantilla PDF activa para {ex_code}. Se ha exportado el payload EX para revisión."
@@ -2477,9 +2711,77 @@ def expedients_view(page: ft.Page):
         for target, source in detail_map.items():
             _set_specific_control_value(f"{prefix}_{target}", _detail_value(details, source) if source not in details else details.get(source))
 
+    def _refresh_saved_values_from_live_contact(saved_values, prefix="representante_legal"):
+        """Mezcla datos vivos del contacto seleccionado en datos específicos.
+
+        Evita que la pantalla EX01 familiar enseñe datos antiguos hasta cambiar
+        de pestaña o volver a seleccionar el autocomplete.
+        """
+        values = dict(saved_values or {})
+        contacto_id = (
+            values.get(f"{prefix}_contacto_id")
+            or values.get(f"{prefix}_id")
+            or _option_id(values.get(prefix))
+        )
+        if not contacto_id:
+            return values
+
+        details = _fetch_cliente_contact_details(contacto_id) or {}
+        if not details:
+            return values
+
+        values[prefix] = values.get(prefix) or f"{contacto_id} - {details.get('nombre_completo') or details.get('nombre') or ''}".strip()
+
+        detail_map = {
+            "contacto_id": "id",
+            "id": "id",
+            "tipo_contacto": "tipo_contacto",
+            "parentesco": "parentesco",
+            "nombre": "nombre",
+            "primer_apellido": "primer_apellido",
+            "segundo_apellido": "segundo_apellido",
+            "nombre_completo": "nombre_completo",
+            "documento": "documento",
+            "nie": "nie",
+            "dni": "dni",
+            "pasaporte": "pasaporte",
+            "nacionalidad": "nacionalidad",
+            "fecha_nacimiento": "fecha_nacimiento",
+            "sexo": "sexo",
+            "telefono": "telefono",
+            "email": "email",
+            "estado_cliente": "estado_cliente",
+            "domicilio_espana": "domicilio_espana",
+            "tipo_via": "tipo_via",
+            "nombre_via": "nombre_via",
+            "numero": "numero",
+            "piso": "piso",
+            "puerta": "puerta",
+            "escalera": "escalera",
+            "localidad": "localidad",
+            "provincia": "provincia",
+            "codigo_postal": "codigo_postal",
+            "localidad_nacimiento": "localidad_nacimiento",
+            "pais_nacimiento": "pais_nacimiento",
+            "nombre_padre": "nombre_padre",
+            "nombre_madre": "nombre_madre",
+            "estado_civil": "estado_civil",
+            "cliente_referenciado_id": "cliente_referenciado_id",
+        }
+
+        for target, source in detail_map.items():
+            key = f"{prefix}_{target}"
+            if source == "id":
+                values[key] = str(contacto_id or "")
+            else:
+                values[key] = str(details.get(source) or "")
+
+        return values
+
     def _build_ex01_familiar_specific_content(expediente_id, formulario, saved_values, tipo_label, subtipo_label):
         state["specific_view_mode"] = "EX01_FAMILIAR"
         state["specific_formulario_id"] = formulario.get("id") if formulario else None
+        saved_values = _refresh_saved_values_from_live_contact(saved_values, "representante_legal")
 
         steps = [
             ("Solicitante", "Cliente del expediente"),
@@ -2528,6 +2830,10 @@ def expedients_view(page: ft.Page):
             details = _fetch_cliente_contact_details(selected_id_value) if selected_id_value else {}
             _remember_contact_specific_values("representante_legal", selected or "", details or {})
             _autosave_specific_values_silent()
+            # Reconstruye la sección para que las tarjetas resumen reflejen el
+            # contacto vivo inmediatamente, sin cambiar de pestaña.
+            if expediente_id:
+                expediente_dialog.content = build_expediente_dialog_content(expediente_id)
             page.update()
 
         familiar_autocomplete = AppAutocomplete(
@@ -2716,9 +3022,10 @@ def expedients_view(page: ft.Page):
                             spacing=10,
                             wrap=True,
                         ),
+                        _specific_generation_status_card(expediente_id),
                         build_snapshot_status_content(expediente_id),
                         ft.Text(
-                            "Usa la barra inferior para guardar, generar snapshot y generar el EX referenciado.",
+                            "Usa la barra inferior para guardar, generar snapshot, generar EX01 familiar o elegir otros formularios desde el menú de tres puntos.",
                             size=12,
                             color=Q_MUTED,
                         ),
@@ -2736,7 +3043,8 @@ def expedients_view(page: ft.Page):
         else:
             nav_controls.extend([
                 secondary_button("Generar snapshot", generate_snapshot),
-                secondary_button("Generar EX referenciado", generate_referenced_ex_form),
+                secondary_button("Generar EX01 familiar", generate_referenced_ex_form),
+                _forms_popup_menu(),
             ])
 
         controls = [
@@ -2794,11 +3102,11 @@ def expedients_view(page: ft.Page):
         ]
 
         return ft.Container(
-            width=920,
-            height=620,
+            expand=True,
             bgcolor="#FFFFFF",
-            border_radius=18,
-            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            border_radius=0,
+            padding=0,
+            clip_behavior=ft.ClipBehavior.NONE,
             content=ft.Column(
                 controls=controls,
                 spacing=12,
@@ -3436,7 +3744,22 @@ def expedients_view(page: ft.Page):
 
     def set_dialog_section(section):
         state["dialog_section"] = section
-        expediente_dialog.content = build_expediente_dialog_content(state.get("dialog_expediente_id"))
+        expediente_id = state.get("dialog_expediente_id")
+        if section == "datos_especificos":
+            state["specific_refresh_counter"] = int(state.get("specific_refresh_counter") or 0) + 1
+            state["specific_field_controls"] = {}
+            state["specific_live_values"] = {}
+            # Relee la ficha base del expediente al entrar en Datos específicos,
+            # para que cliente/tipo/subtipo estén actualizados antes de resolver
+            # cliente, contacto, formularios y plantillas.
+            try:
+                if expediente_id:
+                    latest = expedient_service.get_expediente(expediente_id)
+                    if latest:
+                        load_form(latest)
+            except Exception:
+                pass
+        expediente_dialog.content = build_expediente_dialog_content(expediente_id)
         page.update()
 
     def _nav_button(label, section, icon, subtitle=""):
@@ -3838,11 +4161,11 @@ def expedients_view(page: ft.Page):
                         border=ft.border.all(1, Q_BORDER),
                         border_radius=18,
                         padding=16,
-                        content=ft.Column(
-                            controls=[
-                                build_dialog_section_content(expediente_id),
-                            ],
-                            spacing=12,
+                        clip_behavior=ft.ClipBehavior.NONE,
+                        content=ft.Container(
+                            expand=True,
+                            bgcolor="#FFFFFF",
+                            content=build_dialog_section_content(expediente_id),
                         ),
                     ),
                 ],
@@ -3858,6 +4181,11 @@ def expedients_view(page: ft.Page):
             primary_button("Guardar", save_expediente),
         ],
     )
+    try:
+        expediente_dialog.bgcolor = "#FFFFFF"
+        expediente_dialog.surface_tint_color = "#FFFFFF"
+    except Exception:
+        pass
     page.overlay.append(expediente_dialog)
 
     def open_new(e=None):
@@ -3880,6 +4208,8 @@ def expedients_view(page: ft.Page):
         expediente_id = expediente.get("id")
         state["dialog_section"] = "ficha"
         state["dialog_expediente_id"] = expediente_id
+        state["specific_field_controls"] = {}
+        state["specific_live_values"] = {}
         state.pop("payload_preview_fullscreen", None)
         state.setdefault("document_browser_path", {}).pop(int(expediente_id), None)
         _get_mercurio_box_status(expediente_id, force=True)
