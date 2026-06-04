@@ -680,6 +680,43 @@ def _get_cliente_contacto(contacto_id):
         ).fetchone())
 
 
+def _contacto_id_from_representante_legal_datos(datos):
+    """
+    Resuelve el id vivo del contacto seleccionado como representante/familiar.
+
+    Prioridad:
+    1. Campos técnicos derivados guardados por el autocomplete.
+    2. Valor visible del autocomplete: "11 - Nombre · Documento".
+    """
+    datos = datos or {}
+
+    explicit_id = _first_dynamic_value(
+        datos,
+        "representante_legal_contacto_id",
+        "representante_legal_id",
+        "rep_legal_contacto_id",
+        "rep_legal_id",
+    )
+    if explicit_id:
+        try:
+            return int(str(explicit_id).strip())
+        except Exception:
+            pass
+
+    autocomplete_value = _first_dynamic_value(
+        datos,
+        "representante_legal",
+        "rep_legal",
+        "representante_legal_contacto",
+    )
+    return _extract_leading_id(autocomplete_value)
+
+
+def _get_representante_legal_contacto_from_datos(datos):
+    contacto_id = _contacto_id_from_representante_legal_datos(datos)
+    return _get_cliente_contacto(contacto_id)
+
+
 def _full_name_from_contacto(contacto):
     contacto = contacto or {}
     return " ".join([
@@ -718,49 +755,43 @@ def _fill_missing(merged, key, value):
 
 def _overlay_representante_legal_from_contacto_autocomplete(merged, datos):
     """
-    Si el formulario dinámico solo guarda el valor visible del autocomplete
-    representante_legal = '11 - Nombre · Documento', resuelve el contacto
-    asociado y completa los campos estructurados que Mercurio necesita.
+    Si hay contacto seleccionado, resuelve SIEMPRE el registro vivo en BD.
+
+    Esto evita que Mercurio use derivados antiguos guardados en
+    expediente_datos_especificos, por ejemplo un parentesco anterior.
     """
-    autocomplete_value = _first_dynamic_value(
-        datos,
-        "representante_legal",
-        "rep_legal",
-        "representante_legal_contacto",
-        "representante_legal_contacto_id",
-    )
-    contacto_id = _extract_leading_id(autocomplete_value)
-    contacto = _get_cliente_contacto(contacto_id)
+    contacto = _get_representante_legal_contacto_from_datos(datos)
     if not contacto:
         return merged
 
-    _fill_missing(merged, "representante_legal_contacto_id", contacto.get("id"))
-    _fill_missing(merged, "representante_legal_nombre", _full_name_from_contacto(contacto))
-    _fill_missing(merged, "representante_legal_tipo_documento", _tipo_documento_from_contacto(contacto))
-    _fill_missing(merged, "representante_legal_documento", _documento_from_contacto(contacto))
-    _fill_missing(merged, "representante_legal_titulo", contacto.get("parentesco"))
-    _fill_missing(merged, "representante_legal_telefono_movil", contacto.get("telefono"))
-    _fill_missing(merged, "representante_legal_email", contacto.get("email"))
+    # Campos estructurados críticos: se sobrescriben desde BD viva.
+    # Los derivados persistidos pueden quedar obsoletos si se edita el contacto.
+    merged["representante_legal_contacto_id"] = str(contacto.get("id") or "")
+    merged["representante_legal_nombre"] = _full_name_from_contacto(contacto)
+    merged["representante_legal_tipo_documento"] = _tipo_documento_from_contacto(contacto)
+    merged["representante_legal_documento"] = _documento_from_contacto(contacto)
+    merged["representante_legal_titulo"] = str(contacto.get("parentesco") or "").strip()
+    merged["representante_legal_parentesco"] = str(contacto.get("parentesco") or "").strip()
+    merged["representante_legal_telefono_movil"] = str(contacto.get("telefono") or "").strip()
+    merged["representante_legal_email"] = str(contacto.get("email") or "").strip()
 
     # Domicilio/localización del representante legal.
-    # Importante para EX01 familiar y para diagnóstico de volcado Mercurio.
-    _fill_missing(merged, "representante_legal_domicilio_espana", contacto.get("domicilio_espana"))
-    _fill_missing(merged, "representante_legal_tipo_via", contacto.get("tipo_via"))
-    _fill_missing(merged, "representante_legal_nombre_via", contacto.get("nombre_via"))
-    _fill_missing(merged, "representante_legal_numero", contacto.get("numero"))
-    _fill_missing(merged, "representante_legal_piso", contacto.get("piso"))
-    _fill_missing(merged, "representante_legal_puerta", contacto.get("puerta"))
-    _fill_missing(merged, "representante_legal_escalera", contacto.get("escalera"))
-    _fill_missing(merged, "representante_legal_provincia", contacto.get("provincia"))
-    _fill_missing(merged, "representante_legal_localidad", contacto.get("localidad"))
-    _fill_missing(merged, "representante_legal_municipio", contacto.get("localidad"))
-    _fill_missing(merged, "representante_legal_codigo_postal", contacto.get("codigo_postal"))
+    merged["representante_legal_domicilio_espana"] = str(contacto.get("domicilio_espana") or "").strip()
+    merged["representante_legal_tipo_via"] = str(contacto.get("tipo_via") or "").strip()
+    merged["representante_legal_nombre_via"] = str(contacto.get("nombre_via") or "").strip()
+    merged["representante_legal_numero"] = str(contacto.get("numero") or "").strip()
+    merged["representante_legal_piso"] = str(contacto.get("piso") or "").strip()
+    merged["representante_legal_puerta"] = str(contacto.get("puerta") or "").strip()
+    merged["representante_legal_escalera"] = str(contacto.get("escalera") or "").strip()
+    merged["representante_legal_provincia"] = str(contacto.get("provincia") or "").strip()
+    merged["representante_legal_localidad"] = str(contacto.get("localidad") or "").strip()
+    merged["representante_legal_municipio"] = str(contacto.get("localidad") or "").strip()
+    merged["representante_legal_codigo_postal"] = str(contacto.get("codigo_postal") or "").strip()
 
-    # Datos auxiliares para diagnóstico/exportación, sin interferir en Mercurio.
-    _fill_missing(merged, "representante_legal_nie", contacto.get("nie"))
-    _fill_missing(merged, "representante_legal_dni", contacto.get("dni"))
-    _fill_missing(merged, "representante_legal_pasaporte", contacto.get("pasaporte"))
-    _fill_missing(merged, "representante_legal_parentesco", contacto.get("parentesco"))
+    # Datos auxiliares para diagnóstico/exportación.
+    merged["representante_legal_nie"] = str(contacto.get("nie") or "").strip()
+    merged["representante_legal_dni"] = str(contacto.get("dni") or "").strip()
+    merged["representante_legal_pasaporte"] = str(contacto.get("pasaporte") or "").strip()
 
     return merged
 
@@ -964,12 +995,17 @@ def build_datos_familiar_ex01(cliente, snapshot=None):
     tipo_via_codigo = domicilio_parts["tipo_via_codigo"]
     tipo_via_text = CODIGO_A_TIPO_VIA.get(tipo_via_codigo, tipo_via_codigo)
 
-    parentesco = _first_dynamic_value(
-        datos,
-        "representante_legal_parentesco",
-        "familiar_parentesco",
-        "parentesco",
-    )
+    contacto_representante = _get_representante_legal_contacto_from_datos(datos)
+    parentesco = ""
+    if contacto_representante:
+        parentesco = str(contacto_representante.get("parentesco") or "").strip()
+    if not parentesco:
+        parentesco = _first_dynamic_value(
+            datos,
+            "representante_legal_parentesco",
+            "familiar_parentesco",
+            "parentesco",
+        )
 
     return {
         "reaPasaporteReagrupante": cliente.get("pasaporte") or "",
