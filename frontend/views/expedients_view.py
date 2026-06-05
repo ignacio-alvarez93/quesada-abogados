@@ -2583,6 +2583,42 @@ def expedients_view(page: ft.Page):
             expediente_dialog.content = build_expediente_dialog_content(expediente_id)
             page.update()
 
+    def _save_specific_values_or_raise():
+        """Guarda los datos específicos visibles sin cambiar de pantalla.
+
+        A diferencia de _autosave_specific_values_silent(), esta función deja
+        subir el error para impedir avanzar de paso si el guardado falla.
+        """
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        formulario_id = state.get("specific_formulario_id")
+        if not expediente_id:
+            raise ValueError("Guarda primero el expediente antes de guardar datos específicos")
+        if not formulario_id:
+            raise ValueError("No hay formulario específico configurado para este expediente")
+
+        values = _current_specific_values()
+
+        if state.get("specific_view_mode") == "EX01_FAMILIAR" and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
+            dynamic_form_service.save_datos_especificos_patch(
+                expediente_id,
+                formulario_id,
+                values,
+            )
+        else:
+            dynamic_form_service.save_datos_especificos(
+                expediente_id,
+                formulario_id,
+                values,
+            )
+
+    def _save_specific_and_go_step(next_step):
+        try:
+            _save_specific_values_or_raise()
+            clear_form_message()
+            _set_specific_data_step(next_step)
+        except Exception as exc:
+            show_form_error(str(exc))
+
     def _specific_field_value(saved_values, codigo, default=""):
         value = saved_values.get(codigo)
         if value in (None, ""):
@@ -3122,7 +3158,7 @@ def expedients_view(page: ft.Page):
             nav_controls.append(secondary_button("Anterior", lambda e: _set_specific_data_step(current_step - 1)))
         nav_controls.append(primary_button("Guardar", save_specific_data))
         if current_step < len(steps) - 1:
-            nav_controls.append(secondary_button("Siguiente", lambda e: _set_specific_data_step(current_step + 1)))
+            nav_controls.append(secondary_button("Siguiente", lambda e: _save_specific_and_go_step(current_step + 1)))
         else:
             nav_controls.extend([
                 secondary_button("Generar snapshot", generate_snapshot),
