@@ -54,6 +54,61 @@ from database.connection import get_connection
 from datetime import datetime
 
 
+CLIENT_CONTACT_SYNC_FIELDS = [
+    "nombre", "primer_apellido", "segundo_apellido", "nacionalidad",
+    "nie", "pasaporte", "dni", "fecha_nacimiento", "localidad_nacimiento",
+    "pais_nacimiento", "nombre_padre", "nombre_madre", "estado_civil",
+    "telefono", "email", "tipo_via", "nombre_via", "domicilio_espana",
+    "localidad", "codigo_postal", "provincia", "numero", "piso",
+    "estado_cliente", "observaciones", "observaciones_internas", "sexo",
+]
+
+
+def _table_exists(cursor, table_name):
+    row = cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _table_columns(cursor, table_name):
+    try:
+        rows = cursor.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {row[1] for row in rows}
+    except Exception:
+        return set()
+
+
+def _sync_linked_contact_rows_for_client(cursor, client_id, data):
+    """
+    Mantiene actualizadas las copias denormalizadas en cliente_contactos para
+    compatibilidad con snapshots, formularios y pantallas antiguas.
+
+    La fuente canónica sigue siendo clientes cuando existe cliente_referenciado_id.
+    """
+    if not client_id:
+        return
+    if not _table_exists(cursor, "cliente_contactos"):
+        return
+
+    columns = _table_columns(cursor, "cliente_contactos")
+    fields = [field for field in CLIENT_CONTACT_SYNC_FIELDS if field in columns]
+    if not fields:
+        return
+
+    cursor.execute(
+        f"""
+        UPDATE cliente_contactos
+        SET {", ".join(f"{field} = ?" for field in fields)},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE cliente_referenciado_id = ?
+          AND COALESCE(activo, 1) = 1
+        """,
+        [data.get(field) for field in fields] + [int(client_id)],
+    )
+
+
 def create_client(data):
     data = normalize_client_data(data)
     conn = get_connection()
@@ -202,6 +257,8 @@ def update_client(client_id, data):
         data.get("sexo"),
         client_id,
     ))
+
+    _sync_linked_contact_rows_for_client(cursor, client_id, data)
 
     conn.commit()
     conn.close()

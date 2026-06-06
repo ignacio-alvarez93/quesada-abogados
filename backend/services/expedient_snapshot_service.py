@@ -202,6 +202,29 @@ def _build_expediente(expediente):
     }
 
 
+SNAPSHOT_LINKED_CONTACT_FIELDS = [
+    "nombre", "primer_apellido", "segundo_apellido", "nie", "pasaporte", "dni",
+    "nacionalidad", "fecha_nacimiento", "telefono", "email", "estado_cliente",
+    "domicilio_espana", "tipo_via", "nombre_via", "numero", "piso",
+    "localidad", "provincia", "codigo_postal",
+    "localidad_nacimiento", "pais_nacimiento", "nombre_padre", "nombre_madre",
+    "estado_civil", "sexo", "observaciones", "observaciones_internas",
+]
+
+
+def _apply_linked_client_snapshot_data(contacto):
+    item = dict(contacto or {})
+    if not item.get("cliente_referenciado_id"):
+        return item
+
+    for field in SNAPSHOT_LINKED_CONTACT_FIELDS:
+        ref_value = item.get(f"ref_{field}")
+        if ref_value not in (None, ""):
+            item[field] = ref_value
+
+    return item
+
+
 def _fetch_contactos(cliente_id):
     if not cliente_id:
         return []
@@ -212,17 +235,46 @@ def _fetch_contactos(cliente_id):
 
         rows = conn.execute(
             """
-            SELECT *
-            FROM cliente_contactos
-            WHERE cliente_id = ?
-              AND COALESCE(activo, 1) = 1
-            ORDER BY tipo_contacto ASC, parentesco ASC, nombre ASC, id ASC
+            SELECT
+                cc.*,
+                cr.nombre AS ref_nombre,
+                cr.primer_apellido AS ref_primer_apellido,
+                cr.segundo_apellido AS ref_segundo_apellido,
+                cr.nie AS ref_nie,
+                cr.pasaporte AS ref_pasaporte,
+                cr.dni AS ref_dni,
+                cr.nacionalidad AS ref_nacionalidad,
+                cr.fecha_nacimiento AS ref_fecha_nacimiento,
+                cr.telefono AS ref_telefono,
+                cr.email AS ref_email,
+                cr.estado_cliente AS ref_estado_cliente,
+                cr.domicilio_espana AS ref_domicilio_espana,
+                cr.tipo_via AS ref_tipo_via,
+                cr.nombre_via AS ref_nombre_via,
+                cr.numero AS ref_numero,
+                cr.piso AS ref_piso,
+                cr.localidad AS ref_localidad,
+                cr.provincia AS ref_provincia,
+                cr.codigo_postal AS ref_codigo_postal,
+                cr.localidad_nacimiento AS ref_localidad_nacimiento,
+                cr.pais_nacimiento AS ref_pais_nacimiento,
+                cr.nombre_padre AS ref_nombre_padre,
+                cr.nombre_madre AS ref_nombre_madre,
+                cr.estado_civil AS ref_estado_civil,
+                cr.sexo AS ref_sexo,
+                cr.observaciones AS ref_observaciones,
+                cr.observaciones_internas AS ref_observaciones_internas
+            FROM cliente_contactos cc
+            LEFT JOIN clientes cr ON cr.id = cc.cliente_referenciado_id
+            WHERE cc.cliente_id = ?
+              AND COALESCE(cc.activo, 1) = 1
+            ORDER BY cc.tipo_contacto ASC, cc.parentesco ASC, COALESCE(cr.nombre, cc.nombre) ASC, cc.id ASC
             """,
             (int(cliente_id),),
         ).fetchall()
 
-    return [_with_domicilio_calculado(_dict(row)) for row in rows]
-
+    contactos = [_apply_linked_client_snapshot_data(_dict(row)) for row in rows]
+    return [_with_domicilio_calculado(contacto) for contacto in contactos]
 
 def _split_contactos(contactos):
     empleador_tokens = ("EMPLEADOR", "EMPRESA", "TRABAJO")

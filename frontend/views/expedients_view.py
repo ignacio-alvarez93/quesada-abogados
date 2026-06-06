@@ -798,12 +798,24 @@ def expedients_view(page: ft.Page):
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     """
-                    SELECT id, tipo_contacto, parentesco, nombre, primer_apellido, segundo_apellido,
-                           nie, dni, pasaporte, email, telefono
-                    FROM cliente_contactos
-                    WHERE cliente_id = ?
-                      AND COALESCE(activo, 1) = 1
-                    ORDER BY tipo_contacto ASC, parentesco ASC, nombre ASC, id DESC
+                    SELECT
+                        cc.id,
+                        cc.tipo_contacto,
+                        cc.parentesco,
+                        cc.cliente_referenciado_id,
+                        COALESCE(NULLIF(cr.nombre, ''), cc.nombre) AS nombre,
+                        COALESCE(NULLIF(cr.primer_apellido, ''), cc.primer_apellido) AS primer_apellido,
+                        COALESCE(NULLIF(cr.segundo_apellido, ''), cc.segundo_apellido) AS segundo_apellido,
+                        COALESCE(NULLIF(cr.nie, ''), cc.nie) AS nie,
+                        COALESCE(NULLIF(cr.dni, ''), cc.dni) AS dni,
+                        COALESCE(NULLIF(cr.pasaporte, ''), cc.pasaporte) AS pasaporte,
+                        COALESCE(NULLIF(cr.email, ''), cc.email) AS email,
+                        COALESCE(NULLIF(cr.telefono, ''), cc.telefono) AS telefono
+                    FROM cliente_contactos cc
+                    LEFT JOIN clientes cr ON cr.id = cc.cliente_referenciado_id
+                    WHERE cc.cliente_id = ?
+                      AND COALESCE(cc.activo, 1) = 1
+                    ORDER BY cc.tipo_contacto ASC, cc.parentesco ASC, COALESCE(cr.nombre, cc.nombre) ASC, cc.id DESC
                     """,
                     (int(cliente_id),),
                 ).fetchall()
@@ -900,10 +912,37 @@ def expedients_view(page: ft.Page):
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     """
-                    SELECT *
-                    FROM cliente_contactos
-                    WHERE id = ?
-                      AND COALESCE(activo, 1) = 1
+                    SELECT
+                        cc.*,
+                        COALESCE(NULLIF(cr.nombre, ''), cc.nombre) AS nombre,
+                        COALESCE(NULLIF(cr.primer_apellido, ''), cc.primer_apellido) AS primer_apellido,
+                        COALESCE(NULLIF(cr.segundo_apellido, ''), cc.segundo_apellido) AS segundo_apellido,
+                        COALESCE(NULLIF(cr.nie, ''), cc.nie) AS nie,
+                        COALESCE(NULLIF(cr.pasaporte, ''), cc.pasaporte) AS pasaporte,
+                        COALESCE(NULLIF(cr.dni, ''), cc.dni) AS dni,
+                        COALESCE(NULLIF(cr.nacionalidad, ''), cc.nacionalidad) AS nacionalidad,
+                        COALESCE(NULLIF(cr.fecha_nacimiento, ''), cc.fecha_nacimiento) AS fecha_nacimiento,
+                        COALESCE(NULLIF(cr.telefono, ''), cc.telefono) AS telefono,
+                        COALESCE(NULLIF(cr.email, ''), cc.email) AS email,
+                        COALESCE(NULLIF(cr.estado_cliente, ''), cc.estado_cliente) AS estado_cliente,
+                        COALESCE(NULLIF(cr.domicilio_espana, ''), cc.domicilio_espana) AS domicilio_espana,
+                        COALESCE(NULLIF(cr.tipo_via, ''), cc.tipo_via) AS tipo_via,
+                        COALESCE(NULLIF(cr.nombre_via, ''), cc.nombre_via) AS nombre_via,
+                        COALESCE(NULLIF(cr.numero, ''), cc.numero) AS numero,
+                        COALESCE(NULLIF(cr.piso, ''), cc.piso) AS piso,
+                        COALESCE(NULLIF(cr.localidad, ''), cc.localidad) AS localidad,
+                        COALESCE(NULLIF(cr.provincia, ''), cc.provincia) AS provincia,
+                        COALESCE(NULLIF(cr.codigo_postal, ''), cc.codigo_postal) AS codigo_postal,
+                        COALESCE(NULLIF(cr.localidad_nacimiento, ''), cc.localidad_nacimiento) AS localidad_nacimiento,
+                        COALESCE(NULLIF(cr.pais_nacimiento, ''), cc.pais_nacimiento) AS pais_nacimiento,
+                        COALESCE(NULLIF(cr.nombre_padre, ''), cc.nombre_padre) AS nombre_padre,
+                        COALESCE(NULLIF(cr.nombre_madre, ''), cc.nombre_madre) AS nombre_madre,
+                        COALESCE(NULLIF(cr.estado_civil, ''), cc.estado_civil) AS estado_civil,
+                        COALESCE(NULLIF(cr.sexo, ''), cc.sexo) AS sexo
+                    FROM cliente_contactos cc
+                    LEFT JOIN clientes cr ON cr.id = cc.cliente_referenciado_id
+                    WHERE cc.id = ?
+                      AND COALESCE(cc.activo, 1) = 1
                     LIMIT 1
                     """,
                     (int(contacto_id),),
