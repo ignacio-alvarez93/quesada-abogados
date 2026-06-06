@@ -586,40 +586,69 @@ def select_piso_by_options(browser, field_id, value=None, session_dir=None):
     return result
 
 
-def format_piso_mercurio(value):
+def classify_piso_mercurio(value):
+    """
+    Clasifica el piso antes de tocar el DOM.
+
+    Regla clave:
+    - Solo se selecciona BAJO EXTERIOR/INTERIOR si el valor original es claramente bajo.
+    - Si hay número, siempre prevalece el número: "1" -> PISO 01, nunca PBE.
+    """
     raw = "" if value is None else str(value).strip()
     if not raw:
-        return ""
+        return {"kind": "empty", "raw": raw, "formatted": "", "num": ""}
 
-    m = re.search(r"\\d+", raw)
-    if not m:
-        return raw
+    norm = normalize(raw)
 
-    return "PISO " + m.group(0).zfill(2)
+    # Si contiene un número, SIEMPRE es piso numérico.
+    # Esto evita que textos mezclados o residuos acaben entrando como bajo.
+    m = re.search(r"\d+", raw)
+    if m:
+        num = m.group(0).zfill(2)
+        return {"kind": "piso", "raw": raw, "formatted": "PISO " + num, "num": num}
+
+    if norm in {"BJ", "BJO", "BAJO", "BJ EXT", "BJO EXT", "BAJO EXT", "BAJO EXTERIOR"}:
+        return {"kind": "bajo_exterior", "raw": raw, "formatted": "BAJO EXTERIOR", "num": ""}
+
+    if norm in {"BI", "BJO INT", "BAJO INT", "BAJO INTERIOR"}:
+        return {"kind": "bajo_interior", "raw": raw, "formatted": "BAJO INTERIOR", "num": ""}
+
+    return {"kind": "raw", "raw": raw, "formatted": raw, "num": ""}
+
+
+def format_piso_mercurio(value):
+    return classify_piso_mercurio(value)["formatted"]
 
 
 def set_piso_mercurio(browser, field_id, value=None, session_dir=None):
     """
-    Fuerza selección estricta de PISO XX.
-    Evita seleccionar ATICO 05, BAJO 05, etc.
+    Selección segura de piso en Mercurio.
+
+    - BJ/BJ EXT -> PBE / BAJO EXTERIOR.
+    - BI        -> PBI / BAJO INTERIOR.
+    - 1/01/1 C  -> PISO 01 / P01, sin poder caer en BAJO EXTERIOR.
     """
-    formatted = format_piso_mercurio(value)
+    info = classify_piso_mercurio(value)
+    formatted = info["formatted"]
+    kind = info["kind"]
+    num = info["num"]
+    raw = info["raw"]
 
     if not formatted:
         if session_dir:
             write_log(session_dir, f"VACIO piso {field_id}")
         return False
 
-    num = formatted.replace("PISO ", "").strip()
-
     script = f"""
     (function(){{
         const id = {json.dumps(field_id)};
+        const raw = {json.dumps(raw)};
+        const kind = {json.dumps(kind)};
         const formatted = {json.dumps(formatted)};
         const num = {json.dumps(num)};
 
         const el = document.getElementById(id);
-        if (!el) return {{ ok: false, reason: 'NO_EXISTE' }};
+        if (!el) return {{ ok: false, reason: 'NO_EXISTE', raw, kind, formatted, num }};
 
         function norm(v) {{
             return (v || '').toString().trim().toUpperCase()
@@ -636,51 +665,93 @@ def set_piso_mercurio(browser, field_id, value=None, session_dir=None):
         if (!el.options) {{
             el.value = formatted;
             fire();
-            return {{ ok: true, mode: 'input', value: el.value }};
+            return {{ ok: true, mode: 'input', value: el.value, raw, kind, formatted, num }};
         }}
 
-        const wanted = norm(formatted);
+        // BAJOS: solo si el valor original fue clasificado explícitamente como bajo.
+        if (kind === 'bajo_exterior' || kind === 'bajo_interior') {{
+            const wantedCode = kind === 'bajo_exterior' ? 'PBE' : 'PBI';
+            const wantedText = kind === 'bajo_exterior' ? 'BAJO EXTERIOR' : 'BAJO INTERIOR';
 
-        // 1) EXACTO: value/text = PISO 05
+            for (const opt of el.options || []) {{
+                const ov = norm(opt.value);
+                const ot = norm(opt.textContent || opt.innerText || '');
+
+                if (ov === wantedCode || ot === wantedText) {{
+                    el.value = opt.value;
+                    fire();
+                    return {{
+                        ok: true,
+                        mode: 'bajo_exterior_interior',
+                        selectedValue: opt.value,
+                        selectedText: opt.textContent,
+                        raw,
+                        kind,
+                        wanted: wantedText
+                    }};
+                }}
+            }}
+        }}
+
+        // PISOS NUMÉRICOS: si raw trae número, jamás se permite seleccionar PBE/PBI.
+        if (kind === 'piso') {{
+            const wantedText = 'PISO ' + num;
+            const wantedValue = 'P' + num;
+            const wantedValueNoZero = 'P' + String(parseInt(num, 10));
+            const numericNoZero = String(parseInt(num, 10));
+
+            // 1) Preferencia exacta por value Mercurio habitual: P01, P02...
+            for (const opt of el.options || []) {{
+                const ov = norm(opt.value);
+                const ot = norm(opt.textContent || opt.innerText || '');
+                if (ov === wantedValue || ot === wantedText) {{
+                    el.value = opt.value;
+                    fire();
+                    return {{ ok: true, mode: 'piso_exact', selectedValue: opt.value, selectedText: opt.textContent, raw, kind, wanted: wantedText }};
+                }}
+            }}
+
+            // 2) Fallback numérico, pero exigiendo texto que empiece por PISO.
+            for (const opt of el.options || []) {{
+                const ov = norm(opt.value);
+                const ot = norm(opt.textContent || opt.innerText || '');
+                if ((ov === num || ov === numericNoZero || ov === wantedValueNoZero) && ot.startsWith('PISO')) {{
+                    el.value = opt.value;
+                    fire();
+                    return {{ ok: true, mode: 'piso_value_num_text_piso', selectedValue: opt.value, selectedText: opt.textContent, raw, kind, wanted: wantedText }};
+                }}
+            }}
+
+            return {{
+                ok: false,
+                reason: 'NO_MATCH_PISO_NUMERICO',
+                raw,
+                kind,
+                formatted,
+                num,
+                options: Array.from(el.options || []).map(o => [o.value, o.textContent]).slice(0, 160)
+            }};
+        }}
+
+        // Resto: coincidencia exacta estricta, sin fallback a bajo.
+        const wanted = norm(formatted);
         for (const opt of el.options || []) {{
             const ov = norm(opt.value);
             const ot = norm(opt.textContent || opt.innerText || '');
             if (ov === wanted || ot === wanted) {{
                 el.value = opt.value;
                 fire();
-                return {{ ok: true, mode: 'exact_piso', selectedValue: opt.value, selectedText: opt.textContent, wanted: formatted }};
-            }}
-        }}
-
-        // 2) ESTRICTO: debe empezar por PISO y contener 05
-        for (const opt of el.options || []) {{
-            const ov = norm(opt.value);
-            const ot = norm(opt.textContent || opt.innerText || '');
-
-            if ((ov.startsWith('PISO') && ov.includes(num)) || (ot.startsWith('PISO') && ot.includes(num))) {{
-                el.value = opt.value;
-                fire();
-                return {{ ok: true, mode: 'strict_piso_contains', selectedValue: opt.value, selectedText: opt.textContent, wanted: formatted }};
-            }}
-        }}
-
-        // 3) Último fallback: si hay option con value 05 y texto PISO.
-        for (const opt of el.options || []) {{
-            const ov = norm(opt.value);
-            const ot = norm(opt.textContent || opt.innerText || '');
-
-            if ((ov === num || ov === String(parseInt(num, 10))) && ot.startsWith('PISO')) {{
-                el.value = opt.value;
-                fire();
-                return {{ ok: true, mode: 'value_num_text_piso', selectedValue: opt.value, selectedText: opt.textContent, wanted: formatted }};
+                return {{ ok: true, mode: 'raw_exact', selectedValue: opt.value, selectedText: opt.textContent, raw, kind, wanted: formatted }};
             }}
         }}
 
         return {{
             ok: false,
-            reason: 'NO_MATCH_PISO_ESTRICTO',
-            wanted: formatted,
-            num: num,
+            reason: 'NO_MATCH_PISO_RAW',
+            raw,
+            kind,
+            formatted,
+            num,
             options: Array.from(el.options || []).map(o => [o.value, o.textContent]).slice(0, 160)
         }};
     }})();
@@ -688,7 +759,7 @@ def set_piso_mercurio(browser, field_id, value=None, session_dir=None):
 
     result = js(browser, script)
     if session_dir:
-        write_log(session_dir, f"set_piso_mercurio_STRICT {field_id} value={value!r} formatted={formatted!r} -> {result}")
+        write_log(session_dir, f"set_piso_mercurio_SAFE {field_id} value={value!r} raw={raw!r} kind={kind!r} formatted={formatted!r} num={num!r} -> {result}")
     return result
 
 def fill_section(browser, values, session_dir):
@@ -783,6 +854,10 @@ def fill_section(browser, values, session_dir):
         if base_id.startswith("extCodigoProvincia") or base_id.startswith("notCodigoProvincia") or base_id.startswith("reaCodigoProvincia"):
             continue
         if base_id.startswith("preCodigoProvincia") or base_id.startswith("preCodigoMunicipio") or base_id.startswith("preCodigoLocalidad"):
+            continue
+        if "Piso" in base_id:
+            # Los pisos se gestionan exclusivamente con set_piso_mercurio().
+            # Evita que un *_Piso*_text antiguo sobrescriba un piso numérico real.
             continue
 
         select_by_text_or_value(browser, base_id, text=text_value, session_dir=session_dir)
@@ -902,6 +977,22 @@ def fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
 
     fill_section(browser, familiar, session_dir)
     select_municipio_localidad_reagrupante(browser, familiar, session_dir)
+
+    # Refuerzo específico EX01 Familiar:
+    # la cascada provincia -> municipio -> localidad puede recargar selects
+    # y dejar sin seleccionar el piso del familiar. Por eso se fuerza al final.
+    piso_familiar = familiar.get("reaPisoReagrupante") or ""
+    if piso_familiar:
+        result_piso_familiar = set_piso_mercurio(
+            browser,
+            "reaPisoReagrupante",
+            value=piso_familiar,
+            session_dir=session_dir,
+        )
+        write_log(
+            session_dir,
+            f"FORCE_FINAL reaPisoReagrupante value={piso_familiar!r} -> {result_piso_familiar}",
+        )
 
     print("Datos del familiar rellenados.")
     write_log(session_dir, "Datos del familiar rellenados")

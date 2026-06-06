@@ -1116,11 +1116,11 @@ def sanitize_presentador_for_ex01_familiar(representante):
 
 def _build_familiar_source_from_contacto(cliente, contacto):
     """
-    Fuente de datos para la pestaña Datos del familiar de EX01 familiar.
+    Fuente base para la pestaña Datos del familiar de EX01 familiar.
 
     Si hay contacto/familiar seleccionado en Datos específicos, Mercurio debe
-    usar sus datos vivos, incluida la dirección. Si falta algún dato del
-    contacto, conserva fallback al cliente para no romper expedientes antiguos.
+    usar sus datos vivos. Si falta algún dato del contacto, conserva fallback al
+    cliente para no romper expedientes antiguos.
     """
     cliente = cliente or {}
     contacto = contacto or {}
@@ -1146,6 +1146,59 @@ def _build_familiar_source_from_contacto(cliente, contacto):
 
     return merged
 
+
+def _overlay_familiar_source_from_datos_especificos(familiar, datos):
+    """
+    Aplica sobre el familiar los derivados congelados en datos_especificos.
+
+    Motivo:
+    - El contacto vivo puede tener numero/piso antiguos o vacíos.
+    - El autocomplete/datos específicos puede traer el domicilio completo
+      correcto, por ejemplo: "CARRETERA PRIMO DE RIVERA 1, 01".
+    - Si se sustituye domicilio_espana, hay que sustituir también numero/piso
+      aunque vengan vacíos, para que parse_domicilio los extraiga del texto y
+      no conserve un numero/piso antiguo del contacto.
+    """
+    familiar = dict(familiar or {})
+    datos = datos or {}
+
+    field_map = {
+        "pasaporte": ("representante_legal_pasaporte",),
+        "nie": ("representante_legal_nie", "representante_legal_documento"),
+        "dni": ("representante_legal_dni",),
+        "primer_apellido": ("representante_legal_primer_apellido",),
+        "segundo_apellido": ("representante_legal_segundo_apellido",),
+        "nombre": ("representante_legal_nombre",),
+        "sexo": ("representante_legal_sexo",),
+        "fecha_nacimiento": ("representante_legal_fecha_nacimiento",),
+        "estado_civil": ("representante_legal_estado_civil",),
+        "localidad_nacimiento": ("representante_legal_localidad_nacimiento",),
+        "pais_nacimiento": ("representante_legal_pais_nacimiento",),
+        "nacionalidad": ("representante_legal_nacionalidad",),
+        "nombre_padre": ("representante_legal_nombre_padre",),
+        "nombre_madre": ("representante_legal_nombre_madre",),
+        "provincia": ("representante_legal_provincia",),
+        "localidad": ("representante_legal_localidad", "representante_legal_municipio"),
+        "codigo_postal": ("representante_legal_codigo_postal",),
+        "telefono": ("representante_legal_telefono", "representante_legal_telefono_movil"),
+        "email": ("representante_legal_email",),
+    }
+
+    for target_key, source_keys in field_map.items():
+        value = _first_dynamic_value(datos, *source_keys)
+        if value:
+            familiar[target_key] = value
+
+    domicilio = _first_dynamic_value(datos, "representante_legal_domicilio_espana")
+    if domicilio:
+        familiar["domicilio_espana"] = domicilio
+        # Importante: estos campos deben poder quedar vacíos para que
+        # parse_domicilio extraiga numero/piso desde el domicilio completo.
+        familiar["numero"] = str(datos.get("representante_legal_numero") or "").strip()
+        familiar["piso"] = str(datos.get("representante_legal_piso") or "").strip()
+
+    return familiar
+
 def build_datos_familiar_ex01(cliente, snapshot=None):
     """
     Construye la pestaña Mercurio "Datos del familiar" para EX01 familiar.
@@ -1160,6 +1213,7 @@ def build_datos_familiar_ex01(cliente, snapshot=None):
 
     contacto_representante = _get_representante_legal_contacto_from_datos(datos)
     familiar = _build_familiar_source_from_contacto(cliente, contacto_representante)
+    familiar = _overlay_familiar_source_from_datos_especificos(familiar, datos)
 
     domicilio_parts = parse_domicilio(
         familiar.get("domicilio_espana") or "",
