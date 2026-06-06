@@ -2700,6 +2700,18 @@ def expedients_view(page: ft.Page):
     def refresh_specific_data_screen(e=None):
         expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
         if expediente_id:
+            # Relee la ficha base del expediente y limpia controles cacheados.
+            # Así, si se actualiza la ficha del cliente/expediente desde otra
+            # pantalla, Datos específicos muestra los datos vivos al refrescar.
+            try:
+                latest = expedient_service.get_expediente(expediente_id)
+                if latest:
+                    load_form(latest)
+            except Exception:
+                pass
+            state["specific_refresh_counter"] = int(state.get("specific_refresh_counter") or 0) + 1
+            state["specific_field_controls"] = {}
+            state["specific_live_values"] = {}
             expediente_dialog.content = build_expediente_dialog_content(expediente_id)
             page.update()
 
