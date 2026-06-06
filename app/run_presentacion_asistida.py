@@ -146,6 +146,32 @@ def set_value(browser, field_id, value, session_dir=None, trigger_change=True):
     return ok
 
 
+def set_checkbox(browser, field_id, value=True, session_dir=None):
+    """Marca/desmarca checkboxes reales de Mercurio por id."""
+    truthy = normalize(value) in {"SI", "S", "TRUE", "1", "YES", "Y"}
+
+    script = f"""
+    (function(){{
+        const el = document.getElementById({json.dumps(field_id)});
+        if (!el) return {{ ok: false, reason: 'NO_EXISTE' }};
+        if ((el.type || '').toLowerCase() !== 'checkbox') {{
+            return {{ ok: false, reason: 'NO_ES_CHECKBOX', type: el.type || '' }};
+        }}
+        el.checked = {json.dumps(bool(truthy))};
+        if (el.checked && !el.value) el.value = 'true';
+        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+        if (window.jQuery) window.jQuery(el).trigger('change');
+        return {{ ok: true, checked: el.checked, value: el.value }};
+    }})();
+    """
+
+    result = js(browser, script)
+    if session_dir:
+        write_log(session_dir, f"checkbox {field_id} value={value!r} -> {result}")
+    return result
+
+
 def select_by_text_or_value(browser, field_id, value=None, text=None, session_dir=None):
     """
     Selecciona un <select> por:
@@ -682,7 +708,9 @@ def fill_section(browser, values, session_dir):
         processed.add(field_id)
         text_value = values.get(field_id + "_text", "")
 
-        if (
+        if field_id.startswith("chk"):
+            set_checkbox(browser, field_id, value=value, session_dir=session_dir)
+        elif (
             field_id.startswith("extCodigoPais") or field_id.startswith("extCodigoNacionalidad")
             or field_id.startswith("reaCodigoPais") or field_id.startswith("reaCodigoNacionalidad")
         ):

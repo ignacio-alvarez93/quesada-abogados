@@ -642,6 +642,12 @@ def _snapshot_datos_especificos(snapshot):
     return datos if isinstance(datos, dict) else {}
 
 
+def _truthy_mercurio_flag(value):
+    """Normaliza valores Sí/No del snapshot a bandera booleana para Mercurio."""
+    text = normalize(value)
+    return text in {"SI", "S", "TRUE", "1", "YES", "Y"}
+
+
 def _first_dynamic_value(datos_especificos, *keys):
     for key in keys:
         value = datos_especificos.get(key)
@@ -1274,6 +1280,9 @@ def build_datos_mercurio(expediente, snapshot=None):
         "extCodigoNacionalidad_text": nacionalidad_texto,
         "extPadre": cliente["nombre_padre"],
         "extMadre": cliente["nombre_madre"],
+        "chkHijosCargo": "true" if _truthy_mercurio_flag(
+            _snapshot_datos_especificos(snapshot).get("hijos_menores_edad_escolarizacion")
+        ) else "",
     }
 
     representante = build_datos_representante(snapshot=snapshot)
