@@ -146,11 +146,21 @@ def limpiar_piso(value):
     if not value:
         return ""
 
-    m = re.search(r"\d+", value)
+    normalized = normalize(value)
+
+    # Mercurio necesita el bajo exterior en el campo piso con esta forma.
+    if normalized in {"BJ", "BAJO", "BAJO EXT", "BJ EXT", "BJO", "BJO EXT"}:
+        return "BJ EXT"
+
+    if normalized in {"ENT", "ENTRESUELO", "ENTRESUELO EXT", "ENT EXT"}:
+        return "ENT EXT"
+
+    # Pisos numéricos: "5 C", "PISO 5", "05" -> "05".
+    m = re.search(r"\d+", normalized)
     if m:
         return m.group(0).zfill(2)
 
-    return value
+    return normalized
 
 def _connect():
     conn = sqlite3.connect(DB_PATH)
@@ -294,22 +304,20 @@ def infer_tipo_via(domicilio):
 
 def parse_domicilio(domicilio, numero=None, piso=None):
     """
-    Intenta separar domicilio completo:
-        "AVENIDA DEL MAR 10, 5 C"
-    en:
-        tipo_via = AVENIDA
-        domicilio = DEL MAR
-        numero = 10
-        piso = 5 C
+    Separa domicilio completo en piezas Mercurio.
 
-    Si la ficha ya tiene numero/piso separados, respeta esos valores.
+    Reglas críticas:
+    - El número final se elimina siempre del nombre de vía, aunque ya venga
+      informado en la columna numero.
+    - El piso se toma de la columna piso si existe; si no, de la parte tras coma.
+    - "BJ", "BAJO" y variantes se normalizan a "BJ EXT".
     """
     raw = "" if domicilio is None else str(domicilio).strip()
     cleaned = raw
 
     tipo_via_codigo = infer_tipo_via(raw)
 
-    # Quitar tipo vía al inicio
+    # Quitar tipo vía al inicio.
     for label in sorted(TIPO_VIA_A_CODIGO.keys(), key=len, reverse=True):
         nlabel = normalize(label)
         if normalize(cleaned).startswith(nlabel + " "):
@@ -319,22 +327,39 @@ def parse_domicilio(domicilio, numero=None, piso=None):
     parsed_numero = "" if numero is None else str(numero).strip()
     parsed_piso = "" if piso is None else str(piso).strip()
 
-    # Separar por coma: "DEL MAR 10, 5 C"
-    main_part = cleaned
-    rest_part = ""
-    if "," in cleaned:
-        main_part, rest_part = cleaned.split(",", 1)
-        main_part = main_part.strip()
-        rest_part = rest_part.strip()
-        if not parsed_piso:
-            parsed_piso = rest_part
+    parts = [part.strip() for part in cleaned.split(",") if part.strip()]
+    main_part = parts[0] if parts else cleaned.strip()
+    rest_parts = parts[1:]
 
-    # Último token numérico/letra como número: "DEL MAR 10" -> 10
-    if not parsed_numero:
-        m = re.search(r"\b(\d+[A-Z]?)\b\s*$", main_part, re.IGNORECASE)
-        if m:
-            parsed_numero = m.group(1).strip()
-            main_part = main_part[:m.start()].strip(" ,.-")
+    if rest_parts:
+        first_rest = rest_parts[0]
+        rest_number_match = re.match(r"^(\d+[A-Z]?)\b\s*(.*)$", first_rest, re.IGNORECASE)
+
+        if rest_number_match:
+            rest_number = rest_number_match.group(1).strip()
+            remainder = rest_number_match.group(2).strip(" ,.-")
+            if not parsed_numero:
+                parsed_numero = rest_number
+
+            piso_candidates = []
+            if remainder:
+                piso_candidates.append(remainder)
+            if len(rest_parts) > 1:
+                piso_candidates.extend(rest_parts[1:])
+
+            if not parsed_piso and piso_candidates:
+                parsed_piso = ", ".join(part for part in piso_candidates if part).strip()
+        elif not parsed_piso:
+            parsed_piso = ", ".join(rest_parts).strip()
+
+    # Último token numérico/letra como número: "GENERAL ELORZA 11" -> 11.
+    # Importante: se elimina del domicilio aunque parsed_numero ya venga informado.
+    m = re.search(r"\b(\d+[A-Z]?)\b\s*$", main_part, re.IGNORECASE)
+    if m:
+        trailing_numero = m.group(1).strip()
+        if not parsed_numero:
+            parsed_numero = trailing_numero
+        main_part = main_part[:m.start()].strip(" ,.-")
 
     parsed_domicilio = main_part.strip() or cleaned
     parsed_piso = limpiar_piso(parsed_piso)
@@ -1088,26 +1113,62 @@ def sanitize_presentador_for_ex01_familiar(representante):
     return representante
 
 
+
+def _build_familiar_source_from_contacto(cliente, contacto):
+    """
+    Fuente de datos para la pestaña Datos del familiar de EX01 familiar.
+
+    Si hay contacto/familiar seleccionado en Datos específicos, Mercurio debe
+    usar sus datos vivos, incluida la dirección. Si falta algún dato del
+    contacto, conserva fallback al cliente para no romper expedientes antiguos.
+    """
+    cliente = cliente or {}
+    contacto = contacto or {}
+    if not contacto:
+        return dict(cliente)
+
+    keys = [
+        "pasaporte", "nie", "dni",
+        "primer_apellido", "segundo_apellido", "nombre",
+        "sexo", "fecha_nacimiento", "estado_civil",
+        "localidad_nacimiento", "pais_nacimiento", "nacionalidad",
+        "nombre_padre", "nombre_madre",
+        "domicilio_espana", "numero", "piso",
+        "provincia", "localidad", "codigo_postal",
+        "telefono", "email",
+    ]
+
+    merged = dict(cliente)
+    for key in keys:
+        value = contacto.get(key)
+        if str(value or "").strip():
+            merged[key] = str(value).strip()
+
+    return merged
+
 def build_datos_familiar_ex01(cliente, snapshot=None):
     """
     Construye la pestaña Mercurio "Datos del familiar" para EX01 familiar.
 
     En esta variante:
-    - extranjero = familiar solicitante seleccionado en datos específicos.
-    - familiar = titular de los medios económicos / cliente principal del expediente.
+    - extranjero = cliente/solicitante del expediente.
+    - familiar = contacto seleccionado como familiar/titular de medios
+      en datos específicos, con datos vivos de BD.
     """
     cliente = cliente or {}
     datos = _snapshot_datos_especificos(snapshot)
 
+    contacto_representante = _get_representante_legal_contacto_from_datos(datos)
+    familiar = _build_familiar_source_from_contacto(cliente, contacto_representante)
+
     domicilio_parts = parse_domicilio(
-        cliente.get("domicilio_espana") or "",
-        numero=cliente.get("numero") or "",
-        piso=cliente.get("piso") or "",
+        familiar.get("domicilio_espana") or "",
+        numero=familiar.get("numero") or "",
+        piso=familiar.get("piso") or "",
     )
     tipo_via_codigo = domicilio_parts["tipo_via_codigo"]
     tipo_via_text = CODIGO_A_TIPO_VIA.get(tipo_via_codigo, tipo_via_codigo)
 
-    contacto_representante = _get_representante_legal_contacto_from_datos(datos)
     parentesco = ""
     if contacto_representante:
         parentesco = str(contacto_representante.get("parentesco") or "").strip()
@@ -1120,21 +1181,21 @@ def build_datos_familiar_ex01(cliente, snapshot=None):
         )
 
     return {
-        "reaPasaporteReagrupante": cliente.get("pasaporte") or "",
-        "reaTipoDocumentoReagrupante": map_tipo_documento_reagrupante(cliente),
-        "reaDocumentoReagrupante": map_documento_reagrupante(cliente),
-        "reaApellido1Reagrupante": cliente.get("primer_apellido") or "",
-        "reaApellido2Reagrupante": cliente.get("segundo_apellido") or "",
-        "reaNombreReagrupante": cliente.get("nombre") or "",
-        "reaSexoReagrupante": map_sexo(cliente.get("sexo")),
-        "reaFechaNacimientoReagrupante": format_date_es(cliente.get("fecha_nacimiento")),
-        "reaEstadoCivilReagrupante": map_estado_civil_reagrupante(cliente.get("estado_civil")),
-        "reaEstadoCivilReagrupante_text": cliente.get("estado_civil") or "",
-        "reaLugarNacimientoReagrupante": cliente.get("localidad_nacimiento") or "",
-        "reaCodigoPaisNacimientoReagrupante_text": cliente.get("pais_nacimiento") or "",
-        "reaCodigoNacionalidadReagrupante_text": cliente.get("nacionalidad") or "",
-        "reaPadreReagrupante": cliente.get("nombre_padre") or "",
-        "reaMadreReagrupante": cliente.get("nombre_madre") or "",
+        "reaPasaporteReagrupante": familiar.get("pasaporte") or "",
+        "reaTipoDocumentoReagrupante": map_tipo_documento_reagrupante(familiar),
+        "reaDocumentoReagrupante": map_documento_reagrupante(familiar),
+        "reaApellido1Reagrupante": familiar.get("primer_apellido") or "",
+        "reaApellido2Reagrupante": familiar.get("segundo_apellido") or "",
+        "reaNombreReagrupante": familiar.get("nombre") or "",
+        "reaSexoReagrupante": map_sexo(familiar.get("sexo")),
+        "reaFechaNacimientoReagrupante": format_date_es(familiar.get("fecha_nacimiento")),
+        "reaEstadoCivilReagrupante": map_estado_civil_reagrupante(familiar.get("estado_civil")),
+        "reaEstadoCivilReagrupante_text": familiar.get("estado_civil") or "",
+        "reaLugarNacimientoReagrupante": familiar.get("localidad_nacimiento") or "",
+        "reaCodigoPaisNacimientoReagrupante_text": familiar.get("pais_nacimiento") or "",
+        "reaCodigoNacionalidadReagrupante_text": familiar.get("nacionalidad") or "",
+        "reaPadreReagrupante": familiar.get("nombre_padre") or "",
+        "reaMadreReagrupante": familiar.get("nombre_madre") or "",
         "reaTipoViaReagrupante": tipo_via_codigo,
         "reaTipoViaReagrupante_text": tipo_via_text,
         "reaDomicilioReagrupante": domicilio_parts["domicilio"],
@@ -1145,14 +1206,14 @@ def build_datos_familiar_ex01(cliente, snapshot=None):
         "reaBloqueReagrupante": "",
         "reaKilometroReagrupante": "",
         "reaHectometroReagrupante": "",
-        "reaCodigoProvinciaReagrupante": map_provincia(cliente.get("provincia")),
-        "reaCodigoProvinciaReagrupante_text": cliente.get("provincia") or "",
-        "reaCodigoMunicipioReagrupante_text": cliente.get("localidad") or "",
-        "reaCodigoLocalidadReagrupante_text": cliente.get("localidad") or "",
-        "reaCodigoPostalReagrupante": cliente.get("codigo_postal") or "",
-        "reaTelefonoReagrupante": cliente.get("telefono") or "",
-        "reaTelefonoMovilReagrupante": cliente.get("telefono") or "",
-        "reaEmailReagrupante": cliente.get("email") or "",
+        "reaCodigoProvinciaReagrupante": map_provincia(familiar.get("provincia")),
+        "reaCodigoProvinciaReagrupante_text": familiar.get("provincia") or "",
+        "reaCodigoMunicipioReagrupante_text": familiar.get("localidad") or "",
+        "reaCodigoLocalidadReagrupante_text": familiar.get("localidad") or "",
+        "reaCodigoPostalReagrupante": familiar.get("codigo_postal") or "",
+        "reaTelefonoReagrupante": familiar.get("telefono") or "",
+        "reaTelefonoMovilReagrupante": familiar.get("telefono") or "",
+        "reaEmailReagrupante": familiar.get("email") or "",
         "reaNombreRepresentanteReagrupante": "",
         "reaTipodocumentoRepresentanteReagrupante": "",
         "reaNieRepresentanteReagrupante": "",
