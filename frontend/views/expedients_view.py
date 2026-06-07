@@ -3148,6 +3148,7 @@ def expedients_view(page: ft.Page):
                                 _specific_info_row("Familiar/titular", familiar_nombre),
                                 _specific_info_row("Parentesco CRM", familiar_parentesco),
                                 _specific_info_row("Medios", values.get("propietario_medios_economicos") or propietario.value),
+                                _specific_info_row("Medios", values.get("propietario_medios_economicos") or "TITULAR"),
                                 _specific_info_row("Escolarización", values.get("hijos_menores_edad_escolarizacion") or hijos_menores.value),
                                 _specific_info_row("Representante legal", solicitante_rep_nombre),
                                 _specific_info_row("Presentador", _presentador_nombre(presentador)),
@@ -3278,7 +3279,14 @@ def expedients_view(page: ft.Page):
         except Exception:
             presentador = {}
 
+        # EX01 renovación titular: el propio solicitante es el titular de los
+        # medios económicos. El mapper PDF usa este valor para marcar la
+        # casilla correspondiente.
+        saved_values["propietario_medios_economicos"] = "TITULAR"
+
         hidden_codes = [
+            "propietario_medios_economicos",
+
             # Representante legal real del solicitante.
             "solicitante_representante_legal_contacto_id", "solicitante_representante_legal_id",
             "solicitante_representante_legal_tipo_contacto", "solicitante_representante_legal_parentesco",
