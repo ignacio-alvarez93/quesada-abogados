@@ -162,6 +162,42 @@ def limpiar_piso(value):
 
     return normalized
 
+
+def split_piso_letra_mercurio(value):
+    """Separa piso y letra/puerta para campos Mercurio.
+
+    Ejemplos:
+    - "06D" -> ("06", "D")
+    - "1 A" -> ("01", "A")
+    - "BJ" / "BJ EXT" -> ("BJ EXT", "")
+    """
+    raw = "" if value is None else str(value).strip()
+    if not raw:
+        return "", ""
+
+    normalized = normalize(raw)
+
+    if normalized in {"BJ", "BAJO", "BAJO EXT", "BJ EXT", "BJO", "BJO EXT", "BAJO EXTERIOR"}:
+        return "BJ EXT", ""
+
+    if normalized in {"BI", "BAJO INT", "BAJO INTERIOR", "BJO INT"}:
+        return "BI", ""
+
+    if normalized in {"ENT", "ENTRESUELO", "ENTRESUELO EXT", "ENT EXT"}:
+        return "ENT EXT", ""
+
+    compact = re.sub(r"[^0-9A-Z]", "", normalized)
+    match = re.match(r"^(\d{1,2})([A-Z]{1,4})$", compact)
+    if match:
+        return match.group(1).zfill(2), match.group(2)
+
+    # Formas tipo "PISO 6 D", "6-D" o "06 D".
+    match = re.search(r"(\d{1,2})\D+([A-Z]{1,4})$", normalized)
+    if match and "BAJO" not in normalized:
+        return match.group(1).zfill(2), match.group(2)
+
+    return limpiar_piso(raw), ""
+
 def _connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -362,13 +398,14 @@ def parse_domicilio(domicilio, numero=None, piso=None):
         main_part = main_part[:m.start()].strip(" ,.-")
 
     parsed_domicilio = main_part.strip() or cleaned
-    parsed_piso = limpiar_piso(parsed_piso)
+    parsed_piso, parsed_letra = split_piso_letra_mercurio(parsed_piso)
 
     return {
         "tipo_via_codigo": tipo_via_codigo,
         "domicilio": parsed_domicilio,
         "numero": parsed_numero,
         "piso": parsed_piso,
+        "letra": parsed_letra,
     }
 
 
@@ -1116,11 +1153,11 @@ def sanitize_presentador_for_ex01_familiar(representante):
 
 def _build_familiar_source_from_contacto(cliente, contacto):
     """
-    Fuente base para la pestaña Datos del familiar de EX01 familiar.
+    Fuente de datos para la pestaña Datos del familiar de EX01 familiar.
 
     Si hay contacto/familiar seleccionado en Datos específicos, Mercurio debe
-    usar sus datos vivos. Si falta algún dato del contacto, conserva fallback al
-    cliente para no romper expedientes antiguos.
+    usar sus datos vivos, incluida la dirección. Si falta algún dato del
+    contacto, conserva fallback al cliente para no romper expedientes antiguos.
     """
     cliente = cliente or {}
     contacto = contacto or {}
@@ -1146,59 +1183,6 @@ def _build_familiar_source_from_contacto(cliente, contacto):
 
     return merged
 
-
-def _overlay_familiar_source_from_datos_especificos(familiar, datos):
-    """
-    Aplica sobre el familiar los derivados congelados en datos_especificos.
-
-    Motivo:
-    - El contacto vivo puede tener numero/piso antiguos o vacíos.
-    - El autocomplete/datos específicos puede traer el domicilio completo
-      correcto, por ejemplo: "CARRETERA PRIMO DE RIVERA 1, 01".
-    - Si se sustituye domicilio_espana, hay que sustituir también numero/piso
-      aunque vengan vacíos, para que parse_domicilio los extraiga del texto y
-      no conserve un numero/piso antiguo del contacto.
-    """
-    familiar = dict(familiar or {})
-    datos = datos or {}
-
-    field_map = {
-        "pasaporte": ("representante_legal_pasaporte",),
-        "nie": ("representante_legal_nie", "representante_legal_documento"),
-        "dni": ("representante_legal_dni",),
-        "primer_apellido": ("representante_legal_primer_apellido",),
-        "segundo_apellido": ("representante_legal_segundo_apellido",),
-        "nombre": ("representante_legal_nombre",),
-        "sexo": ("representante_legal_sexo",),
-        "fecha_nacimiento": ("representante_legal_fecha_nacimiento",),
-        "estado_civil": ("representante_legal_estado_civil",),
-        "localidad_nacimiento": ("representante_legal_localidad_nacimiento",),
-        "pais_nacimiento": ("representante_legal_pais_nacimiento",),
-        "nacionalidad": ("representante_legal_nacionalidad",),
-        "nombre_padre": ("representante_legal_nombre_padre",),
-        "nombre_madre": ("representante_legal_nombre_madre",),
-        "provincia": ("representante_legal_provincia",),
-        "localidad": ("representante_legal_localidad", "representante_legal_municipio"),
-        "codigo_postal": ("representante_legal_codigo_postal",),
-        "telefono": ("representante_legal_telefono", "representante_legal_telefono_movil"),
-        "email": ("representante_legal_email",),
-    }
-
-    for target_key, source_keys in field_map.items():
-        value = _first_dynamic_value(datos, *source_keys)
-        if value:
-            familiar[target_key] = value
-
-    domicilio = _first_dynamic_value(datos, "representante_legal_domicilio_espana")
-    if domicilio:
-        familiar["domicilio_espana"] = domicilio
-        # Importante: estos campos deben poder quedar vacíos para que
-        # parse_domicilio extraiga numero/piso desde el domicilio completo.
-        familiar["numero"] = str(datos.get("representante_legal_numero") or "").strip()
-        familiar["piso"] = str(datos.get("representante_legal_piso") or "").strip()
-
-    return familiar
-
 def build_datos_familiar_ex01(cliente, snapshot=None):
     """
     Construye la pestaña Mercurio "Datos del familiar" para EX01 familiar.
@@ -1213,7 +1197,6 @@ def build_datos_familiar_ex01(cliente, snapshot=None):
 
     contacto_representante = _get_representante_legal_contacto_from_datos(datos)
     familiar = _build_familiar_source_from_contacto(cliente, contacto_representante)
-    familiar = _overlay_familiar_source_from_datos_especificos(familiar, datos)
 
     domicilio_parts = parse_domicilio(
         familiar.get("domicilio_espana") or "",
@@ -1255,7 +1238,7 @@ def build_datos_familiar_ex01(cliente, snapshot=None):
         "reaDomicilioReagrupante": domicilio_parts["domicilio"],
         "reaNumeroReagrupante": domicilio_parts["numero"],
         "reaPisoReagrupante": domicilio_parts["piso"],
-        "reaLetraReagrupante": "",
+        "reaLetraReagrupante": domicilio_parts.get("letra") or "",
         "reaEscaleraReagrupante": "",
         "reaBloqueReagrupante": "",
         "reaKilometroReagrupante": "",
@@ -1436,6 +1419,7 @@ def build_datos_mercurio(expediente, snapshot=None):
             "extDomicilio": domicilio_limpio,
             "extNumero": numero_limpio,
             "extPiso": piso_limpio,
+            "extLetra": domicilio_parts.get("letra") or "",
             "extCodigoProvincia": map_provincia(cliente["provincia"]),
             "extCodigoProvincia_text": cliente["provincia"],
             "extCodigoMunicipio_text": cliente["localidad"],
