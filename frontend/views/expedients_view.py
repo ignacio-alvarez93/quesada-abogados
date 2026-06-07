@@ -798,24 +798,12 @@ def expedients_view(page: ft.Page):
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     """
-                    SELECT
-                        cc.id,
-                        cc.tipo_contacto,
-                        cc.parentesco,
-                        cc.cliente_referenciado_id,
-                        COALESCE(NULLIF(cr.nombre, ''), cc.nombre) AS nombre,
-                        COALESCE(NULLIF(cr.primer_apellido, ''), cc.primer_apellido) AS primer_apellido,
-                        COALESCE(NULLIF(cr.segundo_apellido, ''), cc.segundo_apellido) AS segundo_apellido,
-                        COALESCE(NULLIF(cr.nie, ''), cc.nie) AS nie,
-                        COALESCE(NULLIF(cr.dni, ''), cc.dni) AS dni,
-                        COALESCE(NULLIF(cr.pasaporte, ''), cc.pasaporte) AS pasaporte,
-                        COALESCE(NULLIF(cr.email, ''), cc.email) AS email,
-                        COALESCE(NULLIF(cr.telefono, ''), cc.telefono) AS telefono
-                    FROM cliente_contactos cc
-                    LEFT JOIN clientes cr ON cr.id = cc.cliente_referenciado_id
-                    WHERE cc.cliente_id = ?
-                      AND COALESCE(cc.activo, 1) = 1
-                    ORDER BY cc.tipo_contacto ASC, cc.parentesco ASC, COALESCE(cr.nombre, cc.nombre) ASC, cc.id DESC
+                    SELECT id, tipo_contacto, parentesco, nombre, primer_apellido, segundo_apellido,
+                           nie, dni, pasaporte, email, telefono
+                    FROM cliente_contactos
+                    WHERE cliente_id = ?
+                      AND COALESCE(activo, 1) = 1
+                    ORDER BY tipo_contacto ASC, parentesco ASC, nombre ASC, id DESC
                     """,
                     (int(cliente_id),),
                 ).fetchall()
@@ -912,37 +900,10 @@ def expedients_view(page: ft.Page):
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     """
-                    SELECT
-                        cc.*,
-                        COALESCE(NULLIF(cr.nombre, ''), cc.nombre) AS nombre,
-                        COALESCE(NULLIF(cr.primer_apellido, ''), cc.primer_apellido) AS primer_apellido,
-                        COALESCE(NULLIF(cr.segundo_apellido, ''), cc.segundo_apellido) AS segundo_apellido,
-                        COALESCE(NULLIF(cr.nie, ''), cc.nie) AS nie,
-                        COALESCE(NULLIF(cr.pasaporte, ''), cc.pasaporte) AS pasaporte,
-                        COALESCE(NULLIF(cr.dni, ''), cc.dni) AS dni,
-                        COALESCE(NULLIF(cr.nacionalidad, ''), cc.nacionalidad) AS nacionalidad,
-                        COALESCE(NULLIF(cr.fecha_nacimiento, ''), cc.fecha_nacimiento) AS fecha_nacimiento,
-                        COALESCE(NULLIF(cr.telefono, ''), cc.telefono) AS telefono,
-                        COALESCE(NULLIF(cr.email, ''), cc.email) AS email,
-                        COALESCE(NULLIF(cr.estado_cliente, ''), cc.estado_cliente) AS estado_cliente,
-                        COALESCE(NULLIF(cr.domicilio_espana, ''), cc.domicilio_espana) AS domicilio_espana,
-                        COALESCE(NULLIF(cr.tipo_via, ''), cc.tipo_via) AS tipo_via,
-                        COALESCE(NULLIF(cr.nombre_via, ''), cc.nombre_via) AS nombre_via,
-                        COALESCE(NULLIF(cr.numero, ''), cc.numero) AS numero,
-                        COALESCE(NULLIF(cr.piso, ''), cc.piso) AS piso,
-                        COALESCE(NULLIF(cr.localidad, ''), cc.localidad) AS localidad,
-                        COALESCE(NULLIF(cr.provincia, ''), cc.provincia) AS provincia,
-                        COALESCE(NULLIF(cr.codigo_postal, ''), cc.codigo_postal) AS codigo_postal,
-                        COALESCE(NULLIF(cr.localidad_nacimiento, ''), cc.localidad_nacimiento) AS localidad_nacimiento,
-                        COALESCE(NULLIF(cr.pais_nacimiento, ''), cc.pais_nacimiento) AS pais_nacimiento,
-                        COALESCE(NULLIF(cr.nombre_padre, ''), cc.nombre_padre) AS nombre_padre,
-                        COALESCE(NULLIF(cr.nombre_madre, ''), cc.nombre_madre) AS nombre_madre,
-                        COALESCE(NULLIF(cr.estado_civil, ''), cc.estado_civil) AS estado_civil,
-                        COALESCE(NULLIF(cr.sexo, ''), cc.sexo) AS sexo
-                    FROM cliente_contactos cc
-                    LEFT JOIN clientes cr ON cr.id = cc.cliente_referenciado_id
-                    WHERE cc.id = ?
-                      AND COALESCE(cc.activo, 1) = 1
+                    SELECT *
+                    FROM cliente_contactos
+                    WHERE id = ?
+                      AND COALESCE(activo, 1) = 1
                     LIMIT 1
                     """,
                     (int(contacto_id),),
@@ -1184,7 +1145,7 @@ def expedients_view(page: ft.Page):
         if not expediente_id or not formulario_id:
             return
         try:
-            if state.get("specific_view_mode") == "EX01_FAMILIAR" and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
+            if state.get("specific_view_mode") in ("EX01_FAMILIAR", "EX01_TITULAR") and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
                 dynamic_form_service.save_datos_especificos_patch(
                     expediente_id,
                     formulario_id,
@@ -1486,7 +1447,7 @@ def expedients_view(page: ft.Page):
         values = _current_specific_values()
 
         try:
-            if state.get("specific_view_mode") == "EX01_FAMILIAR" and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
+            if state.get("specific_view_mode") in ("EX01_FAMILIAR", "EX01_TITULAR") and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
                 dynamic_form_service.save_datos_especificos_patch(expediente_id, formulario_id, values)
             else:
                 dynamic_form_service.save_datos_especificos(expediente_id, formulario_id, values)
@@ -2161,7 +2122,7 @@ def expedients_view(page: ft.Page):
         if code == "EX01_FAMILIAR":
             candidates.extend(["MERCURIO_EX01_FAMILIAR", "EX01", "MERCURIO_EX01"])
         elif code == "EX01":
-            candidates.extend(["MERCURIO_EX01", "EX01_FAMILIAR", "MERCURIO_EX01_FAMILIAR"])
+            candidates.extend(["MERCURIO_EX01"])
         elif code == "EX02":
             candidates.extend(["MERCURIO_EX02"])
         return list(dict.fromkeys(candidates))
@@ -2420,7 +2381,7 @@ def expedients_view(page: ft.Page):
         try:
             if formulario_id:
                 values = _current_specific_values()
-                if state.get("specific_view_mode") == "EX01_FAMILIAR" and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
+                if state.get("specific_view_mode") in ("EX01_FAMILIAR", "EX01_TITULAR") and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
                     dynamic_form_service.save_datos_especificos_patch(expediente_id, formulario_id, values)
                 else:
                     dynamic_form_service.save_datos_especificos(expediente_id, formulario_id, values)
@@ -2514,7 +2475,7 @@ def expedients_view(page: ft.Page):
         try:
             if formulario_id:
                 values = _current_specific_values()
-                if state.get("specific_view_mode") == "EX01_FAMILIAR" and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
+                if state.get("specific_view_mode") in ("EX01_FAMILIAR", "EX01_TITULAR") and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
                     dynamic_form_service.save_datos_especificos_patch(expediente_id, formulario_id, values)
                 else:
                     dynamic_form_service.save_datos_especificos(expediente_id, formulario_id, values)
@@ -2565,6 +2526,8 @@ def expedients_view(page: ft.Page):
             return "MERCURIO_EX01_FAMILIAR"
         if "EX01" in joined and "FAMILIAR" in joined:
             return "MERCURIO_EX01_FAMILIAR"
+        if "NO LUCRATIVA" in joined or "EX01" in joined:
+            return "MERCURIO_EX01"
         return ""
 
     def _specific_data_stepper(steps, current_step):
@@ -2637,7 +2600,7 @@ def expedients_view(page: ft.Page):
 
         values = _current_specific_values()
 
-        if state.get("specific_view_mode") == "EX01_FAMILIAR" and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
+        if state.get("specific_view_mode") in ("EX01_FAMILIAR", "EX01_TITULAR") and hasattr(dynamic_form_service, "save_datos_especificos_patch"):
             dynamic_form_service.save_datos_especificos_patch(
                 expediente_id,
                 formulario_id,
@@ -3285,6 +3248,332 @@ def expedients_view(page: ft.Page):
             ),
         )
 
+
+    def _build_ex01_titular_specific_content(expediente_id, formulario, saved_values, tipo_label, subtipo_label):
+        """Pantalla específica para EX01 renovación titular.
+
+        Reutiliza el mismo contrato de datos específicos que EX01 familiar:
+        - guardado patch para campos técnicos;
+        - representante legal del solicitante con prefijo solicitante_representante_legal_*;
+        - checks del trámite;
+        - revisión/snapshot/generación EX.
+        """
+        state["specific_view_mode"] = "EX01_TITULAR"
+        state["specific_formulario_id"] = formulario.get("id") if formulario else None
+        saved_values = _refresh_saved_values_from_live_contact(saved_values, "solicitante_representante_legal")
+
+        steps = [
+            ("Solicitante", "Cliente del expediente"),
+            ("Representación", "Presentador profesional"),
+            ("Checks", "Datos del trámite"),
+            ("Revisión", "Snapshot y EX"),
+        ]
+        current_step = max(0, min(int(state.get("specific_data_step") or 0), len(steps) - 1))
+
+        cliente_id = _option_id(cliente.get_value())
+        cliente_details = _fetch_cliente_details(cliente_id) if cliente_id else {}
+        presentador = {}
+        try:
+            presentador = config_service.get_representante_config() or {}
+        except Exception:
+            presentador = {}
+
+        hidden_codes = [
+            # Representante legal real del solicitante.
+            "solicitante_representante_legal_contacto_id", "solicitante_representante_legal_id",
+            "solicitante_representante_legal_tipo_contacto", "solicitante_representante_legal_parentesco",
+            "solicitante_representante_legal_nombre", "solicitante_representante_legal_primer_apellido",
+            "solicitante_representante_legal_segundo_apellido", "solicitante_representante_legal_nombre_completo",
+            "solicitante_representante_legal_documento", "solicitante_representante_legal_nie",
+            "solicitante_representante_legal_dni", "solicitante_representante_legal_pasaporte",
+            "solicitante_representante_legal_nacionalidad", "solicitante_representante_legal_fecha_nacimiento",
+            "solicitante_representante_legal_telefono", "solicitante_representante_legal_email",
+            "solicitante_representante_legal_estado_cliente", "solicitante_representante_legal_domicilio_espana",
+            "solicitante_representante_legal_tipo_via", "solicitante_representante_legal_nombre_via",
+            "solicitante_representante_legal_numero", "solicitante_representante_legal_piso",
+            "solicitante_representante_legal_puerta", "solicitante_representante_legal_escalera",
+            "solicitante_representante_legal_localidad", "solicitante_representante_legal_provincia",
+            "solicitante_representante_legal_codigo_postal", "solicitante_representante_legal_localidad_nacimiento",
+            "solicitante_representante_legal_pais_nacimiento", "solicitante_representante_legal_nombre_padre",
+            "solicitante_representante_legal_nombre_madre", "solicitante_representante_legal_estado_civil",
+            "solicitante_representante_legal_sexo", "solicitante_representante_legal_cliente_referenciado_id",
+        ]
+        hidden_controls = [_register_hidden_specific_control(code, saved_values.get(code, "")) for code in hidden_codes]
+
+        solicitante_rep_value = _specific_field_value(saved_values, "solicitante_representante_legal", "")
+        solicitante_rep_options = _fetch_cliente_contact_options(cliente_id, only_employers=False)
+
+        def apply_solicitante_representante_contact(selected):
+            selected_id_value = _option_id(selected)
+            details = _fetch_cliente_contact_details(selected_id_value) if selected_id_value else {}
+            _remember_contact_specific_values("solicitante_representante_legal", selected or "", details or {})
+            _autosave_specific_values_silent()
+            if expediente_id:
+                expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+            page.update()
+
+        solicitante_rep_autocomplete = AppAutocomplete(
+            page=page,
+            label="Representante legal del solicitante",
+            options=solicitante_rep_options,
+            value=solicitante_rep_value,
+            width=620,
+            max_results=10,
+            allow_free_text=True,
+            on_select=apply_solicitante_representante_contact,
+        )
+        state.setdefault("specific_field_controls", {})["solicitante_representante_legal"] = solicitante_rep_autocomplete
+
+        hijos_menores = _specific_value_select(
+            "hijos_menores_edad_escolarizacion",
+            "Hijos menores en edad escolar",
+            ["Sí", "No"],
+            saved_values,
+            width=300,
+            default="No",
+        )
+        observaciones_especificas = _specific_value_text(
+            "observaciones_ex01_titular",
+            "Observaciones EX01 titular",
+            saved_values,
+            width=720,
+            multiline=True,
+        )
+
+        hidden_bucket = ft.Column(controls=hidden_controls, visible=False)
+
+        def _name_from_details(details):
+            return details.get("nombre_completo") or " ".join(
+                str(details.get(k) or "").strip()
+                for k in ("nombre", "primer_apellido", "segundo_apellido")
+                if str(details.get(k) or "").strip()
+            ).strip()
+
+        def _presentador_nombre(rep):
+            return rep.get("representante_nombre_razon_social") or " ".join(
+                str(rep.get(k) or "").strip()
+                for k in ("representante_nombre", "representante_apellido1", "representante_apellido2")
+                if str(rep.get(k) or "").strip()
+            ).strip()
+
+        def _solicitante_rows():
+            return [
+                _specific_info_row("Nombre", _name_from_details(cliente_details)),
+                _specific_info_row("Documento", _row_document(cliente_details)),
+                _specific_info_row("Nacionalidad", cliente_details.get("nacionalidad")),
+                _specific_info_row("Nacimiento", cliente_details.get("fecha_nacimiento")),
+                _specific_info_row("Estado civil", cliente_details.get("estado_civil")),
+                _specific_info_row("Domicilio", cliente_details.get("domicilio_espana")),
+                _specific_info_row("Provincia", cliente_details.get("provincia")),
+                _specific_info_row("Localidad", cliente_details.get("localidad")),
+                _specific_info_row("Teléfono", cliente_details.get("telefono")),
+                _specific_info_row("Email", cliente_details.get("email")),
+            ]
+
+        def current_step_controls():
+            values = _current_specific_values()
+            solicitante_rep_nombre = values.get("solicitante_representante_legal_nombre_completo") or saved_values.get("solicitante_representante_legal_nombre_completo") or "-"
+            solicitante_rep_doc = values.get("solicitante_representante_legal_documento") or saved_values.get("solicitante_representante_legal_documento") or "-"
+            solicitante_rep_parentesco = values.get("solicitante_representante_legal_parentesco") or saved_values.get("solicitante_representante_legal_parentesco") or "-"
+            solicitante_rep_telefono = values.get("solicitante_representante_legal_telefono") or saved_values.get("solicitante_representante_legal_telefono") or "-"
+            solicitante_rep_email = values.get("solicitante_representante_legal_email") or saved_values.get("solicitante_representante_legal_email") or "-"
+
+            if current_step == 0:
+                return [
+                    _specific_card(
+                        "Solicitante · titular de la renovación",
+                        "Datos del cliente que se volcarán en Mercurio y quedarán congelados en el snapshot.",
+                        [
+                            ft.Row(controls=_solicitante_rows(), spacing=10, wrap=True),
+                            ft.Container(
+                                bgcolor="#FFFFFF",
+                                border=ft.border.all(1, Q_BORDER),
+                                border_radius=12,
+                                padding=12,
+                                content=ft.Column(
+                                    spacing=8,
+                                    controls=[
+                                        ft.Text("Representante legal del solicitante", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(
+                                            "Opcional. Selecciona uno de los contactos vinculados a este cliente.",
+                                            size=12,
+                                            color=Q_MUTED,
+                                        ),
+                                        solicitante_rep_autocomplete.control,
+                                        ft.Row(
+                                            controls=[
+                                                _specific_info_row("Nombre", solicitante_rep_nombre),
+                                                _specific_info_row("Documento", solicitante_rep_doc),
+                                                _specific_info_row("Vínculo / título", solicitante_rep_parentesco),
+                                                _specific_info_row("Teléfono", solicitante_rep_telefono),
+                                                _specific_info_row("Email", solicitante_rep_email),
+                                            ],
+                                            spacing=10,
+                                            wrap=True,
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            ft.Text(
+                                "No hay bloque de familiar/titular de medios en EX01 titular. Si existe representante legal, se vuelca en Datos del extranjero/a.",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        ft.Icons.PERSON,
+                    )
+                ]
+
+            if current_step == 1:
+                return [
+                    _specific_card(
+                        "Representación / presentador profesional",
+                        "Datos del presentador configurado en Settings.",
+                        [
+                            ft.Row(
+                                controls=[
+                                    _specific_info_row("Presentador", _presentador_nombre(presentador)),
+                                    _specific_info_row("Documento", presentador.get("representante_documento")),
+                                    _specific_info_row("Tipo documento", presentador.get("representante_tipo_documento")),
+                                    _specific_info_row("Provincia", presentador.get("representante_provincia")),
+                                    _specific_info_row("Municipio", presentador.get("representante_municipio")),
+                                    _specific_info_row("Email", presentador.get("representante_email")),
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                            ft.Text(
+                                "Este bloque es informativo: se toma de Configuración y el mapper lo envía a Datos del presentador.",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        ft.Icons.GAVEL,
+                    )
+                ]
+
+            if current_step == 2:
+                return [
+                    _specific_card(
+                        "Checks del trámite",
+                        "Campos operativos del expediente. Se guardan en datos específicos y entran en el snapshot.",
+                        [
+                            ft.Row([hijos_menores], wrap=True, spacing=10),
+                            observaciones_especificas,
+                        ],
+                        ft.Icons.CHECKLIST,
+                    )
+                ]
+
+            return [
+                _specific_card(
+                    "Revisión y generación",
+                    "Guarda los datos, genera snapshot y después genera el EX01 para revisión.",
+                    [
+                        ft.Row(
+                            controls=[
+                                _specific_info_row("Solicitante", _name_from_details(cliente_details)),
+                                _specific_info_row("Escolarización", values.get("hijos_menores_edad_escolarizacion") or hijos_menores.value),
+                                _specific_info_row("Representante legal", solicitante_rep_nombre),
+                                _specific_info_row("Presentador", _presentador_nombre(presentador)),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                        _specific_generation_status_card(expediente_id),
+                        build_snapshot_status_content(expediente_id),
+                        ft.Text(
+                            "Usa la barra inferior para guardar, generar snapshot, generar EX01 titular o elegir otros formularios desde el menú de tres puntos.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    ft.Icons.FACT_CHECK,
+                )
+            ]
+
+        nav_controls = []
+        if current_step > 0:
+            nav_controls.append(secondary_button("Anterior", lambda e: _set_specific_data_step(current_step - 1)))
+        nav_controls.append(primary_button("Guardar", save_specific_data))
+        if current_step < len(steps) - 1:
+            nav_controls.append(secondary_button("Siguiente", lambda e: _save_specific_and_go_step(current_step + 1)))
+        else:
+            nav_controls.extend([
+                secondary_button("Generar snapshot", generate_snapshot),
+                secondary_button("Generar EX01 titular", generate_referenced_ex_form),
+                _forms_popup_menu(),
+            ])
+
+        controls = [
+            ft.Container(
+                bgcolor="#EAF3FF",
+                border=ft.border.all(1, "#B9D7FF"),
+                border_radius=16,
+                padding=14,
+                content=ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.VIEW_WEEK, size=24, color=Q_PRIMARY),
+                            bgcolor="#FFFFFF",
+                            border_radius=24,
+                            width=48,
+                            height=48,
+                            alignment=ft.alignment.Alignment(0, 0),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text("EX01 titular · Datos específicos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(f"Tipo/Subtipo: {tipo_label} / {subtipo_label}", size=13, color=Q_MUTED),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                        secondary_button("Refrescar datos", refresh_specific_data_screen),
+                    ],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
+            _specific_data_stepper(steps, current_step),
+            hidden_bucket,
+            *current_step_controls(),
+            ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=14,
+                padding=10,
+                content=ft.Row(
+                    controls=nav_controls + [
+                        ft.Text(
+                            "Pantalla específica. Guarda en datos específicos y respeta snapshot.",
+                            size=12,
+                            color=Q_MUTED,
+                            expand=True,
+                        )
+                    ],
+                    spacing=10,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
+        ]
+
+        return ft.Container(
+            width=860,
+            height=660,
+            bgcolor="#FFFFFF",
+            border_radius=0,
+            padding=0,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            content=ft.Column(
+                controls=controls,
+                spacing=10,
+                scroll=None,
+            ),
+        )
+
+
     def build_dynamic_specific_data_content(expediente_id, formulario, campos, saved_values, tipo_label, subtipo_label):
         state["specific_view_mode"] = "DYNAMIC"
         controls = [
@@ -3427,6 +3716,15 @@ def expedients_view(page: ft.Page):
 
         if formulario and mapper_codigo == "MERCURIO_EX01_FAMILIAR":
             return _build_ex01_familiar_specific_content(
+                expediente_id,
+                formulario,
+                saved_values,
+                tipo_label,
+                subtipo_label,
+            )
+
+        if formulario and mapper_codigo == "MERCURIO_EX01":
+            return _build_ex01_titular_specific_content(
                 expediente_id,
                 formulario,
                 saved_values,

@@ -162,42 +162,6 @@ def limpiar_piso(value):
 
     return normalized
 
-
-def split_piso_letra_mercurio(value):
-    """Separa piso y letra/puerta para campos Mercurio.
-
-    Ejemplos:
-    - "06D" -> ("06", "D")
-    - "1 A" -> ("01", "A")
-    - "BJ" / "BJ EXT" -> ("BJ EXT", "")
-    """
-    raw = "" if value is None else str(value).strip()
-    if not raw:
-        return "", ""
-
-    normalized = normalize(raw)
-
-    if normalized in {"BJ", "BAJO", "BAJO EXT", "BJ EXT", "BJO", "BJO EXT", "BAJO EXTERIOR"}:
-        return "BJ EXT", ""
-
-    if normalized in {"BI", "BAJO INT", "BAJO INTERIOR", "BJO INT"}:
-        return "BI", ""
-
-    if normalized in {"ENT", "ENTRESUELO", "ENTRESUELO EXT", "ENT EXT"}:
-        return "ENT EXT", ""
-
-    compact = re.sub(r"[^0-9A-Z]", "", normalized)
-    match = re.match(r"^(\d{1,2})([A-Z]{1,4})$", compact)
-    if match:
-        return match.group(1).zfill(2), match.group(2)
-
-    # Formas tipo "PISO 6 D", "6-D" o "06 D".
-    match = re.search(r"(\d{1,2})\D+([A-Z]{1,4})$", normalized)
-    if match and "BAJO" not in normalized:
-        return match.group(1).zfill(2), match.group(2)
-
-    return limpiar_piso(raw), ""
-
 def _connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -398,14 +362,13 @@ def parse_domicilio(domicilio, numero=None, piso=None):
         main_part = main_part[:m.start()].strip(" ,.-")
 
     parsed_domicilio = main_part.strip() or cleaned
-    parsed_piso, parsed_letra = split_piso_letra_mercurio(parsed_piso)
+    parsed_piso = limpiar_piso(parsed_piso)
 
     return {
         "tipo_via_codigo": tipo_via_codigo,
         "domicilio": parsed_domicilio,
         "numero": parsed_numero,
         "piso": parsed_piso,
-        "letra": parsed_letra,
     }
 
 
@@ -1238,7 +1201,7 @@ def build_datos_familiar_ex01(cliente, snapshot=None):
         "reaDomicilioReagrupante": domicilio_parts["domicilio"],
         "reaNumeroReagrupante": domicilio_parts["numero"],
         "reaPisoReagrupante": domicilio_parts["piso"],
-        "reaLetraReagrupante": domicilio_parts.get("letra") or "",
+        "reaLetraReagrupante": "",
         "reaEscaleraReagrupante": "",
         "reaBloqueReagrupante": "",
         "reaKilometroReagrupante": "",
@@ -1363,6 +1326,7 @@ def build_datos_mercurio(expediente, snapshot=None):
     tipo_formulario_objetivo = resolve_tipo_formulario_objetivo(expediente_json)
     mapper_codigo = resolve_mapper_codigo(expediente_json, tipo_formulario_objetivo)
     is_ex01_familiar = mapper_codigo == "MERCURIO_EX01_FAMILIAR"
+    is_ex01_titular = mapper_codigo == "MERCURIO_EX01"
 
     extranjero = {
         "extPasaporte": cliente["pasaporte"],
@@ -1385,10 +1349,14 @@ def build_datos_mercurio(expediente, snapshot=None):
 
     representante = build_datos_representante(snapshot=snapshot)
 
-    if is_ex01_familiar:
-        # En EX01 familiar el representante legal del solicitante pertenece
-        # a Datos del extranjero/a (ext*), no a Datos del presentador (pre*).
+    if is_ex01_familiar or is_ex01_titular:
+        # En EX01 el representante legal del solicitante pertenece a
+        # Datos del extranjero/a (ext*), no a Datos del presentador (pre*).
         extranjero.update(build_representante_legal_extranjero(snapshot=snapshot))
+
+    if is_ex01_familiar:
+        # En EX01 familiar, además, se evita mezclar el familiar/titular de
+        # medios económicos con el presentador profesional.
         representante = sanitize_presentador_for_ex01_familiar(representante)
 
     return {
@@ -1419,7 +1387,6 @@ def build_datos_mercurio(expediente, snapshot=None):
             "extDomicilio": domicilio_limpio,
             "extNumero": numero_limpio,
             "extPiso": piso_limpio,
-            "extLetra": domicilio_parts.get("letra") or "",
             "extCodigoProvincia": map_provincia(cliente["provincia"]),
             "extCodigoProvincia_text": cliente["provincia"],
             "extCodigoMunicipio_text": cliente["localidad"],
