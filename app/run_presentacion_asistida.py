@@ -788,6 +788,58 @@ def fill_section(browser, values, session_dir):
         select_by_text_or_value(browser, base_id, text=text_value, session_dir=session_dir)
 
 
+
+def force_final_domicilio_extranjero(browser, domicilio, session_dir):
+    """
+    Refuerzo quirúrgico para EX01 titular.
+
+    Mercurio puede limpiar extNumero/extPiso después de las cascadas
+    provincia -> municipio -> localidad. Por eso se reescriben al final
+    de la pestaña Datos del extranjero/a, usando el JSON ya validado.
+    """
+    domicilio = domicilio or {}
+
+    numero_extranjero = domicilio.get("extNumero") or ""
+    if numero_extranjero:
+        result_numero_ext = set_value(
+            browser,
+            "extNumero",
+            numero_extranjero,
+            session_dir=session_dir,
+            trigger_change=True,
+        )
+        write_log(
+            session_dir,
+            f"FORCE_FINAL extNumero value={numero_extranjero!r} -> {result_numero_ext}",
+        )
+
+    piso_extranjero = domicilio.get("extPiso") or ""
+    if piso_extranjero:
+        result_piso_ext = set_piso_mercurio(
+            browser,
+            "extPiso",
+            value=piso_extranjero,
+            session_dir=session_dir,
+        )
+        write_log(
+            session_dir,
+            f"FORCE_FINAL extPiso value={piso_extranjero!r} -> {result_piso_ext}",
+        )
+
+    letra_extranjero = domicilio.get("extLetra") or ""
+    if letra_extranjero:
+        result_letra_ext = set_value(
+            browser,
+            "extLetra",
+            letra_extranjero,
+            session_dir=session_dir,
+            trigger_change=True,
+        )
+        write_log(
+            session_dir,
+            f"FORCE_FINAL extLetra value={letra_extranjero!r} -> {result_letra_ext}",
+        )
+
 def fill_datos_extranjero(browser, datos_mercurio, session_dir):
     print("[7] Rellenando datos completos del extranjero/a")
     write_log(session_dir, "Rellenando datos completos extranjero")
@@ -802,22 +854,13 @@ def fill_datos_extranjero(browser, datos_mercurio, session_dir):
     fill_section(browser, domicilio, session_dir)
     select_municipio_localidad(browser, domicilio, session_dir, prefix="ext")
 
-    # Refuerzo específico: algunas cascadas de domicilio pueden limpiar campos
-    # auxiliares. La letra del domicilio del extranjero/a se fuerza al final.
-    letra_extranjero = domicilio.get("extLetra") or ""
-    if letra_extranjero:
-        result_letra_ext = set_value(
-            browser,
-            "extLetra",
-            letra_extranjero,
-            session_dir=session_dir,
-            trigger_change=True,
-        )
-        write_log(session_dir, f"FORCE_FINAL extLetra value={letra_extranjero!r} -> {result_letra_ext}")
-
     # Notificación puede estar en otra pestaña, pero si los campos existen, se rellenan.
     fill_section(browser, notificacion, session_dir)
     select_municipio_localidad(browser, notificacion, session_dir, prefix="not")
+
+    # Refuerzo final: Mercurio puede limpiar número/piso tras las cascadas.
+    # Se fuerza al final de la pestaña Datos del extranjero/a.
+    force_final_domicilio_extranjero(browser, domicilio, session_dir)
 
     print("Datos completos rellenados.")
     write_log(session_dir, "Datos completos rellenados")
@@ -915,36 +958,6 @@ def fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
 
     fill_section(browser, familiar, session_dir)
     select_municipio_localidad_reagrupante(browser, familiar, session_dir)
-
-    # Refuerzo específico EX01 Familiar:
-    # la cascada provincia -> municipio -> localidad puede recargar selects
-    # y dejar sin seleccionar el piso/letra del familiar. Por eso se fuerza al final.
-    piso_familiar = familiar.get("reaPisoReagrupante") or ""
-    if piso_familiar:
-        result_piso_familiar = set_piso_mercurio(
-            browser,
-            "reaPisoReagrupante",
-            value=piso_familiar,
-            session_dir=session_dir,
-        )
-        write_log(
-            session_dir,
-            f"FORCE_FINAL reaPisoReagrupante value={piso_familiar!r} -> {result_piso_familiar}",
-        )
-
-    letra_familiar = familiar.get("reaLetraReagrupante") or ""
-    if letra_familiar:
-        result_letra_familiar = set_value(
-            browser,
-            "reaLetraReagrupante",
-            letra_familiar,
-            session_dir=session_dir,
-            trigger_change=True,
-        )
-        write_log(
-            session_dir,
-            f"FORCE_FINAL reaLetraReagrupante value={letra_familiar!r} -> {result_letra_familiar}",
-        )
 
     print("Datos del familiar rellenados.")
     write_log(session_dir, "Datos del familiar rellenados")
