@@ -162,6 +162,43 @@ def limpiar_piso(value):
 
     return normalized
 
+
+
+def split_piso_letra(value):
+    """
+    Separa piso y letra para Mercurio.
+
+    Ejemplos:
+    - 06D -> (06, D)
+    - 1A  -> (01, A)
+    - BJ / BJ EXT -> (BJ EXT, "")
+    """
+    raw = "" if value is None else str(value).strip()
+    if not raw:
+        return "", ""
+
+    normalized = normalize(raw)
+
+    if normalized in {"BJ", "BAJO", "BAJO EXT", "BJ EXT", "BJO", "BJO EXT", "BAJO EXTERIOR"}:
+        return "BJ EXT", ""
+
+    if normalized in {"BI", "BAJO INT", "BAJO INTERIOR", "BJO INT"}:
+        return "BI", ""
+
+    if normalized in {"ENT", "ENTRESUELO", "ENTRESUELO EXT", "ENT EXT"}:
+        return "ENT EXT", ""
+
+    # Numérico con letra de puerta pegada o separada: 06D, 6 D, PISO 6 D.
+    m = re.search(r"(\d+)\s*([A-Z])\b", normalized)
+    if m:
+        return m.group(1).zfill(2), m.group(2)
+
+    m = re.search(r"\d+", normalized)
+    if m:
+        return m.group(0).zfill(2), ""
+
+    return limpiar_piso(raw), ""
+
 def _connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -362,13 +399,14 @@ def parse_domicilio(domicilio, numero=None, piso=None):
         main_part = main_part[:m.start()].strip(" ,.-")
 
     parsed_domicilio = main_part.strip() or cleaned
-    parsed_piso = limpiar_piso(parsed_piso)
+    parsed_piso, parsed_letra = split_piso_letra(parsed_piso)
 
     return {
         "tipo_via_codigo": tipo_via_codigo,
         "domicilio": parsed_domicilio,
         "numero": parsed_numero,
         "piso": parsed_piso,
+        "letra": parsed_letra,
     }
 
 
@@ -1201,7 +1239,7 @@ def build_datos_familiar_ex01(cliente, snapshot=None):
         "reaDomicilioReagrupante": domicilio_parts["domicilio"],
         "reaNumeroReagrupante": domicilio_parts["numero"],
         "reaPisoReagrupante": domicilio_parts["piso"],
-        "reaLetraReagrupante": "",
+        "reaLetraReagrupante": domicilio_parts.get("letra", ""),
         "reaEscaleraReagrupante": "",
         "reaBloqueReagrupante": "",
         "reaKilometroReagrupante": "",
@@ -1319,6 +1357,7 @@ def build_datos_mercurio(expediente, snapshot=None):
     domicilio_limpio = domicilio_parts["domicilio"]
     numero_limpio = domicilio_parts["numero"]
     piso_limpio = domicilio_parts["piso"]
+    letra_limpia = domicilio_parts.get("letra", "")
 
     pais_nacimiento_texto = cliente["pais_nacimiento"]
     nacionalidad_texto = cliente["nacionalidad"]
@@ -1326,7 +1365,6 @@ def build_datos_mercurio(expediente, snapshot=None):
     tipo_formulario_objetivo = resolve_tipo_formulario_objetivo(expediente_json)
     mapper_codigo = resolve_mapper_codigo(expediente_json, tipo_formulario_objetivo)
     is_ex01_familiar = mapper_codigo == "MERCURIO_EX01_FAMILIAR"
-    is_ex01_titular = mapper_codigo == "MERCURIO_EX01"
 
     extranjero = {
         "extPasaporte": cliente["pasaporte"],
@@ -1349,14 +1387,10 @@ def build_datos_mercurio(expediente, snapshot=None):
 
     representante = build_datos_representante(snapshot=snapshot)
 
-    if is_ex01_familiar or is_ex01_titular:
-        # En EX01 el representante legal del solicitante pertenece a
-        # Datos del extranjero/a (ext*), no a Datos del presentador (pre*).
-        extranjero.update(build_representante_legal_extranjero(snapshot=snapshot))
-
     if is_ex01_familiar:
-        # En EX01 familiar, además, se evita mezclar el familiar/titular de
-        # medios económicos con el presentador profesional.
+        # En EX01 familiar el representante legal del solicitante pertenece
+        # a Datos del extranjero/a (ext*), no a Datos del presentador (pre*).
+        extranjero.update(build_representante_legal_extranjero(snapshot=snapshot))
         representante = sanitize_presentador_for_ex01_familiar(representante)
 
     return {
@@ -1387,6 +1421,7 @@ def build_datos_mercurio(expediente, snapshot=None):
             "extDomicilio": domicilio_limpio,
             "extNumero": numero_limpio,
             "extPiso": piso_limpio,
+            "extLetra": letra_limpia,
             "extCodigoProvincia": map_provincia(cliente["provincia"]),
             "extCodigoProvincia_text": cliente["provincia"],
             "extCodigoMunicipio_text": cliente["localidad"],
