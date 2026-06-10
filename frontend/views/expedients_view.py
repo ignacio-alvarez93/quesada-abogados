@@ -3712,20 +3712,20 @@ def expedients_view(page: ft.Page):
         """
         Pantalla específica EX02 - Reagrupación familiar.
 
-        Contrato de datos:
-        - datos_especificos.reagrupante_*  -> persona residente que reagrupa.
-        - datos_especificos.reagrupado_*   -> familiar extranjero reagrupado.
+        Contrato corregido de datos:
+        - datos_especificos.reagrupado_*   -> cliente del expediente / solicitante en Mercurio.
+        - datos_especificos.reagrupante_*  -> familiar residente que reagrupa, seleccionado desde contactos.
         - datos_especificos.representante_* -> presentador profesional congelado para revisión.
 
         No usa contactos.0.* para evitar dependencia del orden de contactos.
         """
         state["specific_view_mode"] = "EX02"
         state["specific_formulario_id"] = formulario.get("id") if formulario else None
-        saved_values = _refresh_saved_values_from_live_contact(saved_values, "reagrupado")
+        saved_values = _refresh_saved_values_from_live_contact(saved_values, "reagrupante")
 
         steps = [
-            ("Reagrupante", "Cliente residente"),
-            ("Reagrupado", "Familiar seleccionado"),
+            ("Reagrupado", "Cliente solicitante"),
+            ("Reagrupante", "Familiar residente"),
             ("Representante", "Presentador profesional"),
             ("Solicitud", "Checks EX02"),
             ("Revisión", "Snapshot y EX"),
@@ -3734,7 +3734,7 @@ def expedients_view(page: ft.Page):
 
         cliente_id = _option_id(cliente.get_value())
         cliente_details = _fetch_cliente_details(cliente_id) if cliente_id else {}
-        reagrupado_options = _fetch_cliente_contact_options(cliente_id, only_employers=False)
+        reagrupante_options = _fetch_cliente_contact_options(cliente_id, only_employers=False)
 
         try:
             presentador = config_service.get_representante_config() or {}
@@ -3817,8 +3817,10 @@ def expedients_view(page: ft.Page):
             for code, default in mapping.items():
                 _register_hidden_specific_control(code, _specific_field_value(saved_values, code, default))
 
-        register_person("reagrupante", cliente_details)
-        register_person("reagrupado", {})
+        # EX02: el expediente y la solicitud Mercurio quedan a nombre del cliente reagrupado.
+        register_person("reagrupado", cliente_details)
+        # El reagrupante es el familiar/contacto residente que da derecho.
+        register_person("reagrupante", {})
         register_presentador()
 
         # Campos visibles de solicitud EX02.
@@ -3863,25 +3865,26 @@ def expedients_view(page: ft.Page):
             width=620,
         )
 
-        def apply_reagrupado(selected):
+        def apply_reagrupante(selected):
             contacto_id = _option_id(selected)
             details = _fetch_cliente_contact_details(contacto_id) if contacto_id else {}
-            _remember_contact_specific_values("reagrupado", selected, details)
-            _set_specific_control_value("familiar_reagrupado", full_name_from_details(details))
+            _remember_contact_specific_values("reagrupante", selected, details)
+            # El reagrupado es el cliente: se mantiene como referencia visible del trámite.
+            _set_specific_control_value("familiar_reagrupado", full_name_from_details(cliente_details))
             _autosave_specific_values_silent()
             page.update()
 
-        reagrupado_autocomplete = AppAutocomplete(
+        reagrupante_autocomplete = AppAutocomplete(
             page=page,
-            label="Familiar reagrupado",
-            options=reagrupado_options,
-            value=_specific_field_value(saved_values, "reagrupado", ""),
+            label="Familiar reagrupante",
+            options=reagrupante_options,
+            value=_specific_field_value(saved_values, "reagrupante", ""),
             width=620,
             max_results=10,
             allow_free_text=True,
-            on_select=apply_reagrupado,
+            on_select=apply_reagrupante,
         )
-        state.setdefault("specific_field_controls", {})["reagrupado"] = reagrupado_autocomplete
+        state.setdefault("specific_field_controls", {})["reagrupante"] = reagrupante_autocomplete
 
         header = ft.Container(
             bgcolor="#EAF3FF",
@@ -3903,7 +3906,7 @@ def expedients_view(page: ft.Page):
                         expand=True,
                         controls=[
                             ft.Text("EX02 · Datos específicos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ft.Text("Contrato explícito: reagrupante, reagrupado y representante. No depende de contactos.0.", size=13, color=Q_MUTED),
+                            ft.Text("Contrato explícito: reagrupado=cliente solicitante, reagrupante=familiar/contacto. No depende de contactos.0.", size=13, color=Q_MUTED),
                         ],
                     ),
                     secondary_button("Refrescar", refresh_specific_data_screen),
@@ -3914,9 +3917,9 @@ def expedients_view(page: ft.Page):
             ),
         )
 
-        reagrupante_card = _specific_card(
-            "Reagrupante",
-            "Se toma del cliente principal del expediente y se congela como datos_especificos.reagrupante_*.",
+        reagrupado_card = _specific_card(
+            "Reagrupado / solicitante",
+            "Se toma del cliente principal del expediente. Es la persona a cuyo nombre se tramita la solicitud en Mercurio.",
             [
                 ft.Row(
                     controls=[
@@ -3937,22 +3940,22 @@ def expedients_view(page: ft.Page):
                     spacing=10,
                     wrap=True,
                 ),
-                ft.Text("Estos datos se guardan como campos técnicos reagrupante_* al avanzar o guardar.", size=11, color=Q_MUTED),
+                ft.Text("Estos datos se guardan como campos técnicos reagrupado_* al avanzar o guardar.", size=11, color=Q_MUTED),
             ],
             icon=ft.Icons.PERSON,
         )
 
-        reagrupado_card = _specific_card(
-            "Reagrupado",
-            "Selecciona el contacto/familiar que se reagrupará. Sus datos vivos se materializan como reagrupado_*.",
+        reagrupante_card = _specific_card(
+            "Reagrupante",
+            "Selecciona el familiar/contacto residente que reagrupa. Sus datos vivos se materializan como reagrupante_*.",
             [
-                reagrupado_autocomplete.control,
+                reagrupante_autocomplete.control,
                 ft.Text("Al seleccionar, se copian NIE/pasaporte, filiación, domicilio, parentesco y contacto.", size=11, color=Q_MUTED),
                 ft.Row(
                     controls=[
-                        _specific_info_row("Seleccionado", _specific_field_value(saved_values, "reagrupado_nombre_completo", "-")),
-                        _specific_info_row("Documento", _specific_field_value(saved_values, "reagrupado_documento", "-")),
-                        _specific_info_row("Parentesco", _specific_field_value(saved_values, "reagrupado_parentesco", "-")),
+                        _specific_info_row("Seleccionado", _specific_field_value(saved_values, "reagrupante_nombre_completo", "-")),
+                        _specific_info_row("Documento", _specific_field_value(saved_values, "reagrupante_documento", "-")),
+                        _specific_info_row("Parentesco", _specific_field_value(saved_values, "reagrupante_parentesco", "-")),
                     ],
                     spacing=10,
                     wrap=True,
@@ -4006,8 +4009,8 @@ def expedients_view(page: ft.Page):
                 ft.Row(
                     controls=[
                         _specific_info_row("Mapper", "MERCURIO_EX02"),
-                        _specific_info_row("Reagrupante", full_name_from_details(cliente_details)),
-                        _specific_info_row("Reagrupado", _specific_field_value(saved_values, "reagrupado_nombre_completo", "-")),
+                        _specific_info_row("Reagrupado", full_name_from_details(cliente_details)),
+                        _specific_info_row("Reagrupante", _specific_field_value(saved_values, "reagrupante_nombre_completo", "-")),
                     ],
                     spacing=10,
                     wrap=True,
@@ -4025,7 +4028,7 @@ def expedients_view(page: ft.Page):
             icon=ft.Icons.CHECK_CIRCLE,
         )
 
-        step_controls = [reagrupante_card, reagrupado_card, representante_card, solicitud_card, review_card]
+        step_controls = [reagrupado_card, reagrupante_card, representante_card, solicitud_card, review_card]
 
         nav = ft.Row(
             controls=[
@@ -4051,6 +4054,7 @@ def expedients_view(page: ft.Page):
                 scroll=ft.ScrollMode.AUTO,
             ),
         )
+
 
     def build_specific_data_content(expediente_id):
         tipo_id = _selected_tipo_id()
