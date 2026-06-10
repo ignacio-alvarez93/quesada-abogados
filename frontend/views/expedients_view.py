@@ -3722,6 +3722,7 @@ def expedients_view(page: ft.Page):
         state["specific_view_mode"] = "EX02"
         state["specific_formulario_id"] = formulario.get("id") if formulario else None
         saved_values = _refresh_saved_values_from_live_contact(saved_values, "reagrupante")
+        saved_values = _refresh_saved_values_from_live_contact(saved_values, "solicitante_representante_legal")
 
         steps = [
             ("Reagrupado", "Cliente solicitante"),
@@ -3819,6 +3820,8 @@ def expedients_view(page: ft.Page):
 
         # EX02: el expediente y la solicitud Mercurio quedan a nombre del cliente reagrupado.
         register_person("reagrupado", cliente_details)
+        # Representante legal real del reagrupado/solicitante, seleccionado desde contactos.
+        register_person("solicitante_representante_legal", {})
         # El reagrupante es el familiar/contacto residente que da derecho.
         register_person("reagrupante", {})
         register_presentador()
@@ -3872,6 +3875,10 @@ def expedients_view(page: ft.Page):
             # El reagrupado es el cliente: se mantiene como referencia visible del trámite.
             _set_specific_control_value("familiar_reagrupado", full_name_from_details(cliente_details))
             _autosave_specific_values_silent()
+            # Reconstruye la sección para que las tarjetas resumen reflejen el contacto
+            # vivo inmediatamente, sin tener que avanzar y volver.
+            if expediente_id:
+                expediente_dialog.content = build_expediente_dialog_content(expediente_id)
             page.update()
 
         reagrupante_autocomplete = AppAutocomplete(
@@ -3885,6 +3892,30 @@ def expedients_view(page: ft.Page):
             on_select=apply_reagrupante,
         )
         state.setdefault("specific_field_controls", {})["reagrupante"] = reagrupante_autocomplete
+
+        solicitante_rep_value = _specific_field_value(saved_values, "solicitante_representante_legal", "")
+
+        def apply_solicitante_representante_contact(selected):
+            contacto_id = _option_id(selected)
+            details = _fetch_cliente_contact_details(contacto_id) if contacto_id else {}
+            _remember_contact_specific_values("solicitante_representante_legal", selected or "", details or {})
+            _autosave_specific_values_silent()
+            # Mismo patrón que EX01 familiar: actualizar la tarjeta inmediatamente.
+            if expediente_id:
+                expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+            page.update()
+
+        solicitante_rep_autocomplete = AppAutocomplete(
+            page=page,
+            label="Representante legal del reagrupado / solicitante",
+            options=reagrupante_options,
+            value=solicitante_rep_value,
+            width=620,
+            max_results=10,
+            allow_free_text=True,
+            on_select=apply_solicitante_representante_contact,
+        )
+        state.setdefault("specific_field_controls", {})["solicitante_representante_legal"] = solicitante_rep_autocomplete
 
         header = ft.Container(
             bgcolor="#EAF3FF",
@@ -3939,6 +3970,28 @@ def expedients_view(page: ft.Page):
                     ],
                     spacing=10,
                     wrap=True,
+                ),
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=8,
+                        controls=[
+                            solicitante_rep_autocomplete.control,
+                            ft.Text("Opcional. Se copia como solicitante_representante_legal_* igual que en EX01 familiar.", size=11, color=Q_MUTED),
+                            ft.Row(
+                                controls=[
+                                    _specific_info_row("Representante legal", _specific_field_value(saved_values, "solicitante_representante_legal_nombre_completo", "-")),
+                                    _specific_info_row("Documento", _specific_field_value(saved_values, "solicitante_representante_legal_documento", "-")),
+                                    _specific_info_row("Parentesco/título", _specific_field_value(saved_values, "solicitante_representante_legal_parentesco", "-")),
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                        ],
+                    ),
                 ),
                 ft.Text("Estos datos se guardan como campos técnicos reagrupado_* al avanzar o guardar.", size=11, color=Q_MUTED),
             ],
