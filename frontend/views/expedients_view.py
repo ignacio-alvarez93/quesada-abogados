@@ -3827,6 +3827,26 @@ def expedients_view(page: ft.Page):
         register_presentador()
 
         # Campos visibles de solicitud EX02.
+        vinculo_reagrupado_reagrupante = _specific_value_select(
+            "vinculo_reagrupado_reagrupante",
+            "Vínculo de la persona reagrupada respecto a la persona que reagrupa",
+            [
+                "CÓNYUGE",
+                "PAREJA REGISTRADA",
+                "PAREJA NO REGISTRADA",
+                "ASCENDIENTE MAYOR DE 65 AÑOS",
+                "ASCENDIENTE MENOR DE 65 AÑOS",
+                "HIJO/A MENOR 18 AÑOS",
+                "HIJO/A MAYOR DE 18 AÑOS CON DISCAPACIDAD",
+                "MENOR DE 18 AÑOS REPRESENTADA LEGALMENTE POR EL REAGRUPANTE",
+                "MAYOR DE 18 AÑOS DISCAPACITADA REPRESENTADA LEGALMENTE POR EL REAGRUPANTE",
+                "HIJO/A MAYOR 18 AÑOS, CUIDADOR",
+                "HIJO/A MAYOR 18 AÑOS - RENOVACIÓN",
+            ],
+            saved_values,
+            width=720,
+            default="CÓNYUGE",
+        )
         hijos = _specific_value_select(
             "hijasos_a_cargo_en_edad_de_escolarización_en_españa",
             "Hijos/as a cargo en edad de escolarización en España",
@@ -4048,6 +4068,7 @@ def expedients_view(page: ft.Page):
             "Campos que alimentan checks y textos específicos del EX02.",
             [
                 ft.Row([tipo_solicitud], wrap=True, spacing=10),
+                ft.Row([vinculo_reagrupado_reagrupante], wrap=True, spacing=10),
                 ft.Row([autorizacion, hijos], wrap=True, spacing=10),
                 ft.Row([simultaneas, familiar_reagrupado], wrap=True, spacing=10),
             ],
@@ -4064,6 +4085,7 @@ def expedients_view(page: ft.Page):
                         _specific_info_row("Mapper", "MERCURIO_EX02"),
                         _specific_info_row("Reagrupado", full_name_from_details(cliente_details)),
                         _specific_info_row("Reagrupante", _specific_field_value(saved_values, "reagrupante_nombre_completo", "-")),
+                        _specific_info_row("Vínculo", _specific_field_value(saved_values, "vinculo_reagrupado_reagrupante", "-")),
                     ],
                     spacing=10,
                     wrap=True,
