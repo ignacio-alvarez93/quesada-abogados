@@ -358,6 +358,12 @@ def expedients_view(page: ft.Page):
         form_message.visible = True
         page.update()
 
+    def show_form_success(message):
+        form_message.controls.clear()
+        form_message.controls.append(success_alert(message))
+        form_message.visible = True
+        page.update()
+
     def clear_form_message():
         form_message.controls.clear()
         form_message.visible = False
@@ -1464,15 +1470,24 @@ def expedients_view(page: ft.Page):
             return
 
         try:
+            # Antes de congelar el snapshot, persistimos los datos específicos visibles
+            # y los campos técnicos ocultos materializados en la ficha EX.
+            if state.get("specific_formulario_id"):
+                _save_specific_values_or_raise()
+
             result = snapshot_service.save_snapshot(expediente_id, created_by="ERP")
             state.setdefault("snapshot_status", {})[int(expediente_id)] = result
-            clear_form_message()
 
             if result.get("validated"):
-                set_message(success_alert(f"Snapshot generado correctamente · versión {result.get('version')}"))
+                message = f"Snapshot generado correctamente · versión {result.get('version')}"
+                _set_specific_generation_success(expediente_id, message)
+                set_message(success_alert(message))
+                show_form_success(message)
             else:
                 errors = result.get("errors") or []
-                set_message(error_alert("Snapshot generado con advertencias:\n- " + "\n- ".join(errors)))
+                message = "Snapshot generado con advertencias:\n- " + "\n- ".join(errors)
+                set_message(error_alert(message))
+                show_form_error(message)
 
             expediente_dialog.content = build_expediente_dialog_content(expediente_id)
             page.update()
@@ -2757,11 +2772,19 @@ def expedients_view(page: ft.Page):
             "nombre_padre": "nombre_padre",
             "nombre_madre": "nombre_madre",
             "estado_civil": "estado_civil",
+            "sexo": "sexo",
             "cliente_referenciado_id": "cliente_referenciado_id",
         }
 
         for target, source in detail_map.items():
             _set_specific_control_value(f"{prefix}_{target}", _detail_value(details, source) if source not in details else details.get(source))
+
+        via_completa = " ".join(
+            str(details.get(key) or "").strip()
+            for key in ("tipo_via", "nombre_via")
+            if str(details.get(key) or "").strip()
+        ).strip() or str(details.get("domicilio_espana") or "").strip()
+        _set_specific_control_value(f"{prefix}_via_completa", via_completa)
 
     def _refresh_saved_values_from_live_contact(saved_values, prefix="representante_legal"):
         """Mezcla datos vivos del contacto seleccionado en datos específicos.
@@ -2818,6 +2841,7 @@ def expedients_view(page: ft.Page):
             "nombre_padre": "nombre_padre",
             "nombre_madre": "nombre_madre",
             "estado_civil": "estado_civil",
+            "sexo": "sexo",
             "cliente_referenciado_id": "cliente_referenciado_id",
         }
 
@@ -2827,6 +2851,13 @@ def expedients_view(page: ft.Page):
                 values[key] = str(contacto_id or "")
             else:
                 values[key] = str(details.get(source) or "")
+
+        via_completa = " ".join(
+            str(details.get(key) or "").strip()
+            for key in ("tipo_via", "nombre_via")
+            if str(details.get(key) or "").strip()
+        ).strip() or str(details.get("domicilio_espana") or "").strip()
+        values[f"{prefix}_via_completa"] = via_completa
 
         return values
 
@@ -3785,17 +3816,24 @@ def expedients_view(page: ft.Page):
                 or str(details.get("pasaporte") or "").strip()
             )
 
-        def register_person(prefix, details=None):
+        def person_values_from_details(details=None):
             details = details or {}
-            defaults = {}
+            values = {}
             for field in person_fields:
-                defaults[field] = str(details.get(field) or "")
-            defaults["nombre_completo"] = full_name_from_details(details)
-            defaults["documento"] = document_from_details(details)
-            defaults["via_completa"] = via_completa_from_details(details)
+                values[field] = str(details.get(field) or "")
+            values["nombre_completo"] = full_name_from_details(details)
+            values["documento"] = document_from_details(details)
+            values["via_completa"] = via_completa_from_details(details)
+            return values
+
+        def register_person(prefix, details=None, force_live=False):
+            defaults = person_values_from_details(details)
             for field in person_fields:
                 code = f"{prefix}_{field}"
-                _register_hidden_specific_control(code, _specific_field_value(saved_values, code, defaults.get(field, "")))
+                value = defaults.get(field, "") if force_live else _specific_field_value(saved_values, code, defaults.get(field, ""))
+                _register_hidden_specific_control(code, value)
+                if force_live:
+                    _remember_specific_value(code, value)
 
         def register_presentador():
             mapping = {
@@ -3819,7 +3857,8 @@ def expedients_view(page: ft.Page):
                 _register_hidden_specific_control(code, _specific_field_value(saved_values, code, default))
 
         # EX02: el expediente y la solicitud Mercurio quedan a nombre del cliente reagrupado.
-        register_person("reagrupado", cliente_details)
+        # Se fuerza desde ficha viva del cliente para que el mapper pueda usar datos_especificos.reagrupado_*.
+        register_person("reagrupado", cliente_details, force_live=True)
         # Representante legal real del reagrupado/solicitante, seleccionado desde contactos.
         register_person("solicitante_representante_legal", {})
         # El reagrupante es el familiar/contacto residente que da derecho.
@@ -3961,7 +4000,6 @@ def expedients_view(page: ft.Page):
                         ],
                     ),
                     secondary_button("Refrescar", refresh_specific_data_screen),
-                    _forms_popup_menu(),
                 ],
                 spacing=12,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -3976,6 +4014,11 @@ def expedients_view(page: ft.Page):
                     controls=[
                         _specific_info_row("Nombre", full_name_from_details(cliente_details)),
                         _specific_info_row("Documento", document_from_details(cliente_details)),
+                        _specific_info_row("NIE", cliente_details.get("nie") or "-"),
+                        _specific_info_row("Pasaporte", cliente_details.get("pasaporte") or "-"),
+                        _specific_info_row("Nacimiento", cliente_details.get("fecha_nacimiento") or "-"),
+                        _specific_info_row("Estado civil", cliente_details.get("estado_civil") or "-"),
+                        _specific_info_row("Sexo", cliente_details.get("sexo") or "-"),
                         _specific_info_row("Nacionalidad", cliente_details.get("nacionalidad") or "-"),
                     ],
                     spacing=10,
@@ -3987,6 +4030,8 @@ def expedients_view(page: ft.Page):
                         _specific_info_row("Número", cliente_details.get("numero") or "-"),
                         _specific_info_row("Piso", cliente_details.get("piso") or "-"),
                         _specific_info_row("Localidad", cliente_details.get("localidad") or "-"),
+                        _specific_info_row("Provincia", cliente_details.get("provincia") or "-"),
+                        _specific_info_row("C.P.", cliente_details.get("codigo_postal") or "-"),
                     ],
                     spacing=10,
                     wrap=True,
@@ -4028,7 +4073,24 @@ def expedients_view(page: ft.Page):
                     controls=[
                         _specific_info_row("Seleccionado", _specific_field_value(saved_values, "reagrupante_nombre_completo", "-")),
                         _specific_info_row("Documento", _specific_field_value(saved_values, "reagrupante_documento", "-")),
+                        _specific_info_row("NIE", _specific_field_value(saved_values, "reagrupante_nie", "-")),
+                        _specific_info_row("Pasaporte", _specific_field_value(saved_values, "reagrupante_pasaporte", "-")),
+                        _specific_info_row("Nacimiento", _specific_field_value(saved_values, "reagrupante_fecha_nacimiento", "-")),
+                        _specific_info_row("Estado civil", _specific_field_value(saved_values, "reagrupante_estado_civil", "-")),
+                        _specific_info_row("Sexo", _specific_field_value(saved_values, "reagrupante_sexo", "-")),
                         _specific_info_row("Parentesco", _specific_field_value(saved_values, "reagrupante_parentesco", "-")),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        _specific_info_row("Domicilio", _specific_field_value(saved_values, "reagrupante_via_completa", "-")),
+                        _specific_info_row("Número", _specific_field_value(saved_values, "reagrupante_numero", "-")),
+                        _specific_info_row("Piso", _specific_field_value(saved_values, "reagrupante_piso", "-")),
+                        _specific_info_row("Localidad", _specific_field_value(saved_values, "reagrupante_localidad", "-")),
+                        _specific_info_row("Provincia", _specific_field_value(saved_values, "reagrupante_provincia", "-")),
+                        _specific_info_row("C.P.", _specific_field_value(saved_values, "reagrupante_codigo_postal", "-")),
                     ],
                     spacing=10,
                     wrap=True,
@@ -4090,14 +4152,11 @@ def expedients_view(page: ft.Page):
                     spacing=10,
                     wrap=True,
                 ),
-                ft.Row(
-                    controls=[
-                        secondary_button("Guardar datos", save_specific_data),
-                        secondary_button("Generar snapshot", generate_snapshot),
-                        primary_button("Generar EX02", generate_referenced_ex_form),
-                    ],
-                    spacing=10,
-                    wrap=True,
+                build_snapshot_status_content(expediente_id),
+                ft.Text(
+                    "Los botones de guardado, snapshot y generación están agrupados abajo para mantener el flujo único de volcado.",
+                    size=12,
+                    color=Q_MUTED,
                 ),
             ],
             icon=ft.Icons.CHECK_CIRCLE,
@@ -4105,12 +4164,30 @@ def expedients_view(page: ft.Page):
 
         step_controls = [reagrupado_card, reagrupante_card, representante_card, solicitud_card, review_card]
 
-        nav = ft.Row(
-            controls=[
-                secondary_button("Anterior", lambda e: _save_specific_and_go_step(current_step - 1)) if current_step > 0 else ft.Container(),
-                primary_button("Siguiente", lambda e: _save_specific_and_go_step(current_step + 1)) if current_step < len(steps) - 1 else ft.Container(),
-            ],
-            spacing=10,
+        nav_controls = []
+        if current_step > 0:
+            nav_controls.append(secondary_button("Anterior", lambda e: _save_specific_and_go_step(current_step - 1)))
+        if current_step < len(steps) - 1:
+            nav_controls.append(primary_button("Siguiente", lambda e: _save_specific_and_go_step(current_step + 1)))
+        else:
+            nav_controls.extend([
+                secondary_button("Guardar datos", save_specific_data),
+                secondary_button("Generar snapshot", generate_snapshot),
+                primary_button("Generar EX02", generate_referenced_ex_form),
+                _forms_popup_menu(),
+            ])
+
+        nav = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=10,
+            content=ft.Row(
+                controls=nav_controls,
+                spacing=10,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
         )
 
         return ft.Container(
