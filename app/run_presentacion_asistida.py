@@ -14,6 +14,17 @@ import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    
+from backend.automation.automation_artifacts import save_page_source
+from backend.automation.automation_logger import write_log
+from backend.automation.browser_actions import click_js, field_exists, js, wait_for_js
+from backend.automation.browser_session import get_session_dir
+from backend.automation.connectors.mercurio_connector import MercurioConnector
 
 
 def normalize(value):
@@ -47,78 +58,6 @@ def resolve_tipo_via_text(value, text=""):
         "UR": "URBANIZACION",
         "ZZ": "DESCONOCIDO",
     }.get(value, text or value)
-
-
-def get_project_root():
-    return Path(__file__).resolve().parents[1]
-
-
-def get_session_dir(arg_session_dir=None, expediente_id="sin_id"):
-    if arg_session_dir:
-        session_dir = Path(arg_session_dir)
-    else:
-        session_dir = get_project_root() / "exports" / "presentaciones_asistidas" / f"expediente_{expediente_id}"
-
-    (session_dir / "html").mkdir(parents=True, exist_ok=True)
-    (session_dir / "logs").mkdir(parents=True, exist_ok=True)
-    return session_dir
-
-
-def get_browser_source(browser):
-    if hasattr(browser, "get_page_source"):
-        return browser.get_page_source()
-    if hasattr(browser, "get_source"):
-        return browser.get_source()
-    if hasattr(browser, "page_source"):
-        return browser.page_source
-    if hasattr(browser, "driver") and hasattr(browser.driver, "page_source"):
-        return browser.driver.page_source
-    if hasattr(browser, "execute_script"):
-        return browser.execute_script("return document.documentElement.outerHTML;")
-    if hasattr(browser, "evaluate"):
-        return browser.evaluate("document.documentElement.outerHTML")
-    raise RuntimeError("No se pudo obtener HTML")
-
-
-def save_page_source(browser, session_dir, label="page_source"):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    html_path = session_dir / "html" / f"{label}_{timestamp}.html"
-    html_path.write_text(get_browser_source(browser) or "", encoding="utf-8")
-    return html_path
-
-
-def write_log(session_dir, message):
-    log_path = session_dir / "logs" / "presentacion.log"
-    stamp = datetime.now().isoformat(timespec="seconds")
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write(f"[{stamp}] {message}\n")
-
-
-def js(browser, code):
-    if hasattr(browser, "execute_script"):
-        return browser.execute_script(code)
-    if hasattr(browser, "evaluate"):
-        return browser.evaluate(code)
-    raise RuntimeError("El navegador no soporta execute_script/evaluate")
-
-
-def wait_for_js(browser, condition_js, timeout=30, interval=0.5):
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            if js(browser, f"return !!({condition_js});"):
-                return True
-        except Exception:
-            pass
-        time.sleep(interval)
-    raise TimeoutError(f"Timeout esperando condición JS: {condition_js}")
-
-
-def field_exists(browser, field_id):
-    try:
-        return bool(js(browser, f"return !!document.getElementById({json.dumps(field_id)});"))
-    except Exception:
-        return False
 
 
 def set_value(browser, field_id, value, session_dir=None, trigger_change=True):
@@ -303,18 +242,6 @@ def select_municipio_localidad(browser, values, session_dir, prefix="ext"):
         except Exception as exc:
             write_log(session_dir, f"WAIT_FAIL localidad {loc_id}: {exc}")
         select_by_text_or_value(browser, loc_id, text=localidad_text, session_dir=session_dir)
-
-
-def click_js(browser, selector):
-    script = f"""
-    (function(){{
-        const el = document.querySelector({json.dumps(selector)});
-        if (!el) return false;
-        el.click();
-        return true;
-    }})();
-    """
-    return js(browser, script)
 
 
 def load_datos_mercurio(path):
@@ -1184,19 +1111,6 @@ def click_continuar_presentador(browser, session_dir):
 
 
 
-def safe_execute(label, func, session_dir):
-    """
-    Evita que un error cierre Chrome/proceso.
-    """
-    try:
-        return func()
-    except Exception as exc:
-        print(f"ERROR en {label}: {exc}")
-        write_log(session_dir, f"ERROR en {label}: {repr(exc)}")
-        return None
-
-
-
 def disconnect_browser_control(browser, session_dir):
     """
     Desconecta SeleniumBase CDP sin cerrar Chrome.
@@ -1584,15 +1498,6 @@ def upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio,
     return True
 
 
-def open_url(browser, url):
-    if hasattr(browser, "open"):
-        browser.open(url)
-    elif hasattr(browser, "get"):
-        browser.get(url)
-    else:
-        raise RuntimeError("La instancia sb_cdp.Chrome no tiene método open/get")
-
-
 def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
     tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
     mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
@@ -1660,13 +1565,11 @@ def main():
         f"Formulario objetivo={describe_tipo_formulario_objetivo(tipo_formulario_objetivo)}. "
         f"Mapper interno={describe_mapper_codigo(mapper_codigo)}"
     )
-    from seleniumbase import sb_cdp
-
-    browser = sb_cdp.Chrome(headless=False)
-    open_url(browser, url)
+    connector = MercurioConnector(session_dir=session_dir, expediente_id=args.expediente_id, headless=False)
+    browser = connector.start_browser(url)
 
     if args.auto:
-        safe_execute('auto inicial', lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir), session_dir)
+        connector.safe_execute('auto inicial', lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir))
         print("Flujo auto finalizado. Si se ha ejecutado la pausa humana, Chrome queda bajo control manual.")
 
     print()
@@ -1692,7 +1595,7 @@ def main():
                 print(f"ERROR guardando HTML: {exc}")
 
         elif cmd == "auto":
-            safe_execute("auto", lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir), session_dir)
+            connector.safe_execute("auto", lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir))
 
         elif cmd == "fill":
             if not datos_mercurio:
@@ -1721,7 +1624,7 @@ def main():
                 print("No se ha encontrado carpeta PARA PRESENTAR. Revisa --documentos-dir o la ruta exportada del expediente.")
             else:
                 print(f"Usando carpeta PARA PRESENTAR: {documentos_dir}")
-                safe_execute("docs", lambda: upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir), session_dir)
+                connector.safe_execute("docs", lambda: upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir))
 
         elif cmd in ("q", "quit", "exit", "salir"):
             print("Cerrando presentación asistida...")
