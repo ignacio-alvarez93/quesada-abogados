@@ -235,6 +235,24 @@ def _snack(page, message, error=False):
     page.update()
 
 
+def _context_line(label, value, icon="•"):
+    return ft.Row(
+        controls=[
+            ft.Text(icon or "•", size=14),
+            ft.Column(
+                controls=[
+                    ft.Text(label, size=11, color=Q_MUTED),
+                    ft.Text(str(value or "-"), size=13, color=Q_PRIMARY_DARK, weight=ft.FontWeight.W_500),
+                ],
+                spacing=1,
+                expand=True,
+            ),
+        ],
+        spacing=8,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
+
 def _company_display_name(company):
     return (company or {}).get("trade_name") or (company or {}).get("name") or "Empresa sin nombre"
 
@@ -277,8 +295,8 @@ def companies_view(page: ft.Page):
     }
 
     root_container = ft.Container(expand=True)
-    table_container = ft.Container(expand=True)
-    context_container = ft.Container(width=380)
+    table_container = ft.Container()
+    context_container = ft.Container(width=360, padding=ft.padding.only(top=0), margin=ft.margin.only(top=0))
     counter_text = ft.Text("", size=12, color=Q_MUTED)
 
     actividades_options = _load_catalog_options("actividades_cnae.csv", "CNAE")
@@ -588,6 +606,7 @@ def companies_view(page: ft.Page):
                         ft.DataCell(ft.Text(company.get("tax_id") or "-")),
                         ft.DataCell(ft.Text(_entity_type_label(company.get("entity_type")) or "-")),
                         ft.DataCell(ft.Text(company.get("main_activity") or company.get("cnae_description") or "-")),
+                        ft.DataCell(ft.Text(company.get("cnae_code") or "-")),
                         ft.DataCell(ft.Text(company.get("city") or "-")),
                         ft.DataCell(
                             ft.TextButton(
@@ -627,11 +646,12 @@ def companies_view(page: ft.Page):
                         ft.DataColumn(ft.Text("CIF/NIF")),
                         ft.DataColumn(ft.Text("Tipo")),
                         ft.DataColumn(ft.Text("Actividad")),
+                        ft.DataColumn(ft.Text("CNAE")),
                         ft.DataColumn(ft.Text("Localidad")),
                         ft.DataColumn(ft.Text("Ficha")),
                     ],
                     rows=rows,
-                    column_spacing=20,
+                    column_spacing=16,
                     heading_row_color=ft.Colors.BLUE_50,
                     border=ft.border.all(1, Q_BORDER),
                     border_radius=12,
@@ -646,16 +666,14 @@ def companies_view(page: ft.Page):
             context_container.content = ft.Container(
                 bgcolor=Q_CARD,
                 border=ft.border.all(1, Q_BORDER),
-                border_radius=16,
-                padding=20,
+                border_radius=14,
+                padding=16,
                 content=ft.Column(
                     controls=[
-                        ft.Text("🏢", size=34),
-                        ft.Text("Selecciona una empresa", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                        ft.Text("Aquí verás el resumen rápido antes de abrir la ficha completa.", size=12, color=Q_MUTED),
+                        ft.Text("Resumen", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Text("Selecciona una empresa para ver su ficha rápida.", size=13, color=Q_MUTED),
                     ],
-                    spacing=10,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=8,
                 ),
             )
             return
@@ -663,39 +681,42 @@ def companies_view(page: ft.Page):
         stats = get_company_stats(company.get("id"))
         address_parts = [company.get("address"), company.get("postal_code"), company.get("city"), company.get("province")]
         address_text = " · ".join([p for p in address_parts if p])
+        activity_text = company.get("main_activity") or company.get("cnae_description") or "-"
+        contact_text = " · ".join([v for v in [company.get("phone"), company.get("email")] if v]) or "-"
 
         context_container.content = ft.Container(
             bgcolor=Q_CARD,
             border=ft.border.all(1, Q_BORDER),
-            border_radius=18,
-            padding=18,
+            border_radius=14,
+            padding=16,
             content=ft.Column(
                 controls=[
                     ft.Row(
                         controls=[
                             ft.Container(
-                                width=44,
-                                height=44,
-                                border_radius=14,
+                                width=42,
+                                height=42,
+                                border_radius=12,
                                 bgcolor=Q_CHIP_BG,
                                 alignment=ft.Alignment(0, 0),
-                                content=ft.Text("🏢", size=22),
+                                content=ft.Text("🏢", size=21),
                             ),
                             ft.Column(
                                 controls=[
                                     ft.Text(_company_display_name(company), size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                    ft.Text(company.get("name") or "", size=12, color=Q_MUTED),
+                                    ft.Text(company.get("tax_id") or "Sin CIF/NIF", size=12, color=Q_MUTED),
                                 ],
                                 spacing=2,
                                 expand=True,
                             ),
                         ],
                         spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     ft.Row(
                         controls=[
                             _small_label("Clientes", str(stats["clients"]), "👥"),
-                            _small_label("Fiscal", str(stats["fiscal_years"]), "📆"),
+                            _small_label("Ejercicios", str(stats["fiscal_years"]), "📆"),
                         ],
                         spacing=8,
                     ),
@@ -706,12 +727,12 @@ def companies_view(page: ft.Page):
                         ],
                         spacing=8,
                     ),
-                    _small_label("Documento", company.get("tax_id") or "-", "🪪"),
-                    _small_label("Tipo", _entity_type_label(company.get("entity_type")), "🏷️"),
-                    _small_label("Actividad", company.get("main_activity") or company.get("cnae_description") or "-", "📊"),
-                    _small_label("CNAE", company.get("cnae_code") or "-", "#"),
-                    _small_label("Contacto", " · ".join([v for v in [company.get("phone"), company.get("email")] if v]) or "-", "☎️"),
-                    _small_label("Domicilio", address_text or "-", "📍"),
+                    ft.Divider(height=12, color=Q_BORDER),
+                    _context_line("Tipo", _entity_type_label(company.get("entity_type")), "🏷️"),
+                    _context_line("Actividad", activity_text, "📊"),
+                    _context_line("CNAE", company.get("cnae_code") or "-", "#"),
+                    _context_line("Contacto", contact_text, "☎️"),
+                    _context_line("Domicilio", address_text or "-", "📍"),
                     ft.Row(
                         controls=[
                             _primary_button("Abrir ficha", lambda e, c=company: open_company_detail(c), icon=ft.Icons.OPEN_IN_NEW),
@@ -815,40 +836,20 @@ def companies_view(page: ft.Page):
     entity_filter.on_change = refresh
 
     def render_master():
-        header = ft.Container(
-            bgcolor=Q_CARD,
-            border_radius=18,
-            padding=24,
-            border=ft.border.all(1, Q_BORDER),
-            content=ft.Row(
-                controls=[
-                    ft.Column(
-                        controls=[
-                            ft.Text("Empresas", size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ft.Text(
-                                "Directorio maestro con panel contextual y ficha completa de empresa.",
-                                size=13,
-                                color=Q_MUTED,
-                            ),
-                        ],
-                        spacing=4,
-                        expand=True,
-                    ),
-                    _primary_button("Nueva empresa", open_new_dialog, icon=ft.Icons.ADD),
-                ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            ),
-        )
-
         filters = ft.Container(
             bgcolor=Q_CARD,
-            border_radius=14,
+            border_radius=12,
             border=ft.border.all(1, Q_BORDER),
-            padding=14,
+            padding=10,
             content=ft.Row(
-                controls=[search_input, entity_filter, _secondary_button("Actualizar", refresh, icon=ft.Icons.REFRESH), counter_text],
+                controls=[
+                    search_input,
+                    entity_filter,
+                    _secondary_button("Actualizar", refresh, icon=ft.Icons.REFRESH),
+                    counter_text,
+                ],
                 wrap=True,
-                spacing=12,
+                spacing=10,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
@@ -859,24 +860,41 @@ def companies_view(page: ft.Page):
             padding=22,
             content=ft.Column(
                 controls=[
-                    header,
                     ft.Row(
                         controls=[
-                            _section_card(
-                                "Directorio de entidades",
-                                ft.Column(controls=[filters, table_container], spacing=12, expand=True),
-                                subtitle="Selecciona una empresa para ver su resumen a la derecha.",
-                                icon="🏢",
+                            ft.Column(
+                                controls=[
+                                    ft.Text("Empresas", size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text("Directorio maestro de sociedades, autónomos y personas físicas empleadoras", size=14, color=Q_MUTED),
+                                ],
+                                spacing=2,
                                 expand=True,
+                            ),
+                            _primary_button("Nueva empresa", open_new_dialog, icon=ft.Icons.ADD),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                expand=True,
+                                content=ft.Column(
+                                    controls=[
+                                        filters,
+                                        table_container,
+                                    ],
+                                    spacing=6,
+                                    expand=True,
+                                ),
                             ),
                             context_container,
                         ],
-                        spacing=16,
+                        spacing=14,
                         expand=True,
                         vertical_alignment=ft.CrossAxisAlignment.START,
                     ),
                 ],
-                spacing=16,
+                spacing=14,
                 expand=True,
             ),
         )

@@ -464,6 +464,116 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
         icon="📝",
     )
 
+    sections = [
+        ("Resumen", "resumen"),
+        ("Datos", "datos"),
+        ("Clientes", "clientes"),
+        ("Representantes", "representantes"),
+        ("Fiscalidad", "fiscalidad"),
+        ("Documentos", "documentos"),
+        ("Métricas", "metricas"),
+        ("Observaciones", "observaciones"),
+    ]
+    state = {"section": "resumen"}
+    content_container = ft.Container(expand=True)
+
+    def build_resumen_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Resumen", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text("Vista rápida de la empresa y sus indicadores principales.", size=13, color=Q_MUTED),
+                summary,
+                datos_entidad,
+                contacto_domicilio,
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_section_content():
+        section = state.get("section")
+        if section == "datos":
+            return ft.Column(
+                controls=[
+                    ft.Text("Datos de empresa", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    datos_entidad,
+                    contacto_domicilio,
+                ],
+                spacing=14,
+                scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            )
+        if section == "clientes":
+            return ft.Column(
+                controls=[ft.Text("Clientes vinculados", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), clientes_section],
+                spacing=14,
+                scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            )
+        if section == "representantes":
+            return ft.Column(
+                controls=[ft.Text("Representantes", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), representantes_section],
+                spacing=14,
+                scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            )
+        if section == "fiscalidad":
+            return ft.Column(
+                controls=[ft.Text("Fiscalidad", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), fiscal_section],
+                spacing=14,
+                scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            )
+        if section == "documentos":
+            return ft.Column(
+                controls=[ft.Text("Documentos fiscales", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), tax_section],
+                spacing=14,
+                scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            )
+        if section == "metricas":
+            return ft.Column(
+                controls=[ft.Text("Métricas económicas", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), metrics_section],
+                spacing=14,
+                scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            )
+        if section == "observaciones":
+            return ft.Column(
+                controls=[ft.Text("Observaciones", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), notes_section],
+                spacing=14,
+                scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            )
+        return build_resumen_section()
+
+    def set_section(key):
+        state["section"] = key
+        nav_container.content = build_nav()
+        content_container.content = build_section_content()
+        page.update()
+
+    def build_nav():
+        controls = []
+        for label, key in sections:
+            selected = state.get("section") == key
+            controls.append(
+                ft.Container(
+                    content=ft.Text(label, size=13, weight=ft.FontWeight.BOLD if selected else ft.FontWeight.W_500, color="#FFFFFF" if selected else Q_PRIMARY_DARK),
+                    bgcolor=Q_PRIMARY if selected else Q_CARD,
+                    border=ft.border.all(1, Q_PRIMARY if selected else Q_BORDER),
+                    border_radius=18,
+                    padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                    ink=True,
+                    on_click=lambda e, k=key: set_section(k),
+                )
+            )
+        return ft.Row(controls=controls, spacing=8, wrap=True)
+
+    nav_container = ft.Container(content=build_nav())
+    content_container.content = build_section_content()
+
     return ft.Container(
         expand=True,
         bgcolor=Q_BG,
@@ -471,18 +581,10 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
         content=ft.Column(
             controls=[
                 header,
-                summary,
-                datos_entidad,
-                contacto_domicilio,
-                clientes_section,
-                representantes_section,
-                fiscal_section,
-                tax_section,
-                metrics_section,
-                notes_section,
+                nav_container,
+                content_container,
             ],
-            spacing=16,
+            spacing=14,
             expand=True,
-            scroll=ft.ScrollMode.AUTO,
         ),
     )
