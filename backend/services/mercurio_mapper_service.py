@@ -25,6 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXPORT_ROOT = PROJECT_ROOT / "exports" / "presentaciones_asistidas"
 
 DEFAULT_MERCURIO_PROVINCIA_CODIGO = "33"  # Asturias provisional
+MERCURIO_EMAIL_REPRESENTANTE = "quesadaabogadosextranjeria@gmail.com"
 
 
 PROVINCIA_NOMBRE_A_CODIGO = {
@@ -965,7 +966,7 @@ def build_datos_representante(snapshot=None):
         # Contacto
         "preTelefonoPresentador": rep.get("representante_telefono") or "",
         "preTelefonoMovilPresentador": rep.get("representante_telefono_movil") or rep.get("representante_telefono") or "",
-        "preEmailPresentador": rep.get("representante_email") or "",
+        "preEmailPresentador": MERCURIO_EMAIL_REPRESENTANTE,
 
         # Representante legal del presentador, si procede
         "preNombreRepresentantePresentador": rep.get("representante_legal_nombre") or "",
@@ -1251,7 +1252,7 @@ def build_datos_familiar_ex01(cliente, snapshot=None):
         "reaCodigoPostalReagrupante": familiar.get("codigo_postal") or "",
         "reaTelefonoReagrupante": familiar.get("telefono") or "",
         "reaTelefonoMovilReagrupante": familiar.get("telefono") or "",
-        "reaEmailReagrupante": familiar.get("email") or "",
+        "reaEmailReagrupante": MERCURIO_EMAIL_REPRESENTANTE,
         "reaNombreRepresentanteReagrupante": "",
         "reaTipodocumentoRepresentanteReagrupante": "",
         "reaNieRepresentanteReagrupante": "",
@@ -1260,6 +1261,166 @@ def build_datos_familiar_ex01(cliente, snapshot=None):
         "reaParentescoReagrupante_text": parentesco,
     }
 
+
+
+def _prefixed_value(datos, prefix, *names):
+    """Lee campos materializados de datos_especificos con prefijo flexible."""
+    datos = datos or {}
+    candidates = []
+    for name in names:
+        if not name:
+            continue
+        candidates.append(f"{prefix}_{name}")
+        candidates.append(name)
+
+    for key in candidates:
+        value = datos.get(key)
+        if str(value or "").strip():
+            return str(value).strip()
+    return ""
+
+
+def map_parentesco_ex02(value):
+    """
+    Mapea el vínculo EX02 al select Mercurio reaParentescoReagrupante.
+
+    HTML real Mercurio:
+    - TU: TUTELADO
+    - P1: PAREJA DE HECHO
+    - AS: DESCENDIENTE
+    - CO: CONYUGE
+    - HI: ASCENDIENTE
+    """
+    text = normalize(value)
+    if not text:
+        return ""
+
+    if text in {"TU", "P1", "AS", "CO", "HI"}:
+        return text
+
+    if "CONYUGE" in text or "ESPOS" in text:
+        return "CO"
+
+    if "PAREJA" in text:
+        return "P1"
+
+    if "ASCEND" in text or "PADRE" in text or "MADRE" in text or "ABUEL" in text:
+        return "HI"
+
+    if "HIJO" in text or "HIJA" in text or "DESCEND" in text:
+        return "AS"
+
+    if "TUTEL" in text or "REPRESENTADA LEGALMENTE" in text or "REPRESENTADO LEGALMENTE" in text:
+        return "TU"
+
+    return ""
+
+
+def build_datos_reagrupante_ex02(snapshot=None):
+    """
+    Construye el bloque Mercurio 'reagrupante' para EX02.
+
+    Fuente canónica:
+    datos_especificos.reagrupante_*
+
+    No depende de cliente.* ni de contactos. La pantalla EX02 ya materializa
+    reagrupante y reagrupado en datos_especificos antes de crear snapshot.
+    """
+    datos = _snapshot_datos_especificos(snapshot)
+    if not datos:
+        return {}
+
+    prefix = "reagrupante"
+
+    nombre = _prefixed_value(datos, prefix, "nombre")
+    apellido1 = _prefixed_value(datos, prefix, "primer_apellido", "apellido1")
+    apellido2 = _prefixed_value(datos, prefix, "segundo_apellido", "apellido2")
+
+    nombre_completo = _prefixed_value(datos, prefix, "nombre_completo")
+    if nombre_completo and not (nombre or apellido1 or apellido2):
+        parts = nombre_completo.split()
+        if len(parts) >= 3:
+            nombre = " ".join(parts[:-2])
+            apellido1 = parts[-2]
+            apellido2 = parts[-1]
+        elif len(parts) == 2:
+            nombre = parts[0]
+            apellido1 = parts[1]
+        else:
+            nombre = nombre_completo
+
+    domicilio_raw = _prefixed_value(datos, prefix, "domicilio_espana", "domicilio")
+    if not domicilio_raw:
+        via = _prefixed_value(datos, prefix, "nombre_via")
+        tipo = _prefixed_value(datos, prefix, "tipo_via")
+        domicilio_raw = " ".join(part for part in (tipo, via) if part).strip()
+
+    domicilio_parts = parse_domicilio(
+        domicilio_raw,
+        numero=_prefixed_value(datos, prefix, "numero"),
+        piso=_prefixed_value(datos, prefix, "piso"),
+    )
+    tipo_via_codigo = domicilio_parts["tipo_via_codigo"]
+    tipo_via_text = CODIGO_A_TIPO_VIA.get(tipo_via_codigo, tipo_via_codigo)
+
+    vinculo = _first_dynamic_value(
+        datos,
+        "vinculo_reagrupado_reagrupante",
+        "vinculo",
+        "parentesco",
+        "parentesco_reagrupado_reagrupante",
+    )
+
+    autorizacion_titular = _first_dynamic_value(
+        datos,
+        "autorizacion_de_la_que_es_titular",
+        "autorización_de_la_que_es_titular",
+        "reagrupante_autorizacion_titular",
+        "reagrupante_autorizacion",
+        "autorizacion_titular_reagrupante",
+    )
+
+    return {
+        "reaPasaporteReagrupante": _prefixed_value(datos, prefix, "pasaporte"),
+        "reaNieReagrupante": _prefixed_value(datos, prefix, "nie", "dni", "documento"),
+        "reaApellido1Reagrupante": apellido1,
+        "reaApellido2Reagrupante": apellido2,
+        "reaNombreReagrupante": nombre,
+        "reaSexoReagrupante": map_sexo(_prefixed_value(datos, prefix, "sexo")),
+        "reaFechaNacimientoReagrupante": format_date_es(_prefixed_value(datos, prefix, "fecha_nacimiento")),
+        "reaEstadoCivilReagrupante": map_estado_civil_reagrupante(_prefixed_value(datos, prefix, "estado_civil")),
+        "reaEstadoCivilReagrupante_text": _prefixed_value(datos, prefix, "estado_civil"),
+        "reaLugarNacimientoReagrupante": _prefixed_value(datos, prefix, "localidad_nacimiento", "lugar_nacimiento"),
+        "reaCodigoPaisNacimientoReagrupante_text": _prefixed_value(datos, prefix, "pais_nacimiento"),
+        "reaCodigoNacionalidadReagrupante_text": _prefixed_value(datos, prefix, "nacionalidad"),
+        "reaPadreReagrupante": _prefixed_value(datos, prefix, "nombre_padre", "padre"),
+        "reaMadreReagrupante": _prefixed_value(datos, prefix, "nombre_madre", "madre"),
+        "reaTipoViaReagrupante": tipo_via_codigo,
+        "reaTipoViaReagrupante_text": tipo_via_text,
+        "reaDomicilioReagrupante": domicilio_parts["domicilio"],
+        "reaNumeroReagrupante": domicilio_parts["numero"],
+        "reaPisoReagrupante": domicilio_parts["piso"],
+        "reaLetraReagrupante": domicilio_parts.get("letra", "") or _prefixed_value(datos, prefix, "letra", "puerta"),
+        "reaEscaleraReagrupante": _prefixed_value(datos, prefix, "escalera"),
+        "reaBloqueReagrupante": _prefixed_value(datos, prefix, "bloque"),
+        "reaKilometroReagrupante": _prefixed_value(datos, prefix, "kilometro"),
+        "reaHectometroReagrupante": _prefixed_value(datos, prefix, "hectometro"),
+        "reaCodigoProvinciaReagrupante": map_provincia(_prefixed_value(datos, prefix, "provincia")),
+        "reaCodigoProvinciaReagrupante_text": _prefixed_value(datos, prefix, "provincia"),
+        "reaCodigoMunicipioReagrupante_text": _prefixed_value(datos, prefix, "municipio", "localidad"),
+        "reaCodigoLocalidadReagrupante_text": _prefixed_value(datos, prefix, "localidad", "municipio"),
+        "reaCodigoPostalReagrupante": _prefixed_value(datos, prefix, "codigo_postal", "cp"),
+        "reaTelefonoReagrupante": _prefixed_value(datos, prefix, "telefono"),
+        "reaTelefonoMovilReagrupante": _prefixed_value(datos, prefix, "telefono_movil", "telefono"),
+        "reaEmailReagrupante": MERCURIO_EMAIL_REPRESENTANTE,
+        "reaAutorizacionTitularReagrupante": autorizacion_titular,
+        "reaParentescoReagrupante": map_parentesco_ex02(vinculo),
+        "reaParentescoReagrupante_text": vinculo,
+        "reaNombreRepresentanteReagrupante": "",
+        "reaTipodocumentoRepresentanteReagrupante": "",
+        "reaNieRepresentanteReagrupante": "",
+        "reaTituloRepresentanteReagrupante": "",
+    }
 
 
 def get_presentacion_reglas_for_expediente(expediente_json):
@@ -1365,6 +1526,7 @@ def build_datos_mercurio(expediente, snapshot=None):
     tipo_formulario_objetivo = resolve_tipo_formulario_objetivo(expediente_json)
     mapper_codigo = resolve_mapper_codigo(expediente_json, tipo_formulario_objetivo)
     is_ex01_familiar = mapper_codigo == "MERCURIO_EX01_FAMILIAR"
+    is_ex02 = mapper_codigo == "MERCURIO_EX02"
 
     extranjero = {
         "extPasaporte": cliente["pasaporte"],
@@ -1414,6 +1576,7 @@ def build_datos_mercurio(expediente, snapshot=None):
         "expediente": expediente_json,
         "cliente": cliente,
         "familiar": build_datos_familiar_ex01(cliente, snapshot=snapshot) if is_ex01_familiar else {},
+        "reagrupante": build_datos_reagrupante_ex02(snapshot=snapshot) if is_ex02 else {},
         "extranjero": extranjero,
         "domicilio_extranjero": {
             "extTipoVia": tipo_via_codigo,
@@ -1429,7 +1592,7 @@ def build_datos_mercurio(expediente, snapshot=None):
             "extCodigoPostal": cliente["codigo_postal"],
             "extTelefono": cliente["telefono"],
             "extTelefonoMovil": cliente["telefono"],
-            "extEmail": cliente["email"],
+            "extEmail": MERCURIO_EMAIL_REPRESENTANTE,
         },
         "notificacion": {
             "notNombreNotificacion": " ".join([
@@ -1440,7 +1603,7 @@ def build_datos_mercurio(expediente, snapshot=None):
             "notTipodocumentoNotificacion": "TU" if cliente["nie"] else ("PA" if cliente["pasaporte"] else ""),
             "notNieNotificacion": cliente["nie"] or cliente["pasaporte"] or cliente["dni"],
             "notTelefonoMovilNotificacion": cliente["telefono"],
-            "notEmailNotificacion": cliente["email"],
+            "notEmailNotificacion": MERCURIO_EMAIL_REPRESENTANTE,
             "notDomicilioNotificacion": domicilio_limpio,
             "notTipoViaNotificacion": tipo_via_codigo,
             "notTipoViaNotificacion_text": tipo_via_text,
