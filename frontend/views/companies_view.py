@@ -1,6 +1,19 @@
+import csv
+import re
+from pathlib import Path
+
 import flet as ft
 
 from backend.services import company_service
+from backend.services.master_data_service import (
+    get_provincias_nombres,
+    get_localidades_by_provincia,
+    get_tipos_via,
+)
+from frontend.components.app_autocomplete import AppAutocomplete
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 Q_PRIMARY = "#003B7A"
 Q_PRIMARY_DARK = "#002B5C"
@@ -11,6 +24,7 @@ Q_BORDER = "#D8E2F0"
 Q_MUTED = "#5E6C84"
 Q_SUCCESS = "#0F8A5F"
 Q_DANGER = "#B42318"
+Q_CHIP_BG = "#EAF3FF"
 
 ENTITY_TYPES = [
     ("juridica", "Sociedad / empresa"),
@@ -18,17 +32,106 @@ ENTITY_TYPES = [
     ("persona_fisica", "Persona física empleadora"),
 ]
 
+DOCUMENT_TYPES = [
+    ("CIF", "CIF"),
+    ("NIF", "NIF"),
+    ("DNI", "DNI"),
+    ("NIE", "NIE"),
+    ("PASAPORTE", "Pasaporte"),
+]
 
-def _text_input(label, width=260, multiline=False):
+
+def _safe_values(loader, fallback=None):
+    try:
+        values = loader() or []
+        return [str(v).strip() for v in values if str(v or "").strip()]
+    except Exception:
+        return fallback or []
+
+
+def _find_catalog_file(filename):
+    candidates = [
+        PROJECT_ROOT / "database" / "master_data" / filename,
+        PROJECT_ROOT / "database" / "catalogs" / filename,
+        PROJECT_ROOT / "data" / filename,
+        PROJECT_ROOT / "assets" / filename,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    for candidate in (PROJECT_ROOT / "database").rglob(filename):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _load_catalog_options(filename, label_code="Código"):
+    path = _find_catalog_file(filename)
+    if not path:
+        return []
+
+    raw = path.read_text(encoding="utf-8-sig", errors="ignore")
+    sample = raw[:2048]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=";,\t,")
+    except Exception:
+        dialect = csv.excel
+        dialect.delimiter = ";"
+
+    rows = []
+    for row in csv.reader(raw.splitlines(), dialect):
+        clean = [str(col or "").strip() for col in row]
+        clean = [col for col in clean if col]
+        if not clean:
+            continue
+
+        first = clean[0].lower()
+        if first in {"codigo", "código", "cnae", "code", label_code.lower()}:
+            continue
+
+        if len(clean) >= 2:
+            code = clean[0]
+            description = " - ".join(clean[1:])
+            rows.append(f"{code} - {description}")
+        else:
+            rows.append(clean[0])
+
+    return rows
+
+
+def _extract_catalog_code(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if " - " in value:
+        return value.split(" - ", 1)[0].strip()
+    match = re.match(r"^([A-Za-z0-9_.-]+)", value)
+    return match.group(1).strip() if match else value
+
+
+def _extract_catalog_description(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if " - " in value:
+        return value.split(" - ", 1)[1].strip()
+    return value
+
+
+def _text_input(label, width=260, multiline=False, read_only=False):
     return ft.TextField(
         label=label,
         width=width,
         multiline=multiline,
         min_lines=2 if multiline else 1,
         max_lines=4 if multiline else 1,
+        read_only=read_only,
         border_radius=10,
         border_color=Q_BORDER,
         focused_border_color=Q_ACCENT,
+        cursor_color=Q_PRIMARY,
+        content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
     )
 
 
@@ -57,7 +160,7 @@ def _primary_button(text, on_click=None, icon=None):
         on_click=on_click,
         style=ft.ButtonStyle(
             shape=ft.RoundedRectangleBorder(radius=10),
-            bgcolor="#003B7A",
+            bgcolor=Q_PRIMARY,
             color="#FFFFFF",
         ),
     )
@@ -67,8 +170,8 @@ def _secondary_button(text, on_click=None, icon=None):
     return ft.OutlinedButton(
         content=ft.Row(
             controls=[
-                ft.Icon(icon, size=16) if icon else ft.Container(width=0),
-                ft.Text(text),
+                ft.Icon(icon, size=16, color=Q_PRIMARY) if icon else ft.Container(width=0),
+                ft.Text(text, color=Q_PRIMARY),
             ],
             spacing=8,
             tight=True,
@@ -76,25 +179,42 @@ def _secondary_button(text, on_click=None, icon=None):
         on_click=on_click,
         style=ft.ButtonStyle(
             shape=ft.RoundedRectangleBorder(radius=10),
-            color="#003B7A",
-            side=ft.BorderSide(1, "#D7E3F4"),
+            color=Q_PRIMARY,
+            side=ft.BorderSide(1, Q_BORDER),
         ),
     )
 
 
-def _section_card(title, content, subtitle=None):
-    controls = [
-        ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-    ]
-    if subtitle:
-        controls.append(ft.Text(subtitle, size=12, color=Q_MUTED))
-    controls.append(content)
+def _section_card(title, content, subtitle=None, icon=None):
+    title_row = ft.Row(
+        controls=[
+            ft.Container(
+                width=34,
+                height=34,
+                border_radius=10,
+                bgcolor=Q_CHIP_BG,
+                alignment=ft.Alignment(0, 0),
+                content=ft.Text(icon or "•", size=16, color=Q_PRIMARY),
+            ),
+            ft.Column(
+                controls=[
+                    ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text(subtitle, size=12, color=Q_MUTED) if subtitle else ft.Container(height=0),
+                ],
+                spacing=2,
+                expand=True,
+            ),
+        ],
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
     return ft.Container(
         bgcolor=Q_CARD,
         border=ft.border.all(1, Q_BORDER),
-        border_radius=14,
+        border_radius=16,
         padding=18,
-        content=ft.Column(controls=controls, spacing=12),
+        content=ft.Column(controls=[title_row, content], spacing=14),
     )
 
 
@@ -120,6 +240,10 @@ def companies_view(page: ft.Page):
         "editing_id": None,
     }
 
+    actividades_options = _load_catalog_options("actividades_cnae.csv", "CNAE")
+    provincia_options = _safe_values(get_provincias_nombres)
+    tipo_via_options = [(value, value) for value in _safe_values(get_tipos_via, ["CALLE", "AVENIDA", "PLAZA", "PASEO", "CARRETERA"])]
+
     search_input = _text_input("Buscar por nombre, CIF/NIF o actividad", width=420)
     entity_filter = _dropdown(
         "Tipo",
@@ -134,38 +258,85 @@ def companies_view(page: ft.Page):
     entity_type = _dropdown("Tipo de entidad", ENTITY_TYPES, width=280, value="juridica")
     name = _text_input("Razón social / nombre visible", 420)
     trade_name = _text_input("Nombre comercial", 320)
-    document_type = _dropdown("Tipo documento", [("CIF", "CIF"), ("NIF", "NIF"), ("DNI", "DNI"), ("NIE", "NIE"), ("PASAPORTE", "Pasaporte")], width=180, value="CIF")
+    document_type = _dropdown("Tipo documento", DOCUMENT_TYPES, width=180, value="CIF")
     tax_id = _text_input("CIF / NIF / DNI / NIE", 220)
     first_name = _text_input("Nombre persona física/autónomo", 260)
     last_name_1 = _text_input("Primer apellido", 240)
     last_name_2 = _text_input("Segundo apellido", 240)
     company_type = _text_input("Forma / tipo", 260)
     main_activity = _text_input("Actividad principal", 520)
-    cnae_code = _text_input("CNAE", 160)
-    cnae_description = _text_input("Descripción CNAE", 420)
+    cnae_code = _text_input("CNAE", 160, read_only=True)
+    cnae_description = _text_input("Descripción CNAE", 420, read_only=True)
     phone = _text_input("Teléfono", 220)
     email = _text_input("Email", 300)
     website = _text_input("Web", 300)
-    address = _text_input("Domicilio", 520)
-    tipo_via = _text_input("Tipo vía", 160)
+    address = _text_input("Domicilio completo", 520)
+    tipo_via = _dropdown("Tipo vía", tipo_via_options, width=170, value="CALLE" if tipo_via_options else None)
     nombre_via = _text_input("Nombre vía", 300)
     numero = _text_input("Número", 100)
     piso = _text_input("Piso", 100)
     puerta = _text_input("Puerta", 100)
     escalera = _text_input("Escalera", 100)
     postal_code = _text_input("Código postal", 150)
-    city = _text_input("Localidad", 220)
-    province = _text_input("Provincia", 220)
     country = _text_input("País", 220)
     country.value = "España"
     notes = _text_input("Notas", 640, multiline=True)
+
+    def on_activity_selected(value=None):
+        selected = actividad_autocomplete.get_value()
+        cnae_code.value = _extract_catalog_code(selected)
+        cnae_description.value = _extract_catalog_description(selected)
+        if selected and not (main_activity.value or "").strip():
+            main_activity.value = _extract_catalog_description(selected)
+        page.update()
+
+    actividad_autocomplete = AppAutocomplete(
+        page=page,
+        label="Actividad CNAE",
+        options=actividades_options,
+        width=640,
+        max_results=10,
+        on_select=on_activity_selected,
+        allow_free_text=True,
+    )
+
+    def on_province_selected(value=None):
+        provincia_value = provincia_autocomplete.get_value().strip()
+        if not provincia_value:
+            localidad_autocomplete.set_options([], clear_value=True)
+            localidad_autocomplete.input.label = "Localidad"
+            page.update()
+            return
+        localidades = _safe_values(lambda: get_localidades_by_provincia(provincia_value))
+        localidad_autocomplete.set_options(localidades, clear_value=True)
+        localidad_autocomplete.input.label = f"Localidad ({len(localidades)})" if localidades else "Localidad (sin datos)"
+        page.update()
+
+    provincia_autocomplete = AppAutocomplete(
+        page=page,
+        label="Provincia",
+        options=provincia_options,
+        width=260,
+        max_results=12,
+        on_select=on_province_selected,
+        allow_free_text=True,
+    )
+
+    localidad_autocomplete = AppAutocomplete(
+        page=page,
+        label="Localidad",
+        options=[],
+        width=260,
+        max_results=12,
+        allow_free_text=True,
+    )
 
     form_controls = [
         entity_type, name, trade_name, document_type, tax_id,
         first_name, last_name_1, last_name_2, company_type,
         main_activity, cnae_code, cnae_description, phone, email, website,
         address, tipo_via, nombre_via, numero, piso, puerta, escalera,
-        postal_code, city, province, country, notes,
+        postal_code, country, notes,
     ]
 
     def refresh(e=None):
@@ -187,7 +358,13 @@ def companies_view(page: ft.Page):
             control.value = ""
         entity_type.value = "juridica"
         document_type.value = "CIF"
+        if tipo_via_options:
+            tipo_via.value = "CALLE" if any(v == "CALLE" for v, _ in tipo_via_options) else tipo_via_options[0][0]
         country.value = "España"
+        actividad_autocomplete.set_value("", update=False)
+        provincia_autocomplete.set_value("", update=False)
+        localidad_autocomplete.set_options([], clear_value=True)
+        localidad_autocomplete.input.label = "Localidad"
 
     def fill_form(company):
         state["editing_id"] = company.get("id")
@@ -215,12 +392,23 @@ def companies_view(page: ft.Page):
             ("puerta", puerta),
             ("escalera", escalera),
             ("postal_code", postal_code),
-            ("city", city),
-            ("province", province),
             ("country", country),
             ("notes", notes),
         ]:
             control.value = company.get(field) or ""
+
+        activity_label = ""
+        if company.get("cnae_code") or company.get("cnae_description"):
+            activity_label = f"{company.get('cnae_code') or ''} - {company.get('cnae_description') or company.get('main_activity') or ''}".strip(" -")
+        actividad_autocomplete.set_value(activity_label, update=False)
+
+        provincia_value = company.get("province") or ""
+        ciudad_value = company.get("city") or ""
+        provincia_autocomplete.set_value(provincia_value, update=False)
+        localidades = _safe_values(lambda: get_localidades_by_provincia(provincia_value)) if provincia_value else []
+        localidad_autocomplete.set_options(localidades, clear_value=False)
+        localidad_autocomplete.input.label = f"Localidad ({len(localidades)})" if localidades else "Localidad"
+        localidad_autocomplete.set_value(ciudad_value, update=False)
 
     def close_dialog(e=None):
         company_dialog.open = False
@@ -239,6 +427,10 @@ def companies_view(page: ft.Page):
         page.update()
 
     def save_company(e=None):
+        activity_value = actividad_autocomplete.get_value()
+        provincia_value = provincia_autocomplete.get_value()
+        localidad_value = localidad_autocomplete.get_value()
+
         data = {
             "entity_type": entity_type.value or "juridica",
             "name": name.value or "",
@@ -249,9 +441,9 @@ def companies_view(page: ft.Page):
             "last_name_1": last_name_1.value or "",
             "last_name_2": last_name_2.value or "",
             "company_type": company_type.value or "",
-            "main_activity": main_activity.value or "",
-            "cnae_code": cnae_code.value or "",
-            "cnae_description": cnae_description.value or "",
+            "main_activity": main_activity.value or _extract_catalog_description(activity_value),
+            "cnae_code": cnae_code.value or _extract_catalog_code(activity_value),
+            "cnae_description": cnae_description.value or _extract_catalog_description(activity_value),
             "phone": phone.value or "",
             "email": email.value or "",
             "website": website.value or "",
@@ -263,8 +455,8 @@ def companies_view(page: ft.Page):
             "puerta": puerta.value or "",
             "escalera": escalera.value or "",
             "postal_code": postal_code.value or "",
-            "city": city.value or "",
-            "province": province.value or "",
+            "city": localidad_value or "",
+            "province": provincia_value or "",
             "country": country.value or "España",
             "notes": notes.value or "",
         }
@@ -295,18 +487,26 @@ def companies_view(page: ft.Page):
             rows.append(
                 ft.DataRow(
                     cells=[
-                        ft.DataCell(ft.Text(company.get("name") or "")),
-                        ft.DataCell(ft.Text(_entity_type_label(company.get("entity_type")))),
+                        ft.DataCell(
+                            ft.Column(
+                                controls=[
+                                    ft.Text(company.get("name") or "", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(company.get("trade_name") or _entity_type_label(company.get("entity_type")), size=11, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                            )
+                        ),
                         ft.DataCell(ft.Text(company.get("tax_id") or "")),
                         ft.DataCell(ft.Text(company.get("main_activity") or company.get("cnae_description") or "")),
+                        ft.DataCell(ft.Text(company.get("cnae_code") or "")),
                         ft.DataCell(ft.Text(company.get("phone") or "")),
                         ft.DataCell(ft.Text(company.get("email") or "")),
                         ft.DataCell(ft.Text(company.get("city") or "")),
                         ft.DataCell(
                             ft.Row(
                                 controls=[
-                                    ft.TextButton("Editar", on_click=lambda e, c=company: open_edit_dialog(c)),
-                                    ft.TextButton("Eliminar", on_click=lambda e, c=company: delete_company(c)),
+                                    ft.TextButton(content=ft.Text("Editar"), on_click=lambda e, c=company: open_edit_dialog(c)),
+                                    ft.TextButton(content=ft.Text("Eliminar"), on_click=lambda e, c=company: delete_company(c)),
                                 ],
                                 spacing=4,
                             )
@@ -318,9 +518,19 @@ def companies_view(page: ft.Page):
         counter_text.value = f"{len(rows)} empresa(s) / entidad(es)"
         if not rows:
             table_container.content = ft.Container(
-                padding=26,
-                alignment=ft.alignment.center,
-                content=ft.Text("No hay empresas que coincidan con el filtro", color=Q_MUTED),
+                padding=34,
+                alignment=ft.Alignment(0, 0),
+                bgcolor=Q_CARD,
+                border_radius=14,
+                border=ft.border.all(1, Q_BORDER),
+                content=ft.Column(
+                    controls=[
+                        ft.Text("🏢", size=32),
+                        ft.Text("No hay empresas que coincidan con el filtro", color=Q_MUTED),
+                    ],
+                    spacing=8,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
             )
             return
 
@@ -328,10 +538,10 @@ def companies_view(page: ft.Page):
             controls=[
                 ft.DataTable(
                     columns=[
-                        ft.DataColumn(ft.Text("Nombre / razón social")),
-                        ft.DataColumn(ft.Text("Tipo")),
+                        ft.DataColumn(ft.Text("Nombre / entidad")),
                         ft.DataColumn(ft.Text("CIF/NIF")),
                         ft.DataColumn(ft.Text("Actividad")),
+                        ft.DataColumn(ft.Text("CNAE")),
                         ft.DataColumn(ft.Text("Teléfono")),
                         ft.DataColumn(ft.Text("Email")),
                         ft.DataColumn(ft.Text("Localidad")),
@@ -341,7 +551,7 @@ def companies_view(page: ft.Page):
                     column_spacing=22,
                     heading_row_color=ft.Colors.BLUE_50,
                     border=ft.border.all(1, Q_BORDER),
-                    border_radius=10,
+                    border_radius=12,
                 )
             ],
             scroll=ft.ScrollMode.AUTO,
@@ -351,24 +561,57 @@ def companies_view(page: ft.Page):
         modal=True,
         title=ft.Text("Nueva empresa / entidad"),
         content=ft.Container(
-            width=980,
-            height=680,
+            width=1040,
+            height=720,
             content=ft.Column(
                 controls=[
-                    ft.Text("Datos generales", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                    ft.Row([entity_type, name, trade_name], wrap=True, spacing=10),
-                    ft.Row([document_type, tax_id, company_type], wrap=True, spacing=10),
-                    ft.Row([first_name, last_name_1, last_name_2], wrap=True, spacing=10),
-                    ft.Row([main_activity, cnae_code, cnae_description], wrap=True, spacing=10),
-                    ft.Divider(height=18),
-                    ft.Text("Contacto y domicilio", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                    ft.Row([phone, email, website], wrap=True, spacing=10),
-                    ft.Row([address, tipo_via, nombre_via], wrap=True, spacing=10),
-                    ft.Row([numero, piso, puerta, escalera, postal_code], wrap=True, spacing=10),
-                    ft.Row([city, province, country], wrap=True, spacing=10),
-                    notes,
+                    _section_card(
+                        "Datos de entidad",
+                        ft.Column(
+                            controls=[
+                                ft.Row([entity_type, name, trade_name], wrap=True, spacing=10),
+                                ft.Row([document_type, tax_id, company_type], wrap=True, spacing=10),
+                                ft.Row([first_name, last_name_1, last_name_2], wrap=True, spacing=10),
+                            ],
+                            spacing=10,
+                        ),
+                        subtitle="Datos maestros de sociedad, autónomo o persona física empleadora.",
+                        icon="🏷️",
+                    ),
+                    _section_card(
+                        "Actividad económica",
+                        ft.Column(
+                            controls=[
+                                actividad_autocomplete.control,
+                                ft.Row([main_activity, cnae_code, cnae_description], wrap=True, spacing=10),
+                            ],
+                            spacing=10,
+                        ),
+                        subtitle="Selecciona la actividad desde el catálogo CNAE; el código se autocompleta.",
+                        icon="📊",
+                    ),
+                    _section_card(
+                        "Contacto y domicilio",
+                        ft.Column(
+                            controls=[
+                                ft.Row([phone, email, website], wrap=True, spacing=10),
+                                ft.Row([address], wrap=True, spacing=10),
+                                ft.Row([tipo_via, nombre_via, numero, piso, puerta, escalera], wrap=True, spacing=10),
+                                ft.Row([provincia_autocomplete.control, localidad_autocomplete.control, postal_code, country], wrap=True, spacing=10),
+                            ],
+                            spacing=10,
+                        ),
+                        subtitle="Domicilio estructurado para futuras automatizaciones y documentos.",
+                        icon="📍",
+                    ),
+                    _section_card(
+                        "Observaciones",
+                        notes,
+                        subtitle="Notas internas no visibles fuera del ERP.",
+                        icon="📝",
+                    ),
                 ],
-                spacing=12,
+                spacing=14,
                 scroll=ft.ScrollMode.AUTO,
             ),
         ),
@@ -385,16 +628,16 @@ def companies_view(page: ft.Page):
 
     header = ft.Container(
         bgcolor=Q_CARD,
-        border_radius=16,
-        padding=22,
+        border_radius=18,
+        padding=24,
         border=ft.border.all(1, Q_BORDER),
         content=ft.Row(
             controls=[
                 ft.Column(
                     controls=[
-                        ft.Text("Empresas / Empleadores", size=26, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Text("Empresas / Empleadores", size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                         ft.Text(
-                            "Alta y mantenimiento de empresas, autónomos y personas físicas empleadoras. La vinculación con clientes se realiza desde la ficha del cliente.",
+                            "Directorio maestro de sociedades, autónomos y personas físicas empleadoras. La vinculación con clientes se realiza desde la ficha del cliente.",
                             size=13,
                             color=Q_MUTED,
                         ),
@@ -402,17 +645,23 @@ def companies_view(page: ft.Page):
                     spacing=4,
                     expand=True,
                 ),
-                _primary_button("Nueva empresa", open_new_dialog),
+                _primary_button("Nueva empresa", open_new_dialog, icon=ft.Icons.ADD),
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         ),
     )
 
-    filters = ft.Row(
-        controls=[search_input, entity_filter, _secondary_button("Actualizar", refresh), counter_text],
-        wrap=True,
-        spacing=12,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    filters = ft.Container(
+        bgcolor=Q_CARD,
+        border_radius=14,
+        border=ft.border.all(1, Q_BORDER),
+        padding=14,
+        content=ft.Row(
+            controls=[search_input, entity_filter, _secondary_button("Actualizar", refresh, icon=ft.Icons.REFRESH), counter_text],
+            wrap=True,
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
     )
 
     root = ft.Container(
@@ -426,6 +675,7 @@ def companies_view(page: ft.Page):
                     "Directorio de entidades",
                     ft.Column(controls=[filters, table_container], spacing=12),
                     subtitle="Vista maestra. No sustituye la ficha de cliente; sirve para dar de alta y mantener entidades.",
+                    icon="🏢",
                 ),
             ],
             spacing=16,
