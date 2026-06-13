@@ -1818,7 +1818,14 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         )
 
     def build_empleadores_section():
-        empleadores = _contact_rows("Empleador / Empresa")
+        """Empresas vinculadas al cliente mediante el nuevo modelo client_companies.
+
+        Nota de arquitectura:
+        - Ya no se pinta el flujo legacy de empleadores en cliente_contactos.
+        - Las acciones de cada fila siguen el patrón de la tabla de contactos:
+          PopupMenuButton + PopupMenuItem.
+        - Desvincular elimina la relación, no la empresa maestra.
+        """
         try:
             empresas_vinculadas = (
                 client_company_service.list_client_companies(cliente_id, active_only=False)
@@ -1827,223 +1834,103 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         except Exception:
             empresas_vinculadas = []
 
-        actividades_options = _load_catalog_options("actividades_cnae.csv", "CNAE")
-        cno_sepe_options = _load_catalog_options("cno_sepe_2011.csv", "CNO/SEPE")
+        relationship_options = [
+            ft.dropdown.Option("empleador", "Empleador"),
+            ft.dropdown.Option("ofertante", "Ofertante"),
+            ft.dropdown.Option("contratante", "Contratante"),
+            ft.dropdown.Option("proveedor", "Proveedor"),
+            ft.dropdown.Option("empresa relacionada", "Empresa relacionada"),
+            ft.dropdown.Option("otro", "Otro"),
+        ]
 
-        empresa = _text_input_erp("Empresa / empleador", 360)
-        cif = _text_input_erp("CIF / NIF", 220)
-        telefono = _text_input_erp("Teléfono", 220)
-        email = _text_input_erp("Email", 320)
-        domicilio = _text_input_erp("Domicilio", 520)
-        tipo_via = _via_type_dropdown("Tipo de vía", 170)
-        nombre_via = _text_input_erp("Nombre de vía", 300)
-        numero = _text_input_erp("Número", 110)
-        piso = _text_input_erp("Piso", 110)
-        puerta = _text_input_erp("Puerta", 110)
-        escalera = _text_input_erp("Escalera", 110)
-        localidad = _text_input_erp("Localidad", 220)
-        provincia = _text_input_erp("Provincia", 220)
-        codigo_postal = _text_input_erp("Código postal", 160)
-        cnae = _text_input_erp("CNAE", 160)
-        cnae.read_only = True
-        cno_sepe_codigo = _text_input_erp("CNO/SEPE", 180)
-        cno_sepe_codigo.read_only = True
-        observaciones = ft.TextField(
-            label="Observaciones",
-            width=640,
-            multiline=True,
-            min_lines=2,
-            max_lines=4,
-            border_radius=10,
-            border_color=Q_BORDER,
-            focused_border_color="#18BFEA",
-        )
+        active_options = [
+            ft.dropdown.Option("1", "Activo"),
+            ft.dropdown.Option("0", "Inactivo"),
+        ]
 
-        def on_actividad_selected(value=None):
-            cnae.value = _extract_catalog_code(actividad_autocomplete.get_value())
-            page.update()
-
-        def on_cno_selected(value=None):
-            cno_sepe_codigo.value = _extract_catalog_code(cno_sepe_autocomplete.get_value())
-            page.update()
-
-        actividad_autocomplete = AppAutocomplete(
-            page=page,
-            label="Actividad de la empresa",
-            options=actividades_options,
-            width=620,
-            max_results=10,
-            on_select=on_actividad_selected,
-            allow_free_text=True,
-        )
-
-        cno_sepe_autocomplete = AppAutocomplete(
-            page=page,
-            label="Ocupación CNO/SEPE",
-            options=cno_sepe_options,
-            width=620,
-            max_results=10,
-            on_select=on_cno_selected,
-            allow_free_text=True,
-        )
-
-        def close_employer_dialog(e=None):
-            employer_dialog.open = False
-            page.update()
-
-        def clear_employer_form():
-            for control in [empresa, cif, telefono, email, domicilio, tipo_via, nombre_via, numero, piso, puerta, escalera, localidad, provincia, codigo_postal, cnae, cno_sepe_codigo, observaciones]:
-                control.value = ""
-            actividad_autocomplete.set_value("", update=False)
-            cno_sepe_autocomplete.set_value("", update=False)
-
-        def save_employer(e=None):
-            if not empresa.value:
-                page.snack_bar = ft.SnackBar(ft.Text("Indica el nombre de la empresa o empleador"))
-                page.snack_bar.open = True
-                page.update()
-                return
-
-            actividad_value = actividad_autocomplete.get_value()
-            cno_value = cno_sepe_autocomplete.get_value()
-
-            _save_client_contact(
-                {
-                    "cliente_id": cliente_id,
-                    "tipo_contacto": "Empleador / Empresa",
-                    "parentesco": "",
-                    "cliente_referenciado_id": None,
-                    "nombre": empresa.value or "",
-                    "primer_apellido": "",
-                    "segundo_apellido": "",
-                    "nie": "",
-                    "pasaporte": "",
-                    "dni": cif.value or "",
-                    "nacionalidad": "",
-                    "fecha_nacimiento": "",
-                    "telefono": telefono.value or "",
-                    "email": email.value or "",
-                    "estado_cliente": "",
-                    "domicilio_espana": domicilio.value or "",
-                    "tipo_via": tipo_via.value or "",
-                    "nombre_via": nombre_via.value or "",
-                    "numero": numero.value or "",
-                    "piso": piso.value or "",
-                    "puerta": puerta.value or "",
-                    "escalera": escalera.value or "",
-                    "localidad": localidad.value or "",
-                    "provincia": provincia.value or "",
-                    "codigo_postal": codigo_postal.value or "",
-                    "localidad_nacimiento": "",
-                    "pais_nacimiento": "",
-                    "nombre_padre": "",
-                    "nombre_madre": "",
-                    "estado_civil": "",
-                    "sexo": "",
-                    "actividad": _extract_catalog_description(actividad_value),
-                    "cnae": cnae.value or _extract_catalog_code(actividad_value),
-                    "cno_sepe": cno_sepe_codigo.value or _extract_catalog_code(cno_value),
-                    "observaciones": observaciones.value or "",
-                    "observaciones_internas": "",
-                }
+        def _notify(message, error=False):
+            page.snack_bar = ft.SnackBar(
+                ft.Text(message),
+                bgcolor="#B42318" if error else "#0F8A5F",
             )
-            close_employer_dialog()
+            page.snack_bar.open = True
+            page.update()
+
+        def _relationship_label(value):
+            lookup = {
+                "empleador": "Empleador",
+                "ofertante": "Ofertante",
+                "contratante": "Contratante",
+                "proveedor": "Proveedor",
+                "empresa relacionada": "Empresa relacionada",
+                "otro": "Otro",
+            }
+            return lookup.get(str(value or "").strip(), value or "-")
+
+        def _company_label(company):
+            name = company.get("name") or ""
+            tax_id = company.get("tax_id") or ""
+            activity = company.get("main_activity") or company.get("cnae_description") or ""
+            parts = [name]
+            details = " · ".join([p for p in [tax_id, activity] if p])
+            if details:
+                parts.append(details)
+            return " — ".join(parts)
+
+        def _company_id_from_label(label):
+            label = str(label or "")
+            if "#" not in label:
+                return None
+            try:
+                return int(label.rsplit("#", 1)[1].strip())
+            except Exception:
+                return None
+
+        def _refresh_section():
             content_container.content = build_empleadores_section()
             page.update()
 
-        employer_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Nuevo empleador / empresa"),
-            content=_themed_dialog_content(
-                "Nuevo empleador / empresa",
-                "Datos de empresa alineados con Mercurio: actividad, CNAE y ocupación CNO/SEPE.",
-                [
-                    _dialog_section(
-                        "Datos empresa / empleador",
-                        ft.Icons.BUSINESS,
-                        [
-                            ft.Row([empresa, cif], wrap=True, spacing=10),
-                            ft.Row([telefono, email], wrap=True, spacing=10),
-                        ],
-                    ),
-                    _dialog_section(
-                        "Actividad y ocupación",
-                        ft.Icons.WORK,
-                        [
-                            actividad_autocomplete.control,
-                            ft.Row([cnae, cno_sepe_codigo], wrap=True, spacing=10),
-                            cno_sepe_autocomplete.control,
-                        ],
-                    ),
-                    _dialog_section(
-                        "Dirección",
-                        ft.Icons.HOME_WORK,
-                        [
-                            domicilio,
-                            ft.Row([tipo_via, nombre_via, numero, piso, puerta, escalera], wrap=True, spacing=10),
-                            ft.Row([provincia, localidad, codigo_postal], wrap=True, spacing=10),
-                        ],
-                    ),
-                    _dialog_section(
-                        "Observaciones",
-                        ft.Icons.NOTES,
-                        [observaciones],
-                    ),
-                ],
-                width=930,
-                height=640,
-            ),
-            actions=[
-                secondary_button("Cancelar", close_employer_dialog),
-                primary_button("Guardar empleador", save_employer),
-            ],
+        # ------------------------------------------------------------------
+        # Dialogo: vincular empresa existente
+        # ------------------------------------------------------------------
+        try:
+            available_companies = company_service.list_companies(limit=1000) if company_service else []
+        except Exception:
+            available_companies = []
+
+        company_options = [f"{_company_label(company)} #{company.get('id')}" for company in available_companies]
+
+        existing_company_ac = AppAutocomplete(
+            page=page,
+            label="Buscar empresa existente",
+            options=company_options,
+            width=720,
+            max_results=12,
+            allow_free_text=False,
         )
-
-        if employer_dialog not in page.overlay:
-            page.overlay.append(employer_dialog)
-
-        def open_new_employer(e=None):
-            clear_employer_form()
-            employer_dialog.open = True
-            page.update()
-
-        entity_type = ft.Dropdown(
-            label="Tipo de entidad",
-            width=220,
-            value="juridica",
-            border_radius=10,
-            border_color=Q_BORDER,
-            focused_border_color="#18BFEA",
-            options=[
-                ft.dropdown.Option("juridica"),
-                ft.dropdown.Option("autonomo"),
-                ft.dropdown.Option("persona_fisica"),
-            ],
-        )
-        company_name = _text_input_erp("Nombre / razón social", 360)
-        company_tax_id = _text_input_erp("CIF / NIF / NIE", 220)
-        company_kind = _text_input_erp("Tipo / forma", 220)
-        company_phone = _text_input_erp("Teléfono", 220)
-        company_email = _text_input_erp("Email", 320)
-        company_activity = _text_input_erp("Actividad", 520)
-        company_cnae = _text_input_erp("CNAE", 160)
-        relationship_type = ft.Dropdown(
+        link_relationship = ft.Dropdown(
             label="Relación con el cliente",
             width=260,
             value="empleador",
             border_radius=10,
             border_color=Q_BORDER,
             focused_border_color="#18BFEA",
-            options=[
-                ft.dropdown.Option("empleador"),
-                ft.dropdown.Option("ofertante"),
-                ft.dropdown.Option("contratante"),
-                ft.dropdown.Option("empresa relacionada"),
-            ],
+            options=relationship_options,
         )
-        company_notes = ft.TextField(
+        link_active = ft.Dropdown(
+            label="Estado",
+            width=160,
+            value="1",
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+            options=active_options,
+        )
+        link_start_date = _text_input_erp("Fecha inicio", 170)
+        link_end_date = _text_input_erp("Fecha fin", 170)
+        link_notes = ft.TextField(
             label="Notas de vinculación",
-            width=640,
+            width=720,
             multiline=True,
             min_lines=2,
             max_lines=4,
@@ -2052,26 +1939,153 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             focused_border_color="#18BFEA",
         )
 
-        def close_company_dialog(e=None):
-            company_dialog.open = False
+        def close_link_existing_dialog(e=None):
+            link_existing_dialog.open = False
             page.update()
 
-        def clear_company_form():
-            for control in [company_name, company_tax_id, company_kind, company_phone, company_email, company_activity, company_cnae, company_notes]:
+        def clear_link_existing_form():
+            existing_company_ac.set_value("", update=False)
+            link_relationship.value = "empleador"
+            link_active.value = "1"
+            link_start_date.value = ""
+            link_end_date.value = ""
+            link_notes.value = ""
+
+        def save_existing_link(e=None):
+            if not client_company_service:
+                _notify("Servicio de vinculación no disponible", error=True)
+                return
+            company_id = _company_id_from_label(existing_company_ac.get_value())
+            if not company_id:
+                _notify("Selecciona una empresa existente", error=True)
+                return
+            try:
+                client_company_service.link_company_to_client(
+                    cliente_id,
+                    company_id,
+                    {
+                        "relationship_type": link_relationship.value or "empleador",
+                        "is_active": link_active.value or "1",
+                        "start_date": link_start_date.value or "",
+                        "end_date": link_end_date.value or "",
+                        "notes": link_notes.value or "",
+                    },
+                )
+            except Exception as exc:
+                _notify(f"No se pudo vincular la empresa: {exc}", error=True)
+                return
+            close_link_existing_dialog()
+            _notify("Empresa vinculada al cliente")
+            _refresh_section()
+
+        link_existing_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Vincular empresa existente"),
+            content=_themed_dialog_content(
+                "Vincular empresa existente",
+                "Selecciona una entidad ya creada en el módulo Empresas y define su relación con este cliente.",
+                [
+                    _dialog_section(
+                        "Empresa",
+                        ft.Icons.BUSINESS,
+                        [existing_company_ac.control],
+                    ),
+                    _dialog_section(
+                        "Relación",
+                        ft.Icons.LINK,
+                        [
+                            ft.Row([link_relationship, link_active, link_start_date, link_end_date], wrap=True, spacing=10),
+                            link_notes,
+                        ],
+                    ),
+                ],
+                width=940,
+                height=520,
+            ),
+            actions=[
+                secondary_button("Cancelar", close_link_existing_dialog),
+                primary_button("Vincular empresa", save_existing_link),
+            ],
+        )
+        if link_existing_dialog not in page.overlay:
+            page.overlay.append(link_existing_dialog)
+
+        def open_link_existing_dialog(e=None):
+            clear_link_existing_form()
+            link_existing_dialog.open = True
+            page.update()
+
+        # ------------------------------------------------------------------
+        # Dialogo: nueva empresa y vincular
+        # ------------------------------------------------------------------
+        entity_type = ft.Dropdown(
+            label="Tipo de entidad",
+            width=240,
+            value="juridica",
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+            options=[
+                ft.dropdown.Option("juridica", "Sociedad / empresa"),
+                ft.dropdown.Option("autonomo", "Autónomo"),
+                ft.dropdown.Option("persona_fisica", "Persona física empleadora"),
+            ],
+        )
+        company_name = _text_input_erp("Nombre / razón social", 390)
+        company_tax_id = _text_input_erp("CIF / NIF / NIE", 220)
+        company_kind = _text_input_erp("Tipo / forma", 220)
+        company_phone = _text_input_erp("Teléfono", 220)
+        company_email = _text_input_erp("Email", 320)
+        company_activity = _text_input_erp("Actividad", 520)
+        company_cnae = _text_input_erp("CNAE", 160)
+        new_relationship = ft.Dropdown(
+            label="Relación con el cliente",
+            width=260,
+            value="empleador",
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+            options=relationship_options,
+        )
+        new_active = ft.Dropdown(
+            label="Estado",
+            width=160,
+            value="1",
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+            options=active_options,
+        )
+        new_start_date = _text_input_erp("Fecha inicio", 170)
+        new_end_date = _text_input_erp("Fecha fin", 170)
+        new_notes = ft.TextField(
+            label="Notas de vinculación",
+            width=720,
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+        )
+
+        def close_new_company_dialog(e=None):
+            new_company_dialog.open = False
+            page.update()
+
+        def clear_new_company_form():
+            for control in [company_name, company_tax_id, company_kind, company_phone, company_email, company_activity, company_cnae, new_start_date, new_end_date, new_notes]:
                 control.value = ""
             entity_type.value = "juridica"
-            relationship_type.value = "empleador"
+            new_relationship.value = "empleador"
+            new_active.value = "1"
 
-        def save_company_link(e=None):
+        def save_new_company_link(e=None):
             if not company_service or not client_company_service:
-                page.snack_bar = ft.SnackBar(ft.Text("Servicios de empresa no disponibles"))
-                page.snack_bar.open = True
-                page.update()
+                _notify("Servicios de empresa no disponibles", error=True)
                 return
-            if not company_name.value:
-                page.snack_bar = ft.SnackBar(ft.Text("Indica el nombre o razón social de la empresa"))
-                page.snack_bar.open = True
-                page.update()
+            if not (company_name.value or "").strip():
+                _notify("Indica el nombre o razón social de la empresa", error=True)
                 return
             try:
                 new_company = company_service.create_company({
@@ -2089,26 +2103,26 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                     cliente_id,
                     new_company["id"],
                     {
-                        "relationship_type": relationship_type.value or "empleador",
-                        "is_active": 1,
-                        "notes": company_notes.value or "",
+                        "relationship_type": new_relationship.value or "empleador",
+                        "is_active": new_active.value or "1",
+                        "start_date": new_start_date.value or "",
+                        "end_date": new_end_date.value or "",
+                        "notes": new_notes.value or "",
                     },
                 )
             except Exception as exc:
-                page.snack_bar = ft.SnackBar(ft.Text(f"No se pudo vincular la empresa: {exc}"))
-                page.snack_bar.open = True
-                page.update()
+                _notify(f"No se pudo crear/vincular la empresa: {exc}", error=True)
                 return
-            close_company_dialog()
-            content_container.content = build_empleadores_section()
-            page.update()
+            close_new_company_dialog()
+            _notify("Empresa creada y vinculada")
+            _refresh_section()
 
-        company_dialog = ft.AlertDialog(
+        new_company_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Nueva empresa vinculada"),
             content=_themed_dialog_content(
                 "Nueva empresa vinculada",
-                "Alta mínima en el nuevo modelo: entidad empleadora vinculada al cliente. Los datos de contrato irán después en expediente.",
+                "Alta mínima de entidad y relación con este cliente. Para datos completos usa el módulo Empresas.",
                 [
                     _dialog_section(
                         "Datos de entidad",
@@ -2120,53 +2134,231 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         ],
                     ),
                     _dialog_section(
-                        "Vinculación con cliente",
+                        "Relación con cliente",
                         ft.Icons.LINK,
-                        [relationship_type, company_notes],
+                        [
+                            ft.Row([new_relationship, new_active, new_start_date, new_end_date], wrap=True, spacing=10),
+                            new_notes,
+                        ],
                     ),
                 ],
-                width=930,
-                height=560,
+                width=940,
+                height=600,
             ),
             actions=[
-                secondary_button("Cancelar", close_company_dialog),
-                primary_button("Guardar empresa vinculada", save_company_link),
+                secondary_button("Cancelar", close_new_company_dialog),
+                primary_button("Guardar empresa vinculada", save_new_company_link),
             ],
         )
+        if new_company_dialog not in page.overlay:
+            page.overlay.append(new_company_dialog)
 
-        if company_dialog not in page.overlay:
-            page.overlay.append(company_dialog)
-
-        def open_new_company(e=None):
-            clear_company_form()
-            company_dialog.open = True
+        def open_new_company_dialog(e=None):
+            clear_new_company_form()
+            new_company_dialog.open = True
             page.update()
 
-        if not empresas_vinculadas:
-            empresas_content = ft.Column(
+        # ------------------------------------------------------------------
+        # Dialogo: modificar relación
+        # ------------------------------------------------------------------
+        edit_link_id = {"value": None}
+        edit_relationship = ft.Dropdown(
+            label="Relación con el cliente",
+            width=260,
+            value="empleador",
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+            options=relationship_options,
+        )
+        edit_active = ft.Dropdown(
+            label="Estado",
+            width=160,
+            value="1",
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+            options=active_options,
+        )
+        edit_start_date = _text_input_erp("Fecha inicio", 170)
+        edit_end_date = _text_input_erp("Fecha fin", 170)
+        edit_notes = ft.TextField(
+            label="Notas de vinculación",
+            width=720,
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+            border_radius=10,
+            border_color=Q_BORDER,
+            focused_border_color="#18BFEA",
+        )
+
+        def close_edit_link_dialog(e=None):
+            edit_link_dialog.open = False
+            page.update()
+
+        def open_edit_link_dialog(link):
+            edit_link_id["value"] = link.get("id")
+            edit_relationship.value = link.get("relationship_type") or "empleador"
+            edit_active.value = "1" if int(link.get("is_active") or 0) else "0"
+            edit_start_date.value = link.get("start_date") or ""
+            edit_end_date.value = link.get("end_date") or ""
+            edit_notes.value = link.get("notes") or ""
+            edit_link_dialog.title = ft.Text(f"Modificar relación: {link.get('company_name') or ''}")
+            edit_link_dialog.open = True
+            page.update()
+
+        def save_edit_link(e=None):
+            if not edit_link_id.get("value"):
+                _notify("No hay vínculo seleccionado", error=True)
+                return
+            try:
+                client_company_service.update_client_company(
+                    edit_link_id["value"],
+                    {
+                        "relationship_type": edit_relationship.value or "empleador",
+                        "is_active": edit_active.value or "1",
+                        "start_date": edit_start_date.value or "",
+                        "end_date": edit_end_date.value or "",
+                        "notes": edit_notes.value or "",
+                    },
+                )
+            except Exception as exc:
+                _notify(f"No se pudo actualizar la relación: {exc}", error=True)
+                return
+            close_edit_link_dialog()
+            _notify("Relación actualizada")
+            _refresh_section()
+
+        edit_link_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Modificar relación"),
+            content=_themed_dialog_content(
+                "Modificar relación",
+                "Cambia el tipo de relación, vigencia y notas. La empresa maestra no se modifica desde aquí.",
+                [
+                    _dialog_section(
+                        "Datos de relación",
+                        ft.Icons.LINK,
+                        [
+                            ft.Row([edit_relationship, edit_active, edit_start_date, edit_end_date], wrap=True, spacing=10),
+                            edit_notes,
+                        ],
+                    ),
+                ],
+                width=900,
+                height=420,
+            ),
+            actions=[
+                secondary_button("Cancelar", close_edit_link_dialog),
+                primary_button("Guardar cambios", save_edit_link),
+            ],
+        )
+        if edit_link_dialog not in page.overlay:
+            page.overlay.append(edit_link_dialog)
+
+        # ------------------------------------------------------------------
+        # Dialogo: confirmar desvinculación
+        # ------------------------------------------------------------------
+        unlink_state = {"link": None}
+
+        def close_unlink_dialog(e=None):
+            unlink_dialog.open = False
+            page.update()
+
+        def open_unlink_dialog(link):
+            unlink_state["link"] = link
+            unlink_dialog.title = ft.Text("Desvincular empresa")
+            unlink_dialog.content = ft.Container(
+                width=520,
+                content=ft.Text(
+                    f"¿Quieres desvincular '{link.get('company_name') or 'esta empresa'}' de este cliente? La empresa no se eliminará del directorio.",
+                    size=14,
+                    color=Q_PRIMARY_DARK,
+                ),
+            )
+            unlink_dialog.open = True
+            page.update()
+
+        def confirm_unlink(e=None):
+            link = unlink_state.get("link")
+            if not link:
+                return
+            try:
+                client_company_service.unlink_company_from_client(link.get("id"))
+            except Exception as exc:
+                _notify(f"No se pudo desvincular la empresa: {exc}", error=True)
+                return
+            close_unlink_dialog()
+            _notify("Empresa desvinculada")
+            _refresh_section()
+
+        unlink_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Desvincular empresa"),
+            content=ft.Text(""),
+            actions=[
+                secondary_button("Cancelar", close_unlink_dialog),
+                primary_button("Desvincular", confirm_unlink),
+            ],
+        )
+        if unlink_dialog not in page.overlay:
+            page.overlay.append(unlink_dialog)
+
+        def _company_actions_menu(link):
+            return ft.PopupMenuButton(
+                icon=ft.Icons.MORE_VERT,
+                tooltip="Acciones",
+                items=[
+                    ft.PopupMenuItem(
+                        content=ft.Text("Modificar"),
+                        icon=ft.Icons.EDIT,
+                        on_click=lambda e, item=link: open_edit_link_dialog(item),
+                    ),
+                    ft.PopupMenuItem(
+                        content=ft.Text("Desvincular"),
+                        icon=ft.Icons.LINK_OFF,
+                        on_click=lambda e, item=link: open_unlink_dialog(item),
+                    ),
+                ],
+            )
+
+        rows = []
+        for link in empresas_vinculadas:
+            rows.append([
+                _company_actions_menu(link),
+                link.get("company_name") or "-",
+                link.get("company_tax_id") or "-",
+                _relationship_label(link.get("relationship_type")),
+                "Activo" if int(link.get("is_active") or 0) else "Inactivo",
+                link.get("main_activity") or link.get("cnae_description") or "-",
+                link.get("cnae_code") or "-",
+                link.get("representative_name") or "-",
+                link.get("notes") or "-",
+            ])
+
+        if not rows:
+            table_content = ft.Column(
                 controls=[
-                    empty_state("Este cliente no tiene empresas vinculadas en el nuevo modelo"),
-                    primary_button("Nueva empresa vinculada", open_new_company),
+                    empty_state("Este cliente no tiene empresas vinculadas"),
+                    ft.Row(
+                        controls=[
+                            primary_button("Vincular empresa existente", open_link_existing_dialog),
+                            secondary_button("Nueva empresa y vincular", open_new_company_dialog),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                    ),
                 ],
                 spacing=12,
             )
         else:
-            empresas_rows = []
-            for item in empresas_vinculadas:
-                empresas_rows.append([
-                    item.get("company_name") or "-",
-                    item.get("company_tax_id") or "-",
-                    item.get("entity_type") or "-",
-                    item.get("relationship_type") or "-",
-                    item.get("cnae_code") or "-",
-                    item.get("main_activity") or "-",
-                    "Activa" if item.get("is_active") else "Inactiva",
-                ])
-            empresas_content = ft.Column(
+            table_content = ft.Column(
                 controls=[
                     ft.Row(
                         controls=[
-                            primary_button("Nueva empresa vinculada", open_new_company),
+                            primary_button("Vincular empresa existente", open_link_existing_dialog),
+                            secondary_button("Nueva empresa y vincular", open_new_company_dialog),
                             ft.Container(
                                 content=ft.Text(
                                     f"Empresas vinculadas: {len(empresas_vinculadas)}",
@@ -2183,62 +2375,9 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         wrap=True,
                     ),
                     app_table(
-                        ["Empresa", "CIF/NIF", "Tipo", "Relación", "CNAE", "Actividad", "Estado"],
-                        empresas_rows,
-                        height=260,
-                    ),
-                ],
-                spacing=12,
-            )
-
-        if not empleadores:
-            content = ft.Column(
-                controls=[
-                    empty_state("Este cliente no tiene empleadores o empresas vinculadas"),
-                    primary_button("Nuevo empleador", open_new_employer),
-                ],
-                spacing=12,
-            )
-        else:
-            rows = []
-            for item in empleadores:
-                rows.append(
-                    [
-                        item.get("nombre") or "-",
-                        item.get("dni") or item.get("nie") or item.get("pasaporte") or "-",
-                        item.get("actividad") or "-",
-                        item.get("cnae") or "-",
-                        item.get("cno_sepe") or "-",
-                        item.get("telefono") or "-",
-                        item.get("email") or "-",
-                        item.get("localidad") or "-",
-                    ]
-                )
-
-            content = ft.Column(
-                controls=[
-                    ft.Row(
-                        controls=[
-                            primary_button("Nuevo empleador", open_new_employer),
-                            ft.Container(
-                                content=ft.Text(
-                                    f"Empleadores: {len(empleadores)}",
-                                    size=12,
-                                    color="#0057B8",
-                                    weight=ft.FontWeight.BOLD,
-                                ),
-                                bgcolor="#EAF3FF",
-                                border_radius=18,
-                                padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                            ),
-                        ],
-                        spacing=8,
-                        wrap=True,
-                    ),
-                    app_table(
-                        ["Empresa", "CIF/NIF", "Actividad", "CNAE", "CNO/SEPE", "Teléfono", "Email", "Localidad"],
+                        ["", "Empresa", "CIF/NIF", "Relación", "Estado", "Actividad", "CNAE", "Representante", "Notas"],
                         rows,
-                        height=390,
+                        height=430,
                     ),
                 ],
                 spacing=12,
@@ -2246,14 +2385,13 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
 
         return ft.Column(
             controls=[
-                ft.Text("Empleadores / Empresas", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text("Empresas vinculadas", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                 ft.Text(
-                    "Empresas, empleadores y ocupaciones vinculadas al cliente para expedientes laborales.",
+                    "Entidades maestras vinculadas al cliente. La empresa se gestiona en Contactos > Empresas; aquí se gestiona la relación.",
                     size=13,
                     color=Q_MUTED,
                 ),
-                _section_card("Empresas vinculadas (nuevo modelo)", empresas_content),
-                _section_card("Empleadores registrados anteriormente", content),
+                _section_card("Empresas / empleadores", table_content),
             ],
             spacing=14,
             scroll=ft.ScrollMode.AUTO,

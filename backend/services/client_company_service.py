@@ -101,3 +101,27 @@ def unlink_company_from_client(client_company_id):
         cur = conn.execute("DELETE FROM client_companies WHERE id = ?", (client_company_id,))
         conn.commit()
         return cur.rowcount > 0
+
+
+
+def list_company_clients(company_id, active_only=False):
+    sql = """
+        SELECT cc.*,
+               c.nombre AS client_nombre,
+               c.primer_apellido AS client_primer_apellido,
+               c.segundo_apellido AS client_segundo_apellido,
+               c.nie AS client_nie,
+               c.pasaporte AS client_pasaporte,
+               c.dni AS client_dni,
+               c.telefono AS client_telefono,
+               c.email AS client_email
+        FROM client_companies cc
+        JOIN clientes c ON c.id = cc.client_id
+        WHERE cc.company_id = ?
+    """
+    params = [company_id]
+    if active_only:
+        sql += " AND cc.is_active = 1"
+    sql += " ORDER BY cc.is_active DESC, c.nombre COLLATE NOCASE ASC, c.primer_apellido COLLATE NOCASE ASC"
+    with _connect() as conn:
+        return [_dict(row) for row in conn.execute(sql, params).fetchall()]
