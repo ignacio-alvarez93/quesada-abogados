@@ -20,10 +20,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
     
-from backend.automation.automation_artifacts import get_browser_source, save_page_source
+from backend.automation.automation_artifacts import save_page_source
 from backend.automation.automation_logger import write_log
-from backend.automation.browser_actions import click_js, field_exists, js, open_url, safe_execute, wait_for_js
-from backend.automation.browser_session import get_project_root, get_session_dir, start_seleniumbase_chrome
+from backend.automation.browser_actions import click_js, field_exists, js, wait_for_js
+from backend.automation.browser_session import get_session_dir
+from backend.automation.connectors.mercurio_connector import MercurioConnector
 
 
 def normalize(value):
@@ -1564,11 +1565,11 @@ def main():
         f"Formulario objetivo={describe_tipo_formulario_objetivo(tipo_formulario_objetivo)}. "
         f"Mapper interno={describe_mapper_codigo(mapper_codigo)}"
     )
-    browser = start_seleniumbase_chrome(headless=False)
-    open_url(browser, url)
+    connector = MercurioConnector(session_dir=session_dir, expediente_id=args.expediente_id, headless=False)
+    browser = connector.start_browser(url)
 
     if args.auto:
-        safe_execute('auto inicial', lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir), session_dir)
+        connector.safe_execute('auto inicial', lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir))
         print("Flujo auto finalizado. Si se ha ejecutado la pausa humana, Chrome queda bajo control manual.")
 
     print()
@@ -1594,7 +1595,7 @@ def main():
                 print(f"ERROR guardando HTML: {exc}")
 
         elif cmd == "auto":
-            safe_execute("auto", lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir), session_dir)
+            connector.safe_execute("auto", lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir))
 
         elif cmd == "fill":
             if not datos_mercurio:
@@ -1623,7 +1624,7 @@ def main():
                 print("No se ha encontrado carpeta PARA PRESENTAR. Revisa --documentos-dir o la ruta exportada del expediente.")
             else:
                 print(f"Usando carpeta PARA PRESENTAR: {documentos_dir}")
-                safe_execute("docs", lambda: upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir), session_dir)
+                connector.safe_execute("docs", lambda: upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir))
 
         elif cmd in ("q", "quit", "exit", "salir"):
             print("Cerrando presentación asistida...")
