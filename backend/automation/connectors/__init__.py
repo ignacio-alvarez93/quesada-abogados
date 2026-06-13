@@ -1,0 +1,1 @@
+"""Conectores de automatización externos."""

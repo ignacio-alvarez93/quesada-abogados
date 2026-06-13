@@ -13,6 +13,9 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
+from backend.automation.automation_artifacts import get_browser_source as _get_source, save_screenshot as _save_screenshot
+from backend.automation.browser_actions import js as _js
+
 
 DEFAULT_FORM_LABELS = {
     "EX01": ["EX01", "RESIDENCIA TEMPORAL NO LUCRATIVA", "NO LUCRATIVA"],
@@ -30,59 +33,10 @@ def normalize(value):
     return value
 
 
-def _js(browser, code):
-    if hasattr(browser, "execute_script"):
-        return browser.execute_script(code)
-    if hasattr(browser, "evaluate"):
-        return browser.evaluate(code)
-    raise RuntimeError("El navegador no soporta execute_script/evaluate")
-
-
-def _get_source(browser):
-    if hasattr(browser, "get_page_source"):
-        return browser.get_page_source()
-    if hasattr(browser, "get_source"):
-        return browser.get_source()
-    if hasattr(browser, "page_source"):
-        return browser.page_source
-    if hasattr(browser, "driver") and hasattr(browser.driver, "page_source"):
-        return browser.driver.page_source
-    return _js(browser, "return document.documentElement.outerHTML;")
-
-
 def _safe_attr(value, max_len=500):
     value = "" if value is None else str(value)
     value = re.sub(r"\s+", " ", value).strip()
     return value[:max_len]
-
-
-def _save_screenshot(browser, path):
-    path = Path(path)
-
-    for obj in (browser, getattr(browser, "driver", None)):
-        if obj is None:
-            continue
-        method = getattr(obj, "save_screenshot", None)
-        if callable(method):
-            try:
-                ok = method(str(path))
-                if ok is not False and path.exists():
-                    return True
-            except Exception:
-                pass
-
-    # Algunos wrappers CDP exponen métodos alternativos.
-    for name in ("get_screenshot_as_file", "screenshot"):
-        method = getattr(browser, name, None)
-        if callable(method):
-            try:
-                result = method(str(path))
-                if path.exists() or result is True:
-                    return True
-            except Exception:
-                pass
-
-    return False
 
 
 def collect_dom_candidates(browser):
