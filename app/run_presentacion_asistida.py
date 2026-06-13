@@ -877,6 +877,78 @@ def select_municipio_localidad_reagrupante(browser, values, session_dir):
         select_by_text_or_value(browser, loc_id, text=localidad_text, session_dir=session_dir)
 
 
+def is_field_visible(browser, field_id):
+    """Devuelve True solo si el campo existe y está visible en la pestaña activa."""
+    script = f"""
+    (function(){{
+        const el = document.getElementById({json.dumps(field_id)});
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (el.closest('[style*="display: none"]')) return false;
+        return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    }})();
+    """
+    return bool(js(browser, script))
+
+
+def filter_visible_values(browser, values, session_dir=None, label=""):
+    """
+    Filtra un bloque de valores para no escribir campos de pestañas ocultas.
+
+    Mercurio deja en el DOM campos de las 4 pantallas EX02 aunque todavía no
+    se haya avanzado a ellas. Para EX02 rellenamos solo lo visible en cada paso.
+    """
+    values = values or {}
+    visible = {}
+    hidden = []
+
+    for key, value in values.items():
+        if key.endswith("_text"):
+            continue
+        if is_field_visible(browser, key):
+            visible[key] = value
+            text_key = key + "_text"
+            if text_key in values:
+                visible[text_key] = values.get(text_key)
+        else:
+            hidden.append(key)
+
+    if session_dir:
+        write_log(
+            session_dir,
+            f"EX02 visible_only {label}: visibles={sorted(visible.keys())} ocultos={hidden}",
+        )
+    return visible
+
+
+
+def fill_datos_reagrupado_ex02(browser, datos_mercurio, session_dir):
+    """
+    EX02 pantalla 2: Datos del reagrupado/solicitante.
+
+    Fuente: cliente del expediente ya mapeado como:
+    - datos_mercurio['extranjero']
+    - datos_mercurio['domicilio_extranjero']
+
+    No rellena reagrupante, presentador ni notificación.
+    """
+    print("[8] Rellenando DATOS DEL REAGRUPADO/SOLICITANTE EX02")
+    write_log(session_dir, "Rellenando datos del reagrupado/solicitante EX02")
+
+    wait_for_js(browser, "document.getElementById('extPasaporte') || document.getElementById('extNie')", timeout=15, interval=0.5)
+
+    extranjero = datos_mercurio.get("extranjero", {}) or {}
+    domicilio = datos_mercurio.get("domicilio_extranjero", {}) or {}
+
+    fill_section(browser, extranjero, session_dir)
+    fill_section(browser, domicilio, session_dir)
+    select_municipio_localidad(browser, domicilio, session_dir, prefix="ext")
+
+    print("Datos del reagrupado/solicitante EX02 rellenados.")
+    write_log(session_dir, "Datos del reagrupado/solicitante EX02 rellenados")
+    return True
+
 def fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
     """
     Rellena la pestaña Datos del familiar de EX01 familiar.
@@ -902,6 +974,107 @@ def fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
     print("Datos del familiar rellenados.")
     write_log(session_dir, "Datos del familiar rellenados")
     return True
+
+
+
+def fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir):
+    """
+    EX02 pantalla 1: Datos del reagrupante.
+
+    Fuente: datos_mercurio['reagrupante'], generado desde
+    datos_especificos.reagrupante_*.
+
+    No usa filtro de visibilidad: Mercurio puede tener campos cargados/ocultos,
+    pero aquí solo se invoca cuando el usuario ya está en la pantalla correcta.
+    """
+    print("[7] Rellenando DATOS DEL REAGRUPANTE EX02")
+    write_log(session_dir, "Rellenando datos del reagrupante EX02")
+
+    reagrupante = datos_mercurio.get("reagrupante", {}) or {}
+    if not reagrupante:
+        write_log(session_dir, "Reagrupante EX02 vacío en datos_mercurio.json")
+        print("No hay bloque reagrupante en datos_mercurio.json")
+        return False
+
+    wait_for_js(
+        browser,
+        "document.getElementById('reaNombreReagrupante') || document.getElementById('reaNieReagrupante') || document.getElementById('reaPasaporteReagrupante')",
+        timeout=15,
+        interval=0.5,
+    )
+
+    fill_section(browser, reagrupante, session_dir)
+    select_municipio_localidad_reagrupante(browser, reagrupante, session_dir)
+
+    print("Datos del reagrupante EX02 rellenados.")
+    write_log(session_dir, "Datos del reagrupante EX02 rellenados")
+    return True
+
+def click_continuar_ex02_extranjero_to_reagrupante(browser, session_dir):
+    """Pausa humana desde Datos del extranjero/reagrupado a Datos del reagrupante."""
+    print("[8] PAUSA HUMANA - CONTINUAR a DATOS DEL REAGRUPANTE EX02")
+    write_log(session_dir, "Pausa humana EX02: extranjero/reagrupado -> reagrupante")
+    print()
+    print("=" * 80)
+    print("PAUSA HUMANA EX02")
+    print("Pulsa MANUALMENTE CONTINUAR para pasar a Datos del reagrupante.")
+    print("Cuando estés en la pantalla del reagrupante, vuelve aquí y pulsa ENTER.")
+    print("=" * 80)
+    input("Pulsa ENTER cuando estés en Datos del reagrupante...")
+    return {"ok": True, "mode": "human_required"}
+
+
+def click_continuar_ex02_reagrupante_to_presentador(browser, session_dir):
+    """Pausa humana desde Datos del reagrupante a Datos del presentador."""
+    print("[9] PAUSA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
+    write_log(session_dir, "Pausa humana EX02: reagrupante -> presentador")
+    print()
+    print("=" * 80)
+    print("PAUSA HUMANA EX02")
+    print("Pulsa MANUALMENTE CONTINUAR para pasar desde Datos del reagrupante a Datos del presentador.")
+    print("Cuando estés en Datos del presentador, vuelve aquí y pulsa ENTER.")
+    print("=" * 80)
+    input("Pulsa ENTER cuando estés en Datos del presentador...")
+    try:
+        wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=10, interval=0.5)
+        write_log(session_dir, "EX02 presentador visible confirmado")
+    except Exception as exc:
+        write_log(session_dir, f"EX02 presentador no confirmado: {repr(exc)}")
+    return {"ok": True, "mode": "human_required"}
+
+def click_continuar_ex02_reagrupante_to_reagrupado(browser, session_dir):
+    """Pausa humana desde Datos del reagrupante a Datos del reagrupado/solicitante."""
+    print("[8] PAUSA HUMANA - CONTINUAR a DATOS DEL REAGRUPADO/SOLICITANTE")
+    write_log(session_dir, "Pausa humana EX02: reagrupante -> reagrupado/solicitante")
+    print()
+    print("=" * 80)
+    print("PAUSA HUMANA EX02")
+    print("Pulsa MANUALMENTE CONTINUAR en Mercurio para pasar desde Datos del reagrupante")
+    print("a Datos del reagrupado/solicitante.")
+    print("Cuando estés en esa pantalla, vuelve aquí y pulsa ENTER.")
+    print("=" * 80)
+    input("Pulsa ENTER cuando estés en Datos del reagrupado/solicitante...")
+    return {"ok": True, "mode": "human_required"}
+
+
+def click_continuar_ex02_reagrupado_to_presentador(browser, session_dir):
+    """Pausa humana desde Datos del reagrupado/solicitante a Datos del presentador."""
+    print("[9] PAUSA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
+    write_log(session_dir, "Pausa humana EX02: reagrupado/solicitante -> presentador")
+    print()
+    print("=" * 80)
+    print("PAUSA HUMANA EX02")
+    print("Pulsa MANUALMENTE CONTINUAR en Mercurio para pasar desde Datos del reagrupado/solicitante")
+    print("a Datos del presentador.")
+    print("Cuando estés en Datos del presentador, vuelve aquí y pulsa ENTER.")
+    print("=" * 80)
+    input("Pulsa ENTER cuando estés en Datos del presentador...")
+    try:
+        wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=10, interval=0.5)
+        write_log(session_dir, "EX02 presentador visible confirmado")
+    except Exception as exc:
+        write_log(session_dir, f"EX02 presentador no confirmado: {repr(exc)}")
+    return {"ok": True, "mode": "human_required"}
 
 
 def click_continuar_extranjero_to_familiar(browser, session_dir):
@@ -1508,17 +1681,26 @@ def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
     step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
     pause_supuesto(session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
     if datos_mercurio:
-        fill_datos_extranjero(browser, datos_mercurio, session_dir)
-        if mapper_mode.get("is_ex01_familiar"):
-            click_continuar_extranjero_to_familiar(browser, session_dir)
-            fill_datos_familiar_ex01(browser, datos_mercurio, session_dir)
-            click_continuar_familiar_to_presentador(browser, session_dir)
+        if mapper_mode.get("is_ex02"):
+            # Orden real Mercurio EX02:
+            # 1) reagrupante desde datos_especificos.reagrupante_*
+            # 2) reagrupado/solicitante desde cliente del expediente
+            # 3) presentador profesional
+            fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir)
+            click_continuar_ex02_reagrupante_to_reagrupado(browser, session_dir)
+            fill_datos_reagrupado_ex02(browser, datos_mercurio, session_dir)
+            click_continuar_ex02_reagrupado_to_presentador(browser, session_dir)
         else:
-            click_continuar(browser, session_dir)
+            fill_datos_extranjero(browser, datos_mercurio, session_dir)
+            if mapper_mode.get("is_ex01_familiar"):
+                click_continuar_extranjero_to_familiar(browser, session_dir)
+                fill_datos_familiar_ex01(browser, datos_mercurio, session_dir)
+                click_continuar_familiar_to_presentador(browser, session_dir)
+            else:
+                click_continuar(browser, session_dir)
         fill_datos_presentador(browser, datos_mercurio, session_dir)
         click_continuar_presentador(browser, session_dir)
         pause_humana_final_presentacion(browser, session_dir)
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1579,6 +1761,7 @@ def main():
     print("  fill       -> rellenar datos completos con datos_mercurio.json")
     print("  fillpre    -> rellenar solo datos del presentador")
     print("  fillfam    -> rellenar solo datos del familiar EX01")
+    print("  fillrea    -> rellenar solo datos del reagrupante EX02")
     print("  human      -> pausa humana final sin disconnect")
     print("  docs       -> subida documental asistida")
     print("  q          -> salir")
@@ -1601,7 +1784,24 @@ def main():
             if not datos_mercurio:
                 print("No hay datos_mercurio.json cargado.")
             else:
-                fill_datos_extranjero(browser, datos_mercurio, session_dir)
+                if mapper_mode.get("is_ex02"):
+                    fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir)
+                else:
+                    fill_datos_extranjero(browser, datos_mercurio, session_dir)
+
+
+
+        elif cmd in ("fillsol", "solicitante", "reagrupado"):
+            if not datos_mercurio:
+                print("No hay datos_mercurio.json cargado.")
+            else:
+                fill_datos_reagrupado_ex02(browser, datos_mercurio, session_dir)
+
+        elif cmd in ("fillrea", "reagrupante", "rea"):
+            if not datos_mercurio:
+                print("No hay datos_mercurio.json cargado.")
+            else:
+                fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir)
 
         elif cmd == "fillpre":
             if not datos_mercurio:
@@ -1614,6 +1814,12 @@ def main():
                 print("No hay datos_mercurio.json cargado.")
             else:
                 fill_datos_familiar_ex01(browser, datos_mercurio, session_dir)
+
+        elif cmd in ("fillrea", "reagrupante", "rea"):
+            if not datos_mercurio:
+                print("No hay datos_mercurio.json cargado.")
+            else:
+                fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir)
 
         elif cmd in ("human", "humano", "pausa"):
             pause_humana_final_presentacion(browser, session_dir)
