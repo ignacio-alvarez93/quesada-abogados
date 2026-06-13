@@ -3,6 +3,7 @@ import flet as ft
 from database.connection import initialize_database
 from frontend.views.login_view import login_view
 from frontend.views.clients_view import clients_view
+from frontend.views.companies_view import companies_view
 from frontend.views.settings_view import settings_view
 from frontend.views.expedients_view import expedients_view
 from frontend.views.expedient_traceability_view import expedient_traceability_view
@@ -44,6 +45,8 @@ def main(page: ft.Page):
     def navigate(view_name):
         if view_name == "Clientes":
             content = clients_view(page)
+        elif view_name == "Empresas":
+            content = companies_view(page)
         elif view_name == "Expedientes":
             content = expedients_view(page)
         elif view_name == "Trazabilidad Expedientes":

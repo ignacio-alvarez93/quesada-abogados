@@ -11,6 +11,8 @@ Q_ITEM_HOVER = "#1261B8"
 
 MENU_ITEMS = [
     ("Clientes", "👥"),
+    ("Empresas", "🏢"),
+    ("Proveedores", "📦"),
     ("Expedientes", "📁"),
     ("Cobros", "💶"),
     ("Documentos / Box", "☁️"),
