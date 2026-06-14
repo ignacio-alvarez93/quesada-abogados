@@ -24,6 +24,11 @@ from frontend.components.app_empty_state import empty_state
 from frontend.components.app_autocomplete import AppAutocomplete
 
 try:
+    from frontend.views.company_detail_view import company_detail_view
+except Exception:
+    company_detail_view = None
+
+try:
     from backend.services import company_service, client_company_service
 except Exception:
     company_service = None
@@ -2305,11 +2310,33 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         if unlink_dialog not in page.overlay:
             page.overlay.append(unlink_dialog)
 
+        def open_company_detail_from_link(link):
+            company_id = link.get("company_id")
+            if not company_id:
+                _notify("No se encontró el ID de empresa vinculada", error=True)
+                return
+            if company_detail_view is None:
+                _notify("La ficha de empresa no está disponible", error=True)
+                return
+
+            content_container.content = company_detail_view(
+                page,
+                company_id,
+                on_back=lambda e=None: set_section("empleadores"),
+                on_edit=None,
+            )
+            page.update()
+
         def _company_actions_menu(link):
             return ft.PopupMenuButton(
                 icon=ft.Icons.MORE_VERT,
                 tooltip="Acciones",
                 items=[
+                    ft.PopupMenuItem(
+                        content=ft.Text("Ver ficha empresa"),
+                        icon=ft.Icons.BUSINESS,
+                        on_click=lambda e, item=link: open_company_detail_from_link(item),
+                    ),
                     ft.PopupMenuItem(
                         content=ft.Text("Modificar"),
                         icon=ft.Icons.EDIT,
