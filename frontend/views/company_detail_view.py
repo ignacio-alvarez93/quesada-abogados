@@ -170,6 +170,79 @@ def _data_table(columns, rows, empty_message):
     )
 
 
+
+
+def _company_initials(company):
+    name = _company_name(company)
+    parts = [part for part in str(name or "").split() if part]
+    if not parts:
+        return "EM"
+    if len(parts) == 1:
+        return parts[0][:2].upper()
+    return (parts[0][:1] + parts[1][:1]).upper()
+
+
+def _company_completion_percent(company):
+    fields = [
+        "name",
+        "tax_id",
+        "codigo_cuenta_cotizacion",
+        "entity_type",
+        "main_activity",
+        "cnae_code",
+        "phone",
+        "email",
+        "address",
+        "city",
+        "province",
+    ]
+    completed = sum(1 for field in fields if (company or {}).get(field))
+    return int((completed / len(fields)) * 100) if fields else 0
+
+
+def _progress_color(percent):
+    if percent >= 80:
+        return "#027A48"
+    if percent >= 50:
+        return "#B54708"
+    return "#B42318"
+
+
+def _company_status_chip(company):
+    percent = _company_completion_percent(company)
+    return ft.Container(
+        content=ft.Text(
+            f"Ficha completa: {percent}%",
+            size=12,
+            color=_progress_color(percent),
+            weight=ft.FontWeight.BOLD,
+        ),
+        bgcolor="#F8FAFC",
+        border=ft.border.all(1, Q_BORDER),
+        border_radius=18,
+        padding=ft.padding.symmetric(horizontal=10, vertical=6),
+    )
+
+
+def _photo_placeholder(company):
+    return ft.Container(
+        width=92,
+        height=92,
+        bgcolor=Q_CHIP_BG,
+        border=ft.border.all(1, "#B9D7FF"),
+        border_radius=18,
+        content=ft.Column(
+            controls=[
+                ft.Text(_company_initials(company), size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text("Empresa", size=11, color=Q_MUTED),
+            ],
+            spacing=2,
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
+
 def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
     try:
         company_tax_service.ensure_schema()
@@ -178,17 +251,60 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
 
     company = company_service.get_company(company_id)
     if not company:
-        return ft.Container(
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            width=230,
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(1, Q_BORDER),
+                            border_radius=14,
+                            padding=12,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Container(
+                                        width=92,
+                                        height=92,
+                                        bgcolor=Q_CHIP_BG,
+                                        border=ft.border.all(1, "#B9D7FF"),
+                                        border_radius=18,
+                                        content=ft.Icon(ft.Icons.BUSINESS, size=40, color=Q_PRIMARY_DARK),
+                                        alignment=ft.Alignment(0, 0),
+                                    ),
+                                    ft.Text("Empresa", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Divider(),
+                                    ft.Row(
+                                        controls=[
+                                            ft.IconButton(
+                                                icon=ft.Icons.ARROW_BACK,
+                                                tooltip="Volver empresas",
+                                                icon_color=Q_PRIMARY_DARK,
+                                                on_click=on_back,
+                                            )
+                                        ],
+                                        alignment=ft.MainAxisAlignment.CENTER,
+                                    ) if on_back else ft.Container(),
+                                ],
+                                spacing=8,
+                                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                        ),
+                        ft.Container(
+                            expand=True,
+                            bgcolor=Q_CARD,
+                            border=ft.border.all(1, Q_BORDER),
+                            border_radius=14,
+                            padding=16,
+                            content=_empty_state("Empresa no encontrada"),
+                        ),
+                    ],
+                    spacing=14,
+                    expand=True,
+                )
+            ],
+            spacing=16,
             expand=True,
-            bgcolor=Q_BG,
-            padding=24,
-            content=ft.Column(
-                controls=[
-                    _secondary_button("Volver", on_back, icon=ft.Icons.ARROW_BACK),
-                    _empty_state("Empresa no encontrada"),
-                ],
-                spacing=14,
-            ),
         )
 
     try:
@@ -216,7 +332,13 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
     except Exception:
         financial_metrics = []
 
-    address_parts = [company.get("address"), company.get("postal_code"), company.get("city"), company.get("province"), company.get("country")]
+    address_parts = [
+        company.get("address"),
+        company.get("postal_code"),
+        company.get("city"),
+        company.get("province"),
+        company.get("country"),
+    ]
     address_text = " · ".join([p for p in address_parts if p])
 
     client_rows = []
@@ -292,40 +414,6 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
             )
         )
 
-    header = ft.Container(
-        bgcolor=Q_CARD,
-        border=ft.border.all(1, Q_BORDER),
-        border_radius=18,
-        padding=22,
-        content=ft.Row(
-            controls=[
-                ft.Column(
-                    controls=[
-                        ft.Row(
-                            controls=[
-                                ft.Text("🏢", size=30),
-                                ft.Text(_company_name(company), size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ],
-                            spacing=10,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        ),
-                        ft.Text(company.get("name") or "", size=13, color=Q_MUTED),
-                    ],
-                    spacing=4,
-                    expand=True,
-                ),
-                ft.Row(
-                    controls=[
-                        _secondary_button("Volver", on_back, icon=ft.Icons.ARROW_BACK),
-                        _secondary_button("Editar", lambda e: on_edit(company) if on_edit else None, icon=ft.Icons.EDIT),
-                    ],
-                    spacing=8,
-                ),
-            ],
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        ),
-    )
-
     summary = ft.Row(
         controls=[
             _info_tile("Clientes vinculados", str(len(linked_clients)), "👥"),
@@ -341,6 +429,14 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
         "Datos de entidad",
         ft.Column(
             controls=[
+                ft.Row(
+                    controls=[
+                        _info_tile("Razón social", company.get("name") or "-", "🏢"),
+                        _info_tile("Nombre comercial", company.get("trade_name") or "-", "🏷️"),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
                 ft.Row(
                     controls=[
                         _info_tile("Tipo", _entity_type_label(company.get("entity_type")), "🏷️"),
@@ -386,6 +482,15 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
                         _info_tile("Vía", company.get("nombre_via") or "-", "🛣️"),
                         _info_tile("Número", company.get("numero") or "-", "#"),
                         _info_tile("Piso/Puerta", " / ".join([v for v in [company.get("piso"), company.get("puerta")] if v]) or "-", "🏠"),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        _info_tile("Localidad", company.get("city") or "-", "📍"),
+                        _info_tile("Provincia", company.get("province") or "-", "🗺️"),
+                        _info_tile("Código postal", company.get("postal_code") or "-", "✉️"),
                     ],
                     spacing=10,
                     wrap=True,
@@ -465,27 +570,107 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
         icon="📝",
     )
 
-    sections = [
-        ("Resumen", "resumen"),
-        ("Datos", "datos"),
-        ("Clientes", "clientes"),
-        ("Representantes", "representantes"),
-        ("Fiscalidad", "fiscalidad"),
-        ("Documentos", "documentos"),
-        ("Métricas", "metricas"),
-        ("Observaciones", "observaciones"),
-    ]
-    state = {"section": "resumen"}
+    state = {"section": "ficha"}
     content_container = ft.Container(expand=True)
 
-    def build_resumen_section():
+    def build_ficha_section():
         return ft.Column(
             controls=[
-                ft.Text("Resumen", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                ft.Text("Vista rápida de la empresa y sus indicadores principales.", size=13, color=Q_MUTED),
-                summary,
                 datos_entidad,
                 contacto_domicilio,
+                notes_section,
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_actividad_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Actividad económica", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                _section_card(
+                    "Actividad y CNAE",
+                    ft.Column(
+                        controls=[
+                            _info_tile("Actividad principal", company.get("main_activity") or "-", "📊"),
+                            _info_tile("CNAE", company.get("cnae_code") or "-", "#"),
+                            _info_tile("Descripción CNAE", company.get("cnae_description") or "-", "📋"),
+                        ],
+                        spacing=10,
+                    ),
+                ),
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_clientes_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Clientes vinculados", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                clientes_section,
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_representantes_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Representantes", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                representantes_section,
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_fiscalidad_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Fiscalidad", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                summary,
+                fiscal_section,
+                tax_section,
+                metrics_section,
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_documentos_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Documentos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                tax_section,
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def build_historial_section():
+        return ft.Column(
+            controls=[
+                ft.Text("Historial / relaciones", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                _section_card(
+                    "Relaciones operativas",
+                    ft.Column(
+                        controls=[
+                            _info_tile("Clientes vinculados", str(len(linked_clients)), "👥"),
+                            _info_tile("Representantes", str(len(representatives)), "👤"),
+                            _info_tile("Ejercicios fiscales", str(len(fiscal_years)), "📆"),
+                            _info_tile("Documentos fiscales", str(len(tax_documents)), "📄"),
+                        ],
+                        spacing=10,
+                    ),
+                    subtitle="Resumen de relaciones conectadas con esta empresa.",
+                    icon="🔗",
+                ),
             ],
             spacing=14,
             scroll=ft.ScrollMode.AUTO,
@@ -493,99 +678,128 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
         )
 
     def build_section_content():
-        section = state.get("section")
-        if section == "datos":
-            return ft.Column(
-                controls=[
-                    ft.Text("Datos de empresa", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                    datos_entidad,
-                    contacto_domicilio,
-                ],
-                spacing=14,
-                scroll=ft.ScrollMode.AUTO,
-                expand=True,
-            )
+        section = state.get("section") or "ficha"
+        if section == "actividad":
+            return build_actividad_section()
         if section == "clientes":
-            return ft.Column(
-                controls=[ft.Text("Clientes vinculados", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), clientes_section],
-                spacing=14,
-                scroll=ft.ScrollMode.AUTO,
-                expand=True,
-            )
+            return build_clientes_section()
         if section == "representantes":
-            return ft.Column(
-                controls=[ft.Text("Representantes", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), representantes_section],
-                spacing=14,
-                scroll=ft.ScrollMode.AUTO,
-                expand=True,
-            )
+            return build_representantes_section()
         if section == "fiscalidad":
-            return ft.Column(
-                controls=[ft.Text("Fiscalidad", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), fiscal_section],
-                spacing=14,
-                scroll=ft.ScrollMode.AUTO,
-                expand=True,
-            )
+            return build_fiscalidad_section()
         if section == "documentos":
-            return ft.Column(
-                controls=[ft.Text("Documentos fiscales", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), tax_section],
-                spacing=14,
-                scroll=ft.ScrollMode.AUTO,
-                expand=True,
-            )
-        if section == "metricas":
-            return ft.Column(
-                controls=[ft.Text("Métricas económicas", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), metrics_section],
-                spacing=14,
-                scroll=ft.ScrollMode.AUTO,
-                expand=True,
-            )
-        if section == "observaciones":
-            return ft.Column(
-                controls=[ft.Text("Observaciones", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK), notes_section],
-                spacing=14,
-                scroll=ft.ScrollMode.AUTO,
-                expand=True,
-            )
-        return build_resumen_section()
+            return build_documentos_section()
+        if section == "historial":
+            return build_historial_section()
+        return build_ficha_section()
 
-    def set_section(key):
-        state["section"] = key
-        nav_container.content = build_nav()
+    def set_section(section):
+        state["section"] = section
         content_container.content = build_section_content()
+        sidebar_menu.content = build_sidebar_menu()
         page.update()
 
-    def build_nav():
-        controls = []
-        for label, key in sections:
-            selected = state.get("section") == key
-            controls.append(
-                ft.Container(
-                    content=ft.Text(label, size=13, weight=ft.FontWeight.BOLD if selected else ft.FontWeight.W_500, color="#FFFFFF" if selected else Q_PRIMARY_DARK),
-                    bgcolor=Q_PRIMARY if selected else Q_CARD,
-                    border=ft.border.all(1, Q_PRIMARY if selected else Q_BORDER),
-                    border_radius=18,
-                    padding=ft.padding.symmetric(horizontal=12, vertical=8),
-                    ink=True,
-                    on_click=lambda e, k=key: set_section(k),
-                )
+    def nav_button(label, section):
+        is_active = state.get("section") == section
+        return ft.Container(
+            content=ft.Text(
+                label,
+                size=13,
+                weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.W_500,
+                color=Q_PRIMARY_DARK if is_active else Q_MUTED,
+            ),
+            bgcolor=Q_CHIP_BG if is_active else Q_CARD,
+            border=ft.border.all(1, "#B9D7FF" if is_active else Q_BORDER),
+            border_radius=10,
+            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+            ink=True,
+            on_click=lambda e, s=section: set_section(s),
+        )
+
+    menu_items = [
+        ("Ficha empresa", "ficha"),
+        ("Actividad económica", "actividad"),
+        ("Clientes vinculados", "clientes"),
+        ("Representantes", "representantes"),
+        ("Fiscalidad", "fiscalidad"),
+        ("Documentos", "documentos"),
+        ("Historial / relaciones", "historial"),
+    ]
+
+    sidebar_actions = []
+    if on_back:
+        sidebar_actions.append(
+            ft.IconButton(
+                icon=ft.Icons.ARROW_BACK,
+                tooltip="Volver empresas",
+                icon_color=Q_PRIMARY_DARK,
+                on_click=on_back,
             )
-        return ft.Row(controls=controls, spacing=8, wrap=True)
+        )
+    if on_edit:
+        sidebar_actions.append(
+            ft.IconButton(
+                icon=ft.Icons.EDIT,
+                tooltip="Editar empresa",
+                icon_color=Q_PRIMARY,
+                on_click=lambda e: on_edit(company),
+            )
+        )
 
-    nav_container = ft.Container(content=build_nav())
-    content_container.content = build_section_content()
-
-    return ft.Container(
-        expand=True,
-        bgcolor=Q_BG,
-        padding=22,
-        content=ft.Column(
+    def build_sidebar_menu():
+        return ft.Column(
             controls=[
-                header,
-                nav_container,
-                content_container,
+                _photo_placeholder(company),
+                ft.Text(_company_name(company), size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK, text_align=ft.TextAlign.CENTER),
+                ft.Text(company.get("tax_id") or "Sin CIF/NIF", size=12, color=Q_MUTED, text_align=ft.TextAlign.CENTER),
+                _company_status_chip(company),
+                ft.Divider(),
+                ft.Text("Menú empresa", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text("Navega por áreas sin una ficha única demasiado larga.", size=12, color=Q_MUTED, text_align=ft.TextAlign.CENTER),
+                ft.Divider(),
+                *[nav_button(label, section) for label, section in menu_items],
+                ft.Container(expand=True),
+                ft.Divider() if sidebar_actions else ft.Container(),
+                ft.Row(
+                    controls=sidebar_actions,
+                    spacing=6,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    visible=bool(sidebar_actions),
+                ),
             ],
-            spacing=14,
-            expand=True,
-        ),
+            spacing=8,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+    sidebar_menu = ft.Container(content=ft.Column(controls=[]))
+    content_container.content = build_section_content()
+    sidebar_menu.content = build_sidebar_menu()
+
+    return ft.Column(
+        controls=[
+            ft.Row(
+                controls=[
+                    ft.Container(
+                        width=230,
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=14,
+                        padding=12,
+                        content=sidebar_menu,
+                    ),
+                    ft.Container(
+                        expand=True,
+                        bgcolor=Q_CARD,
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=14,
+                        padding=16,
+                        content=content_container,
+                    ),
+                ],
+                spacing=14,
+                expand=True,
+            ),
+        ],
+        spacing=16,
+        expand=True,
     )
