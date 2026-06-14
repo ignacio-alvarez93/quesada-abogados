@@ -330,12 +330,22 @@ def context_card(title, controls):
 
 
 def context_line(label, value):
-    return ft.Row(
-        controls=[
-            ft.Text(label, size=12, color="#64748B", expand=True),
-            ft.Text(str(value or "-"), size=12, color="#101828", weight=ft.FontWeight.W_600),
-        ],
-        spacing=8,
+    safe_value = str(value or "-").strip() or "-"
+    return ft.Container(
+        padding=ft.padding.only(top=2, bottom=2),
+        content=ft.Column(
+            controls=[
+                ft.Text(label, size=12, color="#64748B"),
+                ft.Text(
+                    safe_value,
+                    size=12,
+                    color="#101828",
+                    weight=ft.FontWeight.W_600,
+                    no_wrap=False,
+                ),
+            ],
+            spacing=2,
+        ),
     )
 
 
@@ -396,8 +406,8 @@ def company_context_header_card(company):
                 ),
                 ft.Column(
                     controls=[
-                        ft.Text(_company_display_name(company), size=15, weight=ft.FontWeight.BOLD, color="#101828"),
-                        ft.Text(company.get("tax_id") or "Sin CIF/NIF", size=12, color="#64748B"),
+                        ft.Text(_company_display_name(company), size=15, weight=ft.FontWeight.BOLD, color="#101828", no_wrap=False),
+                        ft.Text(company.get("tax_id") or "Sin CIF/NIF", size=12, color="#64748B", no_wrap=False),
                         company_status_badge(company),
                     ],
                     spacing=5,
@@ -848,7 +858,9 @@ def companies_view(page: ft.Page):
                         context_line("Tipo", _entity_type_label(company.get("entity_type"))),
                         context_line("Documento", company.get("tax_id")),
                         context_line("CCC", company.get("codigo_cuenta_cotizacion")),
-                        context_line("Teléfono/email", contact_text),
+                        context_line("Teléfono", company.get("phone")),
+                        context_line("Email", company.get("email")),
+                        context_line("Web", company.get("website")),
                         context_line("Ficha", f"{company_completion_percent(company)}%"),
                         _primary_button("Ver ficha", lambda e, c=company: open_company_detail(c), icon=ft.Icons.OPEN_IN_NEW),
                     ],
@@ -873,9 +885,11 @@ def companies_view(page: ft.Page):
                 context_card(
                     "Domicilio",
                     [
-                        context_line("Dirección", address_text or "-"),
+                        context_line("Dirección", company.get("address")),
+                        context_line("Código postal", company.get("postal_code")),
                         context_line("Localidad", company.get("city")),
                         context_line("Provincia", company.get("province")),
+                        context_line("País", company.get("country")),
                     ],
                 ),
                 context_card(
