@@ -1,6 +1,6 @@
 import flet as ft
 
-from backend.services import company_service, client_company_service, company_tax_service
+from backend.services import company_service, client_company_service, company_tax_service, employment_contract_service
 
 Q_PRIMARY = "#003B7A"
 Q_PRIMARY_DARK = "#002B5C"
@@ -150,6 +150,22 @@ def _client_name(row):
 
 def _document_from_client(row):
     return row.get("client_nie") or row.get("client_pasaporte") or row.get("client_dni") or "-"
+
+
+def _client_name_from_contract(row):
+    return " ".join(
+        [
+            row.get("client_nombre") or "",
+            row.get("client_primer_apellido") or "",
+            row.get("client_segundo_apellido") or "",
+        ]
+    ).strip() or "-"
+
+
+def _contract_salary(row):
+    amount = row.get("salary_amount") or ""
+    period = row.get("salary_period") or ""
+    return " / ".join([part for part in [amount, period] if part]) or "-"
 
 
 def _data_table(columns, rows, empty_message):
@@ -332,6 +348,12 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
     except Exception:
         financial_metrics = []
 
+    try:
+        employment_contract_service.ensure_schema()
+        employment_contracts = employment_contract_service.list_contracts_by_company(company_id)
+    except Exception:
+        employment_contracts = []
+
     address_parts = [
         company.get("address"),
         company.get("postal_code"),
@@ -352,6 +374,27 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
                     ft.DataCell(ft.Text("Activo" if int(row.get("is_active") or 0) else "Inactivo")),
                     ft.DataCell(ft.Text(row.get("client_telefono") or "-")),
                     ft.DataCell(ft.Text(row.get("client_email") or "-")),
+                ]
+            )
+        )
+
+    contract_rows = []
+    for row in employment_contracts:
+        contract_rows.append(
+            ft.DataRow(
+                cells=[
+                    ft.DataCell(ft.Text(_client_name_from_contract(row), weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)),
+                    ft.DataCell(ft.Text(row.get("contract_type") or "-")),
+                    ft.DataCell(ft.Text(row.get("contract_code") or "-")),
+                    ft.DataCell(ft.Text(row.get("collective_agreement") or "-")),
+                    ft.DataCell(ft.Text(row.get("collective_agreement_code") or "-")),
+                    ft.DataCell(ft.Text(row.get("contract_cno_code") or "-")),
+                    ft.DataCell(ft.Text(row.get("contract_position") or "-")),
+                    ft.DataCell(ft.Text(row.get("contract_start_date") or "-")),
+                    ft.DataCell(ft.Text(row.get("contract_end_date") or "-")),
+                    ft.DataCell(ft.Text(row.get("contract_hours") or "-")),
+                    ft.DataCell(ft.Text(_contract_salary(row))),
+                    ft.DataCell(ft.Text(row.get("box_contract_path") or "-", size=12, color=Q_MUTED, tooltip=row.get("box_contract_path") or "")),
                 ]
             )
         )
@@ -420,6 +463,7 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
             _info_tile("Representantes", str(len(representatives)), "👤"),
             _info_tile("Ejercicios fiscales", str(len(fiscal_years)), "📆"),
             _info_tile("Documentos fiscales", str(len(tax_documents)), "📄"),
+            _info_tile("Contratos laborales", str(len(employment_contracts)), "📝"),
         ],
         spacing=10,
         wrap=True,
@@ -535,6 +579,17 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
         icon="📆",
     )
 
+    contratos_section = _section_card(
+        "Contratos / ofertas laborales",
+        _data_table(
+            ["Cliente", "Tipo", "Cód. contrato", "Convenio", "Cód. convenio", "CNO", "Puesto", "Inicio", "Fin", "Jornada", "Salario", "Ruta Box"],
+            contract_rows,
+            "No hay contratos u ofertas laborales vinculados a esta empresa.",
+        ),
+        subtitle="Contratos creados desde la vinculación cliente ↔ empresa.",
+        icon="📝",
+    )
+
     tax_section = _section_card(
         "Documentos fiscales",
         _data_table(
@@ -646,6 +701,7 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
         return ft.Column(
             controls=[
                 ft.Text("Documentos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                contratos_section,
                 tax_section,
             ],
             spacing=14,
@@ -665,6 +721,7 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
                             _info_tile("Representantes", str(len(representatives)), "👤"),
                             _info_tile("Ejercicios fiscales", str(len(fiscal_years)), "📆"),
                             _info_tile("Documentos fiscales", str(len(tax_documents)), "📄"),
+            _info_tile("Contratos laborales", str(len(employment_contracts)), "📝"),
                         ],
                         spacing=10,
                     ),

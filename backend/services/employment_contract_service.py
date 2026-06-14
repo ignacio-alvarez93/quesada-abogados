@@ -206,3 +206,37 @@ def delete_contract(contract_id):
         cur = conn.execute("DELETE FROM employment_contracts WHERE id = ?", (int(contract_id),))
         conn.commit()
         return cur.rowcount > 0
+
+
+def list_contracts_by_company(company_id):
+    """Devuelve contratos/ofertas laborales vinculados a una empresa.
+
+    La relación es: companies -> client_companies -> employment_contracts.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                ec.*,
+                cc.client_id,
+                cc.company_id,
+                cc.relationship_type,
+                cc.is_active AS link_is_active,
+                c.name AS company_name,
+                c.tax_id AS company_tax_id,
+                cl.nombre AS client_nombre,
+                cl.primer_apellido AS client_primer_apellido,
+                cl.segundo_apellido AS client_segundo_apellido,
+                cl.nie AS client_nie,
+                cl.pasaporte AS client_pasaporte,
+                cl.dni AS client_dni
+            FROM employment_contracts ec
+            INNER JOIN client_companies cc ON cc.id = ec.client_company_id
+            LEFT JOIN companies c ON c.id = cc.company_id
+            LEFT JOIN clientes cl ON cl.id = cc.client_id
+            WHERE cc.company_id = ?
+            ORDER BY ec.is_primary DESC, COALESCE(ec.contract_start_date, ec.created_at) DESC, ec.id DESC
+            """,
+            (int(company_id),),
+        ).fetchall()
+        return [_dict(row) for row in rows]

@@ -1920,6 +1920,8 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                 "collective_agreement": prefix["collective_agreement"].value or "",
                 "collective_agreement_code": prefix["collective_agreement_code"].value or "",
                 "contract_position": prefix["contract_position"].value or "",
+                "contract_cno_code": _extract_catalog_code(prefix["contract_cno"].get_value()),
+                "contract_cno_description": _extract_catalog_description(prefix["contract_cno"].get_value()),
                 "contract_start_date": prefix["contract_start_date"].value or "",
                 "contract_end_date": prefix["contract_end_date"].value or "",
                 "contract_hours": prefix["contract_hours"].value or "",
@@ -1947,6 +1949,15 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             employment_contract_service.create_contract(link_id, _contract_payload(controls))
 
         def _contract_controls():
+            cno_options = _load_catalog_options("cno_sepe_2011.csv", "CNO")
+            cno_autocomplete = AppAutocomplete(
+                page=page,
+                label="CNO / SEPE",
+                options=cno_options,
+                width=720,
+                max_results=12,
+                allow_free_text=True,
+            )
             return {
                 "create_contract": ft.Checkbox(label="Crear contrato/oferta de trabajo ahora", value=False),
                 "contract_type": _text_input_erp("Tipo de contrato", 260),
@@ -1954,6 +1965,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                 "collective_agreement": _text_input_erp("Convenio", 420),
                 "collective_agreement_code": _text_input_erp("Código convenio", 180),
                 "contract_position": _text_input_erp("Puesto", 320),
+                "contract_cno": cno_autocomplete,
                 "contract_start_date": _text_input_erp("Fecha inicio contrato", 190),
                 "contract_end_date": _text_input_erp("Fecha fin contrato", 190),
                 "contract_hours": _text_input_erp("Jornada / horas", 180),
@@ -1976,7 +1988,11 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         def _clear_contract_controls(controls):
             controls["create_contract"].value = False
             for key, control in controls.items():
-                if key != "create_contract":
+                if key == "create_contract":
+                    continue
+                if key == "contract_cno":
+                    control.set_value("", update=False)
+                else:
                     control.value = ""
 
         def _contract_dialog_section(controls):
@@ -1988,6 +2004,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                     ft.Row([controls["contract_type"], controls["contract_code"]], wrap=True, spacing=10),
                     ft.Row([controls["collective_agreement"], controls["collective_agreement_code"]], wrap=True, spacing=10),
                     ft.Row([controls["contract_position"], controls["contract_start_date"], controls["contract_end_date"]], wrap=True, spacing=10),
+                    controls["contract_cno"].control,
                     ft.Row([controls["contract_hours"], controls["salary_amount"], controls["salary_period"]], wrap=True, spacing=10),
                     controls["work_center_address"],
                     controls["box_contract_path"],
