@@ -29,10 +29,11 @@ except Exception:
     company_detail_view = None
 
 try:
-    from backend.services import company_service, client_company_service
+    from backend.services import company_service, client_company_service, employment_contract_service
 except Exception:
     company_service = None
     client_company_service = None
+    employment_contract_service = None
 
 Q_PRIMARY_DARK = "#003B7A"
 Q_MUTED = "#64748B"
@@ -1895,6 +1896,105 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             content_container.content = build_empleadores_section()
             page.update()
 
+        def _latest_client_company_link_id(company_id):
+            try:
+                with _connect() as conn:
+                    row = conn.execute(
+                        """
+                        SELECT id
+                        FROM client_companies
+                        WHERE client_id = ? AND company_id = ?
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (int(cliente_id), int(company_id)),
+                    ).fetchone()
+                    return int(row["id"]) if row else None
+            except Exception:
+                return None
+
+        def _contract_payload(prefix):
+            return {
+                "contract_type": prefix["contract_type"].value or "",
+                "contract_code": prefix["contract_code"].value or "",
+                "collective_agreement": prefix["collective_agreement"].value or "",
+                "collective_agreement_code": prefix["collective_agreement_code"].value or "",
+                "contract_position": prefix["contract_position"].value or "",
+                "contract_start_date": prefix["contract_start_date"].value or "",
+                "contract_end_date": prefix["contract_end_date"].value or "",
+                "contract_hours": prefix["contract_hours"].value or "",
+                "salary_amount": prefix["salary_amount"].value or "",
+                "salary_period": prefix["salary_period"].value or "",
+                "work_center_address": prefix["work_center_address"].value or "",
+                "box_contract_path": prefix["box_contract_path"].value or "",
+                "notes": prefix["contract_notes"].value or "",
+                "is_primary": 1,
+            }
+
+        def _create_contract_if_requested(flag, controls, company_id, created_link=None):
+            if not flag.value:
+                return
+            if not employment_contract_service:
+                _notify("Servicio de contratos no disponible", error=True)
+                return
+            link_id = None
+            if isinstance(created_link, dict):
+                link_id = created_link.get("id")
+            link_id = link_id or _latest_client_company_link_id(company_id)
+            if not link_id:
+                _notify("No se pudo localizar la relación cliente-empresa para crear el contrato", error=True)
+                return
+            employment_contract_service.create_contract(link_id, _contract_payload(controls))
+
+        def _contract_controls():
+            return {
+                "create_contract": ft.Checkbox(label="Crear contrato/oferta de trabajo ahora", value=False),
+                "contract_type": _text_input_erp("Tipo de contrato", 260),
+                "contract_code": _text_input_erp("Código contrato", 180),
+                "collective_agreement": _text_input_erp("Convenio", 420),
+                "collective_agreement_code": _text_input_erp("Código convenio", 180),
+                "contract_position": _text_input_erp("Puesto", 320),
+                "contract_start_date": _text_input_erp("Fecha inicio contrato", 190),
+                "contract_end_date": _text_input_erp("Fecha fin contrato", 190),
+                "contract_hours": _text_input_erp("Jornada / horas", 180),
+                "salary_amount": _text_input_erp("Salario", 160),
+                "salary_period": _text_input_erp("Periodo salario", 180),
+                "work_center_address": _text_input_erp("Centro de trabajo", 720),
+                "box_contract_path": _text_input_erp("Ruta Box contrato", 720),
+                "contract_notes": ft.TextField(
+                    label="Notas del contrato/oferta",
+                    width=720,
+                    multiline=True,
+                    min_lines=2,
+                    max_lines=4,
+                    border_radius=10,
+                    border_color=Q_BORDER,
+                    focused_border_color="#18BFEA",
+                ),
+            }
+
+        def _clear_contract_controls(controls):
+            controls["create_contract"].value = False
+            for key, control in controls.items():
+                if key != "create_contract":
+                    control.value = ""
+
+        def _contract_dialog_section(controls):
+            return _dialog_section(
+                "Contrato / oferta de trabajo",
+                ft.Icons.DESCRIPTION,
+                [
+                    controls["create_contract"],
+                    ft.Row([controls["contract_type"], controls["contract_code"]], wrap=True, spacing=10),
+                    ft.Row([controls["collective_agreement"], controls["collective_agreement_code"]], wrap=True, spacing=10),
+                    ft.Row([controls["contract_position"], controls["contract_start_date"], controls["contract_end_date"]], wrap=True, spacing=10),
+                    ft.Row([controls["contract_hours"], controls["salary_amount"], controls["salary_period"]], wrap=True, spacing=10),
+                    controls["work_center_address"],
+                    controls["box_contract_path"],
+                    controls["contract_notes"],
+                ],
+            )
+
         # ------------------------------------------------------------------
         # Dialogo: vincular empresa existente
         # ------------------------------------------------------------------
@@ -1943,6 +2043,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             border_color=Q_BORDER,
             focused_border_color="#18BFEA",
         )
+        existing_contract_controls = _contract_controls()
 
         def close_link_existing_dialog(e=None):
             link_existing_dialog.open = False
@@ -1955,6 +2056,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             link_start_date.value = ""
             link_end_date.value = ""
             link_notes.value = ""
+            _clear_contract_controls(existing_contract_controls)
 
         def save_existing_link(e=None):
             if not client_company_service:
@@ -1965,7 +2067,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                 _notify("Selecciona una empresa existente", error=True)
                 return
             try:
-                client_company_service.link_company_to_client(
+                created_link = client_company_service.link_company_to_client(
                     cliente_id,
                     company_id,
                     {
@@ -1976,6 +2078,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         "notes": link_notes.value or "",
                     },
                 )
+                _create_contract_if_requested(existing_contract_controls["create_contract"], existing_contract_controls, company_id, created_link)
             except Exception as exc:
                 _notify(f"No se pudo vincular la empresa: {exc}", error=True)
                 return
@@ -2003,9 +2106,10 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                             link_notes,
                         ],
                     ),
+                    _contract_dialog_section(existing_contract_controls),
                 ],
                 width=940,
-                height=520,
+                height=680,
             ),
             actions=[
                 secondary_button("Cancelar", close_link_existing_dialog),
@@ -2073,6 +2177,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             border_color=Q_BORDER,
             focused_border_color="#18BFEA",
         )
+        new_contract_controls = _contract_controls()
 
         def close_new_company_dialog(e=None):
             new_company_dialog.open = False
@@ -2084,6 +2189,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             entity_type.value = "juridica"
             new_relationship.value = "empleador"
             new_active.value = "1"
+            _clear_contract_controls(new_contract_controls)
 
         def save_new_company_link(e=None):
             if not company_service or not client_company_service:
@@ -2104,7 +2210,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                     "main_activity": company_activity.value or "",
                     "cnae_code": company_cnae.value or "",
                 })
-                client_company_service.link_company_to_client(
+                created_link = client_company_service.link_company_to_client(
                     cliente_id,
                     new_company["id"],
                     {
@@ -2115,6 +2221,7 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         "notes": new_notes.value or "",
                     },
                 )
+                _create_contract_if_requested(new_contract_controls["create_contract"], new_contract_controls, new_company["id"], created_link)
             except Exception as exc:
                 _notify(f"No se pudo crear/vincular la empresa: {exc}", error=True)
                 return
@@ -2146,9 +2253,10 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                             new_notes,
                         ],
                     ),
+                    _contract_dialog_section(new_contract_controls),
                 ],
                 width=940,
-                height=600,
+                height=740,
             ),
             actions=[
                 secondary_button("Cancelar", close_new_company_dialog),

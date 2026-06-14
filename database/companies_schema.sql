@@ -84,6 +84,9 @@ CREATE TABLE IF NOT EXISTS expedient_contracts (
     client_company_id INTEGER NOT NULL,
     is_primary INTEGER DEFAULT 1,
     contract_type TEXT,
+    collective_agreement_code TEXT,
+    collective_agreement TEXT,
+    contract_code TEXT,
     contract_position TEXT,
     contract_cno_code TEXT,
     contract_cno_description TEXT,
@@ -113,3 +116,45 @@ CREATE TABLE IF NOT EXISTS expedient_contracts (
 CREATE INDEX IF NOT EXISTS idx_expedient_contracts_expedient_id ON expedient_contracts(expedient_id);
 CREATE INDEX IF NOT EXISTS idx_expedient_contracts_client_company_id ON expedient_contracts(client_company_id);
 CREATE INDEX IF NOT EXISTS idx_expedient_contracts_primary ON expedient_contracts(expedient_id, is_primary);
+
+-- Contratos / ofertas laborales vinculadas a una relación cliente-empresa.
+-- El expediente es opcional para permitir registrar el contrato antes de abrir expediente.
+CREATE TABLE IF NOT EXISTS employment_contracts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_company_id INTEGER NOT NULL,
+    expedient_id INTEGER,
+    is_primary INTEGER DEFAULT 1,
+    contract_type TEXT,
+    contract_code TEXT,
+    collective_agreement TEXT,
+    collective_agreement_code TEXT,
+    contract_position TEXT,
+    contract_cno_code TEXT,
+    contract_cno_description TEXT,
+    contract_start_date TEXT,
+    contract_end_date TEXT,
+    contract_hours TEXT,
+    salary_amount TEXT,
+    salary_period TEXT,
+    work_center_address TEXT,
+    work_center_tipo_via TEXT,
+    work_center_nombre_via TEXT,
+    work_center_numero TEXT,
+    work_center_piso TEXT,
+    work_center_puerta TEXT,
+    work_center_escalera TEXT,
+    work_center_postal_code TEXT,
+    work_center_city TEXT,
+    work_center_province TEXT,
+    box_contract_path TEXT,
+    notes TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (client_company_id) REFERENCES client_companies(id) ON DELETE CASCADE,
+    FOREIGN KEY (expedient_id) REFERENCES expedientes(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_employment_contracts_client_company_id ON employment_contracts(client_company_id);
+CREATE INDEX IF NOT EXISTS idx_employment_contracts_expedient_id ON employment_contracts(expedient_id);
+CREATE INDEX IF NOT EXISTS idx_employment_contracts_primary ON employment_contracts(client_company_id, is_primary);
+
