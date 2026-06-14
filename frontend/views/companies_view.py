@@ -315,6 +315,7 @@ def company_status_badge(company):
 
 def context_card(title, controls):
     return ft.Container(
+        width=360,
         content=ft.Column(
             controls=[
                 ft.Text(title, size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY),
@@ -389,6 +390,7 @@ def build_empty_company_context_panel():
 
 def company_context_header_card(company):
     return ft.Container(
+        width=360,
         content=ft.Row(
             controls=[
                 ft.Container(
@@ -469,7 +471,11 @@ def companies_view(page: ft.Page):
 
     root_container = ft.Container(expand=True)
     table_container = ft.Container()
-    context_container = ft.Container(width=360, padding=ft.padding.only(top=0), margin=ft.margin.only(top=0))
+    context_container = ft.Container(
+        width=360,
+        padding=ft.padding.only(top=0),
+        margin=ft.margin.only(top=0),
+    )
     counter_text = ft.Text("", size=12, color=Q_MUTED)
 
     actividades_options = _load_catalog_options("actividades_cnae.csv", "CNAE")
