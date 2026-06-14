@@ -281,6 +281,167 @@ def _small_label(label, value, icon=None):
     )
 
 
+def company_initials(company):
+    name = _company_display_name(company)
+    parts = [part for part in re.split(r"\s+", name or "") if part]
+    initials = "".join(part[0] for part in parts[:2]).upper()
+    return initials or "EM"
+
+
+def company_completion_percent(company):
+    fields = [
+        "name", "tax_id", "entity_type", "main_activity", "cnae_code",
+        "phone", "email", "address", "city", "province",
+    ]
+    completed = sum(1 for field in fields if (company or {}).get(field))
+    return int((completed / len(fields)) * 100) if fields else 0
+
+
+def company_status_badge(company):
+    pct = company_completion_percent(company)
+    if pct >= 80:
+        color, bg, text = "#027A48", "#ECFDF3", f"Ficha {pct}%"
+    elif pct >= 50:
+        color, bg, text = "#B54708", "#FFFAEB", f"Ficha {pct}%"
+    else:
+        color, bg, text = "#B42318", "#FEF3F2", f"Ficha {pct}%"
+    return ft.Container(
+        content=ft.Text(text, size=12, weight=ft.FontWeight.BOLD, color=color),
+        bgcolor=bg,
+        border_radius=20,
+        padding=ft.padding.symmetric(horizontal=10, vertical=5),
+    )
+
+
+def context_card(title, controls):
+    return ft.Container(
+        content=ft.Column(
+            controls=[
+                ft.Text(title, size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY),
+                *controls,
+            ],
+            spacing=8,
+        ),
+        bgcolor=Q_CARD,
+        border=ft.border.all(1, "#E4E7EC"),
+        border_radius=14,
+        padding=12,
+    )
+
+
+def context_line(label, value):
+    return ft.Row(
+        controls=[
+            ft.Text(label, size=12, color="#64748B", expand=True),
+            ft.Text(str(value or "-"), size=12, color="#101828", weight=ft.FontWeight.W_600),
+        ],
+        spacing=8,
+    )
+
+
+def build_empty_company_context_panel():
+    return ft.Container(
+        content=ft.Column(
+            controls=[
+                ft.Container(
+                    content=ft.Icon(ft.Icons.BUSINESS, size=42, color=Q_PRIMARY),
+                    bgcolor=Q_CHIP_BG,
+                    border_radius=50,
+                    width=82,
+                    height=82,
+                    alignment=ft.Alignment(0, 0),
+                ),
+                ft.Text(
+                    "Sin empresa seleccionada",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY,
+                    text_align=ft.TextAlign.CENTER,
+                ),
+                ft.Text(
+                    "Selecciona una empresa en la tabla para ver aquí su resumen operativo.",
+                    size=13,
+                    color="#64748B",
+                    text_align=ft.TextAlign.CENTER,
+                ),
+            ],
+            spacing=12,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        width=360,
+        bgcolor=Q_CARD,
+        border=ft.border.all(1, "#E4E7EC"),
+        border_radius=16,
+        padding=18,
+        margin=ft.margin.only(top=0),
+    )
+
+
+def company_context_header_card(company):
+    return ft.Container(
+        content=ft.Row(
+            controls=[
+                ft.Container(
+                    content=ft.Text(
+                        company_initials(company),
+                        size=18,
+                        weight=ft.FontWeight.BOLD,
+                        color="#FFFFFF",
+                    ),
+                    width=52,
+                    height=52,
+                    border_radius=26,
+                    bgcolor=Q_PRIMARY,
+                    alignment=ft.Alignment(0, 0),
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Text(_company_display_name(company), size=15, weight=ft.FontWeight.BOLD, color="#101828"),
+                        ft.Text(company.get("tax_id") or "Sin CIF/NIF", size=12, color="#64748B"),
+                        company_status_badge(company),
+                    ],
+                    spacing=5,
+                    expand=True,
+                ),
+            ],
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        bgcolor=Q_CARD,
+        border=ft.border.all(1, "#E4E7EC"),
+        border_radius=16,
+        padding=14,
+        margin=ft.margin.only(top=0),
+    )
+
+
+def build_company_context_alerts(company, stats):
+    alerts = []
+    if not company.get("tax_id"):
+        alerts.append("Sin CIF/NIF")
+    if not company.get("cnae_code"):
+        alerts.append("Sin CNAE")
+    if not company.get("phone"):
+        alerts.append("Sin teléfono")
+    if not company.get("email"):
+        alerts.append("Sin email")
+    if not company.get("address") and not company.get("city"):
+        alerts.append("Sin domicilio estructurado")
+    if int(stats.get("clients") or 0) == 0:
+        alerts.append("Sin clientes vinculados")
+    if not alerts:
+        alerts.append("Sin alertas críticas")
+    return [
+        ft.Text(
+            alert,
+            size=12,
+            color="#B42318" if alert != "Sin alertas críticas" else "#027A48",
+            weight=ft.FontWeight.W_600,
+        )
+        for alert in alerts[:6]
+    ]
+
+
 def companies_view(page: ft.Page):
     company_service.ensure_schema()
     try:
@@ -392,10 +553,12 @@ def companies_view(page: ft.Page):
 
     def selected_company():
         selected_id = state.get("selected_id")
+        if not selected_id:
+            return None
         for company in state.get("companies") or []:
             if company.get("id") == selected_id:
                 return company
-        return (state.get("companies") or [None])[0]
+        return None
 
     def get_company_stats(company_id):
         stats = {"clients": 0, "representatives": 0, "fiscal_years": 0, "tax_documents": 0}
@@ -556,7 +719,8 @@ def companies_view(page: ft.Page):
             _snack(page, f"No se pudo eliminar la empresa: {exc}", error=True)
 
     def select_company(company):
-        state["selected_id"] = company.get("id")
+        company_id = company.get("id")
+        state["selected_id"] = None if state.get("selected_id") == company_id else company_id
         render_table()
         render_context_panel()
         page.update()
@@ -587,11 +751,9 @@ def companies_view(page: ft.Page):
                     color=Q_ROW_SELECTED if is_selected else None,
                     cells=[
                         ft.DataCell(
-                            ft.IconButton(
-                                icon=ft.Icons.CHEVRON_RIGHT,
-                                tooltip="Seleccionar",
-                                icon_color=Q_PRIMARY,
-                                on_click=lambda e, c=company: select_company(c),
+                            ft.Checkbox(
+                                value=is_selected,
+                                on_change=lambda e, c=company: select_company(c),
                             )
                         ),
                         ft.DataCell(
@@ -641,7 +803,7 @@ def companies_view(page: ft.Page):
             controls=[
                 ft.DataTable(
                     columns=[
-                        ft.DataColumn(ft.Text("")),
+                        ft.DataColumn(ft.Text("Sel.")),
                         ft.DataColumn(ft.Text("Empresa")),
                         ft.DataColumn(ft.Text("CIF/NIF")),
                         ft.DataColumn(ft.Text("Tipo")),
@@ -663,19 +825,7 @@ def companies_view(page: ft.Page):
     def render_context_panel():
         company = selected_company()
         if not company:
-            context_container.content = ft.Container(
-                bgcolor=Q_CARD,
-                border=ft.border.all(1, Q_BORDER),
-                border_radius=14,
-                padding=16,
-                content=ft.Column(
-                    controls=[
-                        ft.Text("Resumen", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                        ft.Text("Selecciona una empresa para ver su ficha rápida.", size=13, color=Q_MUTED),
-                    ],
-                    spacing=8,
-                ),
-            )
+            context_container.content = build_empty_company_context_panel()
             return
 
         stats = get_company_stats(company.get("id"))
@@ -684,67 +834,58 @@ def companies_view(page: ft.Page):
         activity_text = company.get("main_activity") or company.get("cnae_description") or "-"
         contact_text = " · ".join([v for v in [company.get("phone"), company.get("email")] if v]) or "-"
 
-        context_container.content = ft.Container(
-            bgcolor=Q_CARD,
-            border=ft.border.all(1, Q_BORDER),
-            border_radius=14,
-            padding=16,
-            content=ft.Column(
-                controls=[
-                    ft.Row(
-                        controls=[
-                            ft.Container(
-                                width=42,
-                                height=42,
-                                border_radius=12,
-                                bgcolor=Q_CHIP_BG,
-                                alignment=ft.Alignment(0, 0),
-                                content=ft.Text("🏢", size=21),
-                            ),
-                            ft.Column(
-                                controls=[
-                                    ft.Text(_company_display_name(company), size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                    ft.Text(company.get("tax_id") or "Sin CIF/NIF", size=12, color=Q_MUTED),
-                                ],
-                                spacing=2,
-                                expand=True,
-                            ),
-                        ],
-                        spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    ft.Row(
-                        controls=[
-                            _small_label("Clientes", str(stats["clients"]), "👥"),
-                            _small_label("Ejercicios", str(stats["fiscal_years"]), "📆"),
-                        ],
-                        spacing=8,
-                    ),
-                    ft.Row(
-                        controls=[
-                            _small_label("Docs", str(stats["tax_documents"]), "📄"),
-                            _small_label("Rep.", str(stats["representatives"]), "👤"),
-                        ],
-                        spacing=8,
-                    ),
-                    ft.Divider(height=12, color=Q_BORDER),
-                    _context_line("Tipo", _entity_type_label(company.get("entity_type")), "🏷️"),
-                    _context_line("Actividad", activity_text, "📊"),
-                    _context_line("CNAE", company.get("cnae_code") or "-", "#"),
-                    _context_line("Contacto", contact_text, "☎️"),
-                    _context_line("Domicilio", address_text or "-", "📍"),
-                    ft.Row(
-                        controls=[
-                            _primary_button("Abrir ficha", lambda e, c=company: open_company_detail(c), icon=ft.Icons.OPEN_IN_NEW),
-                            _secondary_button("Editar", lambda e, c=company: open_edit_dialog(c), icon=ft.Icons.EDIT),
-                        ],
-                        spacing=8,
-                        wrap=True,
-                    ),
-                ],
-                spacing=10,
-                scroll=ft.ScrollMode.AUTO,
-            ),
+        context_container.content = ft.Column(
+            controls=[
+                company_context_header_card(company),
+                context_card(
+                    "Resumen ficha",
+                    [
+                        context_line("Tipo", _entity_type_label(company.get("entity_type"))),
+                        context_line("Documento", company.get("tax_id")),
+                        context_line("Teléfono/email", contact_text),
+                        context_line("Ficha", f"{company_completion_percent(company)}%"),
+                        _primary_button("Ver ficha", lambda e, c=company: open_company_detail(c), icon=ft.Icons.OPEN_IN_NEW),
+                    ],
+                ),
+                context_card(
+                    "Actividad",
+                    [
+                        context_line("Actividad", activity_text),
+                        context_line("CNAE", company.get("cnae_code")),
+                        context_line("Descripción", company.get("cnae_description")),
+                    ],
+                ),
+                context_card(
+                    "Vinculaciones",
+                    [
+                        context_line("Clientes", stats.get("clients")),
+                        context_line("Representantes", stats.get("representatives")),
+                        context_line("Ejercicios fiscales", stats.get("fiscal_years")),
+                        context_line("Documentos fiscales", stats.get("tax_documents")),
+                    ],
+                ),
+                context_card(
+                    "Domicilio",
+                    [
+                        context_line("Dirección", address_text or "-"),
+                        context_line("Localidad", company.get("city")),
+                        context_line("Provincia", company.get("province")),
+                    ],
+                ),
+                context_card(
+                    "Alertas",
+                    build_company_context_alerts(company, stats),
+                ),
+                ft.Row(
+                    controls=[
+                        _secondary_button("Editar", lambda e, c=company: open_edit_dialog(c), icon=ft.Icons.EDIT),
+                    ],
+                    spacing=8,
+                    alignment=ft.MainAxisAlignment.END,
+                ),
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
         )
 
     def refresh(e=None):
@@ -754,10 +895,8 @@ def companies_view(page: ft.Page):
                 entity_type=(entity_filter.value or "").strip() or None,
                 limit=500,
             )
-            if state.get("companies") and not state.get("selected_id"):
-                state["selected_id"] = state["companies"][0].get("id")
             if state.get("selected_id") and not any(c.get("id") == state.get("selected_id") for c in state.get("companies") or []):
-                state["selected_id"] = state["companies"][0].get("id") if state.get("companies") else None
+                state["selected_id"] = None
         except Exception as exc:
             state["companies"] = []
             state["selected_id"] = None
