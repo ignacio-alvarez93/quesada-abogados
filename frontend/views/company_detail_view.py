@@ -345,6 +345,7 @@ def company_detail_view(page: ft.Page, company_id, on_back=None, on_edit=None):
                     controls=[
                         _info_tile("Tipo", _entity_type_label(company.get("entity_type")), "🏷️"),
                         _info_tile("Documento", company.get("tax_id") or "-", "🪪"),
+                        _info_tile("CCC", company.get("codigo_cuenta_cotizacion") or "-", "🏦"),
                         _info_tile("Forma / tipo", company.get("company_type") or "-", "#"),
                     ],
                     spacing=10,

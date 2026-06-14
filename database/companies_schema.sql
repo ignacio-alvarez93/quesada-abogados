@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS companies (
     trade_name TEXT,
     document_type TEXT,
     tax_id TEXT,
+    codigo_cuenta_cotizacion TEXT,
     first_name TEXT,
     last_name_1 TEXT,
     last_name_2 TEXT,

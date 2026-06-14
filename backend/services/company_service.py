@@ -6,7 +6,7 @@ DB_PATH = PROJECT_ROOT / "database" / "quesada.db"
 SCHEMA_PATH = PROJECT_ROOT / "database" / "companies_schema.sql"
 
 COMPANY_FIELDS = [
-    "entity_type", "name", "trade_name", "document_type", "tax_id",
+    "entity_type", "name", "trade_name", "document_type", "tax_id", "codigo_cuenta_cotizacion",
     "first_name", "last_name_1", "last_name_2", "company_type",
     "cnae_code", "cnae_description", "main_activity", "phone", "email",
     "website", "address", "tipo_via", "nombre_via", "numero", "piso",
@@ -17,6 +17,18 @@ REPRESENTATIVE_FIELDS = ["full_name", "document_type", "document_number", "posit
 VALID_ENTITY_TYPES = {"juridica", "autonomo", "persona_fisica"}
 
 
+def _table_columns(conn, table_name):
+    try:
+        return [row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()]
+    except Exception:
+        return []
+
+
+def _ensure_column(conn, table_name, column_name, definition="TEXT"):
+    if column_name not in _table_columns(conn, table_name):
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
 def ensure_schema(conn=None):
     own = conn is None
     if conn is None:
@@ -25,6 +37,7 @@ def ensure_schema(conn=None):
     if not SCHEMA_PATH.exists():
         raise FileNotFoundError(f"No existe el schema de empresas: {SCHEMA_PATH}")
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    _ensure_column(conn, "companies", "codigo_cuenta_cotizacion", "TEXT")
     if own:
         conn.commit()
         conn.close()
@@ -74,8 +87,8 @@ def list_companies(search=None, entity_type=None, limit=200):
     where, params = [], []
     if search:
         like = f"%{str(search).strip()}%"
-        where.append("(name LIKE ? OR trade_name LIKE ? OR tax_id LIKE ? OR main_activity LIKE ?)")
-        params.extend([like, like, like, like])
+        where.append("(name LIKE ? OR trade_name LIKE ? OR tax_id LIKE ? OR codigo_cuenta_cotizacion LIKE ? OR main_activity LIKE ?)")
+        params.extend([like, like, like, like, like])
     if entity_type:
         where.append("entity_type = ?")
         params.append(str(entity_type).strip())

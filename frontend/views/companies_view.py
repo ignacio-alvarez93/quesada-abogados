@@ -290,7 +290,7 @@ def company_initials(company):
 
 def company_completion_percent(company):
     fields = [
-        "name", "tax_id", "entity_type", "main_activity", "cnae_code",
+        "name", "tax_id", "codigo_cuenta_cotizacion", "entity_type", "main_activity", "cnae_code",
         "phone", "email", "address", "city", "province",
     ]
     completed = sum(1 for field in fields if (company or {}).get(field))
@@ -419,6 +419,8 @@ def build_company_context_alerts(company, stats):
     alerts = []
     if not company.get("tax_id"):
         alerts.append("Sin CIF/NIF")
+    if not company.get("codigo_cuenta_cotizacion"):
+        alerts.append("Sin CCC")
     if not company.get("cnae_code"):
         alerts.append("Sin CNAE")
     if not company.get("phone"):
@@ -464,7 +466,7 @@ def companies_view(page: ft.Page):
     provincia_options = _safe_values(get_provincias_nombres)
     tipo_via_options = [(value, value) for value in _safe_values(get_tipos_via, ["CALLE", "AVENIDA", "PLAZA", "PASEO", "CARRETERA"])]
 
-    search_input = _text_input("Buscar por nombre, CIF/NIF o actividad", width=420)
+    search_input = _text_input("Buscar por nombre, CIF/NIF, CCC o actividad", width=420)
     entity_filter = _dropdown("Tipo", [("", "Todos")] + ENTITY_TYPES, width=240, value="")
 
     entity_type = _dropdown("Tipo de entidad", ENTITY_TYPES, width=280, value="juridica")
@@ -472,6 +474,7 @@ def companies_view(page: ft.Page):
     trade_name = _text_input("Nombre comercial", 320)
     document_type = _dropdown("Tipo documento", DOCUMENT_TYPES, width=180, value="CIF")
     tax_id = _text_input("CIF / NIF / DNI / NIE", 220)
+    codigo_cuenta_cotizacion = _text_input("Código cuenta cotización", 260)
     first_name = _text_input("Nombre persona física/autónomo", 260)
     last_name_1 = _text_input("Primer apellido", 240)
     last_name_2 = _text_input("Segundo apellido", 240)
@@ -544,7 +547,7 @@ def companies_view(page: ft.Page):
     )
 
     form_controls = [
-        entity_type, name, trade_name, document_type, tax_id,
+        entity_type, name, trade_name, document_type, tax_id, codigo_cuenta_cotizacion,
         first_name, last_name_1, last_name_2, company_type,
         main_activity, cnae_code, cnae_description, phone, email, website,
         address, tipo_via, nombre_via, numero, piso, puerta, escalera,
@@ -602,6 +605,7 @@ def companies_view(page: ft.Page):
             ("trade_name", trade_name),
             ("document_type", document_type),
             ("tax_id", tax_id),
+            ("codigo_cuenta_cotizacion", codigo_cuenta_cotizacion),
             ("first_name", first_name),
             ("last_name_1", last_name_1),
             ("last_name_2", last_name_2),
@@ -669,6 +673,7 @@ def companies_view(page: ft.Page):
             "trade_name": trade_name.value or "",
             "document_type": document_type.value or "",
             "tax_id": tax_id.value or "",
+            "codigo_cuenta_cotizacion": codigo_cuenta_cotizacion.value or "",
             "first_name": first_name.value or "",
             "last_name_1": last_name_1.value or "",
             "last_name_2": last_name_2.value or "",
@@ -842,6 +847,7 @@ def companies_view(page: ft.Page):
                     [
                         context_line("Tipo", _entity_type_label(company.get("entity_type"))),
                         context_line("Documento", company.get("tax_id")),
+                        context_line("CCC", company.get("codigo_cuenta_cotizacion")),
                         context_line("Teléfono/email", contact_text),
                         context_line("Ficha", f"{company_completion_percent(company)}%"),
                         _primary_button("Ver ficha", lambda e, c=company: open_company_detail(c), icon=ft.Icons.OPEN_IN_NEW),
@@ -918,7 +924,7 @@ def companies_view(page: ft.Page):
                         ft.Column(
                             controls=[
                                 ft.Row([entity_type, name, trade_name], wrap=True, spacing=10),
-                                ft.Row([document_type, tax_id, company_type], wrap=True, spacing=10),
+                                ft.Row([document_type, tax_id, codigo_cuenta_cotizacion, company_type], wrap=True, spacing=10),
                                 ft.Row([first_name, last_name_1, last_name_2], wrap=True, spacing=10),
                             ],
                             spacing=10,
