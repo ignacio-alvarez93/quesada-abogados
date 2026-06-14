@@ -6,6 +6,8 @@ from datetime import datetime
 
 from backend.services import expedient_dynamic_form_service as dynamic_form_service
 from backend.services import config_service
+from backend.services import client_company_service
+from backend.services import expedient_contract_service
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "database" / "expedient_snapshots_schema.sql"
@@ -291,6 +293,159 @@ def _split_contactos(contactos):
     return familiares, empleadores
 
 
+
+# --- Empresas como entidad propia -------------------------------------------------
+# Compatibilidad: no sustituye todavía la clave legacy "empleadores" procedente de
+# cliente_contactos. Añade claves nuevas para empresas, representantes y contratos.
+
+def _safe_list_client_companies(cliente_id):
+    if not cliente_id:
+        return []
+    try:
+        return client_company_service.list_client_companies(cliente_id, active_only=False) or []
+    except Exception:
+        # El snapshot debe seguir funcionando aunque el schema de empresas aún no exista
+        # en una base antigua o durante una migración parcial.
+        return []
+
+
+def _safe_list_expedient_contracts(expediente_id):
+    if not expediente_id:
+        return []
+    try:
+        return expedient_contract_service.list_expedient_contracts(expediente_id) or []
+    except Exception:
+        return []
+
+
+def _first_or_none(items):
+    return items[0] if items else None
+
+
+def _build_empresa_from_relation(row):
+    row = dict(row or {})
+    if not row:
+        return {}
+    return {
+        "client_company_id": row.get("id"),
+        "company_id": row.get("company_id"),
+        "entity_type": row.get("entity_type") or "",
+        "nombre": row.get("company_name") or "",
+        "nif_cif": row.get("company_tax_id") or "",
+        "tax_id": row.get("company_tax_id") or "",
+        "cnae": row.get("cnae_code") or "",
+        "cnae_code": row.get("cnae_code") or "",
+        "cnae_description": row.get("cnae_description") or "",
+        "actividad": row.get("main_activity") or "",
+        "main_activity": row.get("main_activity") or "",
+        "relationship_type": row.get("relationship_type") or "",
+        "is_active": row.get("is_active"),
+        "start_date": row.get("start_date") or "",
+        "end_date": row.get("end_date") or "",
+        "notes": row.get("notes") or "",
+    }
+
+
+def _build_representante_empresa_from_relation(row):
+    row = dict(row or {})
+    if not row:
+        return {}
+    return {
+        "representative_id": row.get("representative_id"),
+        "nombre": row.get("representative_name") or "",
+        "documento": row.get("representative_document") or "",
+    }
+
+
+def _build_empresa_from_contract(row):
+    row = dict(row or {})
+    if not row:
+        return {}
+    return {
+        "contract_id": row.get("id"),
+        "client_company_id": row.get("client_company_id"),
+        "company_id": row.get("company_id"),
+        "entity_type": row.get("entity_type") or "",
+        "nombre": row.get("company_name") or "",
+        "nif_cif": row.get("company_tax_id") or "",
+        "tax_id": row.get("company_tax_id") or "",
+        "cnae": row.get("cnae_code") or "",
+        "cnae_code": row.get("cnae_code") or "",
+        "cnae_description": row.get("cnae_description") or "",
+        "actividad": row.get("main_activity") or "",
+        "main_activity": row.get("main_activity") or "",
+    }
+
+
+def _build_representante_empresa_from_contract(row):
+    row = dict(row or {})
+    if not row:
+        return {}
+    return {
+        "representative_id": row.get("representative_id"),
+        "nombre": row.get("representative_name") or "",
+        "documento": row.get("representative_document") or "",
+        "cargo": row.get("representative_position") or "",
+    }
+
+
+def _build_contrato_snapshot(row):
+    row = dict(row or {})
+    if not row:
+        return {}
+    return {
+        "id": row.get("id"),
+        "expedient_id": row.get("expedient_id"),
+        "client_company_id": row.get("client_company_id"),
+        "is_primary": row.get("is_primary"),
+        "tipo_contrato": row.get("contract_type") or "",
+        "contract_type": row.get("contract_type") or "",
+        "puesto": row.get("contract_position") or "",
+        "contract_position": row.get("contract_position") or "",
+        "cno": row.get("contract_cno_code") or "",
+        "contract_cno_code": row.get("contract_cno_code") or "",
+        "contract_cno_description": row.get("contract_cno_description") or "",
+        "fecha_inicio": row.get("contract_start_date") or "",
+        "contract_start_date": row.get("contract_start_date") or "",
+        "fecha_fin": row.get("contract_end_date") or "",
+        "contract_end_date": row.get("contract_end_date") or "",
+        "jornada": row.get("contract_hours") or "",
+        "contract_hours": row.get("contract_hours") or "",
+        "salario": row.get("salary_amount") or "",
+        "salary_amount": row.get("salary_amount") or "",
+        "salary_period": row.get("salary_period") or "",
+        "box_contract_path": row.get("box_contract_path") or "",
+        "notes": row.get("notes") or "",
+    }
+
+
+def _build_centro_trabajo_snapshot(row):
+    row = dict(row or {})
+    if not row:
+        return {}
+    centro = {
+        "domicilio_espana": row.get("work_center_address") or "",
+        "address": row.get("work_center_address") or "",
+        "tipo_via": row.get("work_center_tipo_via") or "",
+        "nombre_via": row.get("work_center_nombre_via") or "",
+        "numero": row.get("work_center_numero") or "",
+        "piso": row.get("work_center_piso") or "",
+        "puerta": row.get("work_center_puerta") or "",
+        "escalera": row.get("work_center_escalera") or "",
+        "codigo_postal": row.get("work_center_postal_code") or "",
+        "postal_code": row.get("work_center_postal_code") or "",
+        "localidad": row.get("work_center_city") or "",
+        "city": row.get("work_center_city") or "",
+        "provincia": row.get("work_center_province") or "",
+        "province": row.get("work_center_province") or "",
+    }
+    return _with_domicilio_calculado(centro)
+
+
+def _build_empresas_snapshot(relaciones):
+    return [_build_empresa_from_relation(row) for row in (relaciones or [])]
+
+
 def _build_formulario(expediente):
     tipo_id = expediente.get("tipo_expediente_id")
     subtipo_id = expediente.get("subtipo_expediente_id")
@@ -321,6 +476,12 @@ def build_snapshot(expediente_id):
     contactos = _fetch_contactos(cliente_id)
     familiares, empleadores = _split_contactos(contactos)
 
+    empresas_relaciones = _safe_list_client_companies(cliente_id)
+    contratos_expediente = _safe_list_expedient_contracts(expediente_full.get("id"))
+    contrato_principal_raw = _first_or_none(contratos_expediente)
+    empresa_principal = _build_empresa_from_contract(contrato_principal_raw) or _build_empresa_from_relation(_first_or_none(empresas_relaciones))
+    representante_empresa = _build_representante_empresa_from_contract(contrato_principal_raw) or _build_representante_empresa_from_relation(_first_or_none(empresas_relaciones))
+
     formulario_data = _build_formulario(expediente_full)
     representante = config_service.get_representante_config()
 
@@ -334,6 +495,12 @@ def build_snapshot(expediente_id):
         "cliente": _build_cliente(expediente_full),
         "contactos": familiares,
         "empleadores": empleadores,
+        "empresas": _build_empresas_snapshot(empresas_relaciones),
+        "empresa_principal": empresa_principal,
+        "representante_empresa": representante_empresa,
+        "contratos": [_build_contrato_snapshot(row) for row in contratos_expediente],
+        "contrato": _build_contrato_snapshot(contrato_principal_raw),
+        "centro_trabajo": _build_centro_trabajo_snapshot(contrato_principal_raw),
         "representante": representante,
         "formulario": formulario_data.get("formulario") or {},
         "campos": formulario_data.get("campos") or [],
