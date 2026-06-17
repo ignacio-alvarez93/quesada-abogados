@@ -252,15 +252,145 @@ ADMIN_DOCUMENT_EVENT_LABELS = {
 }
 
 
+ADMIN_DOCUMENT_STATE_TRANSITIONS = {
+    # Fase 2 conservadora: solo mapea a estados existentes en config_estados_administrativos.
+    "JUSTIFICANTE_PRESENTACION": "PRESENTADO",
+    "ADMISION_TRAMITE": "ADMITIDO",
+    "REQUERIMIENTO": "REQUERIDO",
+    "RESOLUCION_FAVORABLE": "RESUELTO FAVORABLE",
+    "RESOLUCION_DESFAVORABLE": "RESUELTO DENEGADO",
+}
+
+
+def _get_estado_administrativo_nombre(conn, estado_id):
+    if not estado_id:
+        return ""
+    row = conn.execute(
+        """
+        SELECT nombre
+        FROM config_estados_administrativos
+        WHERE id = ?
+        """,
+        (int(estado_id),),
+    ).fetchone()
+    return _text(row["nombre"]) if row else ""
+
+
+def _get_estado_administrativo_id(conn, nombre):
+    nombre = _text(nombre)
+    if not nombre:
+        return None
+    row = conn.execute(
+        """
+        SELECT id
+        FROM config_estados_administrativos
+        WHERE UPPER(TRIM(nombre)) = ?
+        LIMIT 1
+        """,
+        (nombre,),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def _apply_admin_document_transition(expediente_id, event_code):
+    """
+    Aplica transición administrativa si el documento anexado tiene mapping
+    hacia un estado administrativo existente.
+
+    Devuelve:
+    {
+        "changed": bool,
+        "estado_anterior": str,
+        "estado_nuevo": str,
+        "estado_nuevo_id": int | None,
+    }
+    """
+    target_state = ADMIN_DOCUMENT_STATE_TRANSITIONS.get(_text(event_code))
+    if not target_state:
+        return {
+            "changed": False,
+            "estado_anterior": "",
+            "estado_nuevo": "",
+            "estado_nuevo_id": None,
+        }
+
+    with _connect() as conn:
+        expediente = conn.execute(
+            """
+            SELECT id, estado_administrativo_id
+            FROM expedientes
+            WHERE id = ?
+            """,
+            (int(expediente_id),),
+        ).fetchone()
+
+        if not expediente:
+            raise ValueError("Expediente no encontrado")
+
+        estado_anterior = _get_estado_administrativo_nombre(
+            conn,
+            expediente["estado_administrativo_id"],
+        )
+        estado_nuevo_id = _get_estado_administrativo_id(conn, target_state)
+
+        if not estado_nuevo_id:
+            return {
+                "changed": False,
+                "estado_anterior": estado_anterior,
+                "estado_nuevo": "",
+                "estado_nuevo_id": None,
+            }
+
+        estado_nuevo = _text(target_state)
+
+        if int(expediente["estado_administrativo_id"] or 0) == int(estado_nuevo_id):
+            return {
+                "changed": False,
+                "estado_anterior": estado_anterior,
+                "estado_nuevo": estado_nuevo,
+                "estado_nuevo_id": estado_nuevo_id,
+            }
+
+        if _text(event_code) == "JUSTIFICANTE_PRESENTACION":
+            conn.execute(
+                """
+                UPDATE expedientes
+                SET estado_administrativo_id = ?,
+                    estado_presentacion = 'PRESENTADO',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (estado_nuevo_id, int(expediente_id)),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE expedientes
+                SET estado_administrativo_id = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (estado_nuevo_id, int(expediente_id)),
+            )
+        conn.commit()
+
+    return {
+        "changed": True,
+        "estado_anterior": estado_anterior,
+        "estado_nuevo": estado_nuevo,
+        "estado_nuevo_id": estado_nuevo_id,
+    }
+
+
 def create_admin_document_event(data):
     """
     Registra un documento administrativo seleccionado manualmente desde la
     pestaña Trazabilidad del expediente.
 
-    Fase 1:
+    Fase 2:
     - guarda la referencia en expediente_justificantes;
-    - registra evento específico en expediente_eventos;
-    - no cambia todavía el estado administrativo del expediente.
+    - aplica transición administrativa si el event_code tiene mapping;
+    - registra evento específico en expediente_eventos con estado anterior/nuevo.
     """
     expediente_id = int(data.get("expediente_id"))
     file_path = _raw(data.get("archivo_ruta") or data.get("file_path"))
@@ -285,6 +415,15 @@ def create_admin_document_event(data):
         "observaciones": observaciones,
     })
 
+    transition = _apply_admin_document_transition(expediente_id, event_code)
+
+    transition_text = ""
+    if transition.get("changed"):
+        transition_text = (
+            f"\nTransición administrativa: "
+            f"{transition.get('estado_anterior') or 'SIN ESTADO'} → {transition.get('estado_nuevo')}"
+        )
+
     evento_id = registrar_evento(
         expediente_id=expediente_id,
         cliente_id=expediente["cliente_id"],
@@ -294,7 +433,10 @@ def create_admin_document_event(data):
             f"Documento: {file_name or Path(file_path).name or file_path}"
             + (f"\nRuta: {file_path}" if file_path else "")
             + (f"\nObservaciones: {observaciones}" if observaciones else "")
+            + transition_text
         ),
+        estado_anterior=transition.get("estado_anterior") or "",
+        estado_nuevo=transition.get("estado_nuevo") or "",
         entidad_relacionada="expediente_justificantes",
         entidad_relacionada_id=justificante_id,
         usuario=_raw(data.get("usuario") or "ERP"),
@@ -305,6 +447,10 @@ def create_admin_document_event(data):
         "evento_id": evento_id,
         "event_code": event_code,
         "event_label": label,
+        "transition_applied": bool(transition.get("changed")),
+        "estado_anterior": transition.get("estado_anterior") or "",
+        "estado_nuevo": transition.get("estado_nuevo") or "",
+        "estado_nuevo_id": transition.get("estado_nuevo_id"),
     }
 
 
