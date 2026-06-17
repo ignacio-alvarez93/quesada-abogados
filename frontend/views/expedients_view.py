@@ -4528,6 +4528,26 @@ def expedients_view(page: ft.Page):
                 "observaciones": admin_document_observaciones.value,
                 "usuario": "ERP",
             })
+
+            # Sincroniza los controles principales del formulario abierto.
+            # Sin esto, al guardar el expediente se pisa la transición automática
+            # con el valor antiguo que tenía el dropdown en memoria.
+            estado_nuevo_id = result.get("estado_nuevo_id")
+            estado_nuevo = (result.get("estado_nuevo") or "").strip().upper()
+
+            if estado_nuevo_id:
+                estado_administrativo.value = next(
+                    (
+                        option
+                        for option in estado_admin_options
+                        if option.startswith(str(estado_nuevo_id) + " - ")
+                    ),
+                    estado_administrativo.value,
+                )
+
+            if estado_nuevo == "PRESENTADO":
+                estado_presentacion.value = "PRESENTADO"
+
             admin_document_dialog.open = False
             set_message(success_alert(f"Documento anexado: {result.get('event_label') or 'evento administrativo'}"))
             state["dialog_section"] = "trazabilidad"
