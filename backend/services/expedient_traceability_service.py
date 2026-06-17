@@ -235,6 +235,79 @@ def get_justificantes_expediente(expediente_id):
         ]
 
 
+
+
+ADMIN_DOCUMENT_EVENT_LABELS = {
+    "JUSTIFICANTE_PRESENTACION": "Justificante de presentación",
+    "ADMISION_TRAMITE": "Admisión a trámite",
+    "INADMISION_TRAMITE": "Inadmisión a trámite",
+    "ADMISION_TRAMITE_TASA": "Admisión a trámite y tasa",
+    "JUSTIFICANTE_TASA": "Justificante de tasa",
+    "REQUERIMIENTO": "Requerimiento",
+    "JUSTIFICANTE_APORTACION_DOCUMENTACION": "Justificante aportación documentación",
+    "JUSTIFICANTE_AMPLIACION_PLAZO": "Justificante ampliación de plazo",
+    "RESOLUCION_FAVORABLE": "Resolución favorable",
+    "RESOLUCION_DESFAVORABLE": "Resolución desfavorable",
+    "OTRO": "Otro documento administrativo",
+}
+
+
+def create_admin_document_event(data):
+    """
+    Registra un documento administrativo seleccionado manualmente desde la
+    pestaña Trazabilidad del expediente.
+
+    Fase 1:
+    - guarda la referencia en expediente_justificantes;
+    - registra evento específico en expediente_eventos;
+    - no cambia todavía el estado administrativo del expediente.
+    """
+    expediente_id = int(data.get("expediente_id"))
+    file_path = _raw(data.get("archivo_ruta") or data.get("file_path"))
+    file_name = _raw(data.get("archivo_nombre") or data.get("file_name"))
+    event_code = _text(data.get("event_code") or data.get("tipo_justificante") or "OTRO")
+    observaciones = _raw(data.get("observaciones"))
+
+    if not file_path and not file_name:
+        raise ValueError("Selecciona un documento para anexar")
+
+    expediente = get_expediente_basic(expediente_id)
+    if not expediente:
+        raise ValueError("Expediente no encontrado")
+
+    label = ADMIN_DOCUMENT_EVENT_LABELS.get(event_code, event_code.replace("_", " ").title())
+    justificante_id = create_justificante({
+        "expediente_id": expediente_id,
+        "archivo_nombre": file_name or Path(file_path).name,
+        "archivo_ruta": file_path,
+        "tipo_justificante": event_code,
+        "estado_conciliacion": "PENDIENTE",
+        "observaciones": observaciones,
+    })
+
+    evento_id = registrar_evento(
+        expediente_id=expediente_id,
+        cliente_id=expediente["cliente_id"],
+        tipo_evento="DOCUMENTO_ADMINISTRATIVO",
+        titulo=f"DOCUMENTO ADMINISTRATIVO ANEXADO · {label}",
+        descripcion=(
+            f"Documento: {file_name or Path(file_path).name or file_path}"
+            + (f"\nRuta: {file_path}" if file_path else "")
+            + (f"\nObservaciones: {observaciones}" if observaciones else "")
+        ),
+        entidad_relacionada="expediente_justificantes",
+        entidad_relacionada_id=justificante_id,
+        usuario=_raw(data.get("usuario") or "ERP"),
+    )
+
+    return {
+        "justificante_id": justificante_id,
+        "evento_id": evento_id,
+        "event_code": event_code,
+        "event_label": label,
+    }
+
+
 def create_consulta_previa(data):
     cliente_id = int(data.get("cliente_id"))
     importe = _float(data.get("importe"))
