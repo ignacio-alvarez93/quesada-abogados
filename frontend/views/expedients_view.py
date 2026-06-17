@@ -270,6 +270,30 @@ def expedients_view(page: ft.Page):
     observaciones_internas = multiline_input("Observaciones internas", width=720)
     box_folder_path = text_input("Ruta Box futura / observada", width=720)
 
+    admin_document_event_options = [
+        "JUSTIFICANTE_PRESENTACION - Justificante de presentación",
+        "ADMISION_TRAMITE - Admisión a trámite",
+        "INADMISION_TRAMITE - Inadmisión a trámite",
+        "ADMISION_TRAMITE_TASA - Admisión a trámite y tasa",
+        "JUSTIFICANTE_TASA - Justificante de tasa",
+        "REQUERIMIENTO - Requerimiento",
+        "JUSTIFICANTE_APORTACION_DOCUMENTACION - Justificante aportación documentación",
+        "JUSTIFICANTE_AMPLIACION_PLAZO - Justificante ampliación de plazo",
+        "RESOLUCION_FAVORABLE - Resolución favorable",
+        "RESOLUCION_DESFAVORABLE - Resolución desfavorable",
+        "OTRO - Otro documento administrativo",
+    ]
+
+    admin_document_event_type = select_input(
+        "Tipo de documento / evento",
+        admin_document_event_options,
+        value=admin_document_event_options[0],
+        width=620,
+    )
+    admin_document_selected_file = text_input("Documento seleccionado", width=720)
+    admin_document_selected_file.read_only = True
+    admin_document_observaciones = multiline_input("Observaciones", width=720, height=90)
+
     def refresh_subtipo_options_for_tipo(selected_subtipo_id=None, tipo_value=None, reset_value=False):
         """
         Refresca los subtipos según el tipo seleccionado.
@@ -4437,6 +4461,82 @@ def expedients_view(page: ft.Page):
         except Exception as exc:
             return ft.Container(width=920, height=620, content=error_alert(str(exc)))
 
+    def _admin_event_code_from_option(value):
+        value = str(value or "").strip()
+        return value.split(" - ", 1)[0].strip() if " - " in value else value
+
+    async def open_admin_document_picker(e=None):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            show_form_error("Guarda primero el expediente antes de anexar documentos")
+            return
+
+        state["admin_document_expediente_id"] = int(expediente_id)
+        state["admin_document_file"] = None
+
+        try:
+            files = await ft.FilePicker().pick_files(allow_multiple=False)
+        except Exception as exc:
+            show_form_error(str(exc))
+            return
+
+        if not files:
+            return
+
+        selected = files[0]
+        file_path = getattr(selected, "path", "") or getattr(selected, "name", "")
+        file_name = getattr(selected, "name", "") or Path(str(file_path)).name
+
+        if not file_path:
+            show_form_error("No se pudo obtener la ruta del archivo seleccionado")
+            return
+
+        state["admin_document_file"] = {
+            "path": str(file_path),
+            "name": str(file_name),
+        }
+
+        admin_document_selected_file.value = str(file_path)
+        admin_document_event_type.value = admin_document_event_options[0] if admin_document_event_options else None
+        admin_document_observaciones.value = ""
+        admin_document_dialog.open = True
+        page.update()
+
+    def close_admin_document_dialog(e=None):
+        admin_document_dialog.open = False
+        state["admin_document_file"] = None
+        admin_document_selected_file.value = ""
+        admin_document_observaciones.value = ""
+        page.update()
+
+    def save_admin_document_event(e=None):
+        expediente_id = state.get("admin_document_expediente_id") or state.get("dialog_expediente_id") or state.get("editing_id")
+        selected = state.get("admin_document_file") or {}
+        if not expediente_id:
+            show_form_error("No hay expediente activo")
+            return
+        if not selected.get("path") and not selected.get("name"):
+            show_form_error("Selecciona un documento")
+            return
+
+        try:
+            result = trace_service.create_admin_document_event({
+                "expediente_id": expediente_id,
+                "archivo_nombre": selected.get("name") or Path(selected.get("path") or "").name,
+                "archivo_ruta": selected.get("path") or selected.get("name"),
+                "event_code": _admin_event_code_from_option(admin_document_event_type.value),
+                "observaciones": admin_document_observaciones.value,
+                "usuario": "ERP",
+            })
+            admin_document_dialog.open = False
+            set_message(success_alert(f"Documento anexado: {result.get('event_label') or 'evento administrativo'}"))
+            state["dialog_section"] = "trazabilidad"
+            expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+            refresh_table()
+            page.update()
+        except Exception as exc:
+            show_form_error(str(exc))
+
     def build_traceability_content(expediente_id):
         if not expediente_id:
             return ft.Container(
@@ -4502,6 +4602,35 @@ def expedients_view(page: ft.Page):
                 scroll=ft.ScrollMode.AUTO,
                 spacing=14,
                 controls=[
+                    ft.Container(
+                        bgcolor="#EAF3FF",
+                        border=ft.border.all(1, "#B9D7FF"),
+                        border_radius=16,
+                        padding=14,
+                        content=ft.Row(
+                            controls=[
+                                ft.Container(
+                                    content=ft.Icon(ft.Icons.ATTACH_FILE, size=24, color=Q_PRIMARY),
+                                    bgcolor="#FFFFFF",
+                                    border_radius=24,
+                                    width=48,
+                                    height=48,
+                                    alignment=ft.alignment.Alignment(0, 0),
+                                ),
+                                ft.Column(
+                                    controls=[
+                                        ft.Text("Trazabilidad administrativa", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text("Anexa documentos desde la carpeta del cliente y deja rastro en el historial del expediente.", size=13, color=Q_MUTED),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                primary_button("Anexar documento", open_admin_document_picker),
+                            ],
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    ),
                     _section_box(
                         "Justificantes",
                         [rows_or_empty(["Archivo", "Ruta", "Fecha presentación", "Registro", "Estado"], justificante_rows, "No hay justificantes cargados", 240)],
@@ -5168,6 +5297,31 @@ def expedients_view(page: ft.Page):
             ),
         )
 
+
+    admin_document_dialog = form_dialog(
+        "Anexar documento administrativo",
+        ft.Column(
+            controls=[
+                admin_document_selected_file,
+                admin_document_event_type,
+                admin_document_observaciones,
+                ft.Text(
+                    "Fase 1: se guarda la referencia del archivo y se registra el evento en trazabilidad. El cambio automático de estado administrativo se conectará en la siguiente fase.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            ],
+            width=760,
+            height=300,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        actions=[
+            secondary_button("Cancelar", close_admin_document_dialog),
+            primary_button("Guardar evento", save_admin_document_event),
+        ],
+    )
+
     expediente_dialog = form_dialog(
         "Expediente",
         build_expediente_dialog_content(),
@@ -5182,6 +5336,7 @@ def expedients_view(page: ft.Page):
     except Exception:
         pass
     page.overlay.append(expediente_dialog)
+    page.overlay.append(admin_document_dialog)
 
     def open_new(e=None):
         if not cliente_options:
