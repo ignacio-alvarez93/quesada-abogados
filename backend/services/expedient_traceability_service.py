@@ -252,14 +252,76 @@ ADMIN_DOCUMENT_EVENT_LABELS = {
 }
 
 
-ADMIN_DOCUMENT_STATE_TRANSITIONS = {
-    # Fase 2 conservadora: solo mapea a estados existentes en config_estados_administrativos.
+ADMIN_DOCUMENT_BASE_STATE_TRANSITIONS = {
     "JUSTIFICANTE_PRESENTACION": "PRESENTADO",
     "ADMISION_TRAMITE": "ADMITIDO",
     "REQUERIMIENTO": "REQUERIDO",
     "RESOLUCION_FAVORABLE": "RESUELTO FAVORABLE",
     "RESOLUCION_DESFAVORABLE": "RESUELTO DENEGADO",
 }
+
+
+ADMIN_DOCUMENT_STATE_TRANSITIONS_BY_WORKFLOW = {
+    "GENERAL": ADMIN_DOCUMENT_BASE_STATE_TRANSITIONS,
+    "NACIONALIDAD": ADMIN_DOCUMENT_BASE_STATE_TRANSITIONS,
+    "EXTRANJERIA": {
+        "JUSTIFICANTE_PRESENTACION": "PRESENTADO",
+        "ADMISION_TRAMITE": "ADMITIDO",
+        "INADMISION_TRAMITE": "INADMITIDO",
+        "ADMISION_TRAMITE_TASA": "ADMITIDO CON TASA",
+        "JUSTIFICANTE_TASA": "TASA APORTADA",
+        "REQUERIMIENTO": "REQUERIDO",
+        "JUSTIFICANTE_APORTACION_DOCUMENTACION": "REQUERIMIENTO APORTADO",
+        "JUSTIFICANTE_AMPLIACION_PLAZO": "AMPLIACIÓN DE PLAZO SOLICITADA",
+        "RESOLUCION_FAVORABLE": "RESUELTO FAVORABLE",
+        "RESOLUCION_DESFAVORABLE": "RESUELTO DENEGADO",
+    },
+}
+
+
+def _resolve_expediente_workflow_code(conn, expediente_id):
+    row = conn.execute(
+        """
+        SELECT
+            e.id,
+            te.codigo AS tipo_codigo,
+            te.nombre AS tipo_nombre,
+            COALESCE(te.workflow_code, '') AS workflow_code
+        FROM expedientes e
+        LEFT JOIN config_tipos_expediente te ON te.id = e.tipo_expediente_id
+        WHERE e.id = ?
+        """,
+        (int(expediente_id),),
+    ).fetchone()
+
+    if not row:
+        return "GENERAL"
+
+    configured = _text(row["workflow_code"])
+    if configured:
+        return configured
+
+    tipo_codigo = _text(row["tipo_codigo"])
+    tipo_nombre = _text(row["tipo_nombre"])
+    combined = f"{tipo_codigo} {tipo_nombre}"
+
+    if "NACIONALIDAD" in combined:
+        return "NACIONALIDAD"
+
+    if combined.strip():
+        return "EXTRANJERIA"
+
+    return "GENERAL"
+
+
+def _get_admin_document_target_state(event_code, workflow_code):
+    workflow = _text(workflow_code) or "GENERAL"
+    transitions = ADMIN_DOCUMENT_STATE_TRANSITIONS_BY_WORKFLOW.get(
+        workflow,
+        ADMIN_DOCUMENT_STATE_TRANSITIONS_BY_WORKFLOW["GENERAL"],
+    )
+    return transitions.get(_text(event_code))
+
 
 
 def _get_estado_administrativo_nombre(conn, estado_id):
@@ -294,27 +356,26 @@ def _get_estado_administrativo_id(conn, nombre):
 
 def _apply_admin_document_transition(expediente_id, event_code):
     """
-    Aplica transición administrativa si el documento anexado tiene mapping
-    hacia un estado administrativo existente.
+    Aplica transición administrativa según el workflow del tipo de expediente.
 
-    Devuelve:
-    {
-        "changed": bool,
-        "estado_anterior": str,
-        "estado_nuevo": str,
-        "estado_nuevo_id": int | None,
-    }
+    Workflow:
+    - EXTRANJERIA: usa estados ampliados de extranjería.
+    - NACIONALIDAD: mapping base provisional.
+    - GENERAL: mapping base.
     """
-    target_state = ADMIN_DOCUMENT_STATE_TRANSITIONS.get(_text(event_code))
-    if not target_state:
-        return {
-            "changed": False,
-            "estado_anterior": "",
-            "estado_nuevo": "",
-            "estado_nuevo_id": None,
-        }
-
     with _connect() as conn:
+        workflow_code = _resolve_expediente_workflow_code(conn, expediente_id)
+        target_state = _get_admin_document_target_state(event_code, workflow_code)
+
+        if not target_state:
+            return {
+                "changed": False,
+                "workflow_code": workflow_code,
+                "estado_anterior": "",
+                "estado_nuevo": "",
+                "estado_nuevo_id": None,
+            }
+
         expediente = conn.execute(
             """
             SELECT id, estado_administrativo_id
@@ -336,6 +397,7 @@ def _apply_admin_document_transition(expediente_id, event_code):
         if not estado_nuevo_id:
             return {
                 "changed": False,
+                "workflow_code": workflow_code,
                 "estado_anterior": estado_anterior,
                 "estado_nuevo": "",
                 "estado_nuevo_id": None,
@@ -346,6 +408,7 @@ def _apply_admin_document_transition(expediente_id, event_code):
         if int(expediente["estado_administrativo_id"] or 0) == int(estado_nuevo_id):
             return {
                 "changed": False,
+                "workflow_code": workflow_code,
                 "estado_anterior": estado_anterior,
                 "estado_nuevo": estado_nuevo,
                 "estado_nuevo_id": estado_nuevo_id,
@@ -372,14 +435,17 @@ def _apply_admin_document_transition(expediente_id, event_code):
                 """,
                 (estado_nuevo_id, int(expediente_id)),
             )
+
         conn.commit()
 
     return {
         "changed": True,
+        "workflow_code": workflow_code,
         "estado_anterior": estado_anterior,
         "estado_nuevo": estado_nuevo,
         "estado_nuevo_id": estado_nuevo_id,
     }
+
 
 
 def create_admin_document_event(data):
@@ -448,6 +514,7 @@ def create_admin_document_event(data):
         "event_code": event_code,
         "event_label": label,
         "transition_applied": bool(transition.get("changed")),
+        "workflow_code": transition.get("workflow_code") or "",
         "estado_anterior": transition.get("estado_anterior") or "",
         "estado_nuevo": transition.get("estado_nuevo") or "",
         "estado_nuevo_id": transition.get("estado_nuevo_id"),
