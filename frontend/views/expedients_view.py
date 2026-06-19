@@ -2411,7 +2411,7 @@ def expedients_view(page: ft.Page):
         json_path = output.get("json_path") or output.get("payload_path") or ""
         return generated, pdf_path, json_path
 
-    def generate_specific_ex_template(template, e=None):
+    def generate_specific_ex_template(template, e=None, return_section=None):
         expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
         formulario_id = state.get("specific_formulario_id")
         if not expediente_id:
@@ -2431,7 +2431,7 @@ def expedients_view(page: ft.Page):
             _set_specific_generation_success(expediente_id, title, pdf_path or json_path)
             clear_form_message()
             set_message(success_alert(title + (f"\nArchivo: {pdf_path or json_path}" if (pdf_path or json_path) else "")))
-            state["dialog_section"] = "datos_especificos"
+            state["dialog_section"] = return_section or state.get("dialog_section") or "datos_especificos"
             expediente_dialog.content = build_expediente_dialog_content(expediente_id)
             page.update()
         except Exception as exc:
@@ -2544,7 +2544,7 @@ def expedients_view(page: ft.Page):
                     f"\nArchivo: {fallback.get('path')}"
                 ))
 
-            state["dialog_section"] = "datos_especificos"
+            state["dialog_section"] = return_section or state.get("dialog_section") or "datos_especificos"
             expediente_dialog.content = build_expediente_dialog_content(expediente_id)
             page.update()
         except Exception as exc:
@@ -4971,6 +4971,46 @@ def expedients_view(page: ft.Page):
         expediente_dialog.content = build_expediente_dialog_content(expediente_id)
         page.update()
 
+    def _official_form_template_card(template):
+        template_id = template.get("id")
+        nombre = template.get("nombre") or template.get("codigo") or template.get("mapper_destino") or "Formulario oficial"
+        codigo = template.get("codigo") or "-"
+        categoria = template.get("categoria") or "EX"
+        mapper = template.get("mapper_destino") or "-"
+        template_type = template.get("template_type") or "pdf"
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.PICTURE_AS_PDF, size=20, color="#B42318"),
+                        bgcolor="#FEF3F2",
+                        border_radius=20,
+                        width=40,
+                        height=40,
+                        alignment=ft.alignment.Alignment(0, 0),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(nombre, size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(f"{codigo} · {categoria} · {template_type}", size=11, color=Q_MUTED),
+                            ft.Text(f"Mapper destino: {mapper}", size=11, color=Q_MUTED, selectable=True),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                    primary_button("Generar formulario", lambda ev, t=template: generate_specific_ex_template(t, ev, return_section="plantillas")),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+
     def _docx_template_card(template):
         template_id = template.get("id")
         nombre = template.get("nombre") or template.get("codigo") or "Plantilla"
@@ -5019,9 +5059,11 @@ def expedients_view(page: ft.Page):
             )
 
         expediente_id = int(expediente_id)
-        templates = _load_docx_templates_for_expediente()
+        official_templates = _list_ex_document_templates_for_menu()
+        docx_templates = _load_docx_templates_for_expediente()
         result = state.setdefault("expedient_docx_result", {}).get(expediente_id)
         error = state.setdefault("expedient_docx_error", {}).get(expediente_id)
+        ex_result = state.setdefault("specific_generation_result", {}).get(expediente_id)
 
         controls = [
             ft.Container(
@@ -5041,8 +5083,17 @@ def expedients_view(page: ft.Page):
                         ),
                         ft.Column(
                             controls=[
-                                ft.Text("Plantillas documentales", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                ft.Text("Genera DOCX desde plantillas registradas usando el payload del mapper.", size=13, color=Q_MUTED),
+                                ft.Text("Plantillas y formularios", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(
+                                    "Genera formularios oficiales EX/PDF y documentos DOCX usando los datos revisados del expediente.",
+                                    size=13,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    "Los archivos generados se integrarán más adelante con la Bandeja documental.",
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
                             ],
                             spacing=2,
                             expand=True,
@@ -5056,6 +5107,25 @@ def expedients_view(page: ft.Page):
 
         if error:
             controls.append(error_alert(error))
+
+        if ex_result:
+            controls.append(
+                ft.Container(
+                    bgcolor="#ECFDF3",
+                    border=ft.border.all(1, "#ABEFC6"),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        spacing=4,
+                        controls=[
+                            ft.Text("Último formulario generado", size=14, weight=ft.FontWeight.BOLD, color="#027A48"),
+                            ft.Text(ex_result.get("title") or "Formulario generado", size=12, color=Q_PRIMARY_DARK),
+                            ft.Text(ex_result.get("path") or ex_result.get("extra") or "-", size=12, color=Q_PRIMARY_DARK, selectable=True),
+                            ft.Text(f"Realizado: {ex_result.get('at') or '-'}", size=10, color=Q_MUTED),
+                        ],
+                    ),
+                )
+            )
 
         if result:
             output = result.get("output") or {}
@@ -5083,10 +5153,41 @@ def expedients_view(page: ft.Page):
                 )
             )
 
-        if not templates:
+        controls.append(
+            ft.Container(
+                padding=ft.padding.only(top=4, bottom=2),
+                content=ft.Column(
+                    spacing=2,
+                    controls=[
+                        ft.Text("Formularios oficiales", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Text("EX/PDF compatibles con el tipo y subtipo del expediente", size=12, color=Q_MUTED),
+                    ],
+                ),
+            )
+        )
+
+        if not official_templates:
+            controls.append(empty_state("No hay formularios oficiales EX/PDF activos compatibles con este expediente"))
+        else:
+            controls.extend(_official_form_template_card(template) for template in official_templates)
+
+        controls.append(
+            ft.Container(
+                padding=ft.padding.only(top=10, bottom=2),
+                content=ft.Column(
+                    spacing=2,
+                    controls=[
+                        ft.Text("Plantillas documentales", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Text("DOCX/Word internos del despacho", size=12, color=Q_MUTED),
+                    ],
+                ),
+            )
+        )
+
+        if not docx_templates:
             controls.append(empty_state("No hay plantillas DOCX activas configuradas"))
         else:
-            controls.extend(_docx_template_card(template) for template in templates)
+            controls.extend(_docx_template_card(template) for template in docx_templates)
 
         return ft.Column(
             width=920,
@@ -5254,7 +5355,7 @@ def expedients_view(page: ft.Page):
             ("Ficha", "ficha", ft.Icons.ARTICLE, "Datos base"),
             ("Datos específicos", "datos_especificos", ft.Icons.DYNAMIC_FORM, "Formulario"),
             ("Documentación", "documentacion", ft.Icons.FOLDER_OPEN, "Box / PARA PRESENTAR"),
-            ("Plantillas", "plantillas", ft.Icons.DESCRIPTION, "Generar DOCX"),
+            ("Plantillas y formularios", "plantillas", ft.Icons.DESCRIPTION, "EX / DOCX"),
             ("Diagnóstico", "diagnostico", ft.Icons.FACT_CHECK, "Estado documental"),
             ("Automatización", "automatizacion", ft.Icons.ROCKET_LAUNCH, "Payload mapper"),
             ("Trazabilidad", "trazabilidad", ft.Icons.TIMELINE, "Historial"),
