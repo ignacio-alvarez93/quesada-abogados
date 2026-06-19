@@ -333,6 +333,49 @@ def get_mercurio_mapper_mode(datos_mercurio):
     }
 
 
+def wait_for_human_navigation(browser, session_dir, label, ready_js, timeout=300, interval=0.5, fallback_prompt=None):
+    """
+    Espera a que el usuario pulse CONTINUAR manualmente en Mercurio y a que
+    la pantalla destino esté lista.
+
+    No automatiza el click de CONTINUAR: solo observa el DOM.
+    Si no se detecta la pantalla en plazo, conserva el fallback por ENTER.
+    """
+    print()
+    print("=" * 80)
+    print(f"PAUSA HUMANA ASISTIDA: {label}")
+    print("Pulsa MANUALMENTE CONTINUAR en Mercurio.")
+    print("No hace falta volver a CMD si la pantalla destino se detecta correctamente.")
+    print("=" * 80)
+    write_log(session_dir, f"Espera humana asistida iniciada: {label}")
+
+    try:
+        wait_for_js(browser, ready_js, timeout=timeout, interval=interval)
+        write_log(session_dir, f"Espera humana asistida OK: {label}")
+        print(f"[OK] Pantalla detectada: {label}")
+        return {"ok": True, "mode": "human_dom_detected", "label": label}
+    except Exception as exc:
+        write_log(session_dir, f"Espera humana asistida timeout/fallo: {label}: {repr(exc)}")
+        print()
+        print("=" * 80)
+        print(f"No se ha podido detectar automáticamente: {label}")
+        print("Si ya has avanzado correctamente en Mercurio, usa el fallback por consola.")
+        print("=" * 80)
+        input(fallback_prompt or "Pulsa ENTER para continuar...")
+        try:
+            wait_for_js(browser, ready_js, timeout=10, interval=0.5)
+            write_log(session_dir, f"Fallback ENTER confirmado por DOM: {label}")
+            return {"ok": True, "mode": "human_enter_fallback_confirmed", "label": label}
+        except Exception as confirm_exc:
+            write_log(session_dir, f"Fallback ENTER sin confirmación DOM: {label}: {repr(confirm_exc)}")
+            return {
+                "ok": False,
+                "mode": "human_enter_fallback_not_confirmed",
+                "label": label,
+                "error": repr(confirm_exc),
+            }
+
+
 def step_continuar_inicial(browser, session_dir):
     print("[1] Pantalla inicial -> Continuar")
     write_log(session_dir, "Pantalla inicial -> continuar('INI')")
@@ -347,14 +390,21 @@ def step_continuar_abogacia(browser, session_dir):
     js(browser, "validarYEnviar('AB');")
 
 
-def pause_certificado(session_dir):
+def pause_certificado(browser, session_dir):
     print()
     print("=" * 80)
     print("PAUSA HUMANA: selecciona el certificado digital manualmente.")
-    print("Cuando Mercurio haya avanzado a 'Opciones disponibles', vuelve aquí y pulsa ENTER.")
+    print("El script continuará cuando detecte la pantalla de Opciones disponibles.")
     print("=" * 80)
     write_log(session_dir, "Pausa humana certificado")
-    input("Pulsa ENTER para continuar...")
+    return wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Opciones disponibles",
+        "typeof mostrarOpcion === 'function'",
+        timeout=300,
+        fallback_prompt="Pulsa ENTER cuando Mercurio esté en Opciones disponibles...",
+    )
 
 
 def step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=""):
@@ -397,7 +447,7 @@ def step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_
         write_log(session_dir, f"No se pudo guardar HTML tras aviso Mercurio: {repr(exc)}")
 
 
-def pause_supuesto(session_dir, tipo_formulario_objetivo=""):
+def pause_supuesto(browser, session_dir, tipo_formulario_objetivo=""):
     tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
     print()
     print("=" * 80)
@@ -408,10 +458,17 @@ def pause_supuesto(session_dir, tipo_formulario_objetivo=""):
     print("- Selecciona en Mercurio el supuesto/formulario que corresponda a ese objetivo.")
     print("- Si Mercurio muestra otra cosa o tienes dudas, NO continúes y guarda HTML.")
     print()
-    print("Cuando estés en la pantalla de 'Datos del extranjero/a', pulsa ENTER.")
+    print("El script continuará cuando detecte la pantalla de Datos del extranjero/a.")
     print("=" * 80)
     write_log(session_dir, f"Pausa humana supuesto. Formulario objetivo={tipo_desc}")
-    input("Pulsa ENTER para continuar...")
+    return wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Datos del extranjero/a",
+        "document.getElementById('extNombre') || document.getElementById('extNie') || document.getElementById('extPasaporte') || document.getElementById('extNacionalidad')",
+        timeout=300,
+        fallback_prompt="Pulsa ENTER cuando estés en Datos del extranjero/a...",
+    )
 
 
 def select_piso_by_options(browser, field_id, value=None, session_dir=None):
@@ -1011,70 +1068,58 @@ def fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir):
     return True
 
 def click_continuar_ex02_extranjero_to_reagrupante(browser, session_dir):
-    """Pausa humana desde Datos del extranjero/reagrupado a Datos del reagrupante."""
-    print("[8] PAUSA HUMANA - CONTINUAR a DATOS DEL REAGRUPANTE EX02")
-    write_log(session_dir, "Pausa humana EX02: extranjero/reagrupado -> reagrupante")
-    print()
-    print("=" * 80)
-    print("PAUSA HUMANA EX02")
-    print("Pulsa MANUALMENTE CONTINUAR para pasar a Datos del reagrupante.")
-    print("Cuando estés en la pantalla del reagrupante, vuelve aquí y pulsa ENTER.")
-    print("=" * 80)
-    input("Pulsa ENTER cuando estés en Datos del reagrupante...")
-    return {"ok": True, "mode": "human_required"}
+    """Espera humana desde Datos del extranjero/reagrupado a Datos del reagrupante."""
+    print("[8] ESPERA HUMANA - CONTINUAR a DATOS DEL REAGRUPANTE EX02")
+    write_log(session_dir, "Espera humana EX02: extranjero/reagrupado -> reagrupante")
+    return wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Datos del reagrupante EX02",
+        "document.getElementById('reaNombreReagrupante') || document.getElementById('reaNieReagrupante') || document.getElementById('reaPasaporteReagrupante')",
+        timeout=300,
+        fallback_prompt="Pulsa ENTER cuando estés en Datos del reagrupante...",
+    )
 
 
 def click_continuar_ex02_reagrupante_to_presentador(browser, session_dir):
-    """Pausa humana desde Datos del reagrupante a Datos del presentador."""
-    print("[9] PAUSA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
-    write_log(session_dir, "Pausa humana EX02: reagrupante -> presentador")
-    print()
-    print("=" * 80)
-    print("PAUSA HUMANA EX02")
-    print("Pulsa MANUALMENTE CONTINUAR para pasar desde Datos del reagrupante a Datos del presentador.")
-    print("Cuando estés en Datos del presentador, vuelve aquí y pulsa ENTER.")
-    print("=" * 80)
-    input("Pulsa ENTER cuando estés en Datos del presentador...")
-    try:
-        wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=10, interval=0.5)
-        write_log(session_dir, "EX02 presentador visible confirmado")
-    except Exception as exc:
-        write_log(session_dir, f"EX02 presentador no confirmado: {repr(exc)}")
-    return {"ok": True, "mode": "human_required"}
+    """Espera humana desde Datos del reagrupante a Datos del presentador."""
+    print("[9] ESPERA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
+    write_log(session_dir, "Espera humana EX02: reagrupante -> presentador")
+    return wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Datos del presentador",
+        "document.getElementById('preNombrePresentador')",
+        timeout=300,
+        fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+    )
 
 def click_continuar_ex02_reagrupante_to_reagrupado(browser, session_dir):
-    """Pausa humana desde Datos del reagrupante a Datos del reagrupado/solicitante."""
-    print("[8] PAUSA HUMANA - CONTINUAR a DATOS DEL REAGRUPADO/SOLICITANTE")
-    write_log(session_dir, "Pausa humana EX02: reagrupante -> reagrupado/solicitante")
-    print()
-    print("=" * 80)
-    print("PAUSA HUMANA EX02")
-    print("Pulsa MANUALMENTE CONTINUAR en Mercurio para pasar desde Datos del reagrupante")
-    print("a Datos del reagrupado/solicitante.")
-    print("Cuando estés en esa pantalla, vuelve aquí y pulsa ENTER.")
-    print("=" * 80)
-    input("Pulsa ENTER cuando estés en Datos del reagrupado/solicitante...")
-    return {"ok": True, "mode": "human_required"}
+    """Espera humana desde Datos del reagrupante a Datos del reagrupado/solicitante."""
+    print("[8] ESPERA HUMANA - CONTINUAR a DATOS DEL REAGRUPADO/SOLICITANTE")
+    write_log(session_dir, "Espera humana EX02: reagrupante -> reagrupado/solicitante")
+    return wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Datos del reagrupado/solicitante",
+        "document.getElementById('extNombre') || document.getElementById('extNie') || document.getElementById('extPasaporte') || document.getElementById('extNacionalidad')",
+        timeout=300,
+        fallback_prompt="Pulsa ENTER cuando estés en Datos del reagrupado/solicitante...",
+    )
 
 
 def click_continuar_ex02_reagrupado_to_presentador(browser, session_dir):
-    """Pausa humana desde Datos del reagrupado/solicitante a Datos del presentador."""
-    print("[9] PAUSA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
-    write_log(session_dir, "Pausa humana EX02: reagrupado/solicitante -> presentador")
-    print()
-    print("=" * 80)
-    print("PAUSA HUMANA EX02")
-    print("Pulsa MANUALMENTE CONTINUAR en Mercurio para pasar desde Datos del reagrupado/solicitante")
-    print("a Datos del presentador.")
-    print("Cuando estés en Datos del presentador, vuelve aquí y pulsa ENTER.")
-    print("=" * 80)
-    input("Pulsa ENTER cuando estés en Datos del presentador...")
-    try:
-        wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=10, interval=0.5)
-        write_log(session_dir, "EX02 presentador visible confirmado")
-    except Exception as exc:
-        write_log(session_dir, f"EX02 presentador no confirmado: {repr(exc)}")
-    return {"ok": True, "mode": "human_required"}
+    """Espera humana desde Datos del reagrupado/solicitante a Datos del presentador."""
+    print("[9] ESPERA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
+    write_log(session_dir, "Espera humana EX02: reagrupado/solicitante -> presentador")
+    return wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Datos del presentador",
+        "document.getElementById('preNombrePresentador')",
+        timeout=300,
+        fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+    )
 
 
 def click_continuar_extranjero_to_familiar(browser, session_dir):
@@ -1091,15 +1136,14 @@ def click_continuar_extranjero_to_familiar(browser, session_dir):
     print("Cuando estés en Datos del familiar, vuelve aquí y pulsa ENTER.")
     print("=" * 80)
 
-    input("Pulsa ENTER cuando estés en Datos del familiar...")
-
-    try:
-        wait_for_js(browser, "document.getElementById('reaNombreReagrupante') || document.getElementById('reaDocumentoReagrupante')", timeout=10, interval=0.5)
-        write_log(session_dir, "Continuar humano confirmado: pestaña familiar visible")
-        return {"ok": True, "mode": "human_required"}
-    except Exception as exc:
-        write_log(session_dir, f"Continuar a familiar no confirmado: {repr(exc)}")
-        return {"ok": False, "mode": "human_required_not_confirmed", "error": repr(exc)}
+    return wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Datos del familiar",
+        "document.getElementById('reaNombreReagrupante') || document.getElementById('reaDocumentoReagrupante') || document.getElementById('reaNieReagrupante')",
+        timeout=300,
+        fallback_prompt="Pulsa ENTER cuando estés en Datos del familiar...",
+    )
 
 
 def click_continuar_familiar_to_presentador(browser, session_dir):
@@ -1116,15 +1160,14 @@ def click_continuar_familiar_to_presentador(browser, session_dir):
     print("Cuando estés en Datos del presentador, vuelve aquí y pulsa ENTER.")
     print("=" * 80)
 
-    input("Pulsa ENTER cuando estés en Datos del presentador...")
-
-    try:
-        wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=10, interval=0.5)
-        write_log(session_dir, "Continuar humano confirmado: preNombrePresentador visible")
-        return {"ok": True, "mode": "human_required"}
-    except Exception as exc:
-        write_log(session_dir, f"Continuar a presentador no confirmado: {repr(exc)}")
-        return {"ok": False, "mode": "human_required_not_confirmed", "error": repr(exc)}
+    return wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Datos del presentador",
+        "document.getElementById('preNombrePresentador')",
+        timeout=300,
+        fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+    )
 
 
 
@@ -1153,15 +1196,14 @@ def click_continuar(browser, session_dir):
     print("Cuando estés en Datos del presentador, vuelve aquí y pulsa ENTER.")
     print("=" * 80)
 
-    input("Pulsa ENTER cuando estés en Datos del presentador...")
-
-    try:
-        wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=10, interval=0.5)
-        write_log(session_dir, "Continuar humano confirmado: preNombrePresentador visible")
-        return {"ok": True, "mode": "human_required"}
-    except Exception as exc:
-        write_log(session_dir, f"Continuar humano no confirmado: {repr(exc)}")
-        return {"ok": False, "mode": "human_required_not_confirmed", "error": repr(exc)}
+    return wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Datos del presentador",
+        "document.getElementById('preNombrePresentador')",
+        timeout=300,
+        fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+    )
 
 
 
@@ -1677,9 +1719,9 @@ def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
     write_log(session_dir, f"Mapper interno Mercurio: {describe_mapper_codigo(mapper_mode.get('mapper_codigo'))}")
     step_continuar_inicial(browser, session_dir)
     step_continuar_abogacia(browser, session_dir)
-    pause_certificado(session_dir)
+    pause_certificado(browser, session_dir)
     step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
-    pause_supuesto(session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
+    pause_supuesto(browser, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
     if datos_mercurio:
         if mapper_mode.get("is_ex02"):
             # Orden real Mercurio EX02:
