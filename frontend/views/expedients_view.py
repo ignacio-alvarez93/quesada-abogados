@@ -157,7 +157,7 @@ def _mercurio_file_order_label(item):
     return "-"
 
 
-def expedients_view(page: ft.Page):
+def expedients_view(page: ft.Page, on_return_to_queue=None):
     expedient_service.initialize_expedients_schema()
     trace_service.initialize_traceability_schema()
     dynamic_form_service.initialize_dynamic_forms_schema()
@@ -538,6 +538,15 @@ def expedients_view(page: ft.Page):
 
     def close_dialog(e=None):
         expediente_dialog.open = False
+
+        should_return_to_queue = bool(getattr(page, "return_to_queue_after_expediente", False))
+        if should_return_to_queue and state.get("dialog_expediente_id"):
+            page.return_to_queue_after_expediente = False
+            page.open_expediente_id = None
+            page.update()
+            if on_return_to_queue:
+                on_return_to_queue()
+            return
         page.update()
 
     def save_expediente(e=None):
@@ -5500,6 +5509,30 @@ def expedients_view(page: ft.Page):
         page.update()
         scan_expediente_box_in_background(expediente_id)
 
+    def open_pending_expediente_from_navigation():
+        pending_id = getattr(page, "open_expediente_id", None)
+        page.open_expediente_id = None
+
+        if not pending_id:
+            return
+
+        try:
+            pending_id = int(pending_id)
+        except (TypeError, ValueError):
+            return
+
+        expediente = next(
+            (item for item in state.get("expedientes", []) if int(item.get("id") or 0) == pending_id),
+            None,
+        )
+
+        if expediente:
+            open_edit(expediente)
+        else:
+            set_message(error_alert(f"No se encontró el expediente #{pending_id} para abrir la ficha"))
+            refresh()
+
+
     def get_single_selected_expediente():
         if len(state["selected_ids"]) != 1:
             return None
@@ -5882,4 +5915,5 @@ def expedients_view(page: ft.Page):
     load_data()
     table_container.content = build_table()
     content_area.content = build_view()
+    open_pending_expediente_from_navigation()
     return content_area

@@ -34,7 +34,7 @@ def _estado_badge(estado):
     )
 
 
-def presentation_queue_view(page: ft.Page):
+def presentation_queue_view(page: ft.Page, on_open_expediente=None):
     state = {
         "items": [],
         "counts": {},
@@ -84,6 +84,13 @@ def presentation_queue_view(page: ft.Page):
             set_message(error_alert(str(exc)))
         refresh()
 
+    def open_expediente(expediente_id):
+        if on_open_expediente:
+            on_open_expediente(expediente_id)
+        else:
+            set_message(error_alert("No hay navegación configurada para abrir expedientes"))
+            refresh()
+
     def filter_button(label, value):
         if state["filter"] == value:
             return primary_button(label, lambda e, v=value: set_filter(v))
@@ -97,6 +104,8 @@ def presentation_queue_view(page: ft.Page):
         can_retry = estado in ("error", "cancelado")
 
         actions = []
+
+        actions.append(secondary_button("Abrir expediente", lambda e, eid=item["expediente_id"]: open_expediente(eid)))
 
         if can_execute:
             actions.append(primary_button("Ejecutar", lambda e, qid=item["id"]: execute_item(qid)))
