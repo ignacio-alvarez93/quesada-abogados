@@ -131,6 +131,7 @@ KNOWN_ACTIVE_VIEWS = {
     "Clientes",
     "Empresas",
     "Expedientes",
+    "Colas de presentación",
     "Cobros",
     "Documentos / Box",
     "Reporting",
