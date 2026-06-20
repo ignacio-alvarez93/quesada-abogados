@@ -5478,12 +5478,21 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     page.overlay.append(expediente_dialog)
     page.overlay.append(admin_document_dialog)
 
-    def open_new(e=None):
+    def open_new(e=None, cliente_id=None):
         if not cliente_options:
             set_message(error_alert("No hay clientes activos para crear expedientes"))
             refresh()
             return
         clear_form()
+
+        if cliente_id:
+            selected_cliente = next(
+                (option for option in cliente_options if option.startswith(str(cliente_id) + " - ")),
+                "",
+            )
+            if selected_cliente:
+                cliente.set_value(selected_cliente, update=False)
+
         refresh_subtipo_options_for_tipo(tipo_value=tipo_expediente.get_value(), reset_value=True)
         state["dialog_section"] = "ficha"
         state["dialog_expediente_id"] = None
@@ -5508,6 +5517,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         expediente_dialog.open = True
         page.update()
         scan_expediente_box_in_background(expediente_id)
+
+    def open_new_expediente_from_client_navigation():
+        pending_client_id = getattr(page, "new_expediente_client_id", None)
+        page.new_expediente_client_id = None
+
+        if not pending_client_id:
+            return
+
+        try:
+            pending_client_id = int(pending_client_id)
+        except (TypeError, ValueError):
+            return
+
+        open_new(cliente_id=pending_client_id)
 
     def open_pending_expediente_from_navigation():
         pending_id = getattr(page, "open_expediente_id", None)
@@ -5915,5 +5938,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     load_data()
     table_container.content = build_table()
     content_area.content = build_view()
+    open_new_expediente_from_client_navigation()
     open_pending_expediente_from_navigation()
     return content_area

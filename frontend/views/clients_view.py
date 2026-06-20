@@ -879,7 +879,7 @@ def db_table_exists_global(conn, table_name):
         return False
 
 
-def clients_view(page: ft.Page):
+def clients_view(page: ft.Page, on_create_expediente=None):
     state = {
         "editing_id": None,
         "clients": [],
@@ -1958,6 +1958,21 @@ def clients_view(page: ft.Page):
 
     selected_info = ft.Text(selected_count_text(), size=13, color="#64748B")
     selection_bar = ft.Container(visible=True)
+    def crear_expediente_desde_cliente(cliente_id):
+        if not on_create_expediente:
+            show_message(error_alert("No hay navegacion configurada para crear expediente desde cliente."))
+            return
+
+        on_create_expediente(cliente_id)
+
+    def crear_expediente_cliente_seleccionado(e=None):
+        clientes = selected_clients()
+        if len(clientes) != 1:
+            show_message(error_alert("Selecciona un unico cliente para crear expediente."))
+            return
+
+        crear_expediente_desde_cliente(clientes[0]["id"])
+
     bulk_actions = select_input("Acciones en lote", BULK_ACTIONS, value="Acciones en lote", width=220)
 
     def ejecutar_accion_lote(e=None):
@@ -2028,7 +2043,13 @@ def clients_view(page: ft.Page):
         archivar_btn.disabled = not has_selection
         selection_bar.visible = True
         selection_bar.content = ft.Row(
-            controls=[selected_info, bulk_actions, editar_btn, archivar_btn],
+            controls=[
+                selected_info,
+                bulk_actions,
+                editar_btn,
+                secondary_button("Crear expediente", crear_expediente_cliente_seleccionado),
+                archivar_btn,
+            ],
             spacing=12,
             wrap=True,
         )
