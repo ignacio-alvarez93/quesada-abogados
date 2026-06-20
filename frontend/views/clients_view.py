@@ -14,6 +14,10 @@ from backend.services.client_csv_service import (
     preview_clients_from_csv,
     import_clients_from_csv,
 )
+from backend.services.hubspot_service import (
+    HubSpotImportError,
+    preview_contact_import,
+)
 from backend.services.master_data_service import (
     get_nacionalidades,
     get_paises_nombres,
@@ -988,6 +992,9 @@ def clients_view(page: ft.Page):
     observaciones_internas = multiline_input("Observaciones internas", width=640)
     form_message = ft.Column(controls=[], visible=False)
 
+    hubspot_url_input = text_input("URL o ID de contacto HubSpot", width=680)
+    hubspot_message = ft.Column(controls=[], visible=False)
+
     def on_fecha_nacimiento_change(e=None):
         formatted = formatear_fecha_ddmmaaaa(fecha_nacimiento.value)
         if fecha_nacimiento.value != formatted:
@@ -1142,6 +1149,95 @@ def clients_view(page: ft.Page):
         cargar_clientes()
         show_client_list()
 
+    def set_hubspot_message(control):
+        hubspot_message.controls.clear()
+        hubspot_message.controls.append(control)
+        hubspot_message.visible = True
+        page.update()
+
+    def clear_hubspot_message():
+        hubspot_message.controls.clear()
+        hubspot_message.visible = False
+
+    def aplicar_datos_hubspot(data):
+        nombre.value = data.get("nombre") or nombre.value
+        primer_apellido.value = data.get("primer_apellido") or primer_apellido.value
+        segundo_apellido.value = data.get("segundo_apellido") or segundo_apellido.value
+        nie.value = data.get("nie") or nie.value
+        pasaporte.value = data.get("pasaporte") or pasaporte.value
+        dni.value = data.get("dni") or dni.value
+        fecha_nacimiento.value = data.get("fecha_nacimiento") or fecha_nacimiento.value
+        telefono.value = data.get("telefono") or telefono.value
+        email.value = data.get("email") or email.value
+
+        nacionalidad_autocomplete.set_value(data.get("nacionalidad") or nacionalidad_autocomplete.get_value(), update=False)
+        pais_nacimiento_autocomplete.set_value(data.get("pais_nacimiento") or pais_nacimiento_autocomplete.get_value(), update=False)
+
+        provincia_value = data.get("provincia") or provincia_autocomplete.get_value()
+        provincia_autocomplete.set_value(provincia_value, update=False)
+
+        try:
+            localidades = get_localidades_by_provincia(provincia_value) if provincia_value else []
+        except Exception:
+            localidades = []
+
+        localidad_autocomplete.set_options(localidades, clear_value=False)
+        localidad_autocomplete.input.label = f"Localidad ({len(localidades)})" if localidades else "Localidad"
+        localidad_autocomplete.set_value(data.get("localidad") or localidad_autocomplete.get_value(), update=False)
+
+        nombre_via.value = data.get("nombre_via") or nombre_via.value
+        numero_via.value = data.get("numero") or numero_via.value
+        piso.value = data.get("piso") or piso.value
+        codigo_postal.value = data.get("codigo_postal") or codigo_postal.value
+        localidad_nacimiento.value = data.get("localidad_nacimiento") or localidad_nacimiento.value
+        nombre_padre.value = data.get("nombre_padre") or nombre_padre.value
+        nombre_madre.value = data.get("nombre_madre") or nombre_madre.value
+
+        if data.get("estado_civil"):
+            set_dropdown_options(estado_civil, estado_civil_options, data.get("estado_civil"))
+
+        if data.get("sexo"):
+            set_dropdown_options(sexo, ["HOMBRE", "MUJER", "X"], data.get("sexo"))
+
+        extra_lines = []
+        if data.get("hubspot_id"):
+            extra_lines.append(f"HubSpot ID: {data.get('hubspot_id')}")
+        if data.get("hubspot_url"):
+            extra_lines.append(f"HubSpot URL: {data.get('hubspot_url')}")
+        if data.get("tramite_hubspot"):
+            extra_lines.append(f"Trámite HubSpot: {data.get('tramite_hubspot')}")
+        if data.get("importe_deuda_hubspot"):
+            extra_lines.append(f"Importe deuda HubSpot: {data.get('importe_deuda_hubspot')}")
+
+        if extra_lines:
+            current = (observaciones_internas.value or "").strip()
+            addition = "\n".join(extra_lines)
+            observaciones_internas.value = f"{current}\n{addition}".strip() if current else addition
+
+        clear_message()
+        show_message(success_alert("Datos importados desde HubSpot. Revisa la ficha antes de guardar."))
+
+    def consultar_hubspot_contacto(e=None):
+        clear_hubspot_message()
+        try:
+            data = preview_contact_import(hubspot_url_input.value)
+        except HubSpotImportError as exc:
+            set_hubspot_message(error_alert(str(exc)))
+            return
+        except Exception as exc:
+            set_hubspot_message(error_alert(f"Error importando desde HubSpot: {exc}"))
+            return
+
+        aplicar_datos_hubspot(data)
+        hubspot_dialog.open = False
+        page.update()
+
+    def abrir_importar_hubspot(e=None):
+        hubspot_url_input.value = ""
+        clear_hubspot_message()
+        hubspot_dialog.open = True
+        page.update()
+
     cliente_dialog = form_dialog(
         "Cliente",
         ft.Column(
@@ -1165,9 +1261,36 @@ def clients_view(page: ft.Page):
             height=620,
             width=900,
         ),
-        actions=[secondary_button("Cancelar", cerrar_dialogo), primary_button("Guardar", guardar_cliente)],
+        actions=[
+            secondary_button("Importar HubSpot", abrir_importar_hubspot),
+            secondary_button("Cancelar", cerrar_dialogo),
+            primary_button("Guardar", guardar_cliente),
+        ],
     )
+
+    hubspot_dialog = form_dialog(
+        "Importar cliente desde HubSpot",
+        ft.Column(
+            controls=[
+                ft.Text(
+                    "Pega la URL o el ID del contacto de HubSpot. Se rellenarán los campos del formulario, pero no se guardará automáticamente.",
+                    size=13,
+                    color="#64748B",
+                ),
+                hubspot_url_input,
+                hubspot_message,
+            ],
+            spacing=12,
+            width=720,
+        ),
+        actions=[
+            secondary_button("Cancelar", lambda e: setattr(hubspot_dialog, "open", False) or page.update()),
+            primary_button("Consultar y volcar datos", consultar_hubspot_contacto),
+        ],
+    )
+
     page.overlay.append(cliente_dialog)
+    page.overlay.append(hubspot_dialog)
 
     def get_expedientes_priorizados_cliente(cliente):
         cliente_id = cliente.get("id")
