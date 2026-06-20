@@ -148,6 +148,13 @@ def presentation_queue_view(page: ft.Page):
                         wrap=True,
                     ),
                     ft.Text(
+                        "Pendiente de justificante de presentación",
+                        size=12,
+                        color="#3538CD",
+                        weight=ft.FontWeight.BOLD,
+                        visible=estado == "lanzado",
+                    ),
+                    ft.Text(
                         item.get("last_error") or "",
                         size=12,
                         color="#B42318",

@@ -4550,7 +4550,16 @@ def expedients_view(page: ft.Page):
                 estado_presentacion.value = "PRESENTADO"
 
             admin_document_dialog.open = False
-            set_message(success_alert(f"Documento anexado: {result.get('event_label') or 'evento administrativo'}"))
+
+            queue_completion = result.get("queue_completion") or {}
+            if queue_completion.get("changed"):
+                set_message(success_alert(
+                    f"Documento anexado: {result.get('event_label') or 'evento administrativo'}\n"
+                    "Cola de presentación marcada como presentada."
+                ))
+            else:
+                set_message(success_alert(f"Documento anexado: {result.get('event_label') or 'evento administrativo'}"))
+
             state["dialog_section"] = "trazabilidad"
             expediente_dialog.content = build_expediente_dialog_content(expediente_id)
             refresh_table()
