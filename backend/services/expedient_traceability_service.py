@@ -490,6 +490,22 @@ def create_admin_document_event(data):
             f"{transition.get('estado_anterior') or 'SIN ESTADO'} → {transition.get('estado_nuevo')}"
         )
 
+    queue_completion = None
+    if event_code == "JUSTIFICANTE_PRESENTACION":
+        try:
+            from backend.services import presentation_queue_service
+
+            queue_completion = presentation_queue_service.mark_presented_by_expediente(
+                expediente_id,
+                source="DOCUMENTO_ADMINISTRATIVO:JUSTIFICANTE_PRESENTACION",
+            )
+        except Exception as exc:
+            queue_completion = {
+                "ok": False,
+                "changed": False,
+                "error": str(exc),
+            }
+
     evento_id = registrar_evento(
         expediente_id=expediente_id,
         cliente_id=expediente["cliente_id"],
@@ -518,6 +534,7 @@ def create_admin_document_event(data):
         "estado_anterior": transition.get("estado_anterior") or "",
         "estado_nuevo": transition.get("estado_nuevo") or "",
         "estado_nuevo_id": transition.get("estado_nuevo_id"),
+        "queue_completion": queue_completion,
     }
 
 

@@ -15,6 +15,7 @@ def _estado_badge(estado):
     colors = {
         "pendiente": ("#FFF7E6", "#B54708"),
         "en_proceso": ("#EAF3FF", "#0057B8"),
+        "lanzado": ("#EEF4FF", "#3538CD"),
         "completado": ("#ECFDF3", "#027A48"),
         "error": ("#FEF3F2", "#B42318"),
         "cancelado": ("#F2F4F7", "#475467"),
@@ -90,15 +91,19 @@ def presentation_queue_view(page: ft.Page):
 
     def queue_card(item):
         estado = item.get("estado")
+
         can_execute = estado in ("pendiente", "error")
-        can_cancel = estado in ("pendiente", "error", "en_proceso")
+        can_cancel = estado in ("pendiente", "error", "en_proceso", "lanzado")
         can_retry = estado in ("error", "cancelado")
 
         actions = []
+
         if can_execute:
             actions.append(primary_button("Ejecutar", lambda e, qid=item["id"]: execute_item(qid)))
+
         if can_retry:
             actions.append(secondary_button("Reintentar", lambda e, qid=item["id"]: retry_item(qid)))
+
         if can_cancel:
             actions.append(danger_button("Cancelar", lambda e, qid=item["id"]: cancel_item(qid)))
 
@@ -132,9 +137,11 @@ def presentation_queue_view(page: ft.Page):
                     ),
                     ft.Row(
                         controls=[
+                            ft.Text(f"Expediente ID: {item.get('expediente_id')}", size=11, color=Q_MUTED),
                             ft.Text(f"Cola ID: {item.get('id')}", size=11, color=Q_MUTED),
                             ft.Text(f"Intentos: {item.get('intentos') or 0}", size=11, color=Q_MUTED),
                             ft.Text(f"Creado: {item.get('created_at') or '-'}", size=11, color=Q_MUTED),
+                            ft.Text(f"Lanzado: {item.get('started_at') or '-'}", size=11, color=Q_MUTED),
                             ft.Text(f"PID: {item.get('pid') or '-'}", size=11, color=Q_MUTED),
                         ],
                         spacing=12,
@@ -164,7 +171,7 @@ def presentation_queue_view(page: ft.Page):
                         spacing=2,
                         controls=[
                             ft.Text("Colas de presentación", size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ft.Text("Ejecución asistida de expedientes preparados para Mercurio", size=14, color=Q_MUTED),
+                            ft.Text("Centro de control de presentaciones asistidas Mercurio", size=14, color=Q_MUTED),
                         ],
                     ),
                     secondary_button("Actualizar", refresh),
@@ -175,7 +182,8 @@ def presentation_queue_view(page: ft.Page):
                 controls=[
                     metric_card("Pendientes", counts.get("pendiente", 0)),
                     metric_card("En proceso", counts.get("en_proceso", 0)),
-                    metric_card("Completados", counts.get("completado", 0)),
+                    metric_card("Lanzados", counts.get("lanzado", 0)),
+                    metric_card("Presentados", counts.get("completado", 0)),
                     metric_card("Errores", counts.get("error", 0)),
                 ],
                 spacing=12,
@@ -186,8 +194,10 @@ def presentation_queue_view(page: ft.Page):
                     filter_button("Todos", "todos"),
                     filter_button("Pendientes", "pendiente"),
                     filter_button("En proceso", "en_proceso"),
+                    filter_button("Lanzados", "lanzado"),
                     filter_button("Errores", "error"),
-                    filter_button("Completados", "completado"),
+                    filter_button("Presentados", "completado"),
+                    filter_button("Cancelados", "cancelado"),
                 ],
                 spacing=8,
                 wrap=True,

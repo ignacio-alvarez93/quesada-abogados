@@ -1,14 +1,13 @@
 """
 Servicio de cola de presentación asistida.
 
-Fase 1:
+Fase 2:
 - Encolar expedientes.
 - Listar cola.
 - Ejecutar un expediente de forma individual usando el servicio actual.
-- Registrar estados básicos: pendiente, en_proceso, completado, error, cancelado.
-
-No sustituye presentation_assistant_service.
-Solo lo envuelve para preparar la futura ejecución ordenada.
+- Al ejecutar, marcar como lanzado, no como completado.
+- Permitir marcar manualmente como presentado/completado.
+- Registrar trazabilidad al lanzar y al marcar presentado.
 """
 
 import sqlite3
@@ -16,11 +15,13 @@ from pathlib import Path
 from datetime import datetime
 
 from backend.services import presentation_assistant_service
+from backend.services import expedient_traceability_service as trace_service
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
 QUEUE_PENDING = "pendiente"
 QUEUE_RUNNING = "en_proceso"
+QUEUE_LAUNCHED = "lanzado"
 QUEUE_DONE = "completado"
 QUEUE_ERROR = "error"
 QUEUE_CANCELLED = "cancelado"
@@ -60,6 +61,7 @@ def ensure_schema():
             )
             """
         )
+
         existing_columns = {
             row[1]
             for row in conn.execute("PRAGMA table_info(presentation_queue)").fetchall()
@@ -103,6 +105,27 @@ def _connect():
     return conn
 
 
+def _register_trace(expediente_id, tipo_evento, titulo, descripcion):
+    try:
+        expediente = get_expediente_for_queue(expediente_id)
+        if not expediente or not expediente.get("cliente_id"):
+            return
+
+        trace_service.registrar_evento(
+            expediente_id=int(expediente_id),
+            cliente_id=expediente.get("cliente_id"),
+            tipo_evento=tipo_evento,
+            titulo=titulo,
+            descripcion=descripcion,
+            entidad_relacionada="expedientes",
+            entidad_relacionada_id=int(expediente_id),
+            usuario="ERP",
+        )
+    except Exception:
+        # La trazabilidad no debe bloquear la cola.
+        pass
+
+
 def get_expediente_for_queue(expediente_id):
     with _connect() as conn:
         return _dict(
@@ -139,7 +162,7 @@ def enqueue_expediente(expediente_id, prioridad=0):
             SELECT id, estado
             FROM presentation_queue
             WHERE expediente_id = ?
-              AND estado IN ('pendiente', 'en_proceso')
+              AND estado IN ('pendiente', 'en_proceso', 'lanzado')
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -151,7 +174,7 @@ def enqueue_expediente(expediente_id, prioridad=0):
                 "created": False,
                 "id": existing["id"],
                 "estado": existing["estado"],
-                "message": "El expediente ya está en cola",
+                "message": "El expediente ya está en cola o lanzado",
             }
 
         cur = conn.execute(
@@ -182,12 +205,19 @@ def enqueue_expediente(expediente_id, prioridad=0):
         )
         conn.commit()
 
-        return {
-            "created": True,
-            "id": cur.lastrowid,
-            "estado": QUEUE_PENDING,
-            "message": "Expediente enviado a cola",
-        }
+    _register_trace(
+        expediente_id,
+        "COLA_PRESENTACION",
+        "EXPEDIENTE ENVIADO A COLA DE PRESENTACION",
+        "El expediente se incorpora a la cola de presentación asistida.",
+    )
+
+    return {
+        "created": True,
+        "id": cur.lastrowid,
+        "estado": QUEUE_PENDING,
+        "message": "Expediente enviado a cola",
+    }
 
 
 def list_queue(estado=None, limit=200):
@@ -215,9 +245,10 @@ def list_queue(estado=None, limit=200):
                 CASE q.estado
                     WHEN 'en_proceso' THEN 0
                     WHEN 'pendiente' THEN 1
-                    WHEN 'error' THEN 2
-                    WHEN 'completado' THEN 3
-                    ELSE 4
+                    WHEN 'lanzado' THEN 2
+                    WHEN 'error' THEN 3
+                    WHEN 'completado' THEN 4
+                    ELSE 5
                 END,
                 q.prioridad DESC,
                 q.created_at ASC
@@ -258,6 +289,7 @@ def counts_by_estado():
     return {
         "pendiente": data.get(QUEUE_PENDING, 0),
         "en_proceso": data.get(QUEUE_RUNNING, 0),
+        "lanzado": data.get(QUEUE_LAUNCHED, 0),
         "completado": data.get(QUEUE_DONE, 0),
         "error": data.get(QUEUE_ERROR, 0),
         "cancelado": data.get(QUEUE_CANCELLED, 0),
@@ -266,7 +298,9 @@ def counts_by_estado():
 
 
 def mark_cancelled(queue_id):
+    item = get_queue_item(queue_id)
     now = _now()
+
     with _connect() as conn:
         conn.execute(
             """
@@ -278,6 +312,14 @@ def mark_cancelled(queue_id):
             (QUEUE_CANCELLED, now, int(queue_id)),
         )
         conn.commit()
+
+    if item:
+        _register_trace(
+            item["expediente_id"],
+            "COLA_PRESENTACION",
+            "ELEMENTO DE COLA CANCELADO",
+            f"Se cancela el elemento de cola #{queue_id}.",
+        )
 
 
 def reset_to_pending(queue_id):
@@ -297,6 +339,131 @@ def reset_to_pending(queue_id):
             (QUEUE_PENDING, now, int(queue_id)),
         )
         conn.commit()
+
+
+def mark_presented(queue_id):
+    item = get_queue_item(queue_id)
+    if not item:
+        raise ValueError("Elemento de cola no encontrado")
+
+    if item.get("estado") not in (QUEUE_LAUNCHED, QUEUE_RUNNING, QUEUE_DONE):
+        raise ValueError(f"No se puede marcar presentado un elemento en estado {item.get('estado')}")
+
+    now = _now()
+
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE presentation_queue
+            SET estado = ?,
+                updated_at = ?,
+                finished_at = ?,
+                last_error = NULL
+            WHERE id = ?
+            """,
+            (QUEUE_DONE, now, now, int(queue_id)),
+        )
+        conn.commit()
+
+    _register_trace(
+        item["expediente_id"],
+        "PRESENTACION_ASISTIDA",
+        "EXPEDIENTE MARCADO COMO PRESENTADO",
+        f"El expediente se marca manualmente como presentado desde la cola de presentación. Cola #{queue_id}.",
+    )
+
+    return {
+        "ok": True,
+        "queue_id": int(queue_id),
+        "message": "Expediente marcado como presentado",
+    }
+
+
+
+def mark_presented_by_expediente(expediente_id, source="justificante_presentacion"):
+    """
+    Marca como completada la última cola activa de un expediente.
+
+    Criterio funcional:
+    - No se marca presentado al lanzar Mercurio.
+    - Se marca presentado cuando se anexa el justificante de presentación.
+    """
+    expediente_id = int(expediente_id)
+    now = _now()
+
+    with _connect() as conn:
+        target = conn.execute(
+            """
+            SELECT id, estado
+            FROM presentation_queue
+            WHERE expediente_id = ?
+              AND estado IN ('lanzado', 'en_proceso', 'pendiente', 'error')
+            ORDER BY
+                CASE estado
+                    WHEN 'lanzado' THEN 0
+                    WHEN 'en_proceso' THEN 1
+                    WHEN 'pendiente' THEN 2
+                    WHEN 'error' THEN 3
+                    ELSE 4
+                END,
+                updated_at DESC,
+                id DESC
+            LIMIT 1
+            """,
+            (expediente_id,),
+        ).fetchone()
+
+        if not target:
+            return {
+                "ok": True,
+                "changed": False,
+                "message": "No hay cola activa que marcar como presentada",
+            }
+
+        # La tabla tiene UNIQUE(expediente_id, estado). Si ya existía un completado
+        # histórico de este expediente, lo movemos a completado_anterior para poder
+        # cerrar la cola activa sin romper la restricción.
+        conn.execute(
+            """
+            UPDATE presentation_queue
+            SET estado = ?,
+                updated_at = ?
+            WHERE expediente_id = ?
+              AND estado = ?
+              AND id <> ?
+            """,
+            ("completado_anterior", now, expediente_id, QUEUE_DONE, int(target["id"])),
+        )
+
+        conn.execute(
+            """
+            UPDATE presentation_queue
+            SET estado = ?,
+                updated_at = ?,
+                finished_at = ?,
+                last_error = NULL
+            WHERE id = ?
+            """,
+            (QUEUE_DONE, now, now, int(target["id"])),
+        )
+
+        conn.commit()
+
+    _register_trace(
+        expediente_id,
+        "PRESENTACION_ASISTIDA",
+        "EXPEDIENTE MARCADO COMO PRESENTADO",
+        f"El expediente se marca como presentado al anexar justificante de presentación. Origen: {source}.",
+    )
+
+    return {
+        "ok": True,
+        "changed": True,
+        "queue_id": int(target["id"]),
+        "estado_anterior": target["estado"],
+        "estado_nuevo": QUEUE_DONE,
+        "message": "Cola marcada como presentada por justificante",
+    }
 
 
 def execute_queue_item(queue_id):
@@ -343,9 +510,16 @@ def execute_queue_item(queue_id):
                     finished_at = NULL
                 WHERE id = ?
                 """,
-                (QUEUE_DONE, pid, now, int(queue_id)),
+                (QUEUE_LAUNCHED, pid, now, int(queue_id)),
             )
             conn.commit()
+
+        _register_trace(
+            item["expediente_id"],
+            "PRESENTACION_ASISTIDA",
+            "PRESENTACION ASISTIDA LANZADA DESDE COLA",
+            f"Se lanza la presentación asistida desde la cola. Cola #{queue_id}. PID: {pid or '-'}",
+        )
 
         return {
             "ok": True,
@@ -370,5 +544,12 @@ def execute_queue_item(queue_id):
                 (QUEUE_ERROR, str(exc), now, now, int(queue_id)),
             )
             conn.commit()
+
+        _register_trace(
+            item["expediente_id"],
+            "PRESENTACION_ASISTIDA_ERROR",
+            "ERROR AL LANZAR PRESENTACION DESDE COLA",
+            f"Error en cola #{queue_id}: {str(exc)}",
+        )
 
         raise
