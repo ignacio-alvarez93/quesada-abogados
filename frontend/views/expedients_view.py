@@ -11,6 +11,7 @@ from backend.services import expedient_service
 from backend.services import expedient_document_state_service as document_state_service
 from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
+from backend.services import presentation_queue_service
 from backend.services import presentation_config_service
 from backend.services import config_service
 from backend.services import expedient_dynamic_form_service as dynamic_form_service
@@ -5508,6 +5509,38 @@ def expedients_view(page: ft.Page):
             return
         open_edit(expediente)
 
+    def enqueue_selected_presentation(e=None):
+        expediente = get_single_selected_expediente()
+        if not expediente:
+            set_message(error_alert("Selecciona un único expediente para enviar a cola de presentación"))
+            refresh()
+            return
+
+        try:
+            expedient_service.validate_expediente_para_presentar_ready(expediente.get("id"))
+            result = presentation_queue_service.enqueue_expediente(expediente.get("id"))
+            set_message(success_alert(result.get("message") or "Expediente enviado a cola de presentación"))
+
+            try:
+                trace_service.registrar_evento(
+                    expediente_id=expediente["id"],
+                    cliente_id=expediente["cliente_id"],
+                    tipo_evento="COLA_PRESENTACION",
+                    titulo="EXPEDIENTE ENVIADO A COLA DE PRESENTACION",
+                    descripcion="El expediente se incorpora a la cola de presentación asistida.",
+                    entidad_relacionada="expedientes",
+                    entidad_relacionada_id=expediente["id"],
+                    usuario="ERP",
+                )
+            except Exception:
+                pass
+
+        except Exception as exc:
+            set_message(error_alert(str(exc)))
+
+        refresh()
+
+
     def open_presentacion_asistida(e=None):
         expediente = get_single_selected_expediente()
         if not expediente:
@@ -5744,6 +5777,7 @@ def expedients_view(page: ft.Page):
                         visible=state.get("presentation_start") is not None,
                     ),
                     primary_button("Abrir ficha", open_selected_expediente),
+                    secondary_button("Enviar a cola", enqueue_selected_presentation),
                     secondary_button("Presentación asistida", open_presentacion_asistida),
                     danger_button("Archivar selección", archive_selected),
                     ft.Text(

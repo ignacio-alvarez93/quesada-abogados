@@ -10,6 +10,7 @@ from frontend.views.expedient_traceability_view import expedient_traceability_vi
 from frontend.views.economic_view import economic_view
 from frontend.views.box_watch_view import box_watch_view
 from frontend.views.reporting_view import reporting_view
+from frontend.views.presentation_queue_view import presentation_queue_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
 
@@ -49,6 +50,8 @@ def main(page: ft.Page):
             content = companies_view(page)
         elif view_name == "Expedientes":
             content = expedients_view(page)
+        elif view_name == "Colas de presentación":
+            content = presentation_queue_view(page)
         elif view_name == "Trazabilidad Expedientes":
             content = expedient_traceability_view(page)
         elif view_name == "Cobros":
