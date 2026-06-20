@@ -9,6 +9,7 @@ from backend.services.client_service import (
     get_all_clients,
     update_client,
     archive_client,
+    find_client_duplicates,
 )
 from backend.services.client_csv_service import (
     preview_clients_from_csv,
@@ -994,6 +995,11 @@ def clients_view(page: ft.Page):
 
     hubspot_url_input = text_input("URL o ID de contacto HubSpot", width=680)
     hubspot_message = ft.Column(controls=[], visible=False)
+    hubspot_import_data = {
+        "hubspot_id": "",
+        "hubspot_url": "",
+        "hubspot_imported_at": "",
+    }
 
     def on_fecha_nacimiento_change(e=None):
         formatted = formatear_fecha_ddmmaaaa(fecha_nacimiento.value)
@@ -1085,6 +1091,9 @@ def clients_view(page: ft.Page):
         set_dropdown_options(sexo, ["HOMBRE", "MUJER", "X"], cliente.get("sexo") or "")
         observaciones.value = cliente.get("observaciones") or ""
         observaciones_internas.value = cliente.get("observaciones_internas") or ""
+        hubspot_import_data["hubspot_id"] = cliente.get("hubspot_id") or ""
+        hubspot_import_data["hubspot_url"] = cliente.get("hubspot_url") or ""
+        hubspot_import_data["hubspot_imported_at"] = cliente.get("hubspot_imported_at") or ""
         clear_message()
 
     def datos_formulario():
@@ -1099,6 +1108,9 @@ def clients_view(page: ft.Page):
             "fecha_nacimiento": fecha_a_sql(fecha_nacimiento.value),
             "telefono": telefono.value,
             "email": email.value,
+            "hubspot_id": hubspot_import_data.get("hubspot_id") or "",
+            "hubspot_url": hubspot_import_data.get("hubspot_url") or "",
+            "hubspot_imported_at": hubspot_import_data.get("hubspot_imported_at") or "",
             "estado_cliente": estado_cliente.value,
             "tipo_via": tipo_via.value,
             "nombre_via": nombre_via.value,
@@ -1135,6 +1147,25 @@ def clients_view(page: ft.Page):
         cliente_dialog.open = False
         page.update()
 
+    def format_duplicate_warning(duplicates):
+        lines = ["Posible cliente duplicado. Revisa antes de guardar:"]
+        for item in duplicates:
+            motivos = ", ".join(item.get("motivos") or [])
+            nombre_cliente = item.get("nombre") or f"Cliente #{item.get('id')}"
+            lines.append(f"- #{item.get('id')} {nombre_cliente} ({motivos})")
+            details = []
+            if item.get("nie"):
+                details.append(f"NIE: {item.get('nie')}")
+            if item.get("pasaporte"):
+                details.append(f"Pasaporte: {item.get('pasaporte')}")
+            if item.get("email"):
+                details.append(f"Email: {item.get('email')}")
+            if item.get("hubspot_id"):
+                details.append(f"HubSpot ID: {item.get('hubspot_id')}")
+            if details:
+                lines.append("  " + " | ".join(details))
+        return "\n".join(lines)
+
     def guardar_cliente(e):
         errores = validar_formulario()
         if errores:
@@ -1144,6 +1175,10 @@ def clients_view(page: ft.Page):
         if state["editing_id"]:
             update_client(state["editing_id"], data)
         else:
+            duplicates = find_client_duplicates(data)
+            if duplicates:
+                show_message(error_alert(format_duplicate_warning(duplicates)))
+                return
             create_client(data)
         cerrar_dialogo()
         cargar_clientes()
@@ -1160,6 +1195,12 @@ def clients_view(page: ft.Page):
         hubspot_message.visible = False
 
     def aplicar_datos_hubspot(data):
+        from datetime import datetime
+
+        hubspot_import_data["hubspot_id"] = data.get("hubspot_id") or ""
+        hubspot_import_data["hubspot_url"] = data.get("hubspot_url") or ""
+        hubspot_import_data["hubspot_imported_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         nombre.value = data.get("nombre") or nombre.value
         primer_apellido.value = data.get("primer_apellido") or primer_apellido.value
         segundo_apellido.value = data.get("segundo_apellido") or segundo_apellido.value
