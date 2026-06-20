@@ -4,6 +4,7 @@ import re
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 
 
 HUBSPOT_PROPERTIES = [
@@ -58,8 +59,59 @@ def extract_contact_id(value: str) -> str:
     return matches[-1]
 
 
+def _read_env_file(path: Path) -> dict:
+    values = {}
+
+    if not path.exists() or not path.is_file():
+        return values
+
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+
+            key, value = raw.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+
+            if key:
+                values[key] = value
+    except Exception:
+        return values
+
+    return values
+
+
+def _local_env_candidates() -> list[Path]:
+    candidates = [
+        Path.cwd() / ".env.local",
+        Path.cwd() / ".env",
+    ]
+
+    appdata = os.getenv("APPDATA", "").strip()
+    if appdata:
+        candidates.append(Path(appdata) / "QuesadaAbogados" / ".env")
+
+    return candidates
+
+
+def _get_config_value(key: str) -> str:
+    env_value = os.getenv(key, "").strip()
+    if env_value:
+        return env_value
+
+    for candidate in _local_env_candidates():
+        values = _read_env_file(candidate)
+        if values.get(key):
+            return values[key].strip()
+
+    return ""
+
+
 def _access_token() -> str:
-    token = os.getenv("HUBSPOT_ACCESS_TOKEN", "").strip()
+    token = _get_config_value("HUBSPOT_ACCESS_TOKEN")
 
     if token.lower().startswith("bearer "):
         token = token[7:].strip()
@@ -67,7 +119,8 @@ def _access_token() -> str:
     if not token:
         raise HubSpotImportError(
             "No está configurado HUBSPOT_ACCESS_TOKEN. "
-            "Define la variable de entorno antes de importar desde HubSpot."
+            "Define la variable de entorno, crea .env.local o configura "
+            "%APPDATA%/QuesadaAbogados/.env."
         )
 
     return token

@@ -14,3 +14,9 @@ Captura.PNG
 
 downloaded_files/
 exports/
+
+# Local secrets
+.env
+.env.local
+.env.*
+!.env.example
