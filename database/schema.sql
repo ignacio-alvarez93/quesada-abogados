@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS clientes (
     observaciones TEXT,
     observaciones_internas TEXT,
 
+    hubspot_id TEXT,
+    hubspot_url TEXT,
+    hubspot_imported_at TEXT,
+
     activo INTEGER DEFAULT 1,
 
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,

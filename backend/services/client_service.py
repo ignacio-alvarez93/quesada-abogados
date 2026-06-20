@@ -61,6 +61,7 @@ CLIENT_CONTACT_SYNC_FIELDS = [
     "telefono", "email", "tipo_via", "nombre_via", "domicilio_espana",
     "localidad", "codigo_postal", "provincia", "numero", "piso",
     "estado_cliente", "observaciones", "observaciones_internas", "sexo",
+    "hubspot_id", "hubspot_url", "hubspot_imported_at",
 ]
 
 
@@ -78,6 +79,25 @@ def _table_columns(cursor, table_name):
         return {row[1] for row in rows}
     except Exception:
         return set()
+
+
+def ensure_client_hubspot_columns(cursor):
+    """
+    Migración defensiva para bases ya creadas antes de la integración HubSpot.
+    """
+    if not _table_exists(cursor, "clientes"):
+        return
+
+    columns = _table_columns(cursor, "clientes")
+    required = {
+        "hubspot_id": "TEXT",
+        "hubspot_url": "TEXT",
+        "hubspot_imported_at": "TEXT",
+    }
+
+    for column, column_type in required.items():
+        if column not in columns:
+            cursor.execute(f"ALTER TABLE clientes ADD COLUMN {column} {column_type}")
 
 
 def _sync_linked_contact_rows_for_client(cursor, client_id, data):
@@ -113,6 +133,7 @@ def create_client(data):
     data = normalize_client_data(data)
     conn = get_connection()
     cursor = conn.cursor()
+    ensure_client_hubspot_columns(cursor)
 
     cursor.execute("""
         INSERT INTO clientes (
@@ -124,9 +145,10 @@ def create_client(data):
             telefono, email,
             tipo_via, nombre_via, domicilio_espana, localidad, codigo_postal, provincia, numero, piso,
             estado_cliente, fecha_alta, origen_cliente, responsable_interno,
-            observaciones, observaciones_internas, sexo
+            observaciones, observaciones_internas, sexo,
+            hubspot_id, hubspot_url, hubspot_imported_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data.get("nombre"),
         data.get("primer_apellido"),
@@ -158,6 +180,9 @@ def create_client(data):
         data.get("observaciones"),
         data.get("observaciones_internas"),
         data.get("sexo"),
+        data.get("hubspot_id"),
+        data.get("hubspot_url"),
+        data.get("hubspot_imported_at"),
     ))
 
     conn.commit()
@@ -167,6 +192,7 @@ def create_client(data):
 def get_all_clients():
     conn = get_connection()
     cursor = conn.cursor()
+    ensure_client_hubspot_columns(cursor)
 
     cursor.execute("SELECT * FROM clientes WHERE activo = 1 ORDER BY id DESC")
     rows = cursor.fetchall()
@@ -178,6 +204,7 @@ def get_all_clients():
 def get_client_by_id(client_id):
     conn = get_connection()
     cursor = conn.cursor()
+    ensure_client_hubspot_columns(cursor)
 
     cursor.execute("SELECT * FROM clientes WHERE id = ?", (client_id,))
     row = cursor.fetchone()
@@ -190,6 +217,7 @@ def update_client(client_id, data):
     data = normalize_client_data(data)
     conn = get_connection()
     cursor = conn.cursor()
+    ensure_client_hubspot_columns(cursor)
 
     cursor.execute("""
         UPDATE clientes
@@ -223,6 +251,9 @@ def update_client(client_id, data):
             observaciones = ?,
             observaciones_internas = ?,
             sexo = ?,
+            hubspot_id = ?,
+            hubspot_url = ?,
+            hubspot_imported_at = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     """, (
@@ -255,6 +286,9 @@ def update_client(client_id, data):
         data.get("observaciones"),
         data.get("observaciones_internas"),
         data.get("sexo"),
+        data.get("hubspot_id"),
+        data.get("hubspot_url"),
+        data.get("hubspot_imported_at"),
         client_id,
     ))
 
@@ -279,9 +313,96 @@ def archive_client(client_id):
     conn.close()
 
 
+def find_client_duplicates(data, exclude_client_id=None):
+    """
+    Busca posibles duplicados por HubSpot ID, NIE, pasaporte o email.
+    Devuelve clientes activos con el campo de coincidencia.
+    """
+    data = normalize_client_data(data)
+    checks = []
+
+    if data.get("hubspot_id"):
+        checks.append(("hubspot_id", data.get("hubspot_id")))
+    if data.get("nie"):
+        checks.append(("nie", data.get("nie")))
+    if data.get("pasaporte"):
+        checks.append(("pasaporte", data.get("pasaporte")))
+    if data.get("email"):
+        checks.append(("email", data.get("email")))
+
+    if not checks:
+        return []
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    ensure_client_hubspot_columns(cursor)
+
+    duplicates = []
+    seen_ids = set()
+
+    for field, value in checks:
+        query = f"""
+            SELECT *
+            FROM clientes
+            WHERE activo = 1
+              AND {field} = ?
+        """
+        params = [value]
+
+        if exclude_client_id:
+            query += " AND id <> ?"
+            params.append(int(exclude_client_id))
+
+        rows = cursor.execute(query, params).fetchall()
+        for row in rows:
+            item = dict(row)
+            item["_duplicate_field"] = field
+            if item.get("id") not in seen_ids:
+                duplicates.append(item)
+                seen_ids.add(item.get("id"))
+
+    conn.close()
+    return duplicates
+
+
+def format_duplicate_clients(duplicates):
+    if not duplicates:
+        return ""
+
+    lines = ["Posible cliente duplicado detectado:"]
+
+    label_by_field = {
+        "hubspot_id": "HubSpot ID",
+        "nie": "NIE",
+        "pasaporte": "Pasaporte",
+        "email": "Email",
+    }
+
+    for client in duplicates:
+        field = client.get("_duplicate_field")
+        label = label_by_field.get(field, field or "campo")
+        name = " ".join(
+            part for part in [
+                client.get("nombre"),
+                client.get("primer_apellido"),
+                client.get("segundo_apellido"),
+            ]
+            if part
+        ).strip()
+
+        lines.append(
+            f"- #{client.get('id')} {name or 'Sin nombre'} "
+            f"({label}: {client.get(field) or ''})"
+        )
+
+    lines.append("Revisa la ficha existente antes de crear otro cliente.")
+    return "\n".join(lines)
+
+
 def search_clients(search_text):
     conn = get_connection()
     cursor = conn.cursor()
+    ensure_client_hubspot_columns(cursor)
 
     pattern = f"%{search_text}%"
 
@@ -298,14 +419,18 @@ def search_clients(search_text):
             OR dni LIKE ?
             OR telefono LIKE ?
             OR email LIKE ?
+            OR hubspot_id LIKE ?
         )
         ORDER BY id DESC
     """, (
         pattern, pattern, pattern, pattern,
-        pattern, pattern, pattern, pattern
+        pattern, pattern, pattern, pattern, pattern
     ))
 
     rows = cursor.fetchall()
     conn.close()
 
     return [dict(row) for row in rows]
+
+# Alias retrocompatible
+find_duplicate_clients = find_client_duplicates
