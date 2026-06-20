@@ -8,6 +8,7 @@ import flet as ft
 from datetime import datetime
 
 from backend.services import expedient_service
+from backend.services import box_watch_service
 from backend.services import expedient_document_state_service as document_state_service
 from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
@@ -560,11 +561,40 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             if state["editing_id"]:
                 expedient_service.update_expediente(state["editing_id"], data)
                 set_message(success_alert("Expediente actualizado"))
+                close_dialog()
+                refresh_table()
             else:
-                expedient_service.create_expediente(data)
+                new_expediente_id = expedient_service.create_expediente(data)
                 set_message(success_alert("Expediente creado"))
-            close_dialog()
-            refresh_table()
+                refresh_table()
+
+                expediente = expedient_service.get_expediente(new_expediente_id)
+                if expediente:
+                    open_edit(expediente)
+                else:
+                    close_dialog()
+        except Exception as exc:
+            show_form_error(str(exc))
+
+
+    def vincular_box_folder_desde_ficha(e=None):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            show_form_error("Guarda primero el expediente antes de vincular Box.")
+            return
+
+        ruta = (box_folder_path.value or "").strip()
+        if not ruta:
+            show_form_error("Indica una ruta Box antes de vincular.")
+            return
+
+        try:
+            box_watch_service.link_box_folder_to_expediente(ruta, expediente_id)
+            state.setdefault("mercurio_box_status", {}).pop(int(expediente_id), None)
+            _get_mercurio_box_status(expediente_id, force=True)
+            set_message(success_alert("Carpeta Box vinculada al expediente."))
+            expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+            page.update()
         except Exception as exc:
             show_form_error(str(exc))
 
@@ -4388,6 +4418,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     [
                         box_folder_path,
                         ft.Text("Solo se guarda una ruta de referencia. El ERP no manipula Box en esta fase.", size=12, color=Q_MUTED),
+                        ft.Row(
+                            controls=[
+                                primary_button("Vincular ruta Box al expediente", vincular_box_folder_desde_ficha),
+                                secondary_button("Refrescar estado Box", refresh_para_presentar_documents),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
                         observaciones,
                         observaciones_internas,
                     ],
