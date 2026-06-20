@@ -45,16 +45,26 @@ def main(page: ft.Page):
 
     def navigate(view_name, **kwargs):
         if view_name == "Clientes":
-            content = clients_view(page)
+            content = clients_view(
+                page,
+                on_create_expediente=lambda cliente_id: navigate(
+                    "Expedientes",
+                    new_for_client_id=cliente_id,
+                ),
+            )
         elif view_name == "Empresas":
             content = companies_view(page)
         elif view_name == "Expedientes":
             open_expediente_id = kwargs.get("open_expediente_id")
+            new_for_client_id = kwargs.get("new_for_client_id")
             return_to_queue = bool(kwargs.get("return_to_queue"))
 
             if open_expediente_id:
                 page.open_expediente_id = int(open_expediente_id)
                 page.return_to_queue_after_expediente = return_to_queue
+
+            if new_for_client_id:
+                page.new_expediente_client_id = int(new_for_client_id)
 
             content = expedients_view(
                 page,
