@@ -1909,6 +1909,529 @@ def list_root_folders_python_fallback_for_all_routes(ruta_contains=None, limit_p
 
 # === QUESADA BOX RECURSIVE TOTALS OVERRIDE END ===
 
+
+# === QUESADA BOX CANDIDATES EXPEDIENTE V6 START ===
+
+def _qa_normalize_match_text(value):
+    import re
+    import unicodedata
+
+    value = str(value or "").upper().strip()
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = value.replace("Ñ", "N")
+    value = re.sub(r"[^A-Z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _qa_get_expediente_candidate_context(expediente_id):
+    expediente_id = int(expediente_id)
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                e.id,
+                e.numero_expediente,
+                e.tipo_expediente_id,
+                e.subtipo_expediente_id,
+                e.subtipo_expediente,
+                e.fecha_apertura,
+                e.box_folder_path,
+                c.id AS cliente_id,
+                c.nombre AS cliente_nombre,
+                c.primer_apellido AS cliente_primer_apellido,
+                c.segundo_apellido AS cliente_segundo_apellido,
+                c.nie AS cliente_nie,
+                c.pasaporte AS cliente_pasaporte,
+                c.dni AS cliente_dni,
+                te.nombre AS tipo_expediente_nombre,
+                te.codigo AS tipo_expediente_codigo,
+                st.nombre AS subtipo_expediente_nombre,
+                st.codigo AS subtipo_expediente_codigo
+            FROM expedientes e
+            JOIN clientes c ON c.id = e.cliente_id
+            LEFT JOIN config_tipos_expediente te ON te.id = e.tipo_expediente_id
+            LEFT JOIN config_subtipos_expediente st ON st.id = e.subtipo_expediente_id
+            WHERE e.id = ?
+            """,
+            (expediente_id,),
+        ).fetchone()
+
+    if not row:
+        raise ValueError("Expediente no encontrado")
+
+    return _dict(row)
+
+
+def _qa_candidate_year(ctx):
+    from datetime import date
+
+    fecha = str(ctx.get("fecha_apertura") or "").strip()
+    if len(fecha) >= 4 and fecha[:4].isdigit():
+        return fecha[:4]
+    return str(date.today().year)
+
+
+def _qa_candidate_terms(ctx):
+    nombre = ctx.get("cliente_nombre") or ""
+    apellido1 = ctx.get("cliente_primer_apellido") or ""
+    apellido2 = ctx.get("cliente_segundo_apellido") or ""
+
+    full_name = " ".join([nombre, apellido1, apellido2]).strip()
+    name_pairs = [
+        full_name,
+        " ".join([nombre, apellido1]).strip(),
+        " ".join([apellido1, apellido2]).strip(),
+        apellido1,
+        apellido2,
+        nombre,
+        ctx.get("cliente_nie") or "",
+        ctx.get("cliente_pasaporte") or "",
+        ctx.get("cliente_dni") or "",
+        ctx.get("numero_expediente") or "",
+    ]
+
+    result = []
+    seen = set()
+    for term in name_pairs:
+        norm = _qa_normalize_match_text(term)
+        if len(norm) < 3:
+            continue
+        if norm in seen:
+            continue
+        seen.add(norm)
+        result.append({
+            "raw": str(term or "").strip(),
+            "norm": norm,
+            "parts": [p for p in norm.split(" ") if len(p) >= 3],
+        })
+
+    return result
+
+
+def _qa_routes_for_expediente_candidates(ctx):
+    routes = get_configured_box_routes(active_only=True)
+    tipo_id = ctx.get("tipo_expediente_id")
+    year = _qa_candidate_year(ctx)
+
+    if tipo_id:
+        typed_routes = [r for r in routes if int(r.get("tipo_expediente_id") or 0) == int(tipo_id)]
+    else:
+        typed_routes = []
+
+    selected = typed_routes or routes
+
+    # Si hay rutas del mismo tipo que contienen el año del expediente, priorizarlas.
+    year_routes = [
+        r for r in selected
+        if year and (
+            year in str(r.get("ruta_box") or "")
+            or year in str(r.get("ruta_resuelta") or "")
+        )
+    ]
+    if year_routes:
+        selected = year_routes
+
+    return selected
+
+
+def _qa_score_box_candidate(folder, ctx, terms, route):
+    ruta = folder.get("ruta") or folder.get("ruta_norm") or ""
+    nombre = folder.get("nombre_carpeta") or ""
+    haystack = _qa_normalize_match_text(" ".join([ruta, nombre]))
+
+    score = 0
+    reasons = []
+
+    full_name = _qa_normalize_match_text(" ".join([
+        ctx.get("cliente_nombre") or "",
+        ctx.get("cliente_primer_apellido") or "",
+        ctx.get("cliente_segundo_apellido") or "",
+    ]))
+    if full_name and full_name in haystack:
+        score += 120
+        reasons.append("nombre completo")
+
+    for term in terms:
+        norm = term["norm"]
+        parts = term.get("parts") or []
+        if norm and norm in haystack:
+            score += 60
+            reasons.append(term["raw"])
+        elif parts and all(part in haystack for part in parts):
+            score += 45
+            reasons.append("coincidencia parcial " + term["raw"])
+
+    for doc_key in ["cliente_nie", "cliente_pasaporte", "cliente_dni"]:
+        doc = _qa_normalize_match_text(ctx.get(doc_key) or "")
+        if doc and doc in haystack:
+            score += 80
+            reasons.append(doc_key)
+
+    if route and int(route.get("tipo_expediente_id") or 0) == int(ctx.get("tipo_expediente_id") or 0):
+        score += 25
+        reasons.append("ruta del tipo expediente")
+
+    folder_expediente_id = folder.get("expediente_id")
+    if folder_expediente_id and int(folder_expediente_id) != int(ctx["id"]):
+        score -= 70
+        reasons.append("ya vinculada a otro expediente")
+
+    if folder.get("fecha_ultima_actividad"):
+        score += 5
+
+    return score, reasons
+
+
+def _qa_collect_indexed_candidates_for_route(ctx, terms, route, limit=20):
+    collected = {}
+    route_id = route.get("id")
+
+    search_terms = []
+    for term in terms:
+        if term.get("raw"):
+            search_terms.append(term["raw"])
+        for part in term.get("parts") or []:
+            if len(part) >= 4:
+                search_terms.append(part)
+
+    # Evitar explosion de consultas: los mejores terminos suelen ser nombre+apellido y documentos.
+    dedup_terms = []
+    seen = set()
+    for term in search_terms:
+        norm = _qa_normalize_match_text(term)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        dedup_terms.append(term)
+        if len(dedup_terms) >= 8:
+            break
+
+    for term in dedup_terms:
+        try:
+            rows = list_root_folders_for_configured_route(
+                route_id,
+                ruta_contains=term,
+                limit=max(limit * 3, 30),
+            )
+        except Exception:
+            rows = []
+
+        for row in rows:
+            ruta = row.get("ruta") or row.get("ruta_norm") or ""
+            if not ruta:
+                continue
+            score, reasons = _qa_score_box_candidate(row, ctx, terms, route)
+            if score <= 0:
+                continue
+            previous = collected.get(ruta)
+            item = dict(row)
+            item["score"] = score
+            item["match_reasons"] = sorted(set(reasons))
+            item["config_route_id"] = route.get("id")
+            item["config_route_label"] = f"{route.get('tipo_expediente_nombre')} · {route.get('ruta_box')}"
+            item["config_route_relative"] = route.get("ruta_box")
+            item["config_route_resolved"] = route.get("ruta_resuelta")
+            if not previous or score > previous.get("score", 0):
+                collected[ruta] = item
+
+    return list(collected.values())
+
+
+def find_box_folder_candidates_for_expediente(expediente_id, force_scan=False, limit=20):
+    """
+    Busca carpetas Box candidatas para un expediente.
+
+    Modo rapido:
+    - consulta el indice SQLite de Box Watch.
+
+    Modo force_scan:
+    - escanea solo las rutas configuradas compatibles con el tipo/anio del expediente,
+      no todo Box;
+    - vuelve a consultar el indice.
+
+    Seguridad:
+    - no modifica Box;
+    - no mueve, borra ni renombra archivos;
+    - solo actualiza el indice local si force_scan=True.
+    """
+    ensure_box_watch_runtime_columns()
+
+    ctx = _qa_get_expediente_candidate_context(expediente_id)
+    terms = _qa_candidate_terms(ctx)
+    routes = _qa_routes_for_expediente_candidates(ctx)
+
+    if force_scan:
+        route_ids = [int(r.get("id")) for r in routes if r.get("id")]
+        if route_ids:
+            scan_configured_routes(route_ids=route_ids, progress_callback=None, calculate_hash=False)
+
+    candidates = []
+    for route in routes:
+        candidates.extend(_qa_collect_indexed_candidates_for_route(ctx, terms, route, limit=limit))
+
+    by_path = {}
+    for item in candidates:
+        ruta = item.get("ruta") or item.get("ruta_norm") or ""
+        if not ruta:
+            continue
+        previous = by_path.get(ruta)
+        if not previous or int(item.get("score") or 0) > int(previous.get("score") or 0):
+            by_path[ruta] = item
+
+    result = sorted(
+        by_path.values(),
+        key=lambda x: (int(x.get("score") or 0), str(x.get("fecha_ultima_actividad") or "")),
+        reverse=True,
+    )
+
+    return {
+        "expediente_id": int(expediente_id),
+        "cliente_id": int(ctx.get("cliente_id")),
+        "cliente_nombre": " ".join([
+            ctx.get("cliente_nombre") or "",
+            ctx.get("cliente_primer_apellido") or "",
+            ctx.get("cliente_segundo_apellido") or "",
+        ]).strip(),
+        "tipo_expediente_id": ctx.get("tipo_expediente_id"),
+        "tipo_expediente_nombre": ctx.get("tipo_expediente_nombre"),
+        "force_scan": bool(force_scan),
+        "routes": [
+            {
+                "id": r.get("id"),
+                "tipo_expediente_id": r.get("tipo_expediente_id"),
+                "tipo_expediente_nombre": r.get("tipo_expediente_nombre"),
+                "ruta_box": r.get("ruta_box"),
+                "ruta_resuelta": r.get("ruta_resuelta"),
+                "ruta_existe": r.get("ruta_existe"),
+            }
+            for r in routes
+        ],
+        "terms": [t["raw"] for t in terms],
+        "candidates": result[:limit],
+    }
+
+# === QUESADA BOX CANDIDATES EXPEDIENTE V6 END ===
+
+
+# === QUESADA BOX FOLDER OPTIONS EXPEDIENTE V6 START ===
+
+def _qa_folder_options_context(expediente_id):
+    """
+    Contexto mínimo de expediente y cliente para selector manual-asistido.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                e.id,
+                e.numero_expediente,
+                e.tipo_expediente_id,
+                e.subtipo_expediente_id,
+                e.box_folder_path,
+                c.id AS cliente_id,
+                c.nombre AS cliente_nombre,
+                c.primer_apellido AS cliente_primer_apellido,
+                c.segundo_apellido AS cliente_segundo_apellido,
+                c.nie AS cliente_nie,
+                c.pasaporte AS cliente_pasaporte,
+                c.dni AS cliente_dni,
+                te.nombre AS tipo_expediente_nombre,
+                te.codigo AS tipo_expediente_codigo
+            FROM expedientes e
+            JOIN clientes c ON c.id = e.cliente_id
+            LEFT JOIN config_tipos_expediente te ON te.id = e.tipo_expediente_id
+            WHERE e.id = ?
+            """,
+            (int(expediente_id),),
+        ).fetchone()
+
+    if not row:
+        raise ValueError("Expediente no encontrado")
+
+    return _dict(row)
+
+
+def _qa_safe_norm(value):
+    import re
+    import unicodedata
+
+    value = str(value or "")
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = value.upper().replace("Ñ", "N")
+    value = re.sub(r"[^A-Z0-9]+", " ", value)
+    return " ".join(value.split())
+
+
+def _qa_folder_option_score(folder, ctx):
+    """
+    Puntuación orientativa. No excluye resultados.
+    Sirve solo para ordenar.
+    """
+    haystack = _qa_safe_norm(f"{folder.get('nombre_carpeta') or ''} {folder.get('ruta') or ''}")
+
+    nombre = _qa_safe_norm(ctx.get("cliente_nombre"))
+    ap1 = _qa_safe_norm(ctx.get("cliente_primer_apellido"))
+    ap2 = _qa_safe_norm(ctx.get("cliente_segundo_apellido"))
+    nie = _qa_safe_norm(ctx.get("cliente_nie"))
+    pasaporte = _qa_safe_norm(ctx.get("cliente_pasaporte"))
+    dni = _qa_safe_norm(ctx.get("cliente_dni"))
+
+    score = 0
+    reasons = []
+
+    full = " ".join(x for x in [nombre, ap1, ap2] if x).strip()
+    name_ap1 = " ".join(x for x in [nombre, ap1] if x).strip()
+    apellidos = " ".join(x for x in [ap1, ap2] if x).strip()
+
+    checks = [
+        (full, 120, "nombre completo"),
+        (name_ap1, 90, "nombre y primer apellido"),
+        (apellidos, 80, "apellidos"),
+        (ap1, 30, "primer apellido"),
+        (nombre, 15, "nombre"),
+    ]
+
+    for term, points, label in checks:
+        if term and len(term) >= 3 and term in haystack:
+            score += points
+            reasons.append(label)
+
+    for doc_label, doc in [("NIE", nie), ("pasaporte", pasaporte), ("DNI", dni)]:
+        if doc and len(doc) >= 5 and doc in haystack:
+            score += 150
+            reasons.append(doc_label)
+
+    linked_exp = folder.get("expediente_id")
+    if linked_exp:
+        try:
+            if int(linked_exp) == int(ctx.get("id")):
+                score += 200
+                reasons.append("ya vinculado a este expediente")
+            else:
+                score -= 100
+                reasons.append(f"vinculado a expediente {linked_exp}")
+        except Exception:
+            pass
+
+    return score, reasons
+
+
+def _qa_routes_for_folder_options(ctx, include_all_if_missing=True):
+    routes = get_configured_box_routes(active_only=True)
+    tipo_id = ctx.get("tipo_expediente_id")
+
+    exact = []
+    if tipo_id:
+        exact = [
+            route for route in routes
+            if int(route.get("tipo_expediente_id") or 0) == int(tipo_id)
+        ]
+
+    if exact:
+        for route in exact:
+            route["candidate_route_strategy"] = "tipo_expediente"
+        return exact
+
+    if include_all_if_missing:
+        for route in routes:
+            route["candidate_route_strategy"] = "todas_las_rutas_configuradas"
+        return routes
+
+    return []
+
+
+def list_box_folder_options_for_expediente(expediente_id, force_scan=False, limit_per_route=500):
+    """
+    Selector manual-asistido de carpetas Box para un expediente.
+
+    - Carga todas las carpetas raiz de la ruta configurada del tipo.
+    - Si el tipo no tiene ruta configurada, carga todas las rutas activas.
+    - Si force_scan=True, escanea primero esas rutas.
+    - No manipula Box; solo lee e indexa en SQLite.
+    """
+    ensure_box_watch_runtime_columns()
+
+    ctx = _qa_folder_options_context(expediente_id)
+    routes = _qa_routes_for_folder_options(ctx, include_all_if_missing=True)
+
+    scanned_route_ids = []
+    scan_error = ""
+
+    if force_scan and routes:
+        route_ids = [
+            int(route.get("id"))
+            for route in routes
+            if route.get("id") and int(route.get("ruta_existe") or 0) == 1
+        ]
+
+        if route_ids:
+            scan_configured_routes(
+                route_ids=route_ids,
+                progress_callback=None,
+                calculate_hash=False,
+            )
+            scanned_route_ids = route_ids
+        else:
+            scan_error = "No hay rutas existentes en este equipo para escanear."
+
+    options = []
+    for route in routes:
+        route_id = route.get("id")
+        if not route_id:
+            continue
+
+        try:
+            folders = list_root_folders_for_configured_route(
+                route_id,
+                ruta_contains=None,
+                limit=limit_per_route,
+            )
+        except Exception:
+            folders = []
+
+        for folder in folders:
+            item = dict(folder)
+            score, reasons = _qa_folder_option_score(item, ctx)
+            item["score"] = score
+            item["match_reasons"] = reasons
+            item["config_route_id"] = route.get("id")
+            item["config_route_label"] = f"{route.get('tipo_expediente_nombre')} · {route.get('ruta_box')}"
+            item["config_route_relative"] = route.get("ruta_box")
+            item["config_route_resolved"] = route.get("ruta_resuelta")
+            item["candidate_route_strategy"] = route.get("candidate_route_strategy")
+            options.append(item)
+
+    options.sort(
+        key=lambda x: (
+            -int(x.get("score") or 0),
+            str(x.get("config_route_label") or ""),
+            str(x.get("nombre_carpeta") or ""),
+        )
+    )
+
+    return {
+        "expediente_id": int(expediente_id),
+        "cliente_id": ctx.get("cliente_id"),
+        "cliente_nombre": " ".join([
+            ctx.get("cliente_nombre") or "",
+            ctx.get("cliente_primer_apellido") or "",
+            ctx.get("cliente_segundo_apellido") or "",
+        ]).strip(),
+        "tipo_expediente_id": ctx.get("tipo_expediente_id"),
+        "tipo_expediente_nombre": ctx.get("tipo_expediente_nombre"),
+        "routes": routes,
+        "options": options,
+        "total_options": len(options),
+        "force_scan": bool(force_scan),
+        "scanned_route_ids": scanned_route_ids,
+        "scan_error": scan_error,
+    }
+
+# === QUESADA BOX FOLDER OPTIONS EXPEDIENTE V6 END ===
+
+
 # === QUESADA BOX LINK EXPEDIENTE OVERRIDE START ===
 
 def get_expedientes_for_box_link():

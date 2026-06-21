@@ -577,6 +577,154 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             show_form_error(str(exc))
 
 
+    def cerrar_box_folder_options_dialog(e=None):
+        box_folder_options_dialog.open = False
+        page.update()
+
+    def vincular_box_folder_option(ruta):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            show_form_error("Guarda el expediente antes de vincular Box.")
+            return
+
+        ruta = str(ruta or "").strip()
+        if not ruta:
+            show_form_error("La carpeta seleccionada no tiene ruta.")
+            return
+
+        try:
+            box_watch_service.link_box_folder_to_expediente(ruta, expediente_id)
+            box_folder_path.value = ruta
+            _get_mercurio_box_status(expediente_id, force=True)
+            _load_para_presentar_documents(expediente_id, force=True)
+            box_folder_options_dialog.open = False
+            expediente_dialog.content = build_expediente_dialog_content(expediente_id)
+            set_message(success_alert("Carpeta Box vinculada al expediente"))
+            page.update()
+        except Exception as exc:
+            show_form_error(str(exc))
+
+    def cargar_box_folder_options(force_scan=False):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            show_form_error("Guarda el expediente antes de buscar carpetas Box.")
+            return
+
+        try:
+            result = box_watch_service.list_box_folder_options_for_expediente(
+                expediente_id,
+                force_scan=force_scan,
+            )
+        except Exception as exc:
+            show_form_error(str(exc))
+            return
+
+        options = result.get("options") or []
+        routes = result.get("routes") or []
+        scan_error = result.get("scan_error") or ""
+
+        route_controls = []
+        for route in routes:
+            route_controls.append(
+                ft.Text(
+                    f"{route.get('id')} · {route.get('candidate_route_strategy') or ''} · {route.get('ruta_resuelta') or route.get('ruta_box')}",
+                    size=11,
+                    color=Q_MUTED,
+                )
+            )
+
+        option_controls = []
+        for option in options[:200]:
+            ruta = option.get("ruta") or ""
+            score = option.get("score") or 0
+            reasons = ", ".join(option.get("match_reasons") or [])
+            linked = option.get("expediente_id")
+
+            option_controls.append(
+                ft.Container(
+                    padding=10,
+                    border_radius=10,
+                    border=ft.border.all(1, Q_BORDER),
+                    bgcolor="#F8FAFC" if int(score or 0) <= 0 else "#ECFDF3",
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(option.get("nombre_carpeta") or "-", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK, expand=True),
+                                    ft.Text(f"score {score}", size=12, color=Q_MUTED),
+                                    primary_button("Vincular esta", lambda e, p=ruta: vincular_box_folder_option(p)),
+                                ],
+                                spacing=10,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                            ft.Text(ruta, size=11, color=Q_MUTED),
+                            ft.Text(f"Motivos: {reasons or '-'}", size=11, color=Q_MUTED),
+                            ft.Text(f"Ya vinculado a expediente: {linked}", size=11, color="#B42318", visible=bool(linked)),
+                        ],
+                        spacing=5,
+                    ),
+                )
+            )
+
+        if not option_controls:
+            option_controls = [
+                ft.Container(
+                    padding=12,
+                    border_radius=10,
+                    bgcolor="#FFF7ED",
+                    border=ft.border.all(1, "#FED7AA"),
+                    content=ft.Text("No hay carpetas cargadas para las rutas seleccionadas.", color="#9A3412"),
+                )
+            ]
+
+        box_folder_options_dialog.title = ft.Text("Carpetas Box candidatas")
+        box_folder_options_dialog.content = ft.Container(
+            width=900,
+            height=620,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        f"Cliente: {result.get('cliente_nombre') or '-'} · Tipo: {result.get('tipo_expediente_nombre') or '-'}",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Selecciona manualmente la carpeta correcta. El score solo ordena posibles coincidencias.",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    error_alert(scan_error) if scan_error else ft.Container(),
+                    ft.Container(
+                        padding=10,
+                        border_radius=10,
+                        border=ft.border.all(1, Q_BORDER),
+                        bgcolor="#FFFFFF",
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Rutas consultadas", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                *(route_controls or [ft.Text("Sin rutas", color=Q_MUTED, size=12)]),
+                            ],
+                            spacing=4,
+                        ),
+                    ),
+                    ft.Text(f"Opciones encontradas: {result.get('total_options') or 0}", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Column(
+                        controls=option_controls,
+                        spacing=8,
+                        scroll=ft.ScrollMode.AUTO,
+                        expand=True,
+                    ),
+                ],
+                spacing=10,
+            ),
+        )
+        box_folder_options_dialog.actions = [
+            secondary_button("Cerrar", cerrar_box_folder_options_dialog),
+        ]
+        box_folder_options_dialog.open = True
+        page.update()
+
     def vincular_box_folder_desde_ficha(e=None):
         expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
         if not expediente_id:
@@ -4417,6 +4565,16 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     "Ruta de referencia y notas internas del expediente.",
                     [
                         box_folder_path,
+                        ft.Row(
+                            controls=[
+                                secondary_button("Buscar carpetas Box", lambda e: cargar_box_folder_options(False)),
+                                primary_button("Escanear ruta y buscar", lambda e: cargar_box_folder_options(True)),
+                                secondary_button("Vincular ruta escrita", vincular_box_folder_desde_ficha),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                        ft.Text("Selector readonly: el ERP observa Box y solo vincula la ruta en SQLite. No mueve, borra ni renombra archivos.", size=12, color=Q_MUTED),
                         ft.Text("Solo se guarda una ruta de referencia. El ERP no manipula Box en esta fase.", size=12, color=Q_MUTED),
                         ft.Row(
                             controls=[
@@ -5514,6 +5672,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     except Exception:
         pass
     page.overlay.append(expediente_dialog)
+    box_folder_options_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Carpetas Box candidatas"),
+        content=ft.Container(width=900, height=620, content=ft.Text("Sin datos")),
+        actions=[],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(box_folder_options_dialog)
     page.overlay.append(admin_document_dialog)
 
     def open_new(e=None, cliente_id=None):
