@@ -9,6 +9,7 @@ from datetime import datetime
 
 from backend.services import expedient_service
 from backend.services import box_watch_service
+from backend.services import document_viewer_service
 from backend.services import expedient_document_state_service as document_state_service
 from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
@@ -5534,7 +5535,39 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         section = state.get("dialog_section") or "ficha"
 
         if section == "documentacion":
-            return build_documentacion_content(expediente_id)
+            return ft.Container(
+                width=920,
+                height=620,
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            padding=12,
+                            border_radius=12,
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(1, Q_BORDER),
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(ft.Icons.FOLDER_OPEN, color=Q_PRIMARY),
+                                    ft.Column(
+                                        controls=[
+                                            ft.Text("Documentos del expediente", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                            ft.Text("Ver todos los documentos bajo la carpeta Box vinculada.", size=12, color=Q_MUTED),
+                                        ],
+                                        spacing=2,
+                                        expand=True,
+                                    ),
+                                    primary_button("Ver todos los documentos del expediente", show_expediente_documents_dialog),
+                                ],
+                                spacing=10,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                        ),
+                        build_documentacion_content(expediente_id),
+                    ],
+                    spacing=12,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            )
 
         if section == "diagnostico":
             return build_diagnostic_content(expediente_id)
@@ -5552,6 +5585,227 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             return build_expedient_templates_content(expediente_id)
 
         return build_edit_content()
+
+
+    def close_document_viewer_dialog(e=None):
+        document_viewer_dialog.open = False
+        page.update()
+
+    def open_document_with_system(path, expediente_id=None):
+        expediente_id = expediente_id or state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            show_form_error("Guarda o abre un expediente antes de abrir documentos.")
+            return
+
+        try:
+            document_viewer_service.open_document(path, expediente_id=expediente_id)
+        except Exception as exc:
+            show_form_error(str(exc))
+
+    def show_document_preview(path, title=None, expediente_id=None, page_number=1):
+        expediente_id = expediente_id or state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            show_form_error("Guarda o abre un expediente antes de previsualizar documentos.")
+            return
+
+        try:
+            preview = document_viewer_service.create_document_preview(path, expediente_id=expediente_id, page_number=page_number)
+        except Exception as exc:
+            show_form_error(str(exc))
+            return
+
+        controls = [
+            ft.Text(str(title or path), weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+            ft.Text(str(path), size=11, color=Q_MUTED),
+        ]
+
+        preview_path = preview.get("preview_path") or ""
+        current_page = int(preview.get("page_number") or page_number or 1)
+        total_pages = int(preview.get("total_pages") or 1)
+
+        if total_pages > 1:
+            controls.append(
+                ft.Text(
+                    f"Página {current_page} de {total_pages}",
+                    size=12,
+                    color=Q_MUTED,
+                )
+            )
+
+        if preview.get("ok") and preview_path:
+            controls.append(
+                ft.Container(
+                    expand=True,
+                    bgcolor="#F8FAFC",
+                    border_radius=12,
+                    border=ft.border.all(1, Q_BORDER),
+                    padding=8,
+                    content=ft.Image(
+                        src=preview_path,
+                        fit="contain",
+                        expand=True,
+                    ),
+                )
+            )
+        else:
+            controls.append(
+                ft.Container(
+                    padding=16,
+                    bgcolor="#FFF7ED",
+                    border_radius=12,
+                    border=ft.border.all(1, "#FED7AA"),
+                    content=ft.Text(
+                        preview.get("message") or "No hay preview disponible para este documento.",
+                        color="#9A3412",
+                    ),
+                )
+            )
+
+        document_viewer_dialog.title = ft.Text("Visor documental", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
+        document_viewer_dialog.content = ft.Container(
+            width=980,
+            height=680,
+            content=ft.Column(
+                controls=controls,
+                spacing=10,
+                expand=True,
+            ),
+        )
+        actions = []
+
+        if total_pages > 1:
+            if current_page > 1:
+                actions.append(
+                    secondary_button(
+                        "Anterior",
+                        lambda e, p=path, t=title, exp_id=expediente_id, pg=current_page - 1: show_document_preview(p, t, exp_id, pg),
+                    )
+                )
+
+            if current_page < total_pages:
+                actions.append(
+                    primary_button(
+                        "Siguiente",
+                        lambda e, p=path, t=title, exp_id=expediente_id, pg=current_page + 1: show_document_preview(p, t, exp_id, pg),
+                    )
+                )
+
+        actions.extend([
+            secondary_button("Abrir con visor del sistema", lambda e, p=path, exp_id=expediente_id: open_document_with_system(p, exp_id)),
+            secondary_button("Cerrar", close_document_viewer_dialog),
+        ])
+
+        document_viewer_dialog.actions = actions
+        document_viewer_dialog.open = True
+        page.update()
+
+    def show_expediente_documents_dialog(e=None):
+        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        if not expediente_id:
+            show_form_error("Guarda el expediente antes de cargar documentos.")
+            return
+
+        try:
+            result = document_viewer_service.list_expediente_documents(expediente_id)
+        except Exception as exc:
+            show_form_error(str(exc))
+            return
+
+        docs = result.get("documents") or []
+        root_path = result.get("root_path") or ""
+        message = result.get("message") or ""
+
+        document_cards = []
+        for doc in docs[:500]:
+            path = doc.get("path") or ""
+            name = doc.get("name") or "-"
+            rel = doc.get("relative_path") or ""
+            folder = doc.get("folder_relative") or "Raíz"
+            size_label = doc.get("size_label") or "-"
+            modified_at = doc.get("modified_at") or "-"
+            doc_type = doc.get("type") or "document"
+            previewable = bool(doc.get("previewable"))
+
+            document_cards.append(
+                ft.Container(
+                    padding=10,
+                    border_radius=10,
+                    border=ft.border.all(1, Q_BORDER),
+                    bgcolor="#FFFFFF",
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        ft.Icons.PICTURE_AS_PDF if doc_type == "pdf" else ft.Icons.IMAGE if doc_type == "image" else ft.Icons.DESCRIPTION,
+                                        color=Q_PRIMARY,
+                                        size=20,
+                                    ),
+                                    ft.Text(name, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK, expand=True),
+                                    ft.Text(size_label, size=11, color=Q_MUTED),
+                                ],
+                                spacing=8,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                            ft.Text(f"Carpeta: {folder}", size=11, color=Q_MUTED),
+                            ft.Text(rel, size=11, color=Q_MUTED),
+                            ft.Text(f"Modificado: {modified_at}", size=11, color=Q_MUTED),
+                            ft.Row(
+                                controls=[
+                                    ft.Checkbox(
+                                label="Ver",
+                                value=False,
+                                on_change=lambda e, p=path, n=name: (
+                                    show_document_preview(p, n),
+                                    setattr(e.control, "value", False),
+                                    page.update(),
+                                ) if e.control.value else None,
+                            ),
+                                    secondary_button("Abrir", lambda e, p=path: open_document_with_system(p)),
+                                ],
+                                spacing=8,
+                            ),
+                        ],
+                        spacing=5,
+                    ),
+                )
+            )
+
+        if not document_cards:
+            document_cards = [
+                ft.Container(
+                    padding=14,
+                    border_radius=10,
+                    bgcolor="#FFF7ED",
+                    border=ft.border.all(1, "#FED7AA"),
+                    content=ft.Text(message or "No se han encontrado documentos en la carpeta vinculada.", color="#9A3412"),
+                )
+            ]
+
+        document_viewer_dialog.title = ft.Text("Documentos del expediente", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
+        document_viewer_dialog.content = ft.Container(
+            width=980,
+            height=680,
+            content=ft.Column(
+                controls=[
+                    ft.Text(f"Raíz documental: {root_path or '-'}", size=11, color=Q_MUTED),
+                    ft.Text(f"Documentos encontrados: {result.get('total_documents') or 0}", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Column(
+                        controls=document_cards,
+                        spacing=8,
+                        scroll=ft.ScrollMode.AUTO,
+                        expand=True,
+                    ),
+                ],
+                spacing=10,
+                expand=True,
+            ),
+        )
+        document_viewer_dialog.actions = [
+            secondary_button("Cerrar", close_document_viewer_dialog),
+        ]
+        document_viewer_dialog.open = True
+        page.update()
 
     def build_expediente_dialog_content(expediente_id=None):
         """
@@ -5672,6 +5926,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     except Exception:
         pass
     page.overlay.append(expediente_dialog)
+    document_viewer_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Visor documental"),
+        content=ft.Container(width=980, height=680, content=ft.Text("Sin documento")),
+        actions=[],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(document_viewer_dialog)
     box_folder_options_dialog = ft.AlertDialog(
         modal=True,
         title=ft.Text("Carpetas Box candidatas"),
