@@ -5010,6 +5010,32 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                 )
             )
 
+        selected_docs = state.setdefault("document_viewer_selected_docs", {})
+
+        def toggle_document_selection(e, file_path, file_name):
+            if e.control.value:
+                selected_docs[file_path] = {"path": file_path, "name": file_name}
+            else:
+                selected_docs.pop(file_path, None)
+            page.update()
+
+        def open_selected_documents(e=None):
+            selected = list(selected_docs.values())
+            if not selected:
+                show_form_error("Selecciona uno o varios documentos para abrir el visor.")
+                return
+
+            first = selected[0]
+            show_document_preview(
+                first.get("path"),
+                first.get("name"),
+                expediente_id,
+                1,
+                1.6,
+                selected,
+                0,
+            )
+
         file_controls = []
         for file in sorted(data.get("files", []), key=_mercurio_file_sort_key):
             file_controls.append(
@@ -5024,6 +5050,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                             ft.Container(
                                 width=34,
                                 content=ft.Text(_mercurio_file_order_label(file), size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ),
+                            ft.Checkbox(
+                                value=(file.get("path") or "") in selected_docs,
+                                tooltip="Seleccionar para visor",
+                                on_change=lambda e, p=file.get("path") or "", n=file.get("name") or "-": toggle_document_selection(e, p, n),
                             ),
                             ft.Column(
                                 controls=[
@@ -5074,6 +5105,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     secondary_button("Subir nivel", lambda e: open_document_parent_folder(data.get("current_path"), root_path)),
                     primary_button("Abrir carpeta Windows", lambda e: open_current_document_folder(data.get("current_path") or current_path)),
                     secondary_button("Ir a PARA PRESENTAR", open_para_presentar_in_browser),
+                    primary_button("Ver seleccionados", open_selected_documents),
                     secondary_button("Volcar datos en formulario", volcar_datos_formulario),
                 ],
                 spacing=10,
@@ -5100,480 +5132,18 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         state["dialog_section"] = section
         expediente_id = state.get("dialog_expediente_id")
         if section == "datos_especificos":
-            state["specific_refresh_counter"] = int(state.get("specific_refresh_counter") or 0) + 1
-            state["specific_field_controls"] = {}
-            state["specific_live_values"] = {}
-            # Relee la ficha base del expediente al entrar en Datos específicos,
-            # para que cliente/tipo/subtipo estén actualizados antes de resolver
-            # cliente, contacto, formularios y plantillas.
-            try:
-                if expediente_id:
-                    latest = expedient_service.get_expediente(expediente_id)
-                    if latest:
-                        load_form(latest)
-            except Exception:
-                pass
-        expediente_dialog.content = build_expediente_dialog_content(expediente_id)
-        page.update()
-
-    def _nav_button(label, section, icon, subtitle=""):
-        is_active = state.get("dialog_section") == section
-        return ft.Container(
-            bgcolor="#EAF3FF" if is_active else "#FFFFFF",
-            border=ft.border.all(1, "#B9D7FF" if is_active else Q_BORDER),
-            border_radius=14,
-            padding=10,
-            ink=True,
-            on_click=lambda e, s=section: set_dialog_section(s),
-            content=ft.Row(
-                controls=[
-                    ft.Container(
-                        content=ft.Icon(icon, size=18, color=Q_PRIMARY if is_active else Q_MUTED),
-                        bgcolor="#FFFFFF" if is_active else "#F8FAFC",
-                        border_radius=18,
-                        width=36,
-                        height=36,
-                        alignment=ft.alignment.Alignment(0, 0),
-                    ),
-                    ft.Column(
-                        controls=[
-                            ft.Text(label, size=13, weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.W_600, color=Q_PRIMARY_DARK if is_active else "#101828"),
-                            ft.Text(subtitle, size=10, color=Q_MUTED),
-                        ],
-                        spacing=1,
-                        expand=True,
-                    ),
-                ],
-                spacing=9,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-        )
-
-
-
-    def _load_docx_templates_for_expediente():
-        """Carga únicamente plantillas DOCX/Word activas sin tocar lógica de snapshot ni automatización."""
-        try:
-            templates = document_template_service.list_document_templates(active_only=True)
-        except Exception:
-            return []
-
-        return [
-            template for template in (templates or [])
-            if str(template.get("template_type") or "").strip().lower() in ("docx", "word")
-        ]
-
-    def generate_docx_from_expedient(template_id, e=None):
-        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
-        if not expediente_id:
-            show_form_error("Guarda primero el expediente antes de generar documentos")
-            return
-
-        try:
-            result = document_docx_service.generate_docx_from_template(
-                template_id,
-                expediente_id=expediente_id,
-                auto_build_snapshot=True,
-            )
-            state.setdefault("expedient_docx_result", {})[int(expediente_id)] = result
-            state.setdefault("expedient_docx_error", {}).pop(int(expediente_id), None)
-            clear_form_message()
-            set_message(success_alert("Documento generado correctamente"))
-        except Exception as exc:
-            state.setdefault("expedient_docx_result", {}).pop(int(expediente_id), None)
-            state.setdefault("expedient_docx_error", {})[int(expediente_id)] = str(exc)
-
-        state["dialog_section"] = "plantillas"
-        expediente_dialog.content = build_expediente_dialog_content(expediente_id)
-        page.update()
-
-    def _official_form_template_card(template):
-        template_id = template.get("id")
-        nombre = template.get("nombre") or template.get("codigo") or template.get("mapper_destino") or "Formulario oficial"
-        codigo = template.get("codigo") or "-"
-        categoria = template.get("categoria") or "EX"
-        mapper = template.get("mapper_destino") or "-"
-        template_type = template.get("template_type") or "pdf"
-
-        return ft.Container(
-            bgcolor="#FFFFFF",
-            border=ft.border.all(1, Q_BORDER),
-            border_radius=12,
-            padding=12,
-            content=ft.Row(
-                controls=[
-                    ft.Container(
-                        content=ft.Icon(ft.Icons.PICTURE_AS_PDF, size=20, color="#B42318"),
-                        bgcolor="#FEF3F2",
-                        border_radius=20,
-                        width=40,
-                        height=40,
-                        alignment=ft.alignment.Alignment(0, 0),
-                    ),
-                    ft.Column(
-                        controls=[
-                            ft.Text(nombre, size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ft.Text(f"{codigo} · {categoria} · {template_type}", size=11, color=Q_MUTED),
-                            ft.Text(f"Mapper destino: {mapper}", size=11, color=Q_MUTED, selectable=True),
-                        ],
-                        spacing=2,
-                        expand=True,
-                    ),
-                    primary_button("Generar formulario", lambda ev, t=template: generate_specific_ex_template(t, ev, return_section="plantillas")),
-                ],
-                spacing=10,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-        )
-
-
-    def _docx_template_card(template):
-        template_id = template.get("id")
-        nombre = template.get("nombre") or template.get("codigo") or "Plantilla"
-        codigo = template.get("codigo") or "-"
-        categoria = template.get("categoria") or "-"
-        mapper = template.get("mapper_destino") or "-"
-        alcance = "Expediente" if int(template.get("requiere_expediente") or 0) else "General"
-
-        return ft.Container(
-            bgcolor="#FFFFFF",
-            border=ft.border.all(1, Q_BORDER),
-            border_radius=12,
-            padding=12,
-            content=ft.Row(
-                controls=[
-                    ft.Container(
-                        content=ft.Icon(ft.Icons.DESCRIPTION, size=20, color=Q_PRIMARY),
-                        bgcolor="#EAF3FF",
-                        border_radius=20,
-                        width=40,
-                        height=40,
-                        alignment=ft.alignment.Alignment(0, 0),
-                    ),
-                    ft.Column(
-                        controls=[
-                            ft.Text(nombre, size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ft.Text(f"{codigo} · {categoria} · {alcance}", size=11, color=Q_MUTED),
-                            ft.Text(f"Mapper destino: {mapper}", size=11, color=Q_MUTED, selectable=True),
-                        ],
-                        spacing=2,
-                        expand=True,
-                    ),
-                    primary_button("Generar DOCX", lambda ev, tid=template_id: generate_docx_from_expedient(tid, ev)),
-                ],
-                spacing=10,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-        )
-
-    def build_expedient_templates_content(expediente_id):
-        if not expediente_id:
-            return ft.Container(
-                width=920,
-                height=620,
-                content=empty_state("Guarda el expediente para poder generar documentos"),
-            )
-
-        expediente_id = int(expediente_id)
-        official_templates = _list_ex_document_templates_for_menu()
-        docx_templates = _load_docx_templates_for_expediente()
-        result = state.setdefault("expedient_docx_result", {}).get(expediente_id)
-        error = state.setdefault("expedient_docx_error", {}).get(expediente_id)
-        ex_result = state.setdefault("specific_generation_result", {}).get(expediente_id)
-
-        controls = [
-            ft.Container(
-                bgcolor="#EAF3FF",
-                border=ft.border.all(1, "#B9D7FF"),
-                border_radius=16,
-                padding=14,
-                content=ft.Row(
-                    controls=[
-                        ft.Container(
-                            content=ft.Icon(ft.Icons.DESCRIPTION, size=24, color=Q_PRIMARY),
-                            bgcolor="#FFFFFF",
-                            border_radius=24,
-                            width=48,
-                            height=48,
-                            alignment=ft.alignment.Alignment(0, 0),
-                        ),
-                        ft.Column(
-                            controls=[
-                                ft.Text("Plantillas y formularios", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                ft.Text(
-                                    "Genera formularios oficiales EX/PDF y documentos DOCX usando los datos revisados del expediente.",
-                                    size=13,
-                                    color=Q_MUTED,
-                                ),
-                                ft.Text(
-                                    "Los archivos generados se integrarán más adelante con la Bandeja documental.",
-                                    size=12,
-                                    color=Q_MUTED,
-                                ),
-                            ],
-                            spacing=2,
-                            expand=True,
-                        ),
-                    ],
-                    spacing=12,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-            ),
-        ]
-
-        if error:
-            controls.append(error_alert(error))
-
-        if ex_result:
-            controls.append(
-                ft.Container(
-                    bgcolor="#ECFDF3",
-                    border=ft.border.all(1, "#ABEFC6"),
-                    border_radius=12,
-                    padding=12,
-                    content=ft.Column(
-                        spacing=4,
-                        controls=[
-                            ft.Text("Último formulario generado", size=14, weight=ft.FontWeight.BOLD, color="#027A48"),
-                            ft.Text(ex_result.get("title") or "Formulario generado", size=12, color=Q_PRIMARY_DARK),
-                            ft.Text(ex_result.get("path") or ex_result.get("extra") or "-", size=12, color=Q_PRIMARY_DARK, selectable=True),
-                            ft.Text(f"Realizado: {ex_result.get('at') or '-'}", size=10, color=Q_MUTED),
-                        ],
-                    ),
-                )
-            )
-
-        if result:
-            output = result.get("output") or {}
-            docx = result.get("docx") or {}
-            unresolved = docx.get("unresolved_placeholders") or []
-            controls.append(
-                ft.Container(
-                    bgcolor="#F8FAFC",
-                    border=ft.border.all(1, Q_BORDER),
-                    border_radius=12,
-                    padding=12,
-                    content=ft.Column(
-                        spacing=5,
-                        controls=[
-                            ft.Text("Último DOCX generado", size=14, weight=ft.FontWeight.BOLD, color="#027A48"),
-                            ft.Text(output.get("docx_path") or docx.get("docx_path") or "-", size=12, color=Q_PRIMARY_DARK, selectable=True),
-                            ft.Text(
-                                f"Placeholders pendientes: {len(unresolved)}" + (" · " + ", ".join(unresolved[:6]) if unresolved else ""),
-                                size=12,
-                                color="#B42318" if unresolved else Q_MUTED,
-                                selectable=True,
-                            ),
-                        ],
-                    ),
-                )
-            )
-
-        controls.append(
-            ft.Container(
-                padding=ft.padding.only(top=4, bottom=2),
-                content=ft.Column(
-                    spacing=2,
-                    controls=[
-                        ft.Text("Formularios oficiales", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                        ft.Text("EX/PDF compatibles con el tipo y subtipo del expediente", size=12, color=Q_MUTED),
-                    ],
-                ),
-            )
-        )
-
-        if not official_templates:
-            controls.append(empty_state("No hay formularios oficiales EX/PDF activos compatibles con este expediente"))
-        else:
-            controls.extend(_official_form_template_card(template) for template in official_templates)
-
-        controls.append(
-            ft.Container(
-                padding=ft.padding.only(top=10, bottom=2),
-                content=ft.Column(
-                    spacing=2,
-                    controls=[
-                        ft.Text("Plantillas documentales", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                        ft.Text("DOCX/Word internos del despacho", size=12, color=Q_MUTED),
-                    ],
-                ),
-            )
-        )
-
-        if not docx_templates:
-            controls.append(empty_state("No hay plantillas DOCX activas configuradas"))
-        else:
-            controls.extend(_docx_template_card(template) for template in docx_templates)
-
-        return ft.Column(
-            width=920,
-            height=620,
-            scroll=ft.ScrollMode.AUTO,
-            spacing=12,
-            controls=controls,
-        )
-
-    def build_justificantes_content(expediente_id):
-        if not expediente_id:
-            return empty_state("Guarda el expediente para poder ver justificantes")
-
-        try:
-            resumen = trace_service.get_resumen_trazabilidad(expediente_id)
-            justificantes = resumen.get("justificantes", [])
-
-            rows = [
-                [
-                    j.get("archivo_nombre") or "-",
-                    j.get("archivo_ruta") or "-",
-                    _date_to_display(j.get("fecha_presentacion")),
-                    j.get("numero_registro") or "-",
-                    j.get("estado_conciliacion") or "-",
-                ]
-                for j in justificantes
-            ]
-
-            if not rows:
-                return empty_state("No hay justificantes cargados")
-
-            return app_table(
-                ["Archivo", "Ruta", "Fecha presentación", "Registro", "Estado"],
-                rows,
-                height=520,
-            )
-        except Exception as exc:
-            return error_alert(str(exc))
-
-    def build_hojas_content(expediente_id):
-        if not expediente_id:
-            return empty_state("Guarda el expediente para poder ver hojas de encargo")
-
-        try:
-            resumen = trace_service.get_resumen_trazabilidad(expediente_id)
-            hojas = resumen.get("hojas_encargo", [])
-
-            rows = [
-                [
-                    h.get("numero_hoja") or "-",
-                    _date_to_display(h.get("fecha_firma")),
-                    h.get("procedimiento") or "-",
-                    f"{float(h.get('importe_neto') or 0):.2f} €",
-                    h.get("estado_firma") or h.get("estado") or "-",
-                ]
-                for h in hojas
-            ]
-
-            if not rows:
-                return empty_state("No hay hojas de encargo asociadas")
-
-            return app_table(
-                ["Nº hoja", "Firma", "Procedimiento", "Importe neto", "Estado"],
-                rows,
-                height=520,
-            )
-        except Exception as exc:
-            return error_alert(str(exc))
-
-    def build_consultas_content(expediente_id):
-        if not expediente_id:
-            return empty_state("Guarda el expediente para poder ver consultas aplicadas")
-
-        try:
-            resumen = trace_service.get_resumen_trazabilidad(expediente_id)
-            consultas = resumen.get("consultas_aplicadas", [])
-
-            rows = [
-                [
-                    _date_to_display(c.get("fecha_consulta")),
-                    f"{float(c.get('importe_aplicado') or 0):.2f} €",
-                    f"{float(c.get('importe_original') or 0):.2f} €",
-                    c.get("observaciones") or "-",
-                ]
-                for c in consultas
-            ]
-
-            if not rows:
-                return empty_state("No hay consultas aplicadas")
-
-            return app_table(
-                ["Fecha consulta", "Aplicado", "Importe original", "Observaciones"],
-                rows,
-                height=520,
-            )
-        except Exception as exc:
-            return error_alert(str(exc))
-
-    def build_historial_content(expediente_id):
-        if not expediente_id:
-            return empty_state("Guarda el expediente para poder ver historial")
-
-        try:
-            resumen = trace_service.get_resumen_trazabilidad(expediente_id)
-            eventos = resumen.get("eventos", [])
-
-            rows = [
-                [
-                    _date_to_display(ev.get("fecha_evento")),
-                    ev.get("tipo_evento") or "-",
-                    ev.get("titulo") or "-",
-                    ev.get("descripcion") or "-",
-                ]
-                for ev in eventos
-            ]
-
-            if not rows:
-                return empty_state("No hay eventos registrados")
-
-            return app_table(
-                ["Fecha", "Tipo", "Título", "Descripción"],
-                rows,
-                height=520,
-            )
-        except Exception as exc:
-            return error_alert(str(exc))
-
-    def build_dialog_section_content(expediente_id):
-        section = state.get("dialog_section") or "ficha"
-
-        if section == "documentacion":
             return ft.Container(
                 width=920,
                 height=620,
                 content=ft.Column(
                     controls=[
-                        ft.Container(
-                            padding=12,
-                            border_radius=12,
-                            bgcolor="#F8FAFC",
-                            border=ft.border.all(1, Q_BORDER),
-                            content=ft.Row(
-                                controls=[
-                                    ft.Icon(ft.Icons.FOLDER_OPEN, color=Q_PRIMARY),
-                                    ft.Column(
-                                        controls=[
-                                            ft.Text("Documentos del expediente", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                            ft.Text("Ver todos los documentos bajo la carpeta Box vinculada.", size=12, color=Q_MUTED),
-                                        ],
-                                        spacing=2,
-                                        expand=True,
-                                    ),
-                                    primary_button("Ver todos los documentos del expediente", show_expediente_documents_dialog),
-                                ],
-                                spacing=10,
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                            ),
-                        ),
-                        build_documentacion_content(expediente_id),
+                        build_specific_data_content(expediente_id),
+                        build_expediente_documents_inline(expediente_id),
                     ],
                     spacing=12,
                     scroll=ft.ScrollMode.AUTO,
                 ),
             )
-
-        if section == "diagnostico":
-            return build_diagnostic_content(expediente_id)
-
-        if section == "datos_especificos":
-            return build_specific_data_content(expediente_id)
 
         if section == "trazabilidad":
             return build_traceability_content(expediente_id)
@@ -5602,14 +5172,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         except Exception as exc:
             show_form_error(str(exc))
 
-    def show_document_preview(path, title=None, expediente_id=None, page_number=1):
+    def show_document_preview(path, title=None, expediente_id=None, page_number=1, zoom=1.6, queue=None, queue_index=0):
         expediente_id = expediente_id or state.get("dialog_expediente_id") or state.get("editing_id")
         if not expediente_id:
             show_form_error("Guarda o abre un expediente antes de previsualizar documentos.")
             return
 
         try:
-            preview = document_viewer_service.create_document_preview(path, expediente_id=expediente_id, page_number=page_number)
+            preview = document_viewer_service.create_document_preview(path, expediente_id=expediente_id, page_number=page_number, zoom=zoom)
         except Exception as exc:
             show_form_error(str(exc))
             return
@@ -5622,6 +5192,16 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         preview_path = preview.get("preview_path") or ""
         current_page = int(preview.get("page_number") or page_number or 1)
         total_pages = int(preview.get("total_pages") or 1)
+        current_zoom = float(preview.get("zoom") or zoom or 1.6)
+
+        viewer_queue = queue or []
+        try:
+            current_queue_index = int(queue_index or 0)
+        except Exception:
+            current_queue_index = 0
+
+        if viewer_queue:
+            current_queue_index = max(0, min(current_queue_index, len(viewer_queue) - 1))
 
         if total_pages > 1:
             controls.append(
@@ -5640,9 +5220,17 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     border_radius=12,
                     border=ft.border.all(1, Q_BORDER),
                     padding=8,
-                    content=ft.Image(
-                        src=preview_path,
-                        fit="contain",
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(f"Zoom: {current_zoom:.1f}x", size=11, color=Q_MUTED),
+                            ft.Image(
+                                src=preview_path,
+                                fit="contain",
+                                width=int(900 * (current_zoom / 1.6)),
+                            ),
+                        ],
+                        spacing=6,
+                        scroll=ft.ScrollMode.AUTO,
                         expand=True,
                     ),
                 )
@@ -5673,12 +5261,35 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         )
         actions = []
 
+        if viewer_queue and len(viewer_queue) > 1:
+            if current_queue_index > 0:
+                prev_doc = viewer_queue[current_queue_index - 1]
+                actions.append(
+                    secondary_button(
+                        "Doc anterior",
+                        lambda e, d=prev_doc, q=viewer_queue, idx=current_queue_index - 1: show_document_preview(
+                            d.get("path"), d.get("name"), expediente_id, 1, current_zoom, q, idx
+                        ),
+                    )
+                )
+
+            if current_queue_index < len(viewer_queue) - 1:
+                next_doc = viewer_queue[current_queue_index + 1]
+                actions.append(
+                    primary_button(
+                        "Doc siguiente",
+                        lambda e, d=next_doc, q=viewer_queue, idx=current_queue_index + 1: show_document_preview(
+                            d.get("path"), d.get("name"), expediente_id, 1, current_zoom, q, idx
+                        ),
+                    )
+                )
+
         if total_pages > 1:
             if current_page > 1:
                 actions.append(
                     secondary_button(
                         "Anterior",
-                        lambda e, p=path, t=title, exp_id=expediente_id, pg=current_page - 1: show_document_preview(p, t, exp_id, pg),
+                        lambda e, p=path, t=title, exp_id=expediente_id, pg=current_page - 1, z=current_zoom, q=viewer_queue, idx=current_queue_index: show_document_preview(p, t, exp_id, pg, z, q, idx),
                     )
                 )
 
@@ -5686,9 +5297,23 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                 actions.append(
                     primary_button(
                         "Siguiente",
-                        lambda e, p=path, t=title, exp_id=expediente_id, pg=current_page + 1: show_document_preview(p, t, exp_id, pg),
+                        lambda e, p=path, t=title, exp_id=expediente_id, pg=current_page + 1, z=current_zoom, q=viewer_queue, idx=current_queue_index: show_document_preview(p, t, exp_id, pg, z, q, idx),
                     )
                 )
+
+        if preview.get("ok") and preview_path:
+            actions.append(
+                secondary_button(
+                    "Zoom -",
+                    lambda e, p=path, t=title, exp_id=expediente_id, pg=current_page, z=max(0.8, current_zoom - 0.4), q=viewer_queue, idx=current_queue_index: show_document_preview(p, t, exp_id, pg, z, q, idx),
+                )
+            )
+            actions.append(
+                primary_button(
+                    "Zoom +",
+                    lambda e, p=path, t=title, exp_id=expediente_id, pg=current_page, z=min(3.5, current_zoom + 0.4), q=viewer_queue, idx=current_queue_index: show_document_preview(p, t, exp_id, pg, z, q, idx),
+                )
+            )
 
         actions.extend([
             secondary_button("Abrir con visor del sistema", lambda e, p=path, exp_id=expediente_id: open_document_with_system(p, exp_id)),
@@ -5807,6 +5432,30 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         document_viewer_dialog.open = True
         page.update()
 
+    def build_dialog_section_content(expediente_id):
+        section = state.get("dialog_section") or "ficha"
+
+        if section == "documentacion":
+            return build_documentacion_content(expediente_id)
+
+        if section == "diagnostico":
+            return build_diagnostic_content(expediente_id)
+
+        if section == "datos_especificos":
+            return build_specific_data_content(expediente_id)
+
+        if section == "trazabilidad":
+            return build_traceability_content(expediente_id)
+
+        if section == "automatizacion":
+            return build_payload_preview_content(expediente_id)
+
+        if section == "plantillas":
+            return build_expedient_templates_content(expediente_id)
+
+        return build_edit_content()
+
+
     def build_expediente_dialog_content(expediente_id=None):
         """
         Ficha de expediente con menú interno.
@@ -5829,6 +5478,37 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             ("Automatización", "automatizacion", ft.Icons.ROCKET_LAUNCH, "Payload mapper"),
             ("Trazabilidad", "trazabilidad", ft.Icons.TIMELINE, "Historial"),
         ]
+
+        def _nav_button(label, section, icon, subtitle):
+            selected = (state.get("dialog_section") or "ficha") == section
+
+            def _go(e, target_section=section):
+                state["dialog_section"] = target_section
+                expediente_dialog.content = build_expediente_dialog_content(state.get("dialog_expediente_id"))
+                page.update()
+
+            return ft.Container(
+                padding=10,
+                border_radius=12,
+                bgcolor="#EAF2FF" if selected else "#FFFFFF",
+                border=ft.border.all(1, Q_PRIMARY if selected else Q_BORDER),
+                on_click=_go,
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(icon, color=Q_PRIMARY if selected else Q_MUTED),
+                        ft.Column(
+                            controls=[
+                                ft.Text(label, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(subtitle, size=11, color=Q_MUTED),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
 
         return ft.Container(
             width=1160,
@@ -5861,7 +5541,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                                         spacing=2,
                                     ),
                                 ),
-                                *[_nav_button(label, section, icon, subtitle) for label, section, icon, subtitle in menu_items],
+                    *[_nav_button(label, section, icon, subtitle) for label, section, icon, subtitle in menu_items],
                             ],
                             spacing=8,
                         ),
@@ -5926,6 +5606,144 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     except Exception:
         pass
     page.overlay.append(expediente_dialog)
+    def build_expediente_documents_inline(expediente_id=None):
+        if not expediente_id:
+            return ft.Container(
+                padding=12,
+                border_radius=12,
+                bgcolor="#FFF7ED",
+                border=ft.border.all(1, "#FED7AA"),
+                content=ft.Text("Guarda el expediente para poder ver documentos.", color="#9A3412"),
+            )
+
+        try:
+            result = document_viewer_service.list_expediente_documents(expediente_id)
+        except Exception as exc:
+            return ft.Container(
+                padding=12,
+                border_radius=12,
+                bgcolor="#FEF2F2",
+                border=ft.border.all(1, "#FECACA"),
+                content=ft.Text(str(exc), color="#B42318"),
+            )
+
+        docs = result.get("documents") or []
+        root_path = result.get("root_path") or ""
+        message = result.get("message") or ""
+
+        controls = [
+            ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.FOLDER_OPEN, color=Q_PRIMARY),
+                    ft.Column(
+                        controls=[
+                            ft.Text("Documentos del expediente", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(root_path or message or "Carpeta Box vinculada", size=11, color=Q_MUTED, selectable=True),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                    ft.Text(f"{len(docs)} docs", size=12, color=Q_MUTED),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+        ]
+
+        if not docs:
+            controls.append(ft.Text(message or "No hay documentos detectados.", size=13, color=Q_MUTED))
+            return ft.Container(
+                padding=12,
+                border_radius=12,
+                bgcolor="#F8FAFC",
+                border=ft.border.all(1, Q_BORDER),
+                content=ft.Column(controls=controls, spacing=10),
+            )
+
+        document_rows = []
+        current_folder = None
+
+        for doc in docs[:500]:
+            doc_path = doc.get("path") or ""
+            name = doc.get("name") or "-"
+            rel = doc.get("relative_path") or ""
+            folder = doc.get("folder_relative") or "Raíz"
+            size_label = doc.get("size_label") or "-"
+            modified_at = doc.get("modified_at") or "-"
+            doc_type = doc.get("type") or "document"
+
+            if folder != current_folder:
+                current_folder = folder
+                document_rows.append(
+                    ft.Container(
+                        padding=ft.padding.only(top=10, bottom=2),
+                        content=ft.Text(str(folder), weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    )
+                )
+
+            icon = ft.Icons.PICTURE_AS_PDF if doc_type == "pdf" else ft.Icons.IMAGE if doc_type == "image" else ft.Icons.DESCRIPTION
+
+            document_rows.append(
+                ft.Container(
+                    padding=10,
+                    border_radius=10,
+                    border=ft.border.all(1, Q_BORDER),
+                    bgcolor="#FFFFFF",
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(icon, color=Q_PRIMARY),
+                            ft.Checkbox(
+                                label="Ver",
+                                value=False,
+                                on_change=lambda e, p=doc_path, n=name: (
+                                    show_document_preview(p, n),
+                                    setattr(e.control, "value", False),
+                                    page.update(),
+                                ) if e.control.value else None,
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(name, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(f"{size_label} · {modified_at}", size=11, color=Q_MUTED),
+                                    ft.Text(rel, size=10, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            secondary_button("Abrir", lambda e, p=doc_path: open_document_with_system(p)),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                )
+            )
+
+        controls.append(
+            ft.Container(
+                height=470,
+                padding=8,
+                border_radius=12,
+                bgcolor="#F8FAFC",
+                border=ft.border.all(1, Q_BORDER),
+                content=ft.Column(
+                    controls=document_rows,
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            )
+        )
+
+        if len(docs) > 500:
+            controls.append(ft.Text("Se muestran los primeros 500 documentos.", size=11, color=Q_MUTED))
+
+        return ft.Container(
+            padding=12,
+            border_radius=12,
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            content=ft.Column(controls=controls, spacing=10),
+        )
+
     document_viewer_dialog = ft.AlertDialog(
         modal=True,
         title=ft.Text("Visor documental"),

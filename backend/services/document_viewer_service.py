@@ -218,7 +218,7 @@ def open_document(path: str, expediente_id: int | str | None = None) -> dict[str
     }
 
 
-def create_document_preview(path: str, expediente_id: int | str | None = None, page_number: int = 1) -> dict[str, Any]:
+def create_document_preview(path: str, expediente_id: int | str | None = None, page_number: int = 1, zoom: float = 1.6) -> dict[str, Any]:
     """
     Crea o devuelve una preview para Flet.
 
@@ -278,7 +278,15 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
     except Exception:
         requested_page = 1
 
-    safe_name = f"{abs(hash(str(file_path)))}_p{requested_page}.png"
+    try:
+        render_zoom = float(zoom or 1.6)
+    except Exception:
+        render_zoom = 1.6
+
+    render_zoom = max(0.8, min(render_zoom, 3.5))
+    zoom_key = int(render_zoom * 100)
+
+    safe_name = f"{abs(hash(str(file_path)))}_p{requested_page}_z{zoom_key}.png"
     preview_path = PREVIEW_DIR / safe_name
 
     try:
@@ -296,7 +304,7 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
 
         current_page = min(max(1, requested_page), total_pages)
         page = doc.load_page(current_page - 1)
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
+        pix = page.get_pixmap(matrix=fitz.Matrix(render_zoom, render_zoom), alpha=False)
         pix.save(str(preview_path))
         doc.close()
 
@@ -307,6 +315,7 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
             "message": "",
             "page_number": current_page,
             "total_pages": total_pages,
+            "zoom": render_zoom,
         }
     except Exception as exc:
         return {
