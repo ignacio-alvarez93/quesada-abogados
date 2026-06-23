@@ -4610,15 +4610,149 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             result = document_state_service.diagnose_expediente_document_state(expediente_id)
             resumen = result.get("resumen") or {}
 
+            diagnostic_doc_path_by_name = {}
+            try:
+                viewer_docs = document_viewer_service.list_expediente_documents(expediente_id).get("documents") or []
+                for viewer_doc in viewer_docs:
+                    viewer_name = str(viewer_doc.get("name") or "").strip()
+                    viewer_path = str(viewer_doc.get("path") or "").strip()
+                    if viewer_name and viewer_path:
+                        diagnostic_doc_path_by_name[viewer_name.casefold()] = viewer_path
+            except Exception:
+                diagnostic_doc_path_by_name = {}
+
             faltantes_controls = [
                 ft.Text(f"• {f.get('nombre') or f.get('codigo')}", color="#B42318", size=13)
                 for f in result.get("faltantes", [])
             ] or [ft.Text("No hay faltantes", color="#027A48", size=13)]
 
-            encontrados_controls = [
-                ft.Text(f"• {f.get('nombre') or f.get('codigo')}", color="#027A48", size=13)
-                for f in result.get("encontrados", [])
-            ] or [ft.Text("No hay documentos encontrados por regla", color=Q_MUTED, size=13)]
+            selected_diagnostic_docs = state.setdefault("diagnostic_viewer_selected_docs", {})
+
+            def _diagnostic_doc_path(item):
+                direct_path = (
+                    item.get("path")
+                    or item.get("archivo_ruta")
+                    or item.get("ruta")
+                    or item.get("file_path")
+                    or item.get("box_path")
+                    or item.get("document_path")
+                    or ""
+                )
+                if direct_path:
+                    return direct_path
+
+                archivo = (
+                    item.get("archivo")
+                    or item.get("archivo_nombre")
+                    or item.get("file_name")
+                    or item.get("document_name")
+                    or item.get("nombre_archivo")
+                    or ""
+                )
+                archivo_key = str(archivo or "").strip().casefold()
+                if archivo_key:
+                    return diagnostic_doc_path_by_name.get(archivo_key, "")
+
+                return ""
+
+            def _diagnostic_doc_name(item):
+                raw_path = _diagnostic_doc_path(item)
+                return (
+                    item.get("archivo_nombre")
+                    or item.get("archivo")
+                    or item.get("file_name")
+                    or item.get("document_name")
+                    or item.get("nombre_archivo")
+                    or item.get("nombre")
+                    or item.get("codigo")
+                    or Path(str(raw_path)).name
+                    or "-"
+                )
+
+            def toggle_diagnostic_doc_selection(e, file_path, file_name):
+                if not file_path:
+                    e.control.value = False
+                    show_form_error("Esta detección no tiene archivo asociado para abrir en el visor.")
+                    page.update()
+                    return
+
+                if e.control.value:
+                    selected_diagnostic_docs[file_path] = {"path": file_path, "name": file_name}
+                else:
+                    selected_diagnostic_docs.pop(file_path, None)
+
+                page.update()
+
+            def open_selected_diagnostic_documents(e=None):
+                selected = list(selected_diagnostic_docs.values())
+                if not selected:
+                    show_form_error("Selecciona uno o varios documentos detectados para abrir el visor.")
+                    return
+
+                first = selected[0]
+                show_document_preview(
+                    first.get("path"),
+                    first.get("name"),
+                    expediente_id,
+                    1,
+                    1.6,
+                    selected,
+                    0,
+                )
+
+            encontrados_controls = []
+            for f in result.get("encontrados", []):
+                doc_path = _diagnostic_doc_path(f)
+                doc_name = _diagnostic_doc_name(f)
+                label = f.get("nombre") or f.get("codigo") or doc_name
+                codigo = f.get("codigo") or ""
+                has_path = bool(doc_path)
+
+                encontrados_controls.append(
+                    ft.Container(
+                        padding=10,
+                        border_radius=10,
+                        border=ft.border.all(1, "#ABEFC6" if has_path else Q_BORDER),
+                        bgcolor="#F6FEF9" if has_path else "#F8FAFC",
+                        content=ft.Row(
+                            controls=[
+                                ft.Checkbox(
+                                    value=doc_path in selected_diagnostic_docs,
+                                    disabled=not has_path,
+                                    tooltip="Seleccionar para visor" if has_path else "Detección sin archivo asociado",
+                                    on_change=lambda e, p=doc_path, n=doc_name: toggle_diagnostic_doc_selection(e, p, n),
+                                ),
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(f"• {label}", color="#027A48" if has_path else Q_MUTED, size=13, weight=ft.FontWeight.BOLD),
+                                        ft.Text(f"Código: {codigo}" if codigo else "Detección documental", size=11, color=Q_MUTED),
+                                        ft.Text(doc_path if has_path else "Sin ruta de archivo vinculada en el diagnóstico", size=11, color=Q_MUTED, selectable=True),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                secondary_button("Abrir", lambda e, p=doc_path: open_document_with_system(p),) if has_path else ft.Text("Sin visor", size=11, color=Q_MUTED),
+                            ],
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    )
+                )
+
+            if encontrados_controls:
+                encontrados_controls.insert(
+                    0,
+                    ft.Row(
+                        controls=[
+                            primary_button("Ver seleccionados", open_selected_diagnostic_documents),
+                            ft.Text("Selecciona detecciones con archivo asociado para revisarlas en el visor v7.", size=12, color=Q_MUTED),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                )
+            else:
+                encontrados_controls = [ft.Text("No hay documentos encontrados por regla", color=Q_MUTED, size=13)]
 
             signals_controls = [
                 ft.Text(f"• {signal}", size=13)
