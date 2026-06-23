@@ -20,3 +20,6 @@ exports/
 .env.local
 .env.*
 !.env.example
+
+# Runtime previews/document cache
+data/
