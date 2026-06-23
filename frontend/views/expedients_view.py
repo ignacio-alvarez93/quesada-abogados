@@ -5337,6 +5337,97 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         if viewer_queue:
             current_queue_index = max(0, min(current_queue_index, len(viewer_queue) - 1))
 
+        viewer_scroll_state = state.setdefault("document_viewer_scroll_state", {})
+        viewer_scroll_key = f"{expediente_id}|{path}|{current_zoom:.1f}"
+
+        loaded_until_page = current_page
+        if total_pages > 1 and preview.get("preview_type") == "pdf":
+            try:
+                loaded_until_page = int(viewer_scroll_state.get(viewer_scroll_key) or 0)
+            except Exception:
+                loaded_until_page = 0
+
+            loaded_until_page = max(loaded_until_page, current_page + 3)
+            loaded_until_page = min(total_pages, max(1, loaded_until_page))
+            viewer_scroll_state[viewer_scroll_key] = loaded_until_page
+
+        viewer_scroll_controls = state.setdefault("document_viewer_scroll_controls", {})
+        viewer_scroll_loading = state.setdefault("document_viewer_scroll_loading", {})
+
+        def _viewer_page_controls(page_idx, page_preview_path):
+            return [
+                ft.Container(
+                    padding=ft.padding.only(top=8, bottom=2),
+                    content=ft.Text(
+                        f"Página {page_idx} de {total_pages}",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ),
+                ft.Image(
+                    src=page_preview_path,
+                    fit="contain",
+                    width=int(900 * (current_zoom / 1.6)),
+                ),
+                ft.Divider(),
+            ]
+
+        def load_more_viewer_pages(e=None):
+            if not (total_pages > 1 and preview.get("preview_type") == "pdf"):
+                return
+
+            if viewer_scroll_loading.get(viewer_scroll_key):
+                return
+
+            current_loaded = int(viewer_scroll_state.get(viewer_scroll_key) or loaded_until_page or current_page)
+            if current_loaded >= total_pages:
+                return
+
+            viewer_list = viewer_scroll_controls.get(viewer_scroll_key)
+            if not viewer_list:
+                return
+
+            viewer_scroll_loading[viewer_scroll_key] = True
+            try:
+                new_loaded = min(total_pages, current_loaded + 3)
+
+                for page_idx in range(current_loaded + 1, new_loaded + 1):
+                    try:
+                        page_preview = document_viewer_service.create_document_preview(
+                            path,
+                            expediente_id=expediente_id,
+                            page_number=page_idx,
+                            zoom=current_zoom,
+                        )
+                        page_preview_path = page_preview.get("preview_path") or ""
+                    except Exception:
+                        page_preview_path = ""
+
+                    if page_preview_path:
+                        viewer_list.controls.extend(_viewer_page_controls(page_idx, page_preview_path))
+
+                viewer_scroll_state[viewer_scroll_key] = new_loaded
+
+                if new_loaded >= total_pages:
+                    viewer_list.controls.append(
+                        ft.Text("Documento completo cargado.", size=11, color=Q_MUTED)
+                    )
+
+                page.update()
+            finally:
+                viewer_scroll_loading[viewer_scroll_key] = False
+
+        def on_viewer_scroll(e):
+            try:
+                pixels = float(getattr(e, "pixels", 0) or 0)
+                max_scroll = float(getattr(e, "max_scroll_extent", 0) or 0)
+            except Exception:
+                return
+
+            if max_scroll > 0 and pixels >= max_scroll - 250:
+                load_more_viewer_pages()
+
         if total_pages > 1:
             controls.append(
                 ft.Text(
@@ -5347,6 +5438,67 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             )
 
         if preview.get("ok") and preview_path:
+            preview_controls = [
+                ft.Text(f"Zoom: {current_zoom:.1f}x", size=11, color=Q_MUTED),
+            ]
+
+            if total_pages > 1 and preview.get("preview_type") == "pdf":
+                # Carga progresiva: al abrir solo unas páginas; al final del scroll se amplía.
+                visible_start_page = 1
+
+                preview_controls.append(
+                    ft.Text(
+                        f"Vista rápida: páginas {visible_start_page}-{loaded_until_page} de {total_pages}. "
+                        + ("Desplázate al final para cargar más." if loaded_until_page < total_pages else "Documento completo cargado."),
+                        size=11,
+                        color=Q_MUTED,
+                    )
+                )
+
+                for page_idx in range(visible_start_page, loaded_until_page + 1):
+                    try:
+                        if page_idx == current_page:
+                            page_preview_path = preview_path
+                        else:
+                            page_preview = document_viewer_service.create_document_preview(
+                                path,
+                                expediente_id=expediente_id,
+                                page_number=page_idx,
+                                zoom=current_zoom,
+                            )
+                            page_preview_path = page_preview.get("preview_path") or ""
+                    except Exception:
+                        page_preview_path = ""
+
+                    if page_preview_path:
+                        preview_controls.extend(
+                            [
+                                ft.Container(
+                                    padding=ft.padding.only(top=8, bottom=2),
+                                    content=ft.Text(
+                                        f"Página {page_idx} de {total_pages}",
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                ),
+                                ft.Image(
+                                    src=page_preview_path,
+                                    fit="contain",
+                                    width=int(900 * (current_zoom / 1.6)),
+                                ),
+                                ft.Divider(),
+                            ]
+                        )
+            else:
+                preview_controls.append(
+                    ft.Image(
+                        src=preview_path,
+                        fit="contain",
+                        width=int(900 * (current_zoom / 1.6)),
+                    )
+                )
+
             controls.append(
                 ft.Container(
                     expand=True,
@@ -5354,18 +5506,18 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     border_radius=12,
                     border=ft.border.all(1, Q_BORDER),
                     padding=8,
-                    content=ft.Column(
-                        controls=[
-                            ft.Text(f"Zoom: {current_zoom:.1f}x", size=11, color=Q_MUTED),
-                            ft.Image(
-                                src=preview_path,
-                                fit="contain",
-                                width=int(900 * (current_zoom / 1.6)),
-                            ),
-                        ],
-                        spacing=6,
-                        scroll=ft.ScrollMode.AUTO,
-                        expand=True,
+                    content=(
+                        lambda viewer_list: (
+                            viewer_scroll_controls.__setitem__(viewer_scroll_key, viewer_list) or viewer_list
+                        )
+                    )(
+                        ft.ListView(
+                            controls=preview_controls,
+                            spacing=6,
+                            expand=True,
+                            auto_scroll=False,
+                            on_scroll=on_viewer_scroll,
+                        )
                     ),
                 )
             )
