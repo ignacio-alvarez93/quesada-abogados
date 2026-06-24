@@ -11,6 +11,7 @@ from frontend.views.economic_view import economic_view
 from frontend.views.box_watch_view import box_watch_view
 from frontend.views.reporting_view import reporting_view
 from frontend.views.presentation_queue_view import presentation_queue_view
+from frontend.views.document_inbox_view import document_inbox_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
 
@@ -85,6 +86,8 @@ def main(page: ft.Page):
             content = economic_view(page)
         elif view_name == "Documentos / Box":
             content = box_watch_view(page)
+        elif view_name == "Bandeja documental":
+            content = document_inbox_view(page)
         elif view_name == "Reporting":
             content = reporting_view(page)
         elif view_name == "Configuración":
