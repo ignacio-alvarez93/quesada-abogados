@@ -42,6 +42,7 @@ def _format_size(size_bytes):
 def _status_chip(status):
     status = status or "pending"
     colors = {
+        "all": ("#EEF2FF", "#3730A3"),
         "pending": ("#FFF7ED", "#B54708"),
         "linked": ("#EFF8FF", "#175CD3"),
         "copied_to_box": ("#ECFDF3", "#027A48"),
@@ -89,8 +90,6 @@ def document_inbox_view(page: ft.Page):
 
     manual_path = text_input("Ruta del archivo a importar manualmente", width=720)
     source_label = text_input("Origen / etiqueta", width=260)
-    notes_field = multiline_input("Notas", width=720)
-
     box_subfolder = text_input("Subcarpeta Box destino opcional", width=300)
 
     selected_label = ft.Text("Ningún documento seleccionado", size=12, color=Q_MUTED)
@@ -390,10 +389,99 @@ def document_inbox_view(page: ft.Page):
         allow_free_text=False,
     )
 
+    def build_status_counters():
+        status_keys = [key for key in STATUS_LABELS.keys() if key != "all"]
+
+        try:
+            all_items = document_inbox_service.list_inbox_items(status=None, limit=2000)
+        except TypeError:
+            try:
+                all_items = document_inbox_service.list_inbox_items(status=None)
+            except Exception:
+                all_items = []
+        except Exception:
+            all_items = []
+
+        counts = {key: 0 for key in status_keys}
+        total = 0
+
+        for item in all_items:
+            status = str(item.get("status") or "pending")
+            if status in counts:
+                counts[status] += 1
+            total += 1
+
+        current = state.get("status_filter") or "pending"
+
+        def set_status_filter(status_value):
+            status_dropdown.value = status_value
+            refresh_items()
+
+        chips = []
+
+        chips.append(
+            ft.Container(
+                padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                border_radius=999,
+                bgcolor="#EEF2FF" if current == "all" else "#FFFFFF",
+                border=ft.border.all(1, "#3730A3" if current == "all" else Q_BORDER),
+                content=ft.Text(
+                    f"Todos · {total}",
+                    size=11,
+                    color="#3730A3" if current == "all" else Q_MUTED,
+                ),
+                on_click=lambda e: set_status_filter("all"),
+            )
+        )
+
+        for key in status_keys:
+            selected = current == key
+            label = STATUS_LABELS.get(key, key)
+            chip = _status_chip(key)
+
+            # Reutilizamos los colores visuales existentes cuando el chip está activo.
+            active_bg = getattr(chip, "bgcolor", "#FFFFFF")
+            active_border = "#D0D5DD"
+            active_color = Q_PRIMARY_DARK
+
+            chips.append(
+                ft.Container(
+                    padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                    border_radius=999,
+                    bgcolor=active_bg if selected else "#FFFFFF",
+                    border=ft.border.all(2 if selected else 1, active_color if selected else Q_BORDER),
+                    content=ft.Text(
+                        f"{label} · {counts.get(key, 0)}",
+                        size=11,
+                        weight=ft.FontWeight.BOLD if selected else ft.FontWeight.NORMAL,
+                        color=active_color if selected else Q_MUTED,
+                    ),
+                    on_click=lambda e, s=key: set_status_filter(s),
+                )
+            )
+
+        return ft.Container(
+            padding=10,
+            bgcolor="#FFFFFF",
+            border_radius=12,
+            border=ft.border.all(1, Q_BORDER),
+            content=ft.Row(
+                controls=chips,
+                spacing=8,
+                wrap=True,
+            ),
+        )
+
     def refresh_items(e=None):
         state["status_filter"] = status_dropdown.value or "pending"
-        state["items"] = document_inbox_service.list_inbox_items(status=state["status_filter"])
+        query_status = None if state["status_filter"] == "all" else state["status_filter"]
+        state["items"] = document_inbox_service.list_inbox_items(status=query_status)
+        status_counters_box.content = build_status_counters()
         render_items()
+        try:
+            status_counters_box.update()
+        except Exception:
+            pass
 
     def clear_selection(e=None):
         state["selected_item_id"] = None
@@ -442,10 +530,9 @@ def document_inbox_view(page: ft.Page):
                 path,
                 source_type="manual",
                 source_label=source_label.value or "Manual",
-                notes=notes_field.value or "",
+                notes="",
             )
             manual_path.value = ""
-            notes_field.value = ""
             show_success(f"Documento importado a bandeja: #{item['id']}")
             refresh_items()
         except Exception as exc:
@@ -626,7 +713,6 @@ def document_inbox_view(page: ft.Page):
                     color=Q_MUTED,
                 ),
                 ft.Row([manual_path, source_label], spacing=10, wrap=True),
-                notes_field,
                 ft.Row(
                     controls=[
                         primary_button("Importar a bandeja", import_manual),
@@ -637,6 +723,8 @@ def document_inbox_view(page: ft.Page):
             spacing=10,
         ),
     )
+
+    status_counters_box = ft.Container(content=build_status_counters())
 
     events_box = ft.Container(content=build_events_panel())
 
@@ -687,6 +775,7 @@ def document_inbox_view(page: ft.Page):
                 import_box,
                 action_box,
                 events_box,
+                status_counters_box,
                 ft.Text("Documentos", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                 ft.Container(
                     expand=True,
