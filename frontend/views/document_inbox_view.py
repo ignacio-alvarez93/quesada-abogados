@@ -114,6 +114,226 @@ def document_inbox_view(page: ft.Page):
             raise ValueError("Selecciona primero un documento de la bandeja.")
         return document_inbox_service.get_inbox_item(int(item_id))
 
+    def event_value(event, key, default=""):
+        try:
+            if hasattr(event, "get"):
+                return event.get(key, default)
+            return event[key]
+        except Exception:
+            return default
+
+    def event_label(event_type):
+        labels = {
+            "imported": "Importado",
+            "linked": "Vinculado",
+            "status_changed": "Cambio de estado",
+            "copied_to_box": "Copiado a Box",
+            "opened": "Abierto",
+            "rejected": "Rechazado",
+            "restored": "Restaurado",
+        }
+        return labels.get(str(event_type or ""), str(event_type or "Evento"))
+
+    def build_events_panel():
+        item_id = state.get("selected_item_id")
+        if not item_id:
+            return ft.Container(
+                padding=12,
+                bgcolor="#F8FAFC",
+                border_radius=12,
+                border=ft.border.all(1, Q_BORDER),
+                content=ft.Text(
+                    "Selecciona un documento para ver su trazabilidad.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            )
+
+        try:
+            item = document_inbox_service.get_inbox_item(item_id)
+        except Exception:
+            item = None
+
+        if not item:
+            return ft.Container(
+                padding=12,
+                bgcolor="#FEF3F2",
+                border_radius=12,
+                border=ft.border.all(1, "#FDA29B"),
+                content=ft.Text("No se pudo cargar el documento seleccionado.", size=12, color="#B42318"),
+            )
+
+        try:
+            events = document_inbox_service.get_inbox_events(item_id)
+        except Exception as exc:
+            events = []
+            events_error = str(exc)
+        else:
+            events_error = ""
+
+        file_name = str(item.get("original_filename") or item.get("stored_filename") or "-")
+        status = str(item.get("status") or "-")
+        source = " · ".join(
+            part for part in [
+                str(item.get("source_type") or "").strip(),
+                str(item.get("source_label") or "").strip(),
+            ]
+            if part
+        ) or "-"
+
+        stored_path = str(item.get("stored_path") or "-")
+        linked_path = str(item.get("linked_document_path") or "")
+        copied_path = str(item.get("copied_to_box_path") or "")
+
+        client_id = item.get("client_id") or "-"
+        expedient_id = item.get("expedient_id") or "-"
+
+        summary_controls = [
+            ft.Row(
+                controls=[
+                    ft.Text(
+                        "Documento seleccionado",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Container(expand=True),
+                    secondary_button("Cerrar ficha", clear_selection),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            ft.Text(file_name, size=13, weight=ft.FontWeight.BOLD, color="#111827", selectable=True),
+            ft.Row(
+                controls=[
+                    ft.Container(
+                        padding=ft.padding.symmetric(horizontal=10, vertical=4),
+                        border_radius=999,
+                        bgcolor="#EFF6FF",
+                        content=ft.Text(f"Estado: {status}", size=11, color=Q_PRIMARY_DARK),
+                    ),
+                    ft.Container(
+                        padding=ft.padding.symmetric(horizontal=10, vertical=4),
+                        border_radius=999,
+                        bgcolor="#F8FAFC",
+                        content=ft.Text(f"Fuente: {source}", size=11, color=Q_MUTED),
+                    ),
+                ],
+                spacing=8,
+                wrap=True,
+            ),
+            ft.Text(f"Cliente: {client_id} · Expediente: {expedient_id}", size=11, color=Q_MUTED),
+            ft.Text(f"Ruta bandeja: {stored_path}", size=10, color=Q_MUTED, selectable=True),
+        ]
+
+        if copied_path:
+            summary_controls.append(
+                ft.Text(f"Copia Box: {copied_path}", size=10, color=Q_MUTED, selectable=True)
+            )
+
+        if linked_path:
+            summary_controls.append(
+                ft.Text(f"Vinculado: {linked_path}", size=10, color=Q_MUTED, selectable=True)
+            )
+
+        summary_controls.append(
+            ft.Row(
+                controls=[
+                    primary_button("Ver documento", show_preview),
+                    secondary_button("Abrir original", open_system),
+                ],
+                spacing=8,
+                wrap=True,
+            )
+        )
+
+        event_rows = []
+
+        if events_error:
+            event_rows.append(
+                ft.Container(
+                    padding=10,
+                    bgcolor="#FEF3F2",
+                    border_radius=10,
+                    border=ft.border.all(1, "#FDA29B"),
+                    content=ft.Text(
+                        f"No se pudo cargar el historial: {events_error}",
+                        size=11,
+                        color="#B42318",
+                    ),
+                )
+            )
+        elif not events:
+            event_rows.append(
+                ft.Text("Este documento todavía no tiene eventos registrados.", size=12, color=Q_MUTED)
+            )
+        else:
+            for event in events[:12]:
+                created_at = str(event_value(event, "created_at", ""))
+                event_type = event_label(event_value(event, "event_type", ""))
+                message = str(event_value(event, "message", ""))
+                event_rows.append(
+                    ft.Container(
+                        padding=10,
+                        border=ft.border.all(1, "#E5E7EB"),
+                        border_radius=10,
+                        bgcolor="#FFFFFF",
+                        content=ft.Column(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        ft.Text(
+                                            event_type,
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Container(expand=True),
+                                        ft.Text(created_at, size=10, color=Q_MUTED),
+                                    ],
+                                    spacing=8,
+                                ),
+                                ft.Text(message or "Sin detalle", size=11, color="#334155", selectable=True),
+                            ],
+                            spacing=4,
+                        ),
+                    )
+                )
+
+        return ft.Container(
+            padding=12,
+            bgcolor="#F8FAFC",
+            border_radius=12,
+            border=ft.border.all(1, Q_BORDER),
+            content=ft.Column(
+                controls=[
+                    ft.Container(
+                        padding=12,
+                        bgcolor="#FFFFFF",
+                        border_radius=12,
+                        border=ft.border.all(1, "#E5E7EB"),
+                        content=ft.Column(controls=summary_controls, spacing=7),
+                    ),
+                    ft.Text(
+                        "Historial de trazabilidad",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Container(
+                        height=220,
+                        content=ft.ListView(
+                            controls=event_rows,
+                            spacing=6,
+                            auto_scroll=False,
+                        ),
+                    ),
+                ],
+                spacing=10,
+            ),
+        )
+
+
     def client_options_labels():
         return [item["label"] for item in client_options]
 
@@ -175,9 +395,30 @@ def document_inbox_view(page: ft.Page):
         state["items"] = document_inbox_service.list_inbox_items(status=state["status_filter"])
         render_items()
 
+    def clear_selection(e=None):
+        state["selected_item_id"] = None
+        state["selected_client_id"] = None
+        state["selected_expedient_id"] = None
+        selected_label.value = "Ningún documento seleccionado."
+        client_autocomplete.set_options(
+            document_inbox_service.client_autocomplete_options(),
+            clear_value=True,
+        )
+        expedient_autocomplete.set_options([], clear_value=True)
+        refresh_relation_label()
+        events_box.content = build_events_panel()
+        render_items()
+        page.update()
+
     def select_item(item_id):
-        state["selected_item_id"] = int(item_id)
-        item = document_inbox_service.get_inbox_item(int(item_id))
+        item_id = int(item_id)
+
+        if state.get("selected_item_id") == item_id:
+            clear_selection()
+            return
+
+        state["selected_item_id"] = item_id
+        item = document_inbox_service.get_inbox_item(item_id)
         selected_label.value = f"Seleccionado: #{item['id']} · {item.get('original_filename') or '-'}"
 
         if item.get("client_id"):
@@ -189,6 +430,7 @@ def document_inbox_view(page: ft.Page):
             state["selected_expedient_id"] = int(item.get("expedient_id"))
 
         refresh_relation_label()
+        events_box.content = build_events_panel()
         render_items()
 
     def import_manual(e=None):
@@ -396,6 +638,8 @@ def document_inbox_view(page: ft.Page):
         ),
     )
 
+    events_box = ft.Container(content=build_events_panel())
+
     action_box = ft.Container(
         bgcolor="#FFFFFF",
         border=ft.border.all(1, Q_BORDER),
@@ -442,6 +686,7 @@ def document_inbox_view(page: ft.Page):
                 message_box,
                 import_box,
                 action_box,
+                events_box,
                 ft.Text("Documentos", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                 ft.Container(
                     expand=True,
