@@ -5328,6 +5328,26 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         total_pages = int(preview.get("total_pages") or 1)
         current_zoom = float(preview.get("zoom") or zoom or 1.6)
 
+        def _zoomed_preview_image(image_path, page_idx):
+            zoomed_width = int(700 * float(current_zoom or 1.6))
+            viewport_width = 920
+            canvas_width = max(viewport_width, zoomed_width)
+
+            return ft.Row(
+                scroll=ft.ScrollMode.AUTO,
+                controls=[
+                    ft.Container(
+                        width=canvas_width,
+                        alignment=ft.alignment.Alignment(0, 0),
+                        content=ft.Image(
+                            src=image_path,
+                            width=zoomed_width,
+                        ),
+                    )
+                ],
+            )
+
+
         viewer_queue = queue or []
         try:
             current_queue_index = int(queue_index or 0)
@@ -5365,11 +5385,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         color=Q_PRIMARY_DARK,
                     ),
                 ),
-                ft.Image(
-                    src=page_preview_path,
-                    fit="contain",
-                    width=int(900 * (current_zoom / 1.6)),
-                ),
+                _zoomed_preview_image(page_preview_path, page_idx),
                 ft.Divider(),
             ]
 
@@ -5492,11 +5508,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         )
             else:
                 preview_controls.append(
-                    ft.Image(
-                        src=preview_path,
-                        fit="contain",
-                        width=int(900 * (current_zoom / 1.6)),
-                    )
+                    _zoomed_preview_image(preview_path, current_page)
                 )
 
             controls.append(
