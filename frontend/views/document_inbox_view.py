@@ -7,6 +7,7 @@ from frontend.components.app_button import primary_button, secondary_button, dan
 from frontend.components.app_empty_state import empty_state
 from frontend.components.app_text_field import text_input, multiline_input
 from frontend.components.app_autocomplete import AppAutocomplete
+from frontend.components.document_viewer_modal import open_document_viewer_modal
 
 
 Q_PRIMARY_DARK = "#003B7A"
@@ -97,6 +98,7 @@ def document_inbox_view(page: ft.Page):
 
     items_column = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
     preview_dialog = ft.AlertDialog(modal=True)
+    viewer_overlay = {"control": None}
 
     def show_error(message):
         message_box.controls = [error_alert(str(message))]
@@ -215,68 +217,32 @@ def document_inbox_view(page: ft.Page):
             show_error(exc)
 
     def close_preview(e=None):
-        preview_dialog.open = False
+        try:
+            preview_dialog.open = False
+        except Exception:
+            pass
+
+        overlay = viewer_overlay.get("control")
+        if overlay is not None:
+            try:
+                page.overlay.remove(overlay)
+            except Exception:
+                pass
+            viewer_overlay["control"] = None
+
         page.update()
 
     def show_preview(e=None):
         try:
             item = selected_item()
-            preview = document_viewer_service.create_document_preview(
+            open_document_viewer_modal(
+                page,
                 item.get("stored_path"),
+                title=item.get("original_filename") or "Documento de bandeja",
                 expediente_id=None,
-                page_number=1,
-                zoom=1.4,
+                initial_page=1,
+                initial_zoom=1.6,
             )
-            preview_path = preview.get("preview_path") or ""
-            total_pages = int(preview.get("total_pages") or 1)
-
-            controls = [
-                ft.Text(item.get("original_filename") or "-", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                ft.Text(item.get("stored_path") or "-", size=11, color=Q_MUTED, selectable=True),
-            ]
-
-            if preview.get("ok") and preview_path:
-                controls.append(
-                    ft.Container(
-                        bgcolor="#F8FAFC",
-                        border_radius=12,
-                        border=ft.border.all(1, Q_BORDER),
-                        padding=8,
-                        content=ft.Column(
-                            controls=[
-                                ft.Text(f"Páginas: {total_pages}", size=11, color=Q_MUTED),
-                                ft.Image(src=preview_path, fit="contain", width=880),
-                            ],
-                            spacing=6,
-                            scroll=ft.ScrollMode.AUTO,
-                            expand=True,
-                        ),
-                    )
-                )
-            else:
-                controls.append(
-                    ft.Container(
-                        padding=16,
-                        bgcolor="#FFF7ED",
-                        border_radius=12,
-                        border=ft.border.all(1, "#FED7AA"),
-                        content=ft.Text(preview.get("message") or "No hay preview disponible.", color="#9A3412"),
-                    )
-                )
-
-            preview_dialog.title = ft.Text("Visor bandeja documental", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
-            preview_dialog.content = ft.Container(
-                width=960,
-                height=660,
-                content=ft.Column(controls=controls, spacing=10, expand=True),
-            )
-            preview_dialog.actions = [
-                secondary_button("Abrir original", open_system),
-                secondary_button("Cerrar", close_preview),
-            ]
-            page.dialog = preview_dialog
-            preview_dialog.open = True
-            page.update()
         except Exception as exc:
             show_error(exc)
 
