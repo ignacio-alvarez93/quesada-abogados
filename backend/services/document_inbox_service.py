@@ -100,6 +100,16 @@ def _connect():
         return get_db_connection()
 
 
+def _dict_row_factory(cursor, row):
+    """
+    Convierte filas sqlite3 en diccionarios.
+
+    Helper local usado por las funciones de Bandeja Documental que necesitan
+    devolver estructuras dict limpias al frontend.
+    """
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+
 def ensure_document_inbox_schema() -> None:
     _ensure_dirs()
 
@@ -260,6 +270,345 @@ def import_file_to_inbox(
         conn.commit()
 
     return get_inbox_item(item_id)
+
+
+
+# === QUESADA DOCUMENT INBOX BATCHES START ===
+
+def ensure_document_inbox_batch_schema():
+    """
+    Crea las tablas de grupos documentales de Bandeja.
+
+    Un grupo documental es un lote lógico interno:
+    - no toca Box;
+    - no mueve documentos;
+    - agrupa items de document_inbox_items para trabajo posterior:
+      PDF tools, preparación, revisión y eventual copia a Box.
+    """
+    ensure_document_inbox_schema()
+
+    with _connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS document_inbox_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT DEFAULT 'draft',
+                client_id INTEGER,
+                expedient_id INTEGER,
+                target_box_folder TEXT,
+                notes TEXT,
+                metadata_json TEXT
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS document_inbox_batch_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL,
+                inbox_item_id INTEGER NOT NULL,
+                order_index INTEGER DEFAULT 0,
+                role TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(batch_id, inbox_item_id),
+                FOREIGN KEY (batch_id) REFERENCES document_inbox_batches(id),
+                FOREIGN KEY (inbox_item_id) REFERENCES document_inbox_items(id)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_inbox_batches_status
+            ON document_inbox_batches(status)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_inbox_batches_expedient
+            ON document_inbox_batches(expedient_id)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_inbox_batch_items_batch
+            ON document_inbox_batch_items(batch_id)
+            """
+        )
+
+        conn.commit()
+
+
+def create_document_inbox_batch(
+    name: str,
+    inbox_item_ids=None,
+    client_id=None,
+    expedient_id=None,
+    target_box_folder: str = "",
+    notes: str = "",
+    status: str = "draft",
+):
+    """
+    Crea un grupo documental y opcionalmente añade items seleccionados.
+    """
+    import json
+    from datetime import datetime
+
+    ensure_document_inbox_batch_schema()
+
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise ValueError("El grupo documental necesita un nombre.")
+
+    item_ids = []
+    for raw_id in inbox_item_ids or []:
+        try:
+            item_id = int(raw_id)
+        except Exception:
+            continue
+        if item_id not in item_ids:
+            item_ids.append(item_id)
+
+    now = datetime.now().isoformat(timespec="seconds")
+
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO document_inbox_batches (
+                created_at, updated_at, name, status,
+                client_id, expedient_id, target_box_folder,
+                notes, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                now,
+                clean_name,
+                status or "draft",
+                int(client_id) if client_id else None,
+                int(expedient_id) if expedient_id else None,
+                str(target_box_folder or "").strip(),
+                str(notes or "").strip(),
+                json.dumps({"source": "document_inbox"}, ensure_ascii=False),
+            ),
+        )
+
+        batch_id = int(cur.lastrowid)
+
+        for index, item_id in enumerate(item_ids, start=1):
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO document_inbox_batch_items (
+                    batch_id, inbox_item_id, order_index, role, notes, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (batch_id, item_id, index, "", "", now),
+            )
+
+            try:
+                _record_event(
+                    conn,
+                    item_id,
+                    "batch_add",
+                    f"Documento añadido al grupo documental #{batch_id}: {clean_name}",
+                    {"batch_id": batch_id, "batch_name": clean_name},
+                )
+            except TypeError:
+                try:
+                    _record_event(
+                        conn,
+                        item_id,
+                        "batch_add",
+                        f"Documento añadido al grupo documental #{batch_id}: {clean_name}",
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        conn.commit()
+
+    return get_document_inbox_batch(batch_id)
+
+
+def list_document_inbox_batches(status=None, expedient_id=None, client_id=None, limit=200):
+    """
+    Lista grupos documentales con contador de documentos.
+    """
+    ensure_document_inbox_batch_schema()
+
+    where = []
+    params = []
+
+    if status and status != "all":
+        where.append("b.status = ?")
+        params.append(status)
+
+    if expedient_id:
+        where.append("b.expedient_id = ?")
+        params.append(int(expedient_id))
+
+    if client_id:
+        where.append("b.client_id = ?")
+        params.append(int(client_id))
+
+    sql = """
+        SELECT
+            b.*,
+            COUNT(bi.id) AS item_count
+        FROM document_inbox_batches b
+        LEFT JOIN document_inbox_batch_items bi ON bi.batch_id = b.id
+    """
+
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+
+    sql += """
+        GROUP BY b.id
+        ORDER BY b.updated_at DESC, b.id DESC
+        LIMIT ?
+    """
+    params.append(int(limit or 200))
+
+    with _connect() as conn:
+        conn.row_factory = _dict_row_factory
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_document_inbox_batch(batch_id: int):
+    """
+    Devuelve un grupo documental con sus documentos.
+    """
+    ensure_document_inbox_batch_schema()
+
+    with _connect() as conn:
+        conn.row_factory = _dict_row_factory
+
+        batch = conn.execute(
+            "SELECT * FROM document_inbox_batches WHERE id = ?",
+            (int(batch_id),),
+        ).fetchone()
+
+        if not batch:
+            raise ValueError(f"No existe el grupo documental #{batch_id}")
+
+        items = conn.execute(
+            """
+            SELECT
+                bi.id AS batch_item_id,
+                bi.batch_id,
+                bi.inbox_item_id,
+                bi.order_index,
+                bi.role,
+                bi.notes AS batch_item_notes,
+                i.*
+            FROM document_inbox_batch_items bi
+            JOIN document_inbox_items i ON i.id = bi.inbox_item_id
+            WHERE bi.batch_id = ?
+            ORDER BY bi.order_index ASC, bi.id ASC
+            """,
+            (int(batch_id),),
+        ).fetchall()
+
+        result = dict(batch)
+        result["items"] = [dict(row) for row in items]
+        result["item_count"] = len(result["items"])
+        return result
+
+
+def add_items_to_document_inbox_batch(batch_id: int, inbox_item_ids):
+    """
+    Añade documentos a un grupo existente.
+    """
+    from datetime import datetime
+
+    ensure_document_inbox_batch_schema()
+
+    now = datetime.now().isoformat(timespec="seconds")
+    clean_ids = []
+
+    for raw_id in inbox_item_ids or []:
+        try:
+            item_id = int(raw_id)
+        except Exception:
+            continue
+        if item_id not in clean_ids:
+            clean_ids.append(item_id)
+
+    if not clean_ids:
+        return get_document_inbox_batch(batch_id)
+
+    with _connect() as conn:
+        current_max = conn.execute(
+            """
+            SELECT COALESCE(MAX(order_index), 0)
+            FROM document_inbox_batch_items
+            WHERE batch_id = ?
+            """,
+            (int(batch_id),),
+        ).fetchone()[0] or 0
+
+        for offset, item_id in enumerate(clean_ids, start=1):
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO document_inbox_batch_items (
+                    batch_id, inbox_item_id, order_index, role, notes, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (int(batch_id), item_id, int(current_max) + offset, "", "", now),
+            )
+
+        conn.execute(
+            """
+            UPDATE document_inbox_batches
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            (now, int(batch_id)),
+        )
+
+        conn.commit()
+
+    return get_document_inbox_batch(batch_id)
+
+
+def update_document_inbox_batch_status(batch_id: int, status: str):
+    """
+    Cambia estado del grupo documental.
+    """
+    from datetime import datetime
+
+    ensure_document_inbox_batch_schema()
+
+    clean_status = str(status or "").strip() or "draft"
+    now = datetime.now().isoformat(timespec="seconds")
+
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE document_inbox_batches
+            SET status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (clean_status, now, int(batch_id)),
+        )
+        conn.commit()
+
+    return get_document_inbox_batch(batch_id)
+
+
+# === QUESADA DOCUMENT INBOX BATCHES END ===
 
 
 def list_inbox_items(
