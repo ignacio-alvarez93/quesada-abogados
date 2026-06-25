@@ -85,6 +85,21 @@ def _table_columns(conn, table_name: str) -> set[str]:
         return set()
 
 
+def _connect():
+    """
+    Helper local de conexión para las funciones añadidas de Bandeja Documental.
+
+    Se usa como compatibilidad interna para no acoplar las nuevas funciones
+    al nombre exacto del helper de conexión usado por otros servicios.
+    """
+    try:
+        from database.connection import get_connection
+        return get_connection()
+    except ImportError:
+        from database.connection import get_db_connection
+        return get_db_connection()
+
+
 def ensure_document_inbox_schema() -> None:
     _ensure_dirs()
 
@@ -685,4 +700,175 @@ def expedient_autocomplete_options_for_client(client_id: int, limit: int = 200) 
         }
         for expedient in expedients
     ]
+
+
+# === QUESADA DOCUMENT INBOX BOX IMPORT START ===
+
+def _safe_relative_to(child_path: Path, parent_path: Path) -> bool:
+    try:
+        child_path.resolve().relative_to(parent_path.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _get_expedient_box_context(expedient_id: int) -> Dict[str, Any]:
+    """
+    Devuelve contexto mínimo del expediente para trabajar con su carpeta Box vinculada.
+    No modifica Box.
+    """
+    with _connect() as conn:
+        expedient = _get_expedient_for_box(conn, int(expedient_id))
+
+    box_folder = Path(str(expedient.get("box_folder_path") or "")).expanduser()
+    if not box_folder.exists() or not box_folder.is_dir():
+        raise FileNotFoundError(f"La carpeta Box del expediente no existe o no es accesible: {box_folder}")
+
+    return {
+        "expedient": expedient,
+        "box_folder": box_folder,
+        "client_id": expedient.get("cliente_id") or expedient.get("client_id"),
+        "expedient_id": int(expedient_id),
+    }
+
+
+def list_expedient_box_files_for_inbox(expedient_id: int, max_files: int = 500) -> List[Dict[str, Any]]:
+    """
+    Lista archivos físicos de la carpeta Box vinculada al expediente.
+    Se usa para elegir qué documentos copiar a Bandeja Documental.
+    No copia ni modifica nada.
+    """
+    ctx = _get_expedient_box_context(int(expedient_id))
+    base_folder: Path = ctx["box_folder"]
+
+    allowed_extensions = {
+        ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff",
+        ".doc", ".docx", ".xls", ".xlsx", ".txt",
+    }
+
+    result = []
+    for file_path in base_folder.rglob("*"):
+        if len(result) >= int(max_files or 500):
+            break
+
+        try:
+            if not file_path.is_file():
+                continue
+            if file_path.name.startswith("~$"):
+                continue
+            if file_path.suffix.lower() not in allowed_extensions:
+                continue
+
+            stat = file_path.stat()
+            result.append({
+                "path": str(file_path),
+                "relative_path": str(file_path.relative_to(base_folder)),
+                "filename": file_path.name,
+                "extension": file_path.suffix.lower(),
+                "size_bytes": stat.st_size,
+                "modified_at": stat.st_mtime,
+                "client_id": ctx["client_id"],
+                "expedient_id": ctx["expedient_id"],
+                "box_folder_path": str(base_folder),
+            })
+        except Exception:
+            continue
+
+    result.sort(key=lambda item: str(item.get("relative_path") or "").lower())
+    return result
+
+
+def import_box_file_to_inbox(
+    box_file_path: str,
+    expedient_id: int,
+    source_label: str = "Box expediente",
+) -> Dict[str, Any]:
+    """
+    Copia un archivo existente en la carpeta Box vinculada del expediente a Bandeja.
+    No mueve ni modifica el archivo original de Box.
+    """
+    ctx = _get_expedient_box_context(int(expedient_id))
+    base_folder: Path = ctx["box_folder"]
+
+    source_path = Path(str(box_file_path or "")).expanduser()
+    if not source_path.exists() or not source_path.is_file():
+        raise FileNotFoundError(f"No existe el archivo Box indicado: {source_path}")
+
+    if not _safe_relative_to(source_path, base_folder):
+        raise ValueError("Por seguridad, solo se pueden copiar a Bandeja archivos dentro de la carpeta Box vinculada al expediente.")
+
+    metadata = {
+        "box_original_path": str(source_path),
+        "box_relative_path": str(source_path.relative_to(base_folder)),
+        "box_folder_path": str(base_folder),
+        "origin": "expedient_box",
+    }
+
+    # import_file_to_inbox ha ido evolucionando. Pasamos solo los argumentos que acepte.
+    import inspect
+    sig = inspect.signature(import_file_to_inbox)
+    candidate_kwargs = {
+        "source_type": "box",
+        "source_label": source_label or "Box expediente",
+        "client_id": ctx["client_id"],
+        "expedient_id": ctx["expedient_id"],
+        "notes": f"Copiado desde Box: {metadata['box_relative_path']}",
+        "metadata": metadata,
+        "metadata_json": metadata,
+    }
+    kwargs = {key: value for key, value in candidate_kwargs.items() if key in sig.parameters}
+
+    item = import_file_to_inbox(str(source_path), **kwargs)
+
+    # Si la firma actual no soportaba metadata, al menos dejamos un evento adicional si existe _record_event compatible.
+    try:
+        item_id = int(item.get("id"))
+        with _connect() as conn:
+            _record_event(
+                conn,
+                item_id,
+                "box_copied_to_inbox",
+                f"Copiado desde Box a bandeja: {metadata['box_relative_path']}",
+                metadata,
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+    return item
+
+
+def bulk_import_box_files_to_inbox(
+    expedient_id: int,
+    box_file_paths: List[str],
+    source_label: str = "Box expediente",
+) -> Dict[str, Any]:
+    """
+    Copia varios archivos de Box a Bandeja.
+    Devuelve resultado agregado para UI/dialogs.
+    """
+    imported = []
+    errors = []
+
+    for file_path in box_file_paths or []:
+        try:
+            imported.append(import_box_file_to_inbox(
+                file_path,
+                expedient_id=int(expedient_id),
+                source_label=source_label,
+            ))
+        except Exception as exc:
+            errors.append({
+                "path": str(file_path),
+                "error": str(exc),
+            })
+
+    return {
+        "imported_count": len(imported),
+        "error_count": len(errors),
+        "imported": imported,
+        "errors": errors,
+    }
+
+# === QUESADA DOCUMENT INBOX BOX IMPORT END ===
 
