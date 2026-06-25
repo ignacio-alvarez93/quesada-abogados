@@ -1,6 +1,7 @@
 import flet as ft
 
 from backend.services import document_inbox_service
+from backend.services import document_inbox_watch_service
 from backend.services import document_viewer_service
 from frontend.components.app_alert import error_alert, success_alert
 from frontend.components.app_button import primary_button, secondary_button, danger_button
@@ -1319,6 +1320,197 @@ def document_inbox_view(page: ft.Page):
 
     batches_panel_box = ft.Container(content=build_batches_panel_content())
 
+    watch_panel_message = ft.Container()
+    watch_scan_result_box = ft.Column(spacing=6)
+
+    def _watch_result_rows(result):
+        rows = []
+
+        imported = result.get("imported") or []
+        skipped = result.get("skipped") or []
+        errors = result.get("errors") or []
+
+        rows.append(
+            ft.Text(
+                f"Importados: {len(imported)} · Saltados: {len(skipped)} · Errores: {len(errors)}",
+                size=12,
+                weight=ft.FontWeight.BOLD,
+                color=Q_PRIMARY_DARK,
+            )
+        )
+
+        for item in imported[:20]:
+            rows.append(
+                ft.Text(
+                    f"IMPORTADO · {item.get('file_name')} → item #{item.get('inbox_item_id')}",
+                    size=11,
+                    color=Q_PRIMARY_DARK,
+                )
+            )
+
+        for item in skipped[:10]:
+            rows.append(
+                ft.Text(
+                    f"SALTADO · {item.get('file_path')} · {item.get('reason')}",
+                    size=10,
+                    color=Q_MUTED,
+                    selectable=True,
+                )
+            )
+
+        for error in errors[:10]:
+            rows.append(
+                ft.Text(
+                    f"ERROR · {error}",
+                    size=10,
+                    color="#B42318",
+                    selectable=True,
+                )
+            )
+
+        return rows
+
+    def scan_watch_folder_from_ui(watch_folder_id):
+        try:
+            result = document_inbox_watch_service.scan_watch_folder(int(watch_folder_id), max_files=100)
+            watch_panel_message.content = success_alert(
+                f"Escaneo finalizado. Importados: {len(result.get('imported') or [])}. "
+                f"Saltados: {len(result.get('skipped') or [])}. "
+                f"Errores: {len(result.get('errors') or [])}."
+            )
+            watch_scan_result_box.controls = _watch_result_rows(result)
+            refresh_items()
+        except Exception as exc:
+            watch_panel_message.content = error_alert(f"No se pudo escanear la carpeta: {exc}")
+
+        refresh_watch_panel()
+
+    def ensure_downloads_watch_from_ui(e=None):
+        try:
+            folder = document_inbox_watch_service.ensure_default_downloads_watch_folder()
+            watch_panel_message.content = success_alert(
+                f"Vigilancia de Descargas activada: {folder.get('folder_path')}"
+            )
+        except Exception as exc:
+            watch_panel_message.content = error_alert(f"No se pudo activar Descargas: {exc}")
+
+        refresh_watch_panel()
+
+    def build_watch_panel_content():
+        try:
+            folders = document_inbox_watch_service.list_watch_folders(active_only=False)
+        except Exception as exc:
+            return ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=14,
+                padding=10,
+                content=ft.Column(
+                    controls=[
+                        ft.Text("Vigilancia", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        error_alert(f"No se pudieron cargar carpetas vigiladas: {exc}"),
+                    ],
+                    spacing=8,
+                ),
+            )
+
+        rows = []
+
+        if not folders:
+            rows.append(empty_state("Todavía no hay carpetas vigiladas"))
+        else:
+            for folder in folders:
+                folder_id = folder.get("id")
+                name = folder.get("name") or "Carpeta vigilada"
+                folder_path = folder.get("folder_path") or ""
+                is_active = bool(int(folder.get("is_active") or 0))
+                recursive = bool(int(folder.get("recursive") or 0))
+
+                rows.append(
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=10,
+                        content=ft.Row(
+                            controls=[
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            f"#{folder_id} · {name}",
+                                            size=13,
+                                            weight=ft.FontWeight.W_600,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            folder_path,
+                                            size=10,
+                                            color=Q_MUTED,
+                                            selectable=True,
+                                        ),
+                                        ft.Text(
+                                            f"Activa: {'sí' if is_active else 'no'} · Recursiva: {'sí' if recursive else 'no'}",
+                                            size=10,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                primary_button("Escanear ahora", lambda e, folder_id=folder_id: scan_watch_folder_from_ui(folder_id)),
+                            ],
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    )
+                )
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=10,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text("Vigilancia de carpetas", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Container(expand=True),
+                            secondary_button("Activar Descargas", ensure_downloads_watch_from_ui),
+                            secondary_button("Refrescar", lambda e: refresh_watch_panel()),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Text(
+                        "Escanea carpetas locales y copia archivos nuevos a Bandeja Documental. No mueve ni borra los originales.",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    watch_panel_message,
+                    ft.Column(controls=rows, spacing=6),
+                    ft.Divider(),
+                    ft.Text("Último resultado", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    watch_scan_result_box,
+                ],
+                spacing=8,
+            ),
+        )
+
+    def refresh_watch_panel(e=None):
+        watch_panel_box.content = build_watch_panel_content()
+        try:
+            watch_panel_box.update()
+        except Exception:
+            pass
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    watch_panel_box = ft.Container(content=build_watch_panel_content())
+
+
     documents_list_box = ft.Container(
                     expand=True,
                     bgcolor="#FFFFFF",
@@ -1361,6 +1553,7 @@ def document_inbox_view(page: ft.Page):
                 controls=[
                     primary_button("Documentos", lambda e: set_inbox_tab("documents")) if active == "documents" else secondary_button("Documentos", lambda e: set_inbox_tab("documents")),
                     primary_button("Grupos documentales", lambda e: set_inbox_tab("batches")) if active == "batches" else secondary_button("Grupos documentales", lambda e: set_inbox_tab("batches")),
+                    primary_button("Vigilancia", lambda e: set_inbox_tab("watch")) if active == "watch" else secondary_button("Vigilancia", lambda e: set_inbox_tab("watch")),
                     ft.Container(expand=True),
                 ],
                 spacing=8,
@@ -1375,6 +1568,11 @@ def document_inbox_view(page: ft.Page):
                 batches_panel_box,
             ]
 
+        if active == "watch":
+            return [
+                watch_panel_box,
+            ]
+
         return [
             bulk_actions_box,
             documents_list_box,
@@ -1386,6 +1584,12 @@ def document_inbox_view(page: ft.Page):
         if inbox_tab_state["active"] == "batches":
             try:
                 batches_panel_box.content = build_batches_panel_content()
+            except Exception:
+                pass
+
+        if inbox_tab_state["active"] == "watch":
+            try:
+                watch_panel_box.content = build_watch_panel_content()
             except Exception:
                 pass
 
