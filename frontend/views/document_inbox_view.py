@@ -561,7 +561,15 @@ def document_inbox_view(page: ft.Page):
 
         render_items()
         try:
+            bulk_actions_box.content = build_bulk_actions_content()
+        except Exception:
+            pass
+        try:
             selected_label.update()
+        except Exception:
+            pass
+        try:
+            bulk_actions_box.update()
         except Exception:
             pass
         try:
@@ -913,6 +921,132 @@ def document_inbox_view(page: ft.Page):
         dialog.open = True
         page.update()
 
+    bulk_actions_message = ft.Container()
+
+    def clear_bulk_selection(e=None):
+        state["selected_item_ids"] = set()
+        selected_label.value = "Ningún documento seleccionado."
+        bulk_actions_message.content = None
+        render_items()
+        bulk_actions_box.content = build_bulk_actions_content()
+
+        try:
+            selected_label.update()
+        except Exception:
+            pass
+        try:
+            bulk_actions_box.update()
+        except Exception:
+            pass
+        try:
+            items_column.update()
+        except Exception:
+            pass
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def update_selected_documents_status(new_status, success_text):
+        selected_ids = list(state.get("selected_item_ids") or [])
+
+        if not selected_ids:
+            bulk_actions_message.content = error_alert("Selecciona al menos un documento.")
+            try:
+                bulk_actions_message.update()
+            except Exception:
+                pass
+            return
+
+        ok = 0
+        errors = []
+
+        for item_id in selected_ids:
+            try:
+                try:
+                    document_inbox_service.update_inbox_item_status(int(item_id), new_status)
+                except TypeError:
+                    document_inbox_service.update_inbox_item_status(
+                        int(item_id),
+                        new_status,
+                        notes="Actualización en masa desde Bandeja Documental",
+                    )
+                ok += 1
+            except Exception as exc:
+                errors.append(f"#{item_id}: {exc}")
+
+        state["selected_item_ids"] = set()
+        selected_label.value = "Ningún documento seleccionado."
+
+        if errors:
+            bulk_actions_message.content = error_alert(
+                f"{success_text}: {ok}. Errores: " + " | ".join(errors[:3])
+            )
+        else:
+            bulk_actions_message.content = success_alert(f"{success_text}: {ok} documento(s).")
+
+        refresh_items()
+        bulk_actions_box.content = build_bulk_actions_content()
+
+        try:
+            selected_label.update()
+        except Exception:
+            pass
+        try:
+            bulk_actions_message.update()
+        except Exception:
+            pass
+        try:
+            bulk_actions_box.update()
+        except Exception:
+            pass
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def mark_selected_reviewed(e=None):
+        update_selected_documents_status("reviewed", "Marcados como revisados")
+
+    def discard_selected_documents(e=None):
+        update_selected_documents_status("discarded", "Descartados")
+
+    def build_bulk_actions_content():
+        selected_count = len(state.get("selected_item_ids") or [])
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=10,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                f"Seleccionados: {selected_count}",
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Container(expand=True),
+                            secondary_button("Limpiar selección", clear_bulk_selection),
+                            secondary_button("Marcar revisados", mark_selected_reviewed),
+                            danger_button("Descartar", discard_selected_documents),
+                            secondary_button("Agrupar documentos", lambda e: None),
+                            secondary_button("Herramientas PDF", lambda e: None),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    bulk_actions_message,
+                ],
+                spacing=8,
+            ),
+        )
+
+    bulk_actions_box = ft.Container(content=build_bulk_actions_content())
+
     return ft.Container(
         expand=True,
         bgcolor="#F8FAFC",
@@ -931,6 +1065,7 @@ def document_inbox_view(page: ft.Page):
                     spacing=10,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
+                bulk_actions_box,
                 ft.Container(
                     expand=True,
                     bgcolor="#FFFFFF",
