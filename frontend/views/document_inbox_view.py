@@ -73,6 +73,7 @@ def document_inbox_view(page: ft.Page):
     state = {
         "items": [],
         "selected_item_id": None,
+        "selected_item_ids": set(),
         "status_filter": "pending",
         "selected_client_id": None,
         "selected_expedient_id": None,
@@ -485,6 +486,7 @@ def document_inbox_view(page: ft.Page):
 
     def clear_selection(e=None):
         state["selected_item_id"] = None
+        state["selected_item_ids"] = set()
         state["selected_client_id"] = None
         state["selected_expedient_id"] = None
         selected_label.value = "Ningún documento seleccionado."
@@ -496,6 +498,10 @@ def document_inbox_view(page: ft.Page):
         refresh_relation_label()
         events_box.content = build_events_panel()
         render_items()
+        try:
+            events_box.update()
+        except Exception:
+            pass
         page.update()
 
     def select_item(item_id):
@@ -520,6 +526,33 @@ def document_inbox_view(page: ft.Page):
         refresh_relation_label()
         events_box.content = build_events_panel()
         render_items()
+        try:
+            events_box.update()
+        except Exception:
+            pass
+
+    def toggle_item_selection(item_id):
+        item_id = int(item_id)
+        selected_ids = set(state.get("selected_item_ids") or set())
+
+        if item_id in selected_ids:
+            selected_ids.remove(item_id)
+        else:
+            selected_ids.add(item_id)
+
+        state["selected_item_ids"] = selected_ids
+
+        if selected_ids:
+            selected_label.value = f"{len(selected_ids)} documento(s) seleccionado(s)."
+        else:
+            selected_label.value = "Ningún documento seleccionado."
+
+        render_items()
+        try:
+            selected_label.update()
+            items_column.update()
+        except Exception:
+            pass
 
     def import_manual(e=None):
         try:
@@ -622,11 +655,12 @@ def document_inbox_view(page: ft.Page):
 
     def render_items():
         selected_id = state.get("selected_item_id")
+        selected_ids = set(state.get("selected_item_ids") or set())
         rows = []
 
         for item in state.get("items", []):
             item_id = int(item.get("id"))
-            selected = item_id == selected_id
+            selected = item_id == selected_id or item_id in selected_ids
 
             rows.append(
                 ft.Container(
@@ -634,7 +668,7 @@ def document_inbox_view(page: ft.Page):
                     border_radius=12,
                     border=ft.border.all(2 if selected else 1, Q_PRIMARY if selected else Q_BORDER),
                     bgcolor="#EFF8FF" if selected else "#FFFFFF",
-                    on_click=lambda e, item_id=item_id: select_item(item_id),
+                    on_click=lambda e, item_id=item_id: toggle_item_selection(item_id),
                     content=ft.Row(
                         controls=[
                             ft.Text("📄", size=20),
@@ -645,6 +679,7 @@ def document_inbox_view(page: ft.Page):
                                             ft.Text(f"#{item_id}", size=12, color=Q_MUTED),
                                             ft.Text(item.get("original_filename") or "-", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                                             _status_chip(item.get("status")),
+                                            secondary_button("Ficha", lambda e, item_id=item_id: open_item_detail(item_id)),
                                         ],
                                         spacing=8,
                                         wrap=True,
@@ -759,30 +794,141 @@ def document_inbox_view(page: ft.Page):
 
     refresh_items()
 
+    def close_document_detail_dialog(e=None):
+        dialog = state.get("document_detail_dialog")
+        if dialog:
+            dialog.open = False
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def open_document_detail_dialog(e=None):
+        events_box.content = build_events_panel()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Ficha documental", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+            content=ft.Container(
+                width=980,
+                height=720,
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(1, Q_BORDER),
+                            border_radius=14,
+                            padding=12,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text("Documento y relación", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    selected_label,
+                                    selected_relation_label,
+                                    action_box,
+                                ],
+                                spacing=8,
+                            ),
+                        ),
+                        ft.Container(
+                            expand=True,
+                            content=events_box,
+                        ),
+                    ],
+                    spacing=12,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+            actions=[
+                secondary_button("Cerrar", close_document_detail_dialog),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        state["document_detail_dialog"] = dialog
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
+    def open_item_detail(item_id):
+        select_item(item_id)
+        if state.get("selected_item_id"):
+            open_document_detail_dialog()
+
+    def close_import_dialog(e=None):
+        dialog = state.get("import_dialog")
+        if dialog:
+            dialog.open = False
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def open_import_dialog(e=None):
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Importar a bandeja", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+            content=ft.Container(
+                width=760,
+                content=import_box,
+            ),
+            actions=[
+                secondary_button("Cerrar", close_import_dialog),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        state["import_dialog"] = dialog
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
     return ft.Container(
         expand=True,
         bgcolor="#F8FAFC",
-        padding=20,
+        padding=16,
         content=ft.Column(
             controls=[
                 header,
-                ft.Text(
-                    "Centro de entrada documental del ERP. Gestiona documentos recibidos antes de incorporarlos al expediente.",
-                    size=13,
-                    color=Q_MUTED,
-                ),
                 message_box,
-                import_box,
-                action_box,
-                events_box,
-                status_counters_box,
-                ft.Text("Documentos", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Row(
+                    controls=[
+                        primary_button("Importar a bandeja", open_import_dialog),
+                        secondary_button("Actualizar", refresh_items),
+                        ft.Container(expand=True),
+                        selected_label,
+                    ],
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
                 ft.Container(
                     expand=True,
-                    content=items_column,
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=14,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            status_counters_box,
+                            ft.Row(
+                                controls=[
+                                    ft.Text("Documentos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Container(expand=True),
+                                    ft.Text("Click en fila para seleccionar. Botón Ficha para abrir detalle.", size=11, color=Q_MUTED),
+                                ],
+                                spacing=8,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=items_column,
+                            ),
+                        ],
+                        spacing=10,
+                        expand=True,
+                    ),
                 ),
             ],
-            spacing=14,
+            spacing=12,
             expand=True,
         ),
     )
+
