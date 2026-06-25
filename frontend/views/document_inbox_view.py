@@ -1033,7 +1033,7 @@ def document_inbox_view(page: ft.Page):
                             secondary_button("Limpiar selección", clear_bulk_selection),
                             secondary_button("Marcar revisados", mark_selected_reviewed),
                             danger_button("Descartar", discard_selected_documents),
-                            secondary_button("Agrupar documentos", lambda e: None),
+                            secondary_button("Agrupar documentos", lambda e: open_create_batch_dialog(e)),
                             secondary_button("Herramientas PDF", lambda e: None),
                         ],
                         spacing=8,
@@ -1046,6 +1046,175 @@ def document_inbox_view(page: ft.Page):
         )
 
     bulk_actions_box = ft.Container(content=build_bulk_actions_content())
+
+    batch_name_field = text_input("Nombre del grupo documental", width=680)
+    batch_notes_field = multiline_input("Notas del grupo", width=680)
+    batch_dialog_message = ft.Container()
+    batch_selected_docs_box = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO)
+
+    def close_create_batch_dialog(e=None):
+        create_batch_dialog.open = False
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def render_batch_selected_docs():
+        selected_ids = list(state.get("selected_item_ids") or [])
+        rows = []
+
+        if not selected_ids:
+            rows.append(empty_state("No hay documentos seleccionados"))
+        else:
+            selected_set = set(int(x) for x in selected_ids)
+            items = document_inbox_service.list_inbox_items(status=None, limit=1000)
+            selected_items = [item for item in items if int(item.get("id")) in selected_set]
+
+            for item in selected_items:
+                rows.append(
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=10,
+                        padding=8,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text(
+                                    f"#{item.get('id')} · {item.get('original_filename') or '-'}",
+                                    size=12,
+                                    weight=ft.FontWeight.W_600,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    f"Origen: {item.get('source_type') or '-'} · Estado: {item.get('status') or '-'}",
+                                    size=10,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                        ),
+                    )
+                )
+
+        batch_selected_docs_box.controls = rows
+
+    def open_create_batch_dialog(e=None):
+        selected_ids = list(state.get("selected_item_ids") or [])
+
+        batch_dialog_message.content = None
+        batch_name_field.value = ""
+        batch_notes_field.value = ""
+
+        if selected_ids:
+            batch_name_field.value = f"Grupo documental ({len(selected_ids)} documentos)"
+
+        render_batch_selected_docs()
+
+        if create_batch_dialog not in page.overlay:
+            page.overlay.append(create_batch_dialog)
+
+        create_batch_dialog.open = True
+        page.update()
+
+    def create_batch_from_selection(e=None):
+        selected_ids = list(state.get("selected_item_ids") or [])
+
+        if not selected_ids:
+            batch_dialog_message.content = error_alert("Selecciona al menos un documento para crear el grupo.")
+            try:
+                batch_dialog_message.update()
+            except Exception:
+                pass
+            return
+
+        name = (batch_name_field.value or "").strip()
+        if not name:
+            batch_dialog_message.content = error_alert("Indica un nombre para el grupo documental.")
+            try:
+                batch_dialog_message.update()
+            except Exception:
+                pass
+            return
+
+        try:
+            batch = document_inbox_service.create_document_inbox_batch(
+                name=name,
+                inbox_item_ids=selected_ids,
+                notes=batch_notes_field.value or "",
+            )
+
+            state["selected_item_ids"] = set()
+            selected_label.value = "Ningún documento seleccionado."
+            bulk_actions_box.content = build_bulk_actions_content()
+            render_items()
+
+            batch_dialog_message.content = success_alert(
+                f"Grupo #{batch.get('id')} creado con {batch.get('item_count')} documento(s)."
+            )
+
+            try:
+                selected_label.update()
+            except Exception:
+                pass
+            try:
+                bulk_actions_box.update()
+            except Exception:
+                pass
+            try:
+                items_column.update()
+            except Exception:
+                pass
+            try:
+                batch_dialog_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        except Exception as exc:
+            batch_dialog_message.content = error_alert(f"No se pudo crear el grupo: {exc}")
+            try:
+                batch_dialog_message.update()
+            except Exception:
+                pass
+
+    create_batch_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Agrupar documentos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+        content=ft.Container(
+            width=780,
+            height=620,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Crea un grupo documental interno con los documentos seleccionados. No se mueve nada en Box.",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    batch_dialog_message,
+                    batch_name_field,
+                    batch_notes_field,
+                    ft.Text("Documentos incluidos", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Container(
+                        expand=True,
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=8,
+                        content=batch_selected_docs_box,
+                    ),
+                ],
+                spacing=10,
+                expand=True,
+            ),
+        ),
+        actions=[
+            secondary_button("Cerrar", close_create_batch_dialog),
+            primary_button("Crear grupo", create_batch_from_selection),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
 
     return ft.Container(
         expand=True,
