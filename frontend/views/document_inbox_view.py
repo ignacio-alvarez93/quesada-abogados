@@ -1158,6 +1158,57 @@ def document_inbox_view(page: ft.Page):
     batch_detail_body = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
     batch_detail_message = ft.Container()
 
+    def show_batch_item_preview(item):
+        file_path = item.get("stored_path") or item.get("linked_document_path") or ""
+        if not file_path:
+            batch_detail_message.content = error_alert("El documento no tiene ruta interna disponible.")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            return
+
+        try:
+            open_document_viewer_modal(
+                page,
+                file_path,
+                title=item.get("original_filename") or item.get("stored_filename") or "Documento del grupo",
+            )
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo abrir el visor: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+
+    def open_batch_item_external(item):
+        file_path = item.get("stored_path") or item.get("linked_document_path") or ""
+        if not file_path:
+            batch_detail_message.content = error_alert("El documento no tiene ruta interna disponible.")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            return
+
+        try:
+            document_viewer_service.open_document(file_path)
+        except TypeError:
+            try:
+                document_viewer_service.open_document(file_path, expediente_id=item.get("expedient_id"))
+            except Exception as exc:
+                batch_detail_message.content = error_alert(f"No se pudo abrir externamente: {exc}")
+                try:
+                    batch_detail_message.update()
+                except Exception:
+                    pass
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo abrir externamente: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+
     def close_batch_detail_dialog(e=None):
         batch_detail_dialog.open = False
         try:
@@ -1198,27 +1249,36 @@ def document_inbox_view(page: ft.Page):
                         border=ft.border.all(1, Q_BORDER),
                         border_radius=10,
                         padding=8,
-                        content=ft.Column(
+                        content=ft.Row(
                             controls=[
-                                ft.Text(
-                                    f"#{item.get('id')} · {item.get('original_filename') or '-'}",
-                                    size=12,
-                                    weight=ft.FontWeight.W_600,
-                                    color=Q_PRIMARY_DARK,
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            f"#{item.get('id')} · {item.get('original_filename') or '-'}",
+                                            size=12,
+                                            weight=ft.FontWeight.W_600,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            f"Estado: {item.get('status') or '-'} · Origen: {item.get('source_type') or '-'}",
+                                            size=10,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(
+                                            item.get("stored_path") or "",
+                                            size=10,
+                                            color=Q_MUTED,
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
                                 ),
-                                ft.Text(
-                                    f"Estado: {item.get('status') or '-'} · Origen: {item.get('source_type') or '-'}",
-                                    size=10,
-                                    color=Q_MUTED,
-                                ),
-                                ft.Text(
-                                    item.get("stored_path") or "",
-                                    size=10,
-                                    color=Q_MUTED,
-                                    selectable=True,
-                                ),
+                                secondary_button("Ver", lambda e, item=item: show_batch_item_preview(item)),
+                                secondary_button("Abrir externo", lambda e, item=item: open_batch_item_external(item)),
                             ],
-                            spacing=2,
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
                     )
                 )
