@@ -1047,6 +1047,309 @@ def document_inbox_view(page: ft.Page):
 
     bulk_actions_box = ft.Container(content=build_bulk_actions_content())
 
+    batches_panel_message = ft.Container()
+    batches_list_box = ft.Column(spacing=6)
+
+    def build_batches_panel_content():
+        rows = []
+
+        try:
+            batches = document_inbox_service.list_document_inbox_batches(limit=20)
+        except Exception as exc:
+            return ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=14,
+                padding=10,
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Text("Grupos documentales", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Container(expand=True),
+                                secondary_button("Refrescar grupos", refresh_batches_panel),
+                            ],
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        error_alert(f"No se pudieron cargar grupos: {exc}"),
+                    ],
+                    spacing=8,
+                ),
+            )
+
+        if not batches:
+            rows.append(empty_state("Todavía no hay grupos documentales"))
+        else:
+            for batch in batches:
+                batch_id = batch.get("id")
+                name = batch.get("name") or "-"
+                status = batch.get("status") or "draft"
+                item_count = batch.get("item_count") or 0
+                updated_at = batch.get("updated_at") or ""
+
+                rows.append(
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=10,
+                        content=ft.Row(
+                            controls=[
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            f"#{batch_id} · {name}",
+                                            size=13,
+                                            weight=ft.FontWeight.W_600,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            f"{item_count} documento(s) · Estado: {status} · {updated_at}",
+                                            size=11,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                secondary_button("Ver grupo", lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id)),
+                            ],
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    )
+                )
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=10,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text("Grupos documentales", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Container(expand=True),
+                            secondary_button("Refrescar grupos", refresh_batches_panel),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    batches_panel_message,
+                    ft.Column(controls=rows, spacing=6),
+                ],
+                spacing=8,
+            ),
+        )
+
+    def refresh_batches_panel(e=None):
+        batches_panel_box.content = build_batches_panel_content()
+        try:
+            batches_panel_box.update()
+        except Exception:
+            pass
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    batch_detail_body = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+    batch_detail_message = ft.Container()
+
+    def close_batch_detail_dialog(e=None):
+        batch_detail_dialog.open = False
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def open_batch_detail_dialog(batch_id):
+        batch_detail_message.content = None
+
+        try:
+            batch = document_inbox_service.get_document_inbox_batch(int(batch_id))
+            rows = [
+                ft.Text(
+                    f"#{batch.get('id')} · {batch.get('name')}",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    f"Estado: {batch.get('status') or 'draft'} · Documentos: {batch.get('item_count') or 0}",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            ]
+
+            notes = str(batch.get("notes") or "").strip()
+            if notes:
+                rows.append(ft.Text(notes, size=12, color=Q_MUTED, selectable=True))
+
+            rows.append(ft.Divider())
+            rows.append(ft.Text("Documentos del grupo", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK))
+
+            for item in batch.get("items") or []:
+                rows.append(
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=10,
+                        padding=8,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text(
+                                    f"#{item.get('id')} · {item.get('original_filename') or '-'}",
+                                    size=12,
+                                    weight=ft.FontWeight.W_600,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    f"Estado: {item.get('status') or '-'} · Origen: {item.get('source_type') or '-'}",
+                                    size=10,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    item.get("stored_path") or "",
+                                    size=10,
+                                    color=Q_MUTED,
+                                    selectable=True,
+                                ),
+                            ],
+                            spacing=2,
+                        ),
+                    )
+                )
+
+            batch_detail_body.controls = rows
+
+        except Exception as exc:
+            batch_detail_body.controls = [
+                error_alert(f"No se pudo abrir el grupo documental: {exc}")
+            ]
+
+        if batch_detail_dialog not in page.overlay:
+            page.overlay.append(batch_detail_dialog)
+
+        batch_detail_dialog.open = True
+        page.update()
+
+    batch_detail_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Grupo documental", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+        content=ft.Container(
+            width=840,
+            height=680,
+            content=ft.Column(
+                controls=[
+                    batch_detail_message,
+                    batch_detail_body,
+                ],
+                spacing=8,
+                expand=True,
+            ),
+        ),
+        actions=[
+            secondary_button("Cerrar", close_batch_detail_dialog),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    batches_panel_box = ft.Container(content=build_batches_panel_content())
+
+    documents_list_box = ft.Container(
+                    expand=True,
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=14,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            status_counters_box,
+                            ft.Row(
+                                controls=[
+                                    ft.Text("Documentos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Container(expand=True),
+                                    ft.Text("Click en fila para seleccionar. Botón Ficha para abrir detalle.", size=11, color=Q_MUTED),
+                                ],
+                                spacing=8,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=items_column,
+                            ),
+                        ],
+                        spacing=10,
+                        expand=True,
+                    ),
+                )
+
+    inbox_tab_state = {"active": "documents"}
+
+    def build_inbox_tab_selector():
+        active = inbox_tab_state.get("active") or "documents"
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=8,
+            content=ft.Row(
+                controls=[
+                    primary_button("Documentos", lambda e: set_inbox_tab("documents")) if active == "documents" else secondary_button("Documentos", lambda e: set_inbox_tab("documents")),
+                    primary_button("Grupos documentales", lambda e: set_inbox_tab("batches")) if active == "batches" else secondary_button("Grupos documentales", lambda e: set_inbox_tab("batches")),
+                    ft.Container(expand=True),
+                ],
+                spacing=8,
+            ),
+        )
+
+    def build_active_tab_controls():
+        active = inbox_tab_state.get("active") or "documents"
+
+        if active == "batches":
+            return [
+                batches_panel_box,
+            ]
+
+        return [
+            bulk_actions_box,
+            documents_list_box,
+        ]
+
+    def set_inbox_tab(tab_name):
+        inbox_tab_state["active"] = tab_name or "documents"
+
+        if inbox_tab_state["active"] == "batches":
+            try:
+                batches_panel_box.content = build_batches_panel_content()
+            except Exception:
+                pass
+
+        tab_selector_box.content = build_inbox_tab_selector()
+        tab_content_box.controls = build_active_tab_controls()
+
+        try:
+            tab_selector_box.update()
+        except Exception:
+            pass
+        try:
+            tab_content_box.update()
+        except Exception:
+            pass
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    tab_selector_box = ft.Container(content=build_inbox_tab_selector())
+    tab_content_box = ft.Column(controls=build_active_tab_controls(), spacing=10, expand=True)
+
+
+
     batch_name_field = text_input("Nombre del grupo documental", width=680)
     batch_notes_field = multiline_input("Notas del grupo", width=680)
     batch_dialog_message = ft.Container()
@@ -1234,34 +1537,8 @@ def document_inbox_view(page: ft.Page):
                     spacing=10,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                bulk_actions_box,
-                ft.Container(
-                    expand=True,
-                    bgcolor="#FFFFFF",
-                    border=ft.border.all(1, Q_BORDER),
-                    border_radius=14,
-                    padding=12,
-                    content=ft.Column(
-                        controls=[
-                            status_counters_box,
-                            ft.Row(
-                                controls=[
-                                    ft.Text("Documentos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                    ft.Container(expand=True),
-                                    ft.Text("Click en fila para seleccionar. Botón Ficha para abrir detalle.", size=11, color=Q_MUTED),
-                                ],
-                                spacing=8,
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                            ),
-                            ft.Container(
-                                expand=True,
-                                content=items_column,
-                            ),
-                        ],
-                        spacing=10,
-                        expand=True,
-                    ),
-                ),
+                tab_selector_box,
+                tab_content_box,
             ],
             spacing=12,
             expand=True,
