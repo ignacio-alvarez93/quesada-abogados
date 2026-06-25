@@ -480,7 +480,19 @@ def document_inbox_view(page: ft.Page):
         status_counters_box.content = build_status_counters()
         render_items()
         try:
+            status_dropdown.update()
+        except Exception:
+            pass
+        try:
             status_counters_box.update()
+        except Exception:
+            pass
+        try:
+            items_column.update()
+        except Exception:
+            pass
+        try:
+            page.update()
         except Exception:
             pass
 
@@ -550,7 +562,14 @@ def document_inbox_view(page: ft.Page):
         render_items()
         try:
             selected_label.update()
+        except Exception:
+            pass
+        try:
             items_column.update()
+        except Exception:
+            pass
+        try:
+            page.update()
         except Exception:
             pass
 
@@ -654,13 +673,12 @@ def document_inbox_view(page: ft.Page):
             show_error(exc)
 
     def render_items():
-        selected_id = state.get("selected_item_id")
         selected_ids = set(state.get("selected_item_ids") or set())
         rows = []
 
         for item in state.get("items", []):
             item_id = int(item.get("id"))
-            selected = item_id == selected_id or item_id in selected_ids
+            selected = item_id in selected_ids
 
             rows.append(
                 ft.Container(
@@ -798,10 +816,12 @@ def document_inbox_view(page: ft.Page):
         dialog = state.get("document_detail_dialog")
         if dialog:
             dialog.open = False
-            try:
-                page.update()
-            except Exception:
-                pass
+        state["selected_item_id"] = None
+        refresh_relation_label()
+        try:
+            page.update()
+        except Exception:
+            pass
 
     def open_document_detail_dialog(e=None):
         events_box.content = build_events_panel()
@@ -850,9 +870,21 @@ def document_inbox_view(page: ft.Page):
         page.update()
 
     def open_item_detail(item_id):
-        select_item(item_id)
-        if state.get("selected_item_id"):
-            open_document_detail_dialog()
+        state["selected_item_id"] = int(item_id)
+        item = document_inbox_service.get_inbox_item(int(item_id))
+        selected_label.value = f"Seleccionado para ficha: #{item['id']} · {item.get('original_filename') or '-'}"
+
+        if item.get("client_id"):
+            state["selected_client_id"] = int(item.get("client_id"))
+            expedient_labels = build_expedient_options_for_client(state["selected_client_id"])
+            expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+
+        if item.get("expedient_id"):
+            state["selected_expedient_id"] = int(item.get("expedient_id"))
+
+        refresh_relation_label()
+        events_box.content = build_events_panel()
+        open_document_detail_dialog()
 
     def close_import_dialog(e=None):
         dialog = state.get("import_dialog")
