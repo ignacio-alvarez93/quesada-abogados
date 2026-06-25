@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
+import shutil
+import zipfile
 import json
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +23,7 @@ SUPPORTED_EXTENSIONS = {
     ".xls",
     ".xlsx",
     ".txt",
+    ".zip",
 }
 
 
@@ -264,6 +268,167 @@ def _fingerprint(path: Path) -> tuple[str, int, str]:
     return fingerprint, size, modified_at
 
 
+def _document_inbox_tmp_dir() -> Path:
+    """
+    Carpeta temporal propia de Bandeja Documental.
+    """
+    tmp_dir = Path("data") / "document_inbox" / "tmp" / "unzipped"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    return tmp_dir
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()[:24]
+
+
+def _is_supported_inner_file(path: Path) -> bool:
+    """
+    Extensiones permitidas dentro de ZIP.
+
+    No se admite .zip dentro de .zip en esta primera versión para evitar
+    recursividad accidental y paquetes enormes.
+    """
+    ext = path.suffix.lower()
+    return ext in SUPPORTED_EXTENSIONS and ext != ".zip"
+
+
+def _safe_zip_member_name(name: str) -> bool:
+    """
+    Evita Zip Slip y rutas absolutas.
+
+    Rechaza:
+    - rutas absolutas;
+    - miembros con ..;
+    - nombres vacíos;
+    - separadores raros.
+    """
+    if not name or name.strip() == "":
+        return False
+
+    normalized = name.replace("\\", "/")
+
+    if normalized.startswith("/"):
+        return False
+
+    parts = [p for p in normalized.split("/") if p not in ("", ".")]
+
+    if not parts:
+        return False
+
+    if any(part == ".." for part in parts):
+        return False
+
+    drive_like = len(parts[0]) >= 2 and parts[0][1] == ":"
+    if drive_like:
+        return False
+
+    return True
+
+
+def _safe_extract_zip_to_temp(zip_path: Path) -> list[Path]:
+    """
+    Extrae un ZIP en una carpeta temporal controlada.
+
+    Devuelve rutas de archivos internos válidos.
+    """
+    fingerprint, size, modified_at = _fingerprint(zip_path)
+    target_dir = _document_inbox_tmp_dir() / _hash_text(fingerprint)
+
+    if target_dir.exists():
+        shutil.rmtree(target_dir, ignore_errors=True)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    extracted_files: list[Path] = []
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+
+            member_name = info.filename
+
+            if not _safe_zip_member_name(member_name):
+                continue
+
+            normalized = member_name.replace("\\", "/")
+            relative_parts = [p for p in normalized.split("/") if p not in ("", ".")]
+            safe_relative = Path(*relative_parts)
+
+            destination = target_dir / safe_relative
+            destination_parent = destination.parent
+            destination_parent.mkdir(parents=True, exist_ok=True)
+
+            # Doble protección: la ruta final debe quedar dentro de target_dir.
+            try:
+                destination.resolve().relative_to(target_dir.resolve())
+            except ValueError:
+                continue
+
+            if not _is_supported_inner_file(destination):
+                continue
+
+            with zf.open(info, "r") as source, open(destination, "wb") as target:
+                shutil.copyfileobj(source, target)
+
+            extracted_files.append(destination)
+
+    return extracted_files
+
+
+def _import_zip_to_inbox(zip_path: Path, source_label: str) -> list[dict[str, Any]]:
+    """
+    Importa archivos válidos contenidos en un ZIP.
+
+    El ZIP original queda intacto. Los archivos se extraen a tmp controlado
+    y se copian desde ahí a Bandeja.
+    """
+    extracted_files = _safe_extract_zip_to_temp(zip_path)
+    imported_items: list[dict[str, Any]] = []
+
+    for extracted in extracted_files:
+        item = _import_file_to_inbox_compatible(
+            extracted,
+            source_label=f"{source_label} · ZIP: {zip_path.name}",
+        )
+
+        if isinstance(item, dict):
+            imported_items.append(
+                {
+                    "file_path": str(extracted),
+                    "file_name": f"{zip_path.name} / {extracted.name}",
+                    "inbox_item_id": item.get("id"),
+                    "zip_path": str(zip_path),
+                }
+            )
+
+    return imported_items
+
+
+def _safe_import_source_path(path: Path) -> Path:
+    """
+    Evita fallos de Windows por nombres/rutas excesivamente largos.
+
+    Si el nombre es razonable, devuelve la ruta original.
+    Si es muy largo, crea una copia temporal con nombre corto y conserva extensión.
+    """
+    name = path.name
+    full = str(path)
+
+    if len(name) <= 120 and len(full) <= 240:
+        return path
+
+    tmp_dir = Path("data") / "document_inbox" / "tmp" / "safe_import"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = path.suffix.lower() or ".bin"
+    short_name = f"{_hash_text(str(path.resolve()))}{suffix}"
+    target = tmp_dir / short_name
+
+    shutil.copy2(path, target)
+    return target
+
+
 def _import_file_to_inbox_compatible(path: Path, source_label: str) -> dict[str, Any]:
     """
     Llama a import_file_to_inbox filtrando kwargs según la firma real.
@@ -284,7 +449,8 @@ def _import_file_to_inbox_compatible(path: Path, source_label: str) -> dict[str,
     if "notes" in params:
         kwargs["notes"] = "Importado automáticamente desde carpeta vigilada."
 
-    return fn(str(path), **kwargs)
+    safe_path = _safe_import_source_path(path)
+    return fn(str(safe_path), **kwargs)
 
 
 def scan_watch_folder(watch_folder_id: int, max_files: int = 300) -> dict[str, Any]:
@@ -350,8 +516,13 @@ def scan_watch_folder(watch_folder_id: int, max_files: int = 300) -> dict[str, A
 
             try:
                 # 2) Importar sin mantener conexión de vigilancia abierta.
-                item = _import_file_to_inbox_compatible(file_path, source_label=source_label)
-                inbox_item_id = item.get("id") if isinstance(item, dict) else None
+                zip_imported_items = []
+                if file_path.suffix.lower() == ".zip":
+                    zip_imported_items = _import_zip_to_inbox(file_path, source_label=source_label)
+                    inbox_item_id = zip_imported_items[0].get("inbox_item_id") if zip_imported_items else None
+                else:
+                    item = _import_file_to_inbox_compatible(file_path, source_label=source_label)
+                    inbox_item_id = item.get("id") if isinstance(item, dict) else None
 
                 # 3) Registrar éxito.
                 with _connect() as conn:
@@ -411,13 +582,25 @@ def scan_watch_folder(watch_folder_id: int, max_files: int = 300) -> dict[str, A
                         )
                     conn.commit()
 
-                imported.append(
-                    {
-                        "file_path": resolved_path,
-                        "file_name": file_name,
-                        "inbox_item_id": inbox_item_id,
-                    }
-                )
+                if file_path.suffix.lower() == ".zip":
+                    if zip_imported_items:
+                        imported.extend(zip_imported_items)
+                    else:
+                        skipped.append(
+                            {
+                                "file_path": resolved_path,
+                                "reason": "zip_without_supported_documents",
+                                "inbox_item_id": None,
+                            }
+                        )
+                else:
+                    imported.append(
+                        {
+                            "file_path": resolved_path,
+                            "file_name": file_name,
+                            "inbox_item_id": inbox_item_id,
+                        }
+                    )
 
             except Exception as exc:
                 error_message = str(exc)
