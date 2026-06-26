@@ -399,23 +399,12 @@ def document_inbox_view(page: ft.Page):
         status_keys = [key for key in STATUS_LABELS.keys() if key != "all"]
 
         try:
-            all_items = document_inbox_service.list_inbox_items(status=None, limit=2000)
-        except TypeError:
-            try:
-                all_items = document_inbox_service.list_inbox_items(status=None)
-            except Exception:
-                all_items = []
+            raw_counts = document_inbox_service.count_inbox_items_by_status()
         except Exception:
-            all_items = []
+            raw_counts = {}
 
-        counts = {key: 0 for key in status_keys}
-        total = 0
-
-        for item in all_items:
-            status = str(item.get("status") or "pending")
-            if status in counts:
-                counts[status] += 1
-            total += 1
+        counts = {key: int(raw_counts.get(key, 0) or 0) for key in status_keys}
+        total = int(raw_counts.get("all", sum(counts.values())) or 0)
 
         current = status_dropdown.value or state.get("status_filter") or "all"
 

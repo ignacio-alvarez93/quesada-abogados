@@ -656,6 +656,40 @@ def count_inbox_items(status: Optional[str] = None) -> int:
             return int(row[0])
 
 
+
+def count_inbox_items_by_status() -> Dict[str, int]:
+    """
+    Devuelve contadores agregados de Bandeja Documental por estado.
+
+    Evita cargar documentos en frontend solo para pintar chips.
+    """
+    ensure_document_inbox_schema()
+
+    conn = _connect()
+    conn.row_factory = _dict_row_factory
+    try:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(status, 'pending') AS status, COUNT(*) AS total
+            FROM document_inbox_items
+            GROUP BY COALESCE(status, 'pending')
+            """
+        ).fetchall()
+
+        counts: Dict[str, int] = {}
+        total = 0
+
+        for row in rows:
+            status = str(row["status"] or "pending")
+            value = int(row["total"] or 0)
+            counts[status] = value
+            total += value
+
+        counts["all"] = total
+        return counts
+    finally:
+        conn.close()
+
 def list_inbox_items(
     status: Optional[str] = None,
     limit: int = 200,
