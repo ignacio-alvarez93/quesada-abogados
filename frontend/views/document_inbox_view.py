@@ -75,6 +75,9 @@ def document_inbox_view(page: ft.Page):
         "items": [],
         "selected_item_id": None,
         "selected_item_ids": set(),
+        "page": 1,
+        "page_size": 10,
+        "total_items": 0,
         "status_filter": "pending",
         "selected_client_id": None,
         "selected_expedient_id": None,
@@ -95,6 +98,7 @@ def document_inbox_view(page: ft.Page):
     box_subfolder = text_input("Subcarpeta Box destino opcional", width=300)
 
     selected_label = ft.Text("Ningún documento seleccionado", size=12, color=Q_MUTED)
+    pagination_label = ft.Text("Página 1", color=Q_MUTED, size=12)
     selected_relation_label = ft.Text("Cliente/expediente no seleccionado", size=12, color=Q_MUTED)
 
     items_column = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -413,9 +417,12 @@ def document_inbox_view(page: ft.Page):
                 counts[status] += 1
             total += 1
 
-        current = state.get("status_filter") or "pending"
+        current = status_dropdown.value or state.get("status_filter") or "all"
 
         def set_status_filter(status_value):
+            state["status_filter"] = status_value
+            state["page"] = 1
+            state["selected_item_ids"] = set()
             status_dropdown.value = status_value
             refresh_items()
 
@@ -474,32 +481,100 @@ def document_inbox_view(page: ft.Page):
             ),
         )
 
-    def refresh_items(e=None):
-        state["status_filter"] = status_dropdown.value or "pending"
-        query_status = None if state["status_filter"] == "all" else state["status_filter"]
-        state["items"] = document_inbox_service.list_inbox_items(
-            status=query_status,
-            limit=10,
-            offset=0,
-        )
-        status_counters_box.content = build_status_counters()
-        render_items()
+    def document_total_pages():
+        total = int(state.get("total_items") or 0)
+        page_size = max(1, int(state.get("page_size") or 10))
+        return max(1, (total + page_size - 1) // page_size)
+
+    def refresh_pagination_label():
+        total = int(state.get("total_items") or 0)
+        page_size = max(1, int(state.get("page_size") or 10))
+        page_number = max(1, int(state.get("page") or 1))
+        pages = document_total_pages()
+
+        start_index = 0 if total == 0 else ((page_number - 1) * page_size) + 1
+        end_index = min(total, page_number * page_size)
+
+        pagination_label.value = f"Mostrando {start_index}-{end_index} de {total} · Página {page_number} de {pages}"
+
         try:
-            status_dropdown.update()
+            pagination_label.update()
         except Exception:
             pass
+
+    def go_document_page(page_number):
+        state["page"] = max(1, min(int(page_number or 1), document_total_pages()))
+        state["selected_item_ids"] = set()
+        refresh_items()
+
+    def previous_document_page(e=None):
+        go_document_page(int(state.get("page") or 1) - 1)
+
+    def next_document_page(e=None):
+        go_document_page(int(state.get("page") or 1) + 1)
+
+    def on_status_filter_change(e=None):
+        state["page"] = 1
+        state["selected_item_ids"] = set()
+        refresh_items(e)
+
+
+    def refresh_items(e=None):
+        query_status = status_dropdown.value
+        if query_status == "all":
+            query_status = None
+
+        page_size = max(1, int(state.get("page_size") or 10))
+        total = document_inbox_service.count_inbox_items(status=query_status)
+
+        pages = max(1, (int(total or 0) + page_size - 1) // page_size)
+        page_number = max(1, min(int(state.get("page") or 1), pages))
+        offset = (page_number - 1) * page_size
+
+        state["page"] = page_number
+        state["total_items"] = int(total or 0)
+        state["items"] = document_inbox_service.list_inbox_items(
+            status=query_status,
+            limit=page_size,
+            offset=offset,
+        )
+
+        visible_ids = {int(item.get("id")) for item in state["items"] if item.get("id") is not None}
+        state["selected_item_ids"] = {
+            int(item_id)
+            for item_id in state.get("selected_item_ids", set())
+            if int(item_id) in visible_ids
+        }
+
         try:
+            update_status_counters()
+        except NameError:
+            pass
+
+        try:
+            status_counters_box.content = build_status_counters()
             status_counters_box.update()
+        except Exception:
+            pass
+
+        render_items()
+        refresh_pagination_label()
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        selected_label.value = "Seleccionado: ninguno"
+        try:
+            selected_label.update()
         except Exception:
             pass
         try:
             items_column.update()
         except Exception:
             pass
-        try:
-            page.update()
-        except Exception:
-            pass
+
 
     def clear_selection(e=None):
         state["selected_item_id"] = None
@@ -751,7 +826,7 @@ def document_inbox_view(page: ft.Page):
         except Exception:
             pass
 
-    status_dropdown.on_change = refresh_items
+    status_dropdown.on_change = on_status_filter_change
 
     header = ft.Row(
         controls=[
@@ -1799,6 +1874,9 @@ def document_inbox_view(page: ft.Page):
                     controls=[
                         primary_button("Importar a bandeja", open_import_dialog),
                         secondary_button("Actualizar", refresh_items),
+                        secondary_button("Anterior", previous_document_page),
+                        secondary_button("Siguiente", next_document_page),
+                        pagination_label,
                         ft.Container(expand=True),
                         selected_label,
                     ],
