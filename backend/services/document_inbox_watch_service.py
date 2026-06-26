@@ -674,6 +674,55 @@ def scan_watch_folder(watch_folder_id: int, max_files: int = 300) -> dict[str, A
     }
 
 
+
+def scan_active_watch_folders(max_files_per_folder: int = 200) -> dict[str, Any]:
+    """
+    Escanea todas las carpetas vigiladas activas e importa documentos nuevos.
+
+    Uso previsto:
+    - al abrir Bandeja Documental
+    - al pulsar Actualizar en Bandeja Documental
+
+    No modifica la carpeta origen.
+    """
+    ensure_watch_schema()
+
+    folders = list_watch_folders(active_only=True)
+
+    results = []
+    total_imported = 0
+    total_skipped = 0
+    total_errors = 0
+
+    for folder in folders:
+        folder_id = int(folder.get("id"))
+        result = scan_watch_folder(folder_id, max_files=max_files_per_folder)
+
+        imported = result.get("imported") or []
+        skipped = result.get("skipped") or []
+        errors = result.get("errors") or []
+
+        total_imported += len(imported)
+        total_skipped += len(skipped)
+        total_errors += len(errors)
+
+        results.append(
+            {
+                "watch_folder": result.get("watch_folder") or folder,
+                "imported": imported,
+                "skipped": skipped,
+                "errors": errors,
+            }
+        )
+
+    return {
+        "folders": folders,
+        "results": results,
+        "imported": total_imported,
+        "skipped": total_skipped,
+        "errors": total_errors,
+    }
+
 def ensure_default_downloads_watch_folder() -> dict[str, Any]:
     """
     Crea o reactiva la vigilancia de Descargas.

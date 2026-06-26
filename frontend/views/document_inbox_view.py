@@ -78,6 +78,7 @@ def document_inbox_view(page: ft.Page):
         "page": 1,
         "page_size": 10,
         "total_items": 0,
+        "last_watch_scan": None,
         "status_filter": "pending",
         "selected_client_id": None,
         "selected_expedient_id": None,
@@ -508,7 +509,36 @@ def document_inbox_view(page: ft.Page):
         refresh_items(e)
 
 
-    def refresh_items(e=None):
+    def scan_watch_folders_for_inbox():
+        """
+        Escaneo incremental de carpetas vigiladas.
+
+        Se llama solo:
+        - al abrir Bandeja
+        - al pulsar Actualizar
+
+        No se llama al paginar ni al cambiar filtros.
+        """
+        try:
+            result = document_inbox_watch_service.scan_active_watch_folders(max_files_per_folder=200)
+        except Exception as exc:
+            result = {
+                "folders": [],
+                "results": [],
+                "imported": 0,
+                "skipped": 0,
+                "errors": 1,
+                "error_message": str(exc),
+            }
+
+        state["last_watch_scan"] = result
+        return result
+
+
+    def refresh_items(e=None, scan_watch=False):
+        if scan_watch:
+            scan_watch_folders_for_inbox()
+
         query_status = status_dropdown.value
         if query_status == "all":
             query_status = None
@@ -887,7 +917,7 @@ def document_inbox_view(page: ft.Page):
         ),
     )
 
-    refresh_items()
+    refresh_items(scan_watch=True)
 
     def close_document_detail_dialog(e=None):
         dialog = state.get("document_detail_dialog")
@@ -1862,7 +1892,7 @@ def document_inbox_view(page: ft.Page):
                 ft.Row(
                     controls=[
                         primary_button("Importar a bandeja", open_import_dialog),
-                        secondary_button("Actualizar", refresh_items),
+                        secondary_button("Actualizar", lambda e: refresh_items(e, scan_watch=True)),
                         secondary_button("Anterior", previous_document_page),
                         secondary_button("Siguiente", next_document_page),
                         pagination_label,
