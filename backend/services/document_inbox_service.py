@@ -611,42 +611,92 @@ def update_document_inbox_batch_status(batch_id: int, status: str):
 # === QUESADA DOCUMENT INBOX BATCHES END ===
 
 
-def list_inbox_items(
-    status: Optional[str] = None,
-    client_id: Optional[int] = None,
-    expedient_id: Optional[int] = None,
-    limit: int = 300,
-) -> List[Dict[str, Any]]:
-    ensure_document_inbox_schema()
-
-    conditions = []
-    params: List[Any] = []
+def _inbox_items_filter_sql(status: Optional[str] = None):
+    """
+    Construye WHERE compartido para listado y conteo de Bandeja.
+    """
+    where = []
+    params = []
 
     if status and status != "all":
-        conditions.append("status = ?")
+        where.append("status = ?")
         params.append(status)
 
-    if client_id:
-        conditions.append("client_id = ?")
-        params.append(int(client_id))
+    where_sql = ""
+    if where:
+        where_sql = "WHERE " + " AND ".join(where)
 
-    if expedient_id:
-        conditions.append("expedient_id = ?")
-        params.append(int(expedient_id))
+    return where_sql, params
 
-    where = " WHERE " + " AND ".join(conditions) if conditions else ""
 
-    sql = f"""
-        SELECT *
-        FROM document_inbox_items
-        {where}
-        ORDER BY id DESC
-        LIMIT ?
+def count_inbox_items(status: Optional[str] = None) -> int:
     """
-    params.append(int(limit or 300))
+    Cuenta documentos de Bandeja aplicando los mismos filtros que el listado.
+    """
+    ensure_document_inbox_schema()
 
-    with get_connection() as conn:
-        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+    where_sql, params = _inbox_items_filter_sql(status)
+
+    with _connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM document_inbox_items
+            {where_sql}
+            """,
+            params,
+        ).fetchone()
+
+        if row is None:
+            return 0
+
+        try:
+            return int(row["total"])
+        except Exception:
+            return int(row[0])
+
+
+def list_inbox_items(
+    status: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """
+    Lista documentos de Bandeja con paginación real.
+
+    limit:
+        Número máximo de registros a devolver.
+
+    offset:
+        Desplazamiento SQL. Página 1 con tamaño 10 = offset 0.
+        Página 2 con tamaño 10 = offset 10.
+    """
+    ensure_document_inbox_schema()
+
+    safe_limit = max(1, min(int(limit or 200), 500))
+    safe_offset = max(0, int(offset or 0))
+
+    where_sql, params = _inbox_items_filter_sql(status)
+
+    with _connect() as conn:
+        try:
+            conn.row_factory = _dict_row_factory
+        except NameError:
+            conn.row_factory = lambda cursor, row: {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM document_inbox_items
+            {where_sql}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            OFFSET ?
+            """,
+            [*params, safe_limit, safe_offset],
+        ).fetchall()
+
+        return [dict(row) for row in rows]
 
 
 def get_inbox_item(item_id: int) -> Dict[str, Any]:
