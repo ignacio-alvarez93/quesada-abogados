@@ -477,7 +477,11 @@ def document_inbox_view(page: ft.Page):
     def refresh_items(e=None):
         state["status_filter"] = status_dropdown.value or "pending"
         query_status = None if state["status_filter"] == "all" else state["status_filter"]
-        state["items"] = document_inbox_service.list_inbox_items(status=query_status)
+        state["items"] = document_inbox_service.list_inbox_items(
+            status=query_status,
+            limit=10,
+            offset=0,
+        )
         status_counters_box.content = build_status_counters()
         render_items()
         try:
