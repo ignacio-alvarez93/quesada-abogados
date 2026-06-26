@@ -100,6 +100,7 @@ def document_inbox_view(page: ft.Page):
 
     selected_label = ft.Text("Ningún documento seleccionado", size=12, color=Q_MUTED)
     pagination_label = ft.Text("Página 1", color=Q_MUTED, size=12)
+    watch_scan_notice = ft.Text("", color=Q_MUTED, size=12)
     selected_relation_label = ft.Text("Cliente/expediente no seleccionado", size=12, color=Q_MUTED)
 
     items_column = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -509,6 +510,33 @@ def document_inbox_view(page: ft.Page):
         refresh_items(e)
 
 
+    def refresh_watch_scan_notice():
+        result = state.get("last_watch_scan") or {}
+
+        folders = result.get("folders") or []
+        imported = int(result.get("imported") or 0)
+        skipped = int(result.get("skipped") or 0)
+        errors = int(result.get("errors") or 0)
+
+        if not folders:
+            watch_scan_notice.value = "Vigilancia: sin carpetas activas"
+            watch_scan_notice.color = Q_MUTED
+        elif errors:
+            watch_scan_notice.value = f"Vigilancia: {imported} nuevos · {skipped} ya vistos · {errors} errores"
+            watch_scan_notice.color = "#B91C1C"
+        elif imported:
+            watch_scan_notice.value = f"Vigilancia: {imported} nuevos · {skipped} ya vistos · 0 errores"
+            watch_scan_notice.color = "#166534"
+        else:
+            watch_scan_notice.value = f"Vigilancia: 0 nuevos · {skipped} ya vistos · 0 errores"
+            watch_scan_notice.color = Q_MUTED
+
+        try:
+            watch_scan_notice.update()
+        except Exception:
+            pass
+
+
     def scan_watch_folders_for_inbox():
         """
         Escaneo incremental de carpetas vigiladas.
@@ -532,6 +560,12 @@ def document_inbox_view(page: ft.Page):
             }
 
         state["last_watch_scan"] = result
+
+        try:
+            refresh_watch_scan_notice()
+        except Exception:
+            pass
+
         return result
 
 
@@ -1896,6 +1930,7 @@ def document_inbox_view(page: ft.Page):
                         secondary_button("Anterior", previous_document_page),
                         secondary_button("Siguiente", next_document_page),
                         pagination_label,
+                        watch_scan_notice,
                         ft.Container(expand=True),
                         selected_label,
                     ],
