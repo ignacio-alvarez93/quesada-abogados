@@ -965,34 +965,203 @@ def document_inbox_view(page: ft.Page):
             pass
 
     def open_document_detail_dialog(e=None):
-        events_box.content = build_events_panel()
+        """
+        Ficha documental aislada.
+
+        No reutiliza controles de la Bandeja principal para evitar glitches de Flet
+        cuando un mismo control aparece en varios contenedores/dialogs.
+        """
+        try:
+            item = selected_item()
+        except Exception as exc:
+            show_error(exc)
+            return
+
+        item_id = int(item.get("id"))
+        filename = item.get("original_filename") or "-"
+        stored_path = item.get("stored_path") or "-"
+        status = item.get("status") or "pending"
+
+        detail_events_box = ft.Container(content=build_events_panel())
+
+        detail_relation_text = ft.Text(
+            f"Cliente ID: {item.get('client_id') or '-'} · Expediente ID: {item.get('expedient_id') or '-'}",
+            size=12,
+            color=Q_MUTED,
+        )
+
+        def detail_show_preview(e=None):
+            try:
+                open_document_viewer_modal(
+                    page,
+                    item.get("stored_path"),
+                    title=item.get("original_filename") or "Documento de bandeja",
+                    expediente_id=None,
+                    initial_page=1,
+                    initial_zoom=1.6,
+                )
+            except Exception as exc:
+                show_error(exc)
+
+        def detail_open_system(e=None):
+            try:
+                document_viewer_service.open_document(item.get("stored_path"))
+            except Exception as exc:
+                show_error(exc)
+
+        def detail_mark_reviewed(e=None):
+            try:
+                updated = document_inbox_service.update_inbox_item_status(item_id, "reviewed")
+                show_success(f"Documento #{updated['id']} marcado como revisado.")
+                refresh_items()
+                close_document_detail_dialog()
+            except Exception as exc:
+                show_error(exc)
+
+        def detail_discard(e=None):
+            try:
+                updated = document_inbox_service.update_inbox_item_status(item_id, "discarded")
+                show_success(f"Documento #{updated['id']} descartado.")
+                refresh_items()
+                close_document_detail_dialog()
+            except Exception as exc:
+                show_error(exc)
+
+        detail_header = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text("📄", size=24),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(f"Documento #{item_id}", size=12, color=Q_MUTED),
+                                    ft.Text(filename, size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            _status_chip(status),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                    ),
+                    ft.Text(stored_path, size=11, color=Q_MUTED, selectable=True),
+                ],
+                spacing=8,
+            ),
+        )
+
+        detail_meta = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Metadatos", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text(
+                        f"Origen: {item.get('source_type') or '-'} · {item.get('source_label') or '-'}",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        f"Tamaño: {_format_size(item.get('size_bytes'))} · Creado: {item.get('created_at') or '-'}",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        f"Box destino: {item.get('copied_to_box_path') or '-'}",
+                        size=12,
+                        color=Q_MUTED,
+                        selectable=True,
+                    ),
+                ],
+                spacing=6,
+            ),
+        )
+
+        detail_relation = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Relación", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    detail_relation_text,
+                    ft.Text(
+                        "Para cambiar cliente/expediente usa el panel de acciones de la Bandeja principal.",
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=6,
+            ),
+        )
+
+        detail_actions = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Acciones rápidas", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Row(
+                        controls=[
+                            primary_button("Ver", detail_show_preview),
+                            secondary_button("Abrir original", detail_open_system),
+                            secondary_button("Revisado", detail_mark_reviewed),
+                            danger_button("Descartar", detail_discard),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                spacing=8,
+            ),
+        )
+
+        detail_trace = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Trazabilidad", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    detail_events_box,
+                ],
+                spacing=8,
+            ),
+        )
 
         dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Ficha documental", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
             content=ft.Container(
                 width=980,
-                height=720,
+                height=740,
                 content=ft.Column(
                     controls=[
-                        ft.Container(
-                            bgcolor="#F8FAFC",
-                            border=ft.border.all(1, Q_BORDER),
-                            border_radius=14,
-                            padding=12,
-                            content=ft.Column(
-                                controls=[
-                                    ft.Text("Documento y relación", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                    selected_label,
-                                    selected_relation_label,
-                                    action_box,
-                                ],
-                                spacing=8,
-                            ),
+                        detail_header,
+                        ft.Row(
+                            controls=[
+                                ft.Container(content=detail_meta, expand=True),
+                                ft.Container(content=detail_relation, expand=True),
+                            ],
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.START,
                         ),
+                        detail_actions,
                         ft.Container(
                             expand=True,
-                            content=events_box,
+                            content=detail_trace,
                         ),
                     ],
                     spacing=12,
