@@ -972,7 +972,11 @@ def document_inbox_view(page: ft.Page):
         cuando un mismo control aparece en varios contenedores/dialogs.
         """
         try:
-            item = selected_item()
+            active_item_id = state.get("selected_item_id")
+            if active_item_id:
+                item = document_inbox_service.get_inbox_item(int(active_item_id))
+            else:
+                item = selected_item()
         except Exception as exc:
             show_error(exc)
             return
@@ -1141,15 +1145,75 @@ def document_inbox_view(page: ft.Page):
             ),
         )
 
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Ficha documental", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-            content=ft.Container(
-                width=980,
-                height=740,
-                content=ft.Column(
+        detail_pdf_tools = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Herramientas PDF", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Text(
+                        "Zona preparada para aplicar operaciones al documento actual.",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Row(
+                        controls=[
+                            primary_button("Ver PDF", detail_show_preview),
+                            secondary_button("Abrir original", detail_open_system),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Divider(height=12),
+                    ft.Text("Próximas acciones", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Row(
+                        controls=[
+                            secondary_button("Renombrar", lambda e: show_error("Pendiente: renombrar documento.")),
+                            secondary_button("Separar páginas", lambda e: show_error("Pendiente: separar PDF.")),
+                            secondary_button("Unir con selección", lambda e: show_error("Pendiente: unir PDFs seleccionados.")),
+                            secondary_button("OCR / texto", lambda e: show_error("Pendiente: OCR / extracción de texto.")),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                spacing=10,
+            ),
+        )
+
+        detail_linking = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Vincular documento", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    detail_relation_text,
+                    ft.Text(
+                        "Esta pestaña será el espacio para buscar cliente, elegir expediente, vincular y copiar a Box.",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Divider(height=12),
+                    ft.Text(
+                        "Por ahora se conserva la vinculación desde el panel principal de la Bandeja para no romper flujo.",
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=8,
+            ),
+        )
+
+        detail_body = ft.Container(expand=True)
+
+        def set_detail_section(section_name, do_update=True):
+            if section_name == "principal":
+                detail_body.content = ft.Column(
                     controls=[
-                        detail_header,
                         ft.Row(
                             controls=[
                                 ft.Container(content=detail_meta, expand=True),
@@ -1159,9 +1223,75 @@ def document_inbox_view(page: ft.Page):
                             vertical_alignment=ft.CrossAxisAlignment.START,
                         ),
                         detail_actions,
+                    ],
+                    spacing=12,
+                    scroll=ft.ScrollMode.AUTO,
+                )
+            elif section_name == "vincular":
+                detail_body.content = ft.Column(
+                    controls=[
+                        detail_linking,
+                    ],
+                    spacing=12,
+                    scroll=ft.ScrollMode.AUTO,
+                )
+            elif section_name == "pdf":
+                detail_body.content = ft.Column(
+                    controls=[
+                        detail_pdf_tools,
+                    ],
+                    spacing=12,
+                    scroll=ft.ScrollMode.AUTO,
+                )
+            elif section_name == "trazabilidad":
+                detail_body.content = ft.Column(
+                    controls=[
+                        detail_trace,
+                    ],
+                    spacing=12,
+                    scroll=ft.ScrollMode.AUTO,
+                )
+            else:
+                detail_body.content = ft.Text("Sección no disponible.", color=Q_MUTED)
+
+            if do_update:
+                try:
+                    detail_body.update()
+                except Exception:
+                    pass
+
+        set_detail_section("principal", do_update=False)
+
+        detail_menu = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=10,
+            content=ft.Row(
+                controls=[
+                    primary_button("Principal", lambda e: set_detail_section("principal")),
+                    secondary_button("Vincular", lambda e: set_detail_section("vincular")),
+                    secondary_button("Herramientas PDF", lambda e: set_detail_section("pdf")),
+                    secondary_button("Trazabilidad", lambda e: set_detail_section("trazabilidad")),
+                ],
+                spacing=10,
+                wrap=True,
+            ),
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Ficha documental", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+            content=ft.Container(
+                width=1040,
+                height=760,
+                content=ft.Column(
+                    controls=[
+                        detail_header,
+                        detail_menu,
                         ft.Container(
                             expand=True,
-                            content=detail_trace,
+                            content=detail_body,
                         ),
                     ],
                     spacing=12,
