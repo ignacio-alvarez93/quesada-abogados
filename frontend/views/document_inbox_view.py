@@ -1,6 +1,7 @@
 import flet as ft
 
 from backend.services import document_inbox_service
+from backend.services.list_expediente_box_directory import list_expediente_box_directory
 from backend.services import document_inbox_watch_service
 from backend.services import document_viewer_service
 from frontend.components.app_alert import error_alert, success_alert
@@ -986,6 +987,138 @@ def document_inbox_view(page: ft.Page):
         stored_path = item.get("stored_path") or "-"
         status = item.get("status") or "pending"
 
+        def _clean_visible_label(label):
+            """
+            Limpia labels técnicos:
+            - #25 <sep> NOMBRE <sep> DOC
+            - 25 - NOMBRE
+            - 25 · NOMBRE
+            - 25 | NOMBRE
+            """
+            label = str(label or "").strip()
+            if not label:
+                return ""
+
+            weird_sep = chr(0x2592)
+
+            if weird_sep in label:
+                parts = [p.strip() for p in label.split(weird_sep) if p.strip()]
+                if len(parts) >= 2:
+                    first = parts[0].strip().lstrip("#").strip()
+                    if first.isdigit():
+                        return parts[1].strip()
+
+            for sep in [" - ", " · ", " | "]:
+                if sep in label:
+                    left, right = label.split(sep, 1)
+                    left = left.strip().lstrip("#").strip()
+                    if left.isdigit() and right.strip():
+                        return right.strip()
+
+            return label
+
+        def _option_visible_label(option, fallback_keys=None):
+            fallback_keys = fallback_keys or []
+
+            if isinstance(option, dict):
+                for key in fallback_keys:
+                    value = str(option.get(key) or "").strip()
+                    if value:
+                        return _clean_visible_label(value)
+
+                value = str(option.get("label") or option.get("name") or option.get("value") or "").strip()
+                return _clean_visible_label(value)
+
+            return _clean_visible_label(option)
+
+        def _client_visible_label(option):
+            if isinstance(option, dict):
+                client = option.get("client") or {}
+                nombre = " ".join(
+                    str(client.get(key) or "").strip()
+                    for key in ["nombre", "primer_apellido", "segundo_apellido"]
+                    if str(client.get(key) or "").strip()
+                ).strip()
+
+                if nombre:
+                    return nombre
+
+            return _option_visible_label(option)
+
+        def _type_from_box_folder_path(box_folder_path):
+            """
+            Extrae el tipo principal desde la ruta Box del expediente.
+            Ejemplo:
+            NUEVO REGLAMENTO / REAGRUPACION FAMILIAR / 2026 / CLIENTE
+            """
+            raw = str(box_folder_path or "").strip()
+            if not raw:
+                return ""
+
+            parts = [p.strip() for p in raw.replace("/", "\\").split("\\") if p.strip()]
+            if not parts:
+                return ""
+
+            for i, part in enumerate(parts):
+                if part.upper() == "NUEVO REGLAMENTO" and i + 1 < len(parts):
+                    return parts[i + 1].strip()
+
+            for i, part in enumerate(parts):
+                if part.isdigit() and len(part) == 4 and i - 1 >= 0:
+                    candidate = parts[i - 1].strip()
+                    if candidate.upper() not in {"BOX", "USERS", "NACHO"}:
+                        return candidate
+
+            return ""
+
+
+        def _expedient_visible_label(option):
+            """
+            Mostrar SOLO el tipo principal del expediente.
+            Prioridad:
+            1) campo tipo si viene enriquecido
+            2) inferir desde box_folder_path
+            3) fallback por ID
+            """
+            expedient = {}
+            expedient_id = None
+
+            if isinstance(option, dict):
+                expedient = option.get("expedient") or {}
+                expedient_id = option.get("id") or option.get("value") or expedient.get("id")
+
+            if expedient_id:
+                try:
+                    full = document_inbox_service.get_expedient(int(expedient_id)) or {}
+                    if isinstance(full, dict):
+                        enriched = dict(expedient)
+                        enriched.update(full)
+                        expedient = enriched
+                except Exception:
+                    pass
+
+            for key in [
+                "tipo_expediente",
+                "nombre_tipo_expediente",
+                "tipo_expediente_nombre",
+                "tipo_nombre",
+                "tipo",
+            ]:
+                value = str((expedient or {}).get(key) or "").strip()
+                if value:
+                    return value
+
+            inferred = _type_from_box_folder_path((expedient or {}).get("box_folder_path"))
+            if inferred:
+                return inferred
+
+            tipo_id = str((expedient or {}).get("tipo_expediente_id") or "").strip()
+            if tipo_id:
+                return f"Tipo expediente ID {tipo_id}"
+
+            return _option_visible_label(option)
+
+
         detail_events_box = ft.Container(content=build_events_panel())
 
         detail_relation_text = ft.Text(
@@ -1010,6 +1143,50 @@ def document_inbox_view(page: ft.Page):
         def detail_open_system(e=None):
             try:
                 document_viewer_service.open_document(item.get("stored_path"))
+            except Exception as exc:
+                show_error(exc)
+
+        def detail_link_selected(e=None):
+            try:
+                state["selected_item_id"] = item_id
+
+                detail_client_id = state.get("detail_selected_client_id")
+                detail_expedient_id = state.get("detail_selected_expedient_id")
+
+                if detail_client_id:
+                    state["selected_client_id"] = int(detail_client_id)
+
+                if detail_expedient_id:
+                    state["selected_expedient_id"] = int(detail_expedient_id)
+
+                link_selected(e)
+
+                refreshed = document_inbox_service.get_inbox_item(item_id)
+                detail_relation_text.value = (
+                    f"Cliente ID: {refreshed.get('client_id') or '-'} · "
+                    f"Expediente ID: {refreshed.get('expedient_id') or '-'}"
+                )
+                try:
+                    detail_relation_text.update()
+                except Exception:
+                    pass
+            except Exception as exc:
+                show_error(exc)
+
+        def detail_copy_to_box(e=None):
+            try:
+                state["selected_item_id"] = item_id
+
+                detail_client_id = state.get("detail_selected_client_id")
+                detail_expedient_id = state.get("detail_selected_expedient_id")
+
+                if detail_client_id:
+                    state["selected_client_id"] = int(detail_client_id)
+
+                if detail_expedient_id:
+                    state["selected_expedient_id"] = int(detail_expedient_id)
+
+                copy_to_box(e)
             except Exception as exc:
                 show_error(exc)
 
@@ -1183,6 +1360,355 @@ def document_inbox_view(page: ft.Page):
             ),
         )
 
+        detail_client_label = ft.Text(
+            f"Cliente seleccionado: {state.get('detail_selected_client_id') or state.get('selected_client_id') or '-'}",
+            size=12,
+            color=Q_MUTED,
+        )
+
+        detail_expedient_label = ft.Text(
+            f"Expediente seleccionado: {state.get('detail_selected_expedient_id') or state.get('selected_expedient_id') or '-'}",
+            size=12,
+            color=Q_MUTED,
+        )
+
+        detail_directory_label = ft.Text(
+            f"Directorio seleccionado: {state.get('detail_selected_directory') or '-'}",
+            size=12,
+            color=Q_MUTED,
+        )
+
+        detail_directory_label_to_path = {}
+
+        def build_directory_options_for_expedient(expedient_id):
+            detail_directory_label_to_path.clear()
+
+            base_path = str(state.get("detail_selected_expedient_box_folder_path") or "").strip()
+
+            if not base_path and expedient_id:
+                try:
+                    expedient = document_inbox_service.get_expedient(int(expedient_id)) or {}
+                    base_path = str(expedient.get("box_folder_path") or "").strip()
+                except Exception:
+                    base_path = ""
+
+            if not base_path:
+                return []
+
+            try:
+                data = list_expediente_box_directory(base_path, relative_base=base_path)
+            except Exception as exc:
+                show_error(f"No se pudieron listar directorios del expediente: {exc}")
+                return []
+
+            labels = []
+            seen = set()
+
+            def add_folder(label, path_value):
+                label = str(label or "").strip()
+                path_value = str(path_value or label or "").strip()
+                if not label or label in seen:
+                    return
+                seen.add(label)
+                labels.append(label)
+                detail_directory_label_to_path[label] = path_value
+
+            # Estructura real comprobada:
+            # {"folders": [{"name": "...", "path": "...", "relative_path": "..."}], "files": [...]}
+            if isinstance(data, dict):
+                for folder in data.get("folders") or []:
+                    if not isinstance(folder, dict):
+                        continue
+
+                    label = str(folder.get("relative_path") or folder.get("name") or "").strip()
+                    folder_path = str(folder.get("path") or folder.get("absolute_path") or label).strip()
+
+                    add_folder(label, folder_path)
+
+            # Fallback por si en otro caso llega una lista directa.
+            elif isinstance(data, list):
+                for folder in data:
+                    if isinstance(folder, dict):
+                        label = str(folder.get("relative_path") or folder.get("name") or "").strip()
+                        folder_path = str(folder.get("path") or folder.get("absolute_path") or label).strip()
+                        add_folder(label, folder_path)
+
+            return labels
+
+
+        def on_detail_directory_selected(value):
+            try:
+                label = _normalize_autocomplete_value(value)
+                if not label:
+                    return
+
+                state["detail_selected_directory"] = detail_directory_label_to_path.get(label) or label
+                detail_directory_label.value = f"Directorio seleccionado: {state.get('detail_selected_directory') or '-'}"
+
+                try:
+                    detail_directory_label.update()
+                except Exception:
+                    pass
+            except Exception as exc:
+                show_error(exc)
+
+        detail_directory_autocomplete = AppAutocomplete(
+            page,
+            label="Directorio / carpeta destino",
+            options=[],
+            on_select=on_detail_directory_selected,
+        )
+
+        detail_client_options_raw = document_inbox_service.client_autocomplete_options()
+        detail_client_labels = []
+        detail_client_label_to_id = {}
+
+        for option in detail_client_options_raw or []:
+            raw_label = ""
+            value = None
+
+            if isinstance(option, dict):
+                raw_label = str(option.get("label") or option.get("name") or option.get("value") or "").strip()
+                label = _client_visible_label(option)
+                value = option.get("id") or option.get("value")
+            else:
+                raw_label = str(option or "").strip()
+                label = _clean_visible_label(raw_label)
+                value = None
+
+            if not label:
+                continue
+
+            visible_label = label
+            if visible_label in detail_client_label_to_id:
+                visible_label = f"{label} ({value or raw_label})"
+
+            detail_client_labels.append(visible_label)
+
+            try:
+                if value is not None:
+                    detail_client_label_to_id[visible_label] = int(value)
+                elif " - " in raw_label:
+                    detail_client_label_to_id[visible_label] = int(raw_label.split(" - ", 1)[0])
+            except Exception:
+                pass
+
+        detail_expedient_label_to_id = {}
+
+        detail_expedient_label_to_box_path = {}
+
+        def _normalize_autocomplete_value(value):
+            if isinstance(value, dict):
+                return str(value.get("label") or value.get("value") or value.get("name") or "").strip()
+            return str(value or "").strip()
+
+        def _extract_id_from_label(label, mapping):
+            label = str(label or "").strip()
+            if label in mapping:
+                return int(mapping[label])
+
+            if " - " in label:
+                try:
+                    return int(label.split(" - ", 1)[0])
+                except Exception:
+                    return None
+
+            return None
+
+        def on_detail_client_selected(value):
+            try:
+                label = _normalize_autocomplete_value(value)
+                client_id = _extract_id_from_label(label, detail_client_label_to_id)
+
+                if not client_id:
+                    raise ValueError("No se pudo identificar el cliente seleccionado.")
+
+                state["detail_selected_client_id"] = int(client_id)
+                state["selected_client_id"] = int(client_id)
+
+                expedient_options_raw = document_inbox_service.expedient_autocomplete_options_for_client(int(client_id))
+                expedient_labels = []
+                detail_expedient_label_to_id.clear()
+                detail_expedient_label_to_box_path.clear()
+
+                for option in expedient_options_raw or []:
+                    raw_exp_label = ""
+                    exp_value = None
+
+                    if isinstance(option, dict):
+                        raw_exp_label = str(option.get("label") or option.get("name") or option.get("value") or "").strip()
+                        exp_label = _expedient_visible_label(option)
+                        exp_value = option.get("id") or option.get("value")
+                    else:
+                        raw_exp_label = str(option or "").strip()
+                        exp_label = _clean_visible_label(raw_exp_label)
+                        exp_value = None
+
+                    if not exp_label:
+                        continue
+
+                    visible_exp_label = exp_label
+                    if visible_exp_label in detail_expedient_label_to_id:
+                        visible_exp_label = f"{exp_label} ({exp_value or raw_exp_label})"
+
+                    expedient_labels.append(visible_exp_label)
+
+                    try:
+                        if exp_value is not None:
+                            detail_expedient_label_to_id[visible_exp_label] = int(exp_value)
+                        elif " - " in raw_exp_label:
+                            detail_expedient_label_to_id[visible_exp_label] = int(raw_exp_label.split(" - ", 1)[0])
+                    except Exception:
+                        pass
+
+                    try:
+                        if isinstance(option, dict):
+                            exp_obj = option.get("expedient") or {}
+                            box_path = str(exp_obj.get("box_folder_path") or "").strip()
+                            if box_path:
+                                detail_expedient_label_to_box_path[visible_exp_label] = box_path
+                    except Exception:
+                        pass
+
+                detail_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+
+                detail_client_label.value = f"Cliente seleccionado: {label}"
+                detail_expedient_label.value = "Expediente seleccionado: -"
+
+                state["detail_selected_expedient_id"] = None
+                state["selected_expedient_id"] = None
+
+                try:
+                    detail_client_label.update()
+                    detail_expedient_label.update()
+                except Exception:
+                    pass
+
+            except Exception as exc:
+                show_error(exc)
+
+        def on_detail_expedient_selected(value):
+            try:
+                label = _normalize_autocomplete_value(value)
+                expedient_id = _extract_id_from_label(label, detail_expedient_label_to_id)
+
+                if not expedient_id:
+                    raise ValueError("No se pudo identificar el expediente seleccionado.")
+
+                state["detail_selected_expedient_id"] = int(expedient_id)
+                state["selected_expedient_id"] = int(expedient_id)
+
+                selected_box_path = detail_expedient_label_to_box_path.get(label)
+                if selected_box_path:
+                    state["detail_selected_expedient_box_folder_path"] = selected_box_path
+
+                detail_expedient_label.value = f"Expediente seleccionado: {label}"
+
+                try:
+                    directory_labels = build_directory_options_for_expedient(int(expedient_id))
+                    detail_directory_autocomplete.set_options(directory_labels, clear_value=True)
+                except Exception:
+                    pass
+
+                try:
+                    detail_expedient_label.update()
+                except Exception:
+                    pass
+
+            except Exception as exc:
+                show_error(exc)
+
+        detail_client_autocomplete = AppAutocomplete(
+            page,
+            label="Cliente",
+            options=detail_client_labels,
+            on_select=on_detail_client_selected,
+        )
+
+        detail_expedient_autocomplete = AppAutocomplete(
+            page,
+            label="Expediente",
+            options=[],
+            on_select=on_detail_expedient_selected,
+        )
+
+        initial_client_id = state.get("detail_selected_client_id") or state.get("selected_client_id") or item.get("client_id")
+        initial_expedient_id = state.get("detail_selected_expedient_id") or state.get("selected_expedient_id") or item.get("expedient_id")
+
+        if initial_client_id:
+            state["detail_selected_client_id"] = int(initial_client_id)
+            state["selected_client_id"] = int(initial_client_id)
+            detail_client_label.value = "Cliente seleccionado: cargado desde documento/selección"
+
+            try:
+                expedient_options_raw = document_inbox_service.expedient_autocomplete_options_for_client(int(initial_client_id))
+                expedient_labels = []
+                detail_expedient_label_to_id.clear()
+                detail_expedient_label_to_box_path.clear()
+
+                for option in expedient_options_raw or []:
+                    raw_exp_label = ""
+                    exp_value = None
+
+                    if isinstance(option, dict):
+                        raw_exp_label = str(option.get("label") or option.get("name") or option.get("value") or "").strip()
+                        exp_label = _expedient_visible_label(option)
+                        exp_value = option.get("id") or option.get("value")
+                    else:
+                        raw_exp_label = str(option or "").strip()
+                        exp_label = _clean_visible_label(raw_exp_label)
+                        exp_value = None
+
+                    if not exp_label:
+                        continue
+
+                    visible_exp_label = exp_label
+                    if visible_exp_label in detail_expedient_label_to_id:
+                        visible_exp_label = f"{exp_label} ({exp_value or raw_exp_label})"
+
+                    expedient_labels.append(visible_exp_label)
+
+                    try:
+                        if exp_value is not None:
+                            detail_expedient_label_to_id[visible_exp_label] = int(exp_value)
+                        elif " - " in raw_exp_label:
+                            detail_expedient_label_to_id[visible_exp_label] = int(raw_exp_label.split(" - ", 1)[0])
+                    except Exception:
+                        pass
+
+                    try:
+                        if isinstance(option, dict):
+                            exp_obj = option.get("expedient") or {}
+                            box_path = str(exp_obj.get("box_folder_path") or "").strip()
+                            if box_path:
+                                detail_expedient_label_to_box_path[visible_exp_label] = box_path
+                    except Exception:
+                        pass
+
+                detail_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+            except Exception:
+                pass
+
+        if initial_expedient_id:
+            state["detail_selected_expedient_id"] = int(initial_expedient_id)
+            state["selected_expedient_id"] = int(initial_expedient_id)
+            detail_expedient_label.value = "Expediente seleccionado: cargado desde documento/selección"
+
+            try:
+                detail_directory_autocomplete.set_options(
+                    build_directory_options_for_expedient(int(initial_expedient_id)),
+                    clear_value=True,
+                )
+            except Exception:
+                pass
+
+        def detail_save_directory(e=None):
+            try:
+                show_success("Directorio de destino guardado en la ficha.")
+            except Exception as exc:
+                show_error(exc)
+
+
         detail_linking = ft.Container(
             bgcolor="#FFFFFF",
             border=ft.border.all(1, Q_BORDER),
@@ -1193,18 +1719,55 @@ def document_inbox_view(page: ft.Page):
                     ft.Text("Vincular documento", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                     detail_relation_text,
                     ft.Text(
-                        "Esta pestaña será el espacio para buscar cliente, elegir expediente, vincular y copiar a Box.",
+                        "Selecciona cliente, expediente y, opcionalmente, un directorio destino para este documento.",
                         size=12,
                         color=Q_MUTED,
                     ),
+                    ft.Row(
+                        controls=[
+                            detail_client_autocomplete.control,
+                            detail_expedient_autocomplete.control,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Selección de la ficha", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                detail_client_label,
+                                detail_expedient_label,
+                            ],
+                            spacing=4,
+                        ),
+                    ),
+                    detail_directory_autocomplete.control,
+                    detail_directory_label,
+                    ft.Row(
+                        controls=[
+                            secondary_button("Guardar directorio", detail_save_directory),
+                            primary_button("Vincular documento", detail_link_selected),
+                            secondary_button("Copiar a Box expediente", detail_copy_to_box),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
                     ft.Divider(height=12),
-                    ft.Text(
-                        "Por ahora se conserva la vinculación desde el panel principal de la Bandeja para no romper flujo.",
-                        size=11,
-                        color=Q_MUTED,
+                    ft.Text("Estado documental", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Row(
+                        controls=[
+                            secondary_button("Marcar revisado", detail_mark_reviewed),
+                            danger_button("Descartar", detail_discard),
+                        ],
+                        spacing=10,
+                        wrap=True,
                     ),
                 ],
-                spacing=8,
+                spacing=10,
             ),
         )
 
