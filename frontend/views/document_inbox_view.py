@@ -25,6 +25,7 @@ STATUS_LABELS = {
     "copied_to_box": "Copiados a Box",
     "reviewed": "Revisados",
     "discarded": "Descartados",
+    "duplicate": "Duplicados",
     "error": "Error",
 }
 
@@ -50,6 +51,7 @@ def _status_chip(status):
         "copied_to_box": ("#ECFDF3", "#027A48"),
         "reviewed": ("#F0F9FF", "#026AA2"),
         "discarded": ("#F2F4F7", "#475467"),
+        "duplicate": ("#FEF0C7", "#B54708"),
         "error": ("#FEF3F2", "#B42318"),
     }
     bg, fg = colors.get(status, ("#F8FAFC", Q_MUTED))
@@ -844,6 +846,20 @@ def document_inbox_view(page: ft.Page):
         except Exception as exc:
             show_error(exc)
 
+    def mark_detected_duplicates(e=None):
+        try:
+            result = document_inbox_service.mark_detected_inbox_duplicates(
+                status_filter=state.get("status_filter"),
+            )
+            show_success(
+                f"Duplicados marcados: {result.get('marked_count', 0)} · "
+                f"Omitidos: {result.get('skipped_count', 0)} · "
+                f"Errores: {result.get('error_count', 0)}"
+            )
+            refresh_items()
+        except Exception as exc:
+            show_error(exc)
+
     def render_items():
         selected_ids = set(state.get("selected_item_ids") or set())
         rows = []
@@ -852,12 +868,23 @@ def document_inbox_view(page: ft.Page):
             item_id = int(item.get("id"))
             selected = item_id in selected_ids
 
+            is_duplicate = bool(item.get("is_duplicate"))
+            duplicate_label = ""
+            if is_duplicate:
+                duplicate_label = (
+                    f"Duplicado de #{item.get('duplicate_of_id') or '-'}"
+                    f" · {item.get('duplicate_reason') or 'posible duplicado'}"
+                )
+
             rows.append(
                 ft.Container(
                     padding=10,
                     border_radius=12,
-                    border=ft.border.all(2 if selected else 1, Q_PRIMARY if selected else Q_BORDER),
-                    bgcolor="#EFF8FF" if selected else "#FFFFFF",
+                    border=ft.border.all(
+                        2 if selected else 1,
+                        "#F79009" if is_duplicate else (Q_PRIMARY if selected else Q_BORDER),
+                    ),
+                    bgcolor="#FFF7E6" if is_duplicate else ("#EFF8FF" if selected else "#FFFFFF"),
                     on_click=lambda e, item_id=item_id: toggle_item_selection(item_id),
                     content=ft.Row(
                         controls=[
@@ -869,6 +896,18 @@ def document_inbox_view(page: ft.Page):
                                             ft.Text(f"#{item_id}", size=12, color=Q_MUTED),
                                             ft.Text(item.get("original_filename") or "-", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                                             _status_chip(item.get("status")),
+                                            ft.Container(
+                                                visible=is_duplicate,
+                                                padding=ft.padding.symmetric(horizontal=8, vertical=3),
+                                                border_radius=999,
+                                                bgcolor="#FEF0C7",
+                                                content=ft.Text(
+                                                    duplicate_label,
+                                                    size=11,
+                                                    color="#B54708",
+                                                    weight=ft.FontWeight.BOLD,
+                                                ),
+                                            ),
                                             secondary_button("Ficha", lambda e, item_id=item_id: open_item_detail(item_id)),
                                         ],
                                         spacing=8,
@@ -918,6 +957,7 @@ def document_inbox_view(page: ft.Page):
             ft.Container(expand=True),
             status_dropdown,
             secondary_button("Actualizar", refresh_items),
+            secondary_button("Marcar duplicados detectados", mark_detected_duplicates),
         ],
         spacing=12,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -972,6 +1012,7 @@ def document_inbox_view(page: ft.Page):
                         secondary_button("Vincular", link_selected),
                         primary_button("Copiar a Box expediente", copy_to_box),
                         secondary_button("Revisado", lambda e: set_status("reviewed")),
+                        secondary_button("Duplicado", lambda e: set_status("duplicate")),
                         danger_button("Descartar", lambda e: set_status("discarded")),
                     ],
                     spacing=10,

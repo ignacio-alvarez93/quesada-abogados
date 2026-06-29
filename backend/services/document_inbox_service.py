@@ -26,6 +26,7 @@ VALID_STATUSES = {
     "copied_to_box",
     "reviewed",
     "discarded",
+    "duplicate",
     "error",
 }
 
@@ -208,11 +209,114 @@ def _record_event(
     )
 
 
+
+def _norm_document_path(value: str) -> str:
+    return str(value or "").replace("\\", "/").strip().lower()
+
+
+def _metadata_dict(value) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            loaded = json.loads(value)
+            return loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _find_existing_inbox_item_for_source(
+    source_path: Path,
+    original_filename: str = "",
+    source_type: str = "",
+    client_id=None,
+    expedient_id=None,
+    sha256: str = "",
+    size_bytes: int = 0,
+) -> Dict[str, Any]:
+    """
+    Evita duplicados reales en Bandeja Documental.
+
+    Criterios:
+    - misma ruta de origen en metadata imported_from / box_original_path;
+    - mismo stored_path, especialmente si intentan reimportar desde data/document_inbox;
+    - mismo SHA256 global;
+    - fallback: mismo nombre + tamaño + source_type + expediente.
+    """
+    ensure_document_inbox_schema()
+
+    src_norm = _norm_document_path(str(source_path))
+    digest = str(sha256 or "").strip().lower()
+    filename_norm = str(original_filename or "").strip().lower()
+    source_type_norm = str(source_type or "manual").strip().lower()
+    expedient_key = str(expedient_id or "")
+
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM document_inbox_items
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+        for row in rows:
+            item = dict(row)
+            metadata = _metadata_dict(item.get("metadata_json") or "")
+
+            item_stored = _norm_document_path(item.get("stored_path") or "")
+            item_imported_from = _norm_document_path(
+                metadata.get("imported_from")
+                or metadata.get("box_original_path")
+                or metadata.get("source_path")
+                or ""
+            )
+            item_sha = str(
+                item.get("sha256")
+                or metadata.get("sha256")
+                or metadata.get("file_sha256")
+                or ""
+            ).strip().lower()
+
+            if src_norm and item_stored and src_norm == item_stored:
+                item["already_imported"] = True
+                item["dedupe_reason"] = "stored_path"
+                return item
+
+            if src_norm and item_imported_from and src_norm == item_imported_from:
+                item["already_imported"] = True
+                item["dedupe_reason"] = "imported_from"
+                return item
+
+            if digest and item_sha and digest == item_sha:
+                item["already_imported"] = True
+                item["dedupe_reason"] = "sha256"
+                return item
+
+            same_name = filename_norm and filename_norm == str(item.get("original_filename") or "").strip().lower()
+            same_size = bool(size_bytes) and int(item.get("size_bytes") or 0) == int(size_bytes)
+            same_source = source_type_norm == str(item.get("source_type") or "manual").strip().lower()
+            same_expedient = expedient_key == str(item.get("expedient_id") or "")
+
+            if same_name and same_size and same_source and same_expedient:
+                item["already_imported"] = True
+                item["dedupe_reason"] = "filename_size_source_expedient"
+                return item
+
+    return {}
+
+
 def import_file_to_inbox(
     file_path: str,
     source_type: str = "manual",
     source_label: str = "",
     notes: str = "",
+    client_id=None,
+    expedient_id=None,
+    metadata=None,
+    metadata_json=None,
 ) -> Dict[str, Any]:
     ensure_document_inbox_schema()
 
@@ -221,6 +325,21 @@ def import_file_to_inbox(
         raise FileNotFoundError(f"No existe el archivo indicado: {file_path}")
 
     original_filename = src.name
+    source_stat = src.stat()
+    source_digest = _sha256(src)
+
+    existing = _find_existing_inbox_item_for_source(
+        source_path=src,
+        original_filename=original_filename,
+        source_type=source_type or "manual",
+        client_id=client_id,
+        expedient_id=expedient_id,
+        sha256=source_digest,
+        size_bytes=source_stat.st_size,
+    )
+    if existing:
+        return existing
+
     stored_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_safe_filename(original_filename)}"
     dest = _unique_destination(INBOX_ORIGINALS, stored_filename)
 
@@ -231,6 +350,17 @@ def import_file_to_inbox(
     mime_type = mimetypes.guess_type(str(dest))[0] or ""
     file_ext = dest.suffix.lower().lstrip(".")
 
+    metadata_payload = {}
+    metadata_payload.update(_metadata_dict(metadata))
+    metadata_payload.update(_metadata_dict(metadata_json))
+    metadata_payload.setdefault("imported_from", str(src))
+    metadata_payload.setdefault("source_path", str(src))
+    metadata_payload["sha256"] = digest
+    metadata_payload["file_sha256"] = digest
+    metadata_payload["size_bytes"] = size_bytes
+    metadata_payload["source_size_bytes"] = source_stat.st_size
+    metadata_payload["source_modified_at"] = source_stat.st_mtime
+
     with get_connection() as conn:
         cur = conn.execute(
             """
@@ -239,9 +369,10 @@ def import_file_to_inbox(
                 source_type, source_label,
                 original_filename, stored_filename, stored_path,
                 file_ext, mime_type, size_bytes, sha256,
-                status, notes, metadata_json
+                status, notes, metadata_json,
+                client_id, expedient_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
             """,
             (
                 _now(),
@@ -256,7 +387,9 @@ def import_file_to_inbox(
                 size_bytes,
                 digest,
                 notes or "",
-                json.dumps({"imported_from": str(src)}, ensure_ascii=False),
+                json.dumps(metadata_payload, ensure_ascii=False),
+                int(client_id) if client_id else None,
+                int(expedient_id) if expedient_id else None,
             ),
         )
         item_id = int(cur.lastrowid)
@@ -265,7 +398,12 @@ def import_file_to_inbox(
             item_id,
             "imported",
             f"Documento importado desde {source_type or 'manual'}",
-            {"source_path": str(src), "stored_path": str(dest)},
+            {
+                "source_path": str(src),
+                "stored_path": str(dest),
+                "sha256": digest,
+                "already_imported": False,
+            },
         )
         conn.commit()
 
@@ -690,6 +828,64 @@ def count_inbox_items_by_status() -> Dict[str, int]:
     finally:
         conn.close()
 
+
+def _inbox_duplicate_key(item: Dict[str, Any]):
+    metadata = _metadata_dict(item.get("metadata_json") or "")
+
+    origin_path = _norm_document_path(
+        metadata.get("imported_from")
+        or metadata.get("box_original_path")
+        or metadata.get("source_path")
+        or ""
+    )
+    digest = str(
+        item.get("sha256")
+        or metadata.get("sha256")
+        or metadata.get("file_sha256")
+        or ""
+    ).strip().lower()
+    filename = str(item.get("original_filename") or "").strip().lower()
+    size = str(item.get("size_bytes") or "").strip()
+
+    if origin_path:
+        return ("origin_path", origin_path)
+
+    if digest:
+        return ("sha256", digest)
+
+    if filename and size:
+        return ("filename_size", filename, size)
+
+    return None
+
+
+def _annotate_inbox_duplicates(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Marca duplicados históricos sin borrar ni modificar datos.
+
+    Conserva como principal el item con ID menor.
+    """
+    seen = {}
+
+    for item in sorted(items, key=lambda x: int(x.get("id") or 0)):
+        item["is_duplicate"] = False
+        item["duplicate_of_id"] = None
+        item["duplicate_reason"] = ""
+
+        key = _inbox_duplicate_key(item)
+        if not key:
+            continue
+
+        if key in seen:
+            item["is_duplicate"] = True
+            item["duplicate_of_id"] = seen[key]
+            item["duplicate_reason"] = str(key[0])
+        else:
+            seen[key] = int(item.get("id") or 0)
+
+    return items
+
+
 def list_inbox_items(
     status: Optional[str] = None,
     limit: int = 200,
@@ -730,7 +926,113 @@ def list_inbox_items(
             [*params, safe_limit, safe_offset],
         ).fetchall()
 
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        return _annotate_inbox_duplicates(items)
+
+
+
+def mark_detected_inbox_duplicates(status_filter: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Marca como duplicate los items detectados como duplicados históricos.
+
+    No borra archivos.
+    No mueve documentos.
+    No toca el item principal.
+    """
+    items = list_inbox_items(status=status_filter, limit=500, offset=0)
+
+    marked = []
+    skipped = []
+    errors = []
+
+    for item in items:
+        item_id = int(item.get("id") or 0)
+        if not item_id:
+            continue
+
+        if not item.get("is_duplicate"):
+            skipped.append(item_id)
+            continue
+
+        duplicate_of_id = item.get("duplicate_of_id")
+        duplicate_reason = item.get("duplicate_reason") or "detected_duplicate"
+
+        already_duplicate_status = str(item.get("status") or "") == "duplicate"
+
+        try:
+            with get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT * FROM document_inbox_items WHERE id = ?",
+                    (item_id,),
+                ).fetchone()
+
+                if not row:
+                    errors.append({"id": item_id, "error": "No existe el item"})
+                    continue
+
+                current = dict(row)
+                metadata = _metadata_dict(current.get("metadata_json") or "")
+                metadata["duplicate_of_id"] = duplicate_of_id
+                metadata["duplicate_reason"] = duplicate_reason
+                metadata["duplicate_marked_at"] = _now()
+
+                conn.execute(
+                    """
+                    UPDATE document_inbox_items
+                    SET status = 'duplicate',
+                        updated_at = ?,
+                        metadata_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        _now(),
+                        json.dumps(metadata, ensure_ascii=False),
+                        item_id,
+                    ),
+                )
+
+                event_exists = conn.execute(
+                    """
+                    SELECT 1
+                    FROM document_inbox_events
+                    WHERE item_id = ?
+                      AND event_type = 'duplicate_marked'
+                    LIMIT 1
+                    """,
+                    (item_id,),
+                ).fetchone()
+
+                if not event_exists:
+                    _record_event(
+                        conn,
+                        item_id,
+                        "duplicate_marked",
+                        f"Documento marcado como duplicado de #{duplicate_of_id}",
+                        {
+                            "duplicate_of_id": duplicate_of_id,
+                            "duplicate_reason": duplicate_reason,
+                            "repaired": already_duplicate_status,
+                        },
+                    )
+
+                conn.commit()
+
+            if already_duplicate_status:
+                skipped.append(item_id)
+            else:
+                marked.append(item_id)
+        except Exception as exc:
+            errors.append({"id": item_id, "error": str(exc)})
+
+    return {
+        "marked_count": len(marked),
+        "skipped_count": len(skipped),
+        "error_count": len(errors),
+        "marked": marked,
+        "skipped": skipped,
+        "errors": errors,
+    }
 
 
 def get_inbox_item(item_id: int) -> Dict[str, Any]:
@@ -1193,13 +1495,39 @@ def list_expedient_box_files_for_inbox(expedient_id: int, max_files: int = 500) 
                 continue
 
             stat = file_path.stat()
+            relative_path = str(file_path.relative_to(base_folder))
+
+            already_imported = False
+            dedupe_reason = ""
+            inbox_item_id = None
+
+            try:
+                file_sha256 = _calculate_file_sha256(file_path)
+                existing = _find_existing_box_inbox_item(
+                    expedient_id=int(ctx["expedient_id"]),
+                    box_original_path=str(file_path),
+                    box_relative_path=relative_path,
+                    sha256=file_sha256,
+                )
+                if existing:
+                    already_imported = True
+                    dedupe_reason = str(existing.get("dedupe_reason") or "")
+                    inbox_item_id = existing.get("id")
+            except Exception:
+                file_sha256 = ""
+
             result.append({
                 "path": str(file_path),
-                "relative_path": str(file_path.relative_to(base_folder)),
+                "relative_path": relative_path,
                 "filename": file_path.name,
                 "extension": file_path.suffix.lower(),
                 "size_bytes": stat.st_size,
                 "modified_at": stat.st_mtime,
+                "sha256": file_sha256,
+                "file_sha256": file_sha256,
+                "already_imported": already_imported,
+                "dedupe_reason": dedupe_reason,
+                "inbox_item_id": inbox_item_id,
                 "client_id": ctx["client_id"],
                 "expedient_id": ctx["expedient_id"],
                 "box_folder_path": str(base_folder),
@@ -1209,6 +1537,89 @@ def list_expedient_box_files_for_inbox(expedient_id: int, max_files: int = 500) 
 
     result.sort(key=lambda item: str(item.get("relative_path") or "").lower())
     return result
+
+
+
+def _calculate_file_sha256(file_path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """
+    Calcula SHA256 para deduplicación documental.
+    Lee por bloques para no cargar documentos grandes en memoria.
+    """
+    digest = hashlib.sha256()
+    with Path(file_path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            if chunk:
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _find_existing_box_inbox_item(
+    expedient_id: int,
+    box_original_path: str = "",
+    box_relative_path: str = "",
+    sha256: str = "",
+) -> Dict[str, Any]:
+    """
+    Busca si un archivo de Box ya fue importado a Bandeja Documental.
+
+    Estrategia:
+    - Primero por expediente + metadata_json con ruta original/relativa.
+    - Después por expediente + SHA256.
+    """
+    ensure_document_inbox_schema()
+
+    original = str(box_original_path or "").replace("\\", "/").strip()
+    relative = str(box_relative_path or "").replace("\\", "/").strip()
+    digest = str(sha256 or "").strip().lower()
+
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM document_inbox_items
+            WHERE expedient_id = ?
+              AND source_type = 'box'
+            ORDER BY id DESC
+            """,
+            (int(expedient_id),),
+        ).fetchall()
+
+        for row in rows:
+            item = dict(row)
+            raw_metadata = item.get("metadata_json") or ""
+            try:
+                metadata = json.loads(raw_metadata) if raw_metadata else {}
+            except Exception:
+                metadata = {}
+
+            item_original = str(metadata.get("box_original_path") or "").replace("\\", "/").strip()
+            item_relative = str(metadata.get("box_relative_path") or "").replace("\\", "/").strip()
+            item_imported_from = str(metadata.get("imported_from") or "").replace("\\", "/").strip()
+            item_sha = str(metadata.get("sha256") or metadata.get("file_sha256") or "").strip().lower()
+
+            if original and item_original and original.lower() == item_original.lower():
+                item["already_imported"] = True
+                item["dedupe_reason"] = "box_original_path"
+                return item
+
+            if original and item_imported_from and original.lower() == item_imported_from.lower():
+                item["already_imported"] = True
+                item["dedupe_reason"] = "legacy_imported_from"
+                return item
+
+            if relative and item_relative and relative.lower() == item_relative.lower():
+                item["already_imported"] = True
+                item["dedupe_reason"] = "box_relative_path"
+                return item
+
+            if digest and item_sha and digest == item_sha:
+                item["already_imported"] = True
+                item["dedupe_reason"] = "sha256"
+                return item
+
+    return {}
 
 
 def import_box_file_to_inbox(
@@ -1230,12 +1641,29 @@ def import_box_file_to_inbox(
     if not _safe_relative_to(source_path, base_folder):
         raise ValueError("Por seguridad, solo se pueden copiar a Bandeja archivos dentro de la carpeta Box vinculada al expediente.")
 
+    stat = source_path.stat()
+    box_relative_path = str(source_path.relative_to(base_folder))
+    file_sha256 = _calculate_file_sha256(source_path)
+
     metadata = {
         "box_original_path": str(source_path),
-        "box_relative_path": str(source_path.relative_to(base_folder)),
+        "box_relative_path": box_relative_path,
         "box_folder_path": str(base_folder),
         "origin": "expedient_box",
+        "sha256": file_sha256,
+        "file_sha256": file_sha256,
+        "size_bytes": stat.st_size,
+        "modified_at": stat.st_mtime,
     }
+
+    existing = _find_existing_box_inbox_item(
+        expedient_id=int(expedient_id),
+        box_original_path=str(source_path),
+        box_relative_path=box_relative_path,
+        sha256=file_sha256,
+    )
+    if existing:
+        return existing
 
     # import_file_to_inbox ha ido evolucionando. Pasamos solo los argumentos que acepte.
     import inspect
