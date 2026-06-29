@@ -715,36 +715,111 @@ def get_document_inbox_batch(batch_id: int):
 def add_items_to_document_inbox_batch(batch_id: int, inbox_item_ids):
     """
     Añade documentos a un grupo existente.
+
+    Reglas:
+    - No borra ni mueve documentos.
+    - No añade duplicate/discarded.
+    - No duplica documentos ya presentes en el grupo.
+    - Registra evento batch_add en cada documento realmente añadido.
     """
     from datetime import datetime
 
     ensure_document_inbox_batch_schema()
 
     now = datetime.now().isoformat(timespec="seconds")
-    clean_ids = []
+    raw_ids = []
 
     for raw_id in inbox_item_ids or []:
         try:
             item_id = int(raw_id)
         except Exception:
             continue
-        if item_id not in clean_ids:
-            clean_ids.append(item_id)
+        if item_id not in raw_ids:
+            raw_ids.append(item_id)
 
-    if not clean_ids:
-        return get_document_inbox_batch(batch_id)
+    if not raw_ids:
+        result = get_document_inbox_batch(batch_id)
+        result["add_result"] = {
+            "added_count": 0,
+            "skipped_count": 0,
+            "added": [],
+            "skipped": [],
+        }
+        return result
+
+    added = []
+    skipped = []
 
     with _connect() as conn:
-        current_max = conn.execute(
+        conn.row_factory = _dict_row_factory
+
+        batch = conn.execute(
+            "SELECT * FROM document_inbox_batches WHERE id = ?",
+            (int(batch_id),),
+        ).fetchone()
+        if not batch:
+            raise ValueError(f"No existe el grupo documental #{batch_id}")
+
+        existing_rows = conn.execute(
             """
-            SELECT COALESCE(MAX(order_index), 0)
+            SELECT inbox_item_id
             FROM document_inbox_batch_items
             WHERE batch_id = ?
             """,
             (int(batch_id),),
-        ).fetchone()[0] or 0
+        ).fetchall()
+        existing_ids = {int(row["inbox_item_id"]) for row in existing_rows}
 
-        for offset, item_id in enumerate(clean_ids, start=1):
+        placeholders = ", ".join("?" for _ in raw_ids)
+        item_rows = conn.execute(
+            f"""
+            SELECT id, status, original_filename
+            FROM document_inbox_items
+            WHERE id IN ({placeholders})
+            """,
+            tuple(raw_ids),
+        ).fetchall()
+        by_id = {int(row["id"]): dict(row) for row in item_rows}
+
+        current_max_row = conn.execute(
+            """
+            SELECT COALESCE(MAX(order_index), 0) AS current_max
+            FROM document_inbox_batch_items
+            WHERE batch_id = ?
+            """,
+            (int(batch_id),),
+        ).fetchone()
+        current_max = int(current_max_row["current_max"] or 0) if current_max_row else 0
+
+        next_index = int(current_max)
+
+        for item_id in raw_ids:
+            item = by_id.get(int(item_id))
+            if not item:
+                skipped.append({
+                    "id": item_id,
+                    "reason": "not_found",
+                })
+                continue
+
+            if item_id in existing_ids:
+                skipped.append({
+                    "id": item_id,
+                    "reason": "already_in_batch",
+                    "filename": item.get("original_filename"),
+                })
+                continue
+
+            status_value = str(item.get("status") or "").strip().lower()
+            if status_value in {"duplicate", "discarded"}:
+                skipped.append({
+                    "id": item_id,
+                    "reason": f"status_{status_value}",
+                    "filename": item.get("original_filename"),
+                })
+                continue
+
+            next_index += 1
             conn.execute(
                 """
                 INSERT OR IGNORE INTO document_inbox_batch_items (
@@ -752,8 +827,34 @@ def add_items_to_document_inbox_batch(batch_id: int, inbox_item_ids):
                 )
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (int(batch_id), item_id, int(current_max) + offset, "", "", now),
+                (int(batch_id), item_id, next_index, "", "", now),
             )
+
+            added.append({
+                "id": item_id,
+                "filename": item.get("original_filename"),
+            })
+
+            try:
+                _record_event(
+                    conn,
+                    item_id,
+                    "batch_add",
+                    f"Documento añadido al grupo documental #{int(batch_id)}: {batch['name']}",
+                    {"batch_id": int(batch_id), "batch_name": batch["name"]},
+                )
+            except TypeError:
+                try:
+                    _record_event(
+                        conn,
+                        item_id,
+                        "batch_add",
+                        f"Documento añadido al grupo documental #{int(batch_id)}: {batch['name']}",
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
         conn.execute(
             """
@@ -766,7 +867,94 @@ def add_items_to_document_inbox_batch(batch_id: int, inbox_item_ids):
 
         conn.commit()
 
+    result = get_document_inbox_batch(batch_id)
+    result["add_result"] = {
+        "added_count": len(added),
+        "skipped_count": len(skipped),
+        "added": added,
+        "skipped": skipped,
+    }
+    return result
+
+
+def remove_item_from_document_inbox_batch(batch_id: int, inbox_item_id: int):
+    """
+    Quita un documento de un grupo documental.
+
+    No borra el documento de Bandeja.
+    No borra el archivo.
+    Solo elimina la relación grupo-documento.
+    """
+    from datetime import datetime
+
+    ensure_document_inbox_batch_schema()
+
+    now = datetime.now().isoformat(timespec="seconds")
+
+    with _connect() as conn:
+        conn.row_factory = _dict_row_factory
+
+        batch = conn.execute(
+            "SELECT * FROM document_inbox_batches WHERE id = ?",
+            (int(batch_id),),
+        ).fetchone()
+        if not batch:
+            raise ValueError(f"No existe el grupo documental #{batch_id}")
+
+        relation = conn.execute(
+            """
+            SELECT id
+            FROM document_inbox_batch_items
+            WHERE batch_id = ? AND inbox_item_id = ?
+            """,
+            (int(batch_id), int(inbox_item_id)),
+        ).fetchone()
+
+        if not relation:
+            raise ValueError("El documento no pertenece a este grupo.")
+
+        conn.execute(
+            """
+            DELETE FROM document_inbox_batch_items
+            WHERE batch_id = ? AND inbox_item_id = ?
+            """,
+            (int(batch_id), int(inbox_item_id)),
+        )
+
+        conn.execute(
+            """
+            UPDATE document_inbox_batches
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            (now, int(batch_id)),
+        )
+
+        try:
+            _record_event(
+                conn,
+                int(inbox_item_id),
+                "batch_remove",
+                f"Documento quitado del grupo documental #{int(batch_id)}: {batch['name']}",
+                {"batch_id": int(batch_id), "batch_name": batch["name"]},
+            )
+        except TypeError:
+            try:
+                _record_event(
+                    conn,
+                    int(inbox_item_id),
+                    "batch_remove",
+                    f"Documento quitado del grupo documental #{int(batch_id)}: {batch['name']}",
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        conn.commit()
+
     return get_document_inbox_batch(batch_id)
+
 
 
 def update_document_inbox_batch_status(batch_id: int, status: str):
