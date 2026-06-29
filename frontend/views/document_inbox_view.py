@@ -2204,11 +2204,82 @@ def document_inbox_view(page: ft.Page):
     batches_panel_message = ft.Container()
     batches_list_box = ft.Column(spacing=6)
 
+    batch_filter_search_field = text_input("Buscar grupo", width=260)
+    batch_filter_status_field = text_input("Estado", width=150)
+    batch_filter_client_id_field = text_input("Cliente ID", width=120)
+    batch_filter_expedient_id_field = text_input("Expediente ID", width=140)
+
+    def _batch_filter_kwargs():
+        raw_status = str(batch_filter_status_field.value or "").strip()
+        raw_client_id = str(batch_filter_client_id_field.value or "").strip()
+        raw_expedient_id = str(batch_filter_expedient_id_field.value or "").strip()
+        raw_search = str(batch_filter_search_field.value or "").strip()
+
+        kwargs = {"limit": 50}
+
+        if raw_status:
+            kwargs["status"] = raw_status
+
+        if raw_client_id:
+            kwargs["client_id"] = int(raw_client_id)
+
+        if raw_expedient_id:
+            kwargs["expedient_id"] = int(raw_expedient_id)
+
+        if raw_search:
+            kwargs["search"] = raw_search
+
+        return kwargs
+
+    def clear_batch_filters(e=None):
+        batch_filter_search_field.value = ""
+        batch_filter_status_field.value = ""
+        batch_filter_client_id_field.value = ""
+        batch_filter_expedient_id_field.value = ""
+        refresh_batches_panel()
+
+    def apply_batch_filters(e=None):
+        refresh_batches_panel()
+
+    def quick_copy_batch_from_list(batch_id):
+        try:
+            batch = document_inbox_service.get_document_inbox_batch(int(batch_id))
+            expedient_id = batch.get("expedient_id")
+            subfolder = str(batch.get("target_box_folder") or "").strip()
+
+            if not expedient_id:
+                raise ValueError("El grupo no tiene expediente destino. Abre el grupo y asígnalo antes de copiar.")
+
+            result = document_inbox_service.copy_document_inbox_batch_to_expedient_box(
+                int(batch_id),
+                expedient_id=int(expedient_id),
+                subfolder=subfolder,
+            )
+
+            copy_result = result.get("copy_result") or {}
+            batches_panel_message.content = success_alert(
+                f"Grupo #{batch_id} copiado a Box. "
+                f"Copiados: {copy_result.get('copied_count', 0)} · "
+                f"Omitidos: {copy_result.get('skipped_count', 0)} · "
+                f"Errores: {copy_result.get('error_count', 0)}"
+            )
+            refresh_batches_panel()
+        except Exception as exc:
+            batches_panel_message.content = error_alert(f"No se pudo copiar el grupo #{batch_id} a Box: {exc}")
+            try:
+                batches_panel_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
     def build_batches_panel_content():
         rows = []
 
         try:
-            batches = document_inbox_service.list_document_inbox_batches(limit=20)
+            batches = document_inbox_service.list_document_inbox_batches(**_batch_filter_kwargs())
         except Exception as exc:
             return ft.Container(
                 bgcolor="#FFFFFF",
@@ -2240,6 +2311,9 @@ def document_inbox_view(page: ft.Page):
                 status = batch.get("status") or "draft"
                 item_count = batch.get("item_count") or 0
                 updated_at = batch.get("updated_at") or ""
+                client_id = batch.get("client_id") or "-"
+                expedient_id = batch.get("expedient_id") or "-"
+                target_folder = batch.get("target_box_folder") or "-"
 
                 rows.append(
                     ft.Container(
@@ -2262,11 +2336,18 @@ def document_inbox_view(page: ft.Page):
                                             size=11,
                                             color=Q_MUTED,
                                         ),
+                                        ft.Text(
+                                            f"Cliente: {client_id} · Expediente: {expedient_id} · Carpeta: {target_folder}",
+                                            size=10,
+                                            color=Q_MUTED,
+                                            selectable=True,
+                                        ),
                                     ],
                                     spacing=2,
                                     expand=True,
                                 ),
                                 secondary_button("Ver grupo", lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id)),
+                                secondary_button("Copiar a Box", lambda e, batch_id=batch_id: quick_copy_batch_from_list(batch_id)),
                             ],
                             spacing=8,
                             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -2289,6 +2370,18 @@ def document_inbox_view(page: ft.Page):
                         ],
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row(
+                        controls=[
+                            batch_filter_search_field,
+                            batch_filter_status_field,
+                            batch_filter_client_id_field,
+                            batch_filter_expedient_id_field,
+                            primary_button("Aplicar filtros", apply_batch_filters),
+                            secondary_button("Limpiar", clear_batch_filters),
+                        ],
+                        spacing=8,
+                        wrap=True,
                     ),
                     batches_panel_message,
                     ft.Column(controls=rows, spacing=6),
