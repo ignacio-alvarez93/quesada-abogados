@@ -1316,6 +1316,170 @@ def copy_inbox_item_to_expedient_box(
     return get_inbox_item(item_id)
 
 
+
+def _batch_item_dedupe_key(item: Dict[str, Any]):
+    """
+    Clave defensiva para evitar copiar el mismo documento dos veces dentro de un grupo.
+    """
+    digest = str(item.get("sha256") or "").strip().lower()
+    stored_path = _norm_document_path(item.get("stored_path") or item.get("linked_document_path") or "")
+    filename = str(item.get("original_filename") or "").strip().lower()
+    size = str(item.get("size_bytes") or "").strip()
+
+    if digest:
+        return ("sha256", digest)
+    if stored_path:
+        return ("stored_path", stored_path)
+    if filename and size:
+        return ("filename_size", filename, size)
+    return None
+
+
+def copy_document_inbox_batch_to_expedient_box(
+    batch_id: int,
+    expedient_id: Optional[int] = None,
+    subfolder: str = "",
+) -> Dict[str, Any]:
+    """
+    Copia segura de un grupo documental a la carpeta Box de un expediente.
+
+    No borra originales.
+    No mueve documentos.
+    No copia documentos descartados ni duplicados.
+    No copia dos veces el mismo documento dentro del mismo grupo.
+    """
+    ensure_document_inbox_schema()
+    ensure_document_inbox_batch_schema()
+
+    batch = get_document_inbox_batch(int(batch_id))
+    batch_expedient_id = int(expedient_id or batch.get("expedient_id") or 0)
+
+    if not batch_expedient_id:
+        raise ValueError("Indica un expediente destino para copiar el grupo a Box.")
+
+    safe_subfolder = str(subfolder or batch.get("target_box_folder") or "").strip().replace("\\", "/").strip("/")
+
+    copied = []
+    skipped = []
+    errors = []
+    seen_keys = set()
+
+    for item in batch.get("items") or []:
+        item_id = int(item.get("id") or item.get("inbox_item_id") or 0)
+        if not item_id:
+            continue
+
+        status = str(item.get("status") or "").strip().lower()
+
+        if status in {"duplicate", "discarded"}:
+            skipped.append({
+                "id": item_id,
+                "reason": f"status_{status}",
+                "filename": item.get("original_filename"),
+            })
+            continue
+
+        key = _batch_item_dedupe_key(item)
+        if key and key in seen_keys:
+            skipped.append({
+                "id": item_id,
+                "reason": "duplicate_inside_batch",
+                "filename": item.get("original_filename"),
+            })
+            continue
+
+        if key:
+            seen_keys.add(key)
+
+        src = Path(str(item.get("stored_path") or item.get("linked_document_path") or ""))
+        if not src.exists() or not src.is_file():
+            skipped.append({
+                "id": item_id,
+                "reason": "missing_file",
+                "filename": item.get("original_filename"),
+                "path": str(src),
+            })
+            continue
+
+        try:
+            updated = copy_inbox_item_to_expedient_box(
+                item_id,
+                expedient_id=batch_expedient_id,
+                subfolder=safe_subfolder,
+            )
+            copied.append({
+                "id": item_id,
+                "filename": updated.get("original_filename"),
+                "destination_path": updated.get("copied_to_box_path"),
+            })
+        except Exception as exc:
+            errors.append({
+                "id": item_id,
+                "filename": item.get("original_filename"),
+                "error": str(exc),
+            })
+
+    if errors and copied:
+        batch_status = "partial"
+    elif errors and not copied:
+        batch_status = "error"
+    elif copied:
+        batch_status = "copied_to_box"
+    else:
+        batch_status = "partial"
+
+    metadata = _metadata_dict(batch.get("metadata_json") or "")
+    metadata["last_copy_to_box"] = {
+        "at": _now(),
+        "expedient_id": batch_expedient_id,
+        "subfolder": safe_subfolder,
+        "copied_count": len(copied),
+        "skipped_count": len(skipped),
+        "error_count": len(errors),
+    }
+
+    with get_connection() as conn:
+        expedient = _get_expedient_for_box(conn, batch_expedient_id)
+
+        conn.execute(
+            """
+            UPDATE document_inbox_batches
+            SET status = ?,
+                expedient_id = ?,
+                client_id = COALESCE(client_id, ?),
+                target_box_folder = ?,
+                metadata_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                batch_status,
+                batch_expedient_id,
+                expedient.get("cliente_id"),
+                safe_subfolder,
+                json.dumps(metadata, ensure_ascii=False),
+                _now(),
+                int(batch_id),
+            ),
+        )
+        conn.commit()
+
+    refreshed = get_document_inbox_batch(int(batch_id))
+    refreshed["copy_result"] = {
+        "batch_id": int(batch_id),
+        "status": batch_status,
+        "expedient_id": batch_expedient_id,
+        "subfolder": safe_subfolder,
+        "copied_count": len(copied),
+        "skipped_count": len(skipped),
+        "error_count": len(errors),
+        "copied": copied,
+        "skipped": skipped,
+        "errors": errors,
+    }
+    return refreshed
+
+
 def open_inbox_item(item_id: int) -> Dict[str, Any]:
     item = get_inbox_item(item_id)
     path = Path(str(item.get("stored_path") or ""))
