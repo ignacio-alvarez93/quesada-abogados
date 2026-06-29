@@ -1035,6 +1035,46 @@ def mark_detected_inbox_duplicates(status_filter: Optional[str] = None) -> Dict[
     }
 
 
+
+def _annotate_single_inbox_duplicate(item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Anota un item individual con datos de duplicado.
+
+    Prioridad:
+    - metadata_json.duplicate_of_id si ya fue marcado como duplicate;
+    - detección dinámica frente al conjunto completo si aún no está marcado.
+    """
+    if not item:
+        return item
+
+    metadata = _metadata_dict(item.get("metadata_json") or "")
+
+    duplicate_of_id = metadata.get("duplicate_of_id")
+    duplicate_reason = metadata.get("duplicate_reason") or ""
+
+    if duplicate_of_id:
+        item["is_duplicate"] = True
+        item["duplicate_of_id"] = duplicate_of_id
+        item["duplicate_reason"] = duplicate_reason or "metadata"
+        return item
+
+    try:
+        items = list_inbox_items(status="all", limit=500, offset=0)
+        for candidate in items:
+            if int(candidate.get("id") or 0) == int(item.get("id") or 0):
+                item["is_duplicate"] = bool(candidate.get("is_duplicate"))
+                item["duplicate_of_id"] = candidate.get("duplicate_of_id")
+                item["duplicate_reason"] = candidate.get("duplicate_reason") or ""
+                return item
+    except Exception:
+        pass
+
+    item["is_duplicate"] = False
+    item["duplicate_of_id"] = None
+    item["duplicate_reason"] = ""
+    return item
+
+
 def get_inbox_item(item_id: int) -> Dict[str, Any]:
     ensure_document_inbox_schema()
 
@@ -1047,7 +1087,7 @@ def get_inbox_item(item_id: int) -> Dict[str, Any]:
     item = _dict(row)
     if not item:
         raise ValueError("No existe el documento de bandeja indicado.")
-    return item
+    return _annotate_single_inbox_duplicate(item)
 
 
 def get_inbox_events(item_id: int) -> List[Dict[str, Any]]:

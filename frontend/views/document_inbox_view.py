@@ -860,6 +860,18 @@ def document_inbox_view(page: ft.Page):
         except Exception as exc:
             show_error(exc)
 
+    def open_principal_from_duplicate(duplicate_of_id):
+        try:
+            principal_id = int(duplicate_of_id or 0)
+            if not principal_id:
+                raise ValueError("Este duplicado no tiene documento principal asociado.")
+
+            state["selected_item_id"] = principal_id
+            state["selected_item_ids"] = set()
+            open_document_detail_dialog()
+        except Exception as exc:
+            show_error(exc)
+
     def render_items():
         selected_ids = set(state.get("selected_item_ids") or set())
         rows = []
@@ -1057,6 +1069,9 @@ def document_inbox_view(page: ft.Page):
         filename = item.get("original_filename") or "-"
         stored_path = item.get("stored_path") or "-"
         status = item.get("status") or "pending"
+        is_duplicate = bool(item.get("is_duplicate"))
+        duplicate_of_id = item.get("duplicate_of_id")
+        duplicate_reason = item.get("duplicate_reason") or ""
 
         def _clean_visible_label(label):
             """
@@ -1217,6 +1232,24 @@ def document_inbox_view(page: ft.Page):
             except Exception as exc:
                 show_error(exc)
 
+        def detail_open_principal(e=None):
+            try:
+                principal_id = int(duplicate_of_id or 0)
+                if not principal_id:
+                    raise ValueError("Este duplicado no tiene documento principal asociado.")
+
+                dialog = state.get("document_detail_dialog")
+                if dialog:
+                    dialog.open = False
+
+                state["selected_item_id"] = principal_id
+                state["selected_item_ids"] = set()
+
+                refresh_items()
+                open_document_detail_dialog()
+            except Exception as exc:
+                show_error(exc)
+
         def detail_link_selected(e=None):
             try:
                 state["selected_item_id"] = item_id
@@ -1329,6 +1362,32 @@ def document_inbox_view(page: ft.Page):
                         vertical_alignment=ft.CrossAxisAlignment.START,
                     ),
                     ft.Text(stored_path, size=11, color=Q_MUTED, selectable=True),
+                ],
+                spacing=8,
+            ),
+        )
+
+        detail_duplicate = ft.Container(
+            visible=is_duplicate,
+            bgcolor="#FFF7E6",
+            border=ft.border.all(1, "#F79009"),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Text("Documento duplicado", size=15, weight=ft.FontWeight.BOLD, color="#B54708"),
+                    ft.Text(
+                        f"Este documento está marcado como duplicado de #{duplicate_of_id or '-'}"
+                        f" · {duplicate_reason or 'sin motivo'}",
+                        size=12,
+                        color="#B54708",
+                    ),
+                    ft.Row(
+                        controls=[
+                            secondary_button("Abrir principal", detail_open_principal),
+                        ],
+                        spacing=10,
+                    ),
                 ],
                 spacing=8,
             ),
@@ -1948,6 +2007,7 @@ def document_inbox_view(page: ft.Page):
                 content=ft.Column(
                     controls=[
                         detail_header,
+                        detail_duplicate,
                         detail_menu,
                         ft.Container(
                             expand=True,
