@@ -2314,6 +2314,13 @@ def document_inbox_view(page: ft.Page):
     batch_target_expedient_id_field = text_input("Expediente ID destino", width=220)
     batch_target_subfolder_field = text_input("Subcarpeta Box destino", width=360)
 
+    batch_edit_name_field = text_input("Nombre del grupo", width=680)
+    batch_edit_notes_field = multiline_input("Notas del grupo", width=680)
+    batch_edit_subfolder_field = text_input("Subcarpeta Box destino", width=360)
+    batch_edit_status_field = text_input("Estado del grupo", width=220)
+    batch_edit_client_label_to_id = {}
+    batch_edit_expedient_label_to_id = {}
+
     def _batch_metadata_dict(raw):
         try:
             if isinstance(raw, dict):
@@ -2324,6 +2331,94 @@ def document_inbox_view(page: ft.Page):
             return parsed if isinstance(parsed, dict) else {}
         except Exception:
             return {}
+
+
+    def _batch_edit_client_labels():
+        batch_edit_client_label_to_id.clear()
+        options = document_inbox_service.client_autocomplete_options()
+        for item in options:
+            label = item.get("label")
+            if label:
+                batch_edit_client_label_to_id[label] = int(item.get("id"))
+        return list(batch_edit_client_label_to_id.keys())
+
+    def _batch_edit_expedient_labels_for_client(client_id):
+        batch_edit_expedient_label_to_id.clear()
+        if not client_id:
+            return []
+
+        options = document_inbox_service.expedient_autocomplete_options_for_client(int(client_id))
+        for item in options:
+            label = item.get("label")
+            if label:
+                batch_edit_expedient_label_to_id[label] = int(item.get("id"))
+        return list(batch_edit_expedient_label_to_id.keys())
+
+    def _batch_edit_find_client_label(client_id):
+        if not client_id:
+            return ""
+
+        target = int(client_id)
+        for label, value in batch_edit_client_label_to_id.items():
+            if int(value) == target:
+                return label
+
+        _batch_edit_client_labels()
+        for label, value in batch_edit_client_label_to_id.items():
+            if int(value) == target:
+                return label
+
+        return ""
+
+    def _batch_edit_find_expedient_label(expedient_id):
+        if not expedient_id:
+            return ""
+
+        target = int(expedient_id)
+        for label, value in batch_edit_expedient_label_to_id.items():
+            if int(value) == target:
+                return label
+
+        return ""
+
+    def on_batch_edit_client_selected(value):
+        client_id = batch_edit_client_label_to_id.get(value)
+        state["batch_edit_client_id"] = int(client_id) if client_id else None
+        state["batch_edit_expedient_id"] = None
+
+        expedient_labels = _batch_edit_expedient_labels_for_client(state.get("batch_edit_client_id"))
+        batch_edit_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+        batch_edit_expedient_autocomplete.input.label = (
+            f"Expediente destino ({len(expedient_labels)})"
+            if expedient_labels
+            else "Expediente destino (sin expedientes)"
+        )
+        page.update()
+
+    def on_batch_edit_expedient_selected(value):
+        expedient_id = batch_edit_expedient_label_to_id.get(value)
+        state["batch_edit_expedient_id"] = int(expedient_id) if expedient_id else None
+        page.update()
+
+    batch_edit_client_autocomplete = AppAutocomplete(
+        page=page,
+        label="Cliente destino",
+        options=_batch_edit_client_labels(),
+        width=520,
+        max_results=12,
+        on_select=on_batch_edit_client_selected,
+        allow_free_text=False,
+    )
+
+    batch_edit_expedient_autocomplete = AppAutocomplete(
+        page=page,
+        label="Expediente destino",
+        options=[],
+        width=520,
+        max_results=12,
+        on_select=on_batch_edit_expedient_selected,
+        allow_free_text=False,
+    )
 
 
     def show_batch_item_preview(item):
@@ -2376,6 +2471,47 @@ def document_inbox_view(page: ft.Page):
                 batch_detail_message.update()
             except Exception:
                 pass
+
+    def save_open_batch_changes(e=None):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            name = str(batch_edit_name_field.value or "").strip()
+            if not name:
+                raise ValueError("El nombre del grupo es obligatorio.")
+
+            client_id = state.get("batch_edit_client_id")
+            expedient_id = state.get("batch_edit_expedient_id")
+
+            updated = document_inbox_service.update_document_inbox_batch(
+                batch_id,
+                name=name,
+                notes=batch_edit_notes_field.value or "",
+                client_id=int(client_id) if client_id else None,
+                expedient_id=int(expedient_id) if expedient_id else None,
+                target_box_folder=batch_edit_subfolder_field.value or "",
+                status=batch_edit_status_field.value or "draft",
+            )
+
+            batch_detail_message.content = success_alert(
+                f"Grupo actualizado: #{updated.get('id')} · {updated.get('name')}"
+            )
+
+            open_batch_detail_dialog(batch_id)
+            refresh_batches_panel()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudieron guardar los cambios del grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
 
     def copy_open_batch_to_box(e=None):
         try:
@@ -2505,8 +2641,27 @@ def document_inbox_view(page: ft.Page):
 
         try:
             batch = document_inbox_service.get_document_inbox_batch(int(batch_id))
+
             batch_target_expedient_id_field.value = str(batch.get("expedient_id") or "")
             batch_target_subfolder_field.value = str(batch.get("target_box_folder") or "")
+
+            batch_edit_name_field.value = str(batch.get("name") or "")
+            batch_edit_notes_field.value = str(batch.get("notes") or "")
+            batch_edit_subfolder_field.value = str(batch.get("target_box_folder") or "")
+            batch_edit_status_field.value = str(batch.get("status") or "draft")
+
+            state["batch_edit_client_id"] = int(batch.get("client_id")) if batch.get("client_id") else None
+            state["batch_edit_expedient_id"] = int(batch.get("expedient_id")) if batch.get("expedient_id") else None
+
+            batch_edit_client_autocomplete.set_options(_batch_edit_client_labels(), clear_value=True)
+            client_label = _batch_edit_find_client_label(state.get("batch_edit_client_id"))
+            batch_edit_client_autocomplete.input.value = client_label or ""
+
+            expedient_labels = _batch_edit_expedient_labels_for_client(state.get("batch_edit_client_id"))
+            batch_edit_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+            expedient_label = _batch_edit_find_expedient_label(state.get("batch_edit_expedient_id"))
+            batch_edit_expedient_autocomplete.input.value = expedient_label or ""
+
             rows = [
                 ft.Text(
                     f"#{batch.get('id')} · {batch.get('name')}",
@@ -2566,6 +2721,45 @@ def document_inbox_view(page: ft.Page):
                         ),
                     )
                 )
+
+            rows.append(
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=10,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Editar grupo", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(
+                                "Actualiza la cabecera del grupo documental. No mueve ni borra documentos.",
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            batch_edit_name_field,
+                            batch_edit_notes_field,
+                            ft.Row(
+                                controls=[
+                                    batch_edit_client_autocomplete.control,
+                                    batch_edit_expedient_autocomplete.control,
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    batch_edit_subfolder_field,
+                                    batch_edit_status_field,
+                                    primary_button("Guardar cambios", save_open_batch_changes),
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                )
+            )
 
             rows.append(
                 ft.Container(

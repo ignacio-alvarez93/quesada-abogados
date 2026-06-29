@@ -957,6 +957,117 @@ def remove_item_from_document_inbox_batch(batch_id: int, inbox_item_id: int):
 
 
 
+def update_document_inbox_batch(
+    batch_id: int,
+    name: str = "",
+    notes: str = "",
+    client_id=None,
+    expedient_id=None,
+    target_box_folder: str = "",
+    status: str = "draft",
+):
+    """
+    Actualiza metadatos de un grupo documental.
+
+    No borra documentos.
+    No mueve archivos.
+    No copia a Box.
+    Solo actualiza la cabecera del grupo y registra trazabilidad.
+    """
+    from datetime import datetime
+
+    ensure_document_inbox_batch_schema()
+
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise ValueError("El nombre del grupo documental es obligatorio.")
+
+    clean_status = str(status or "draft").strip() or "draft"
+    now = datetime.now().isoformat(timespec="seconds")
+
+    with _connect() as conn:
+        conn.row_factory = _dict_row_factory
+
+        batch = conn.execute(
+            "SELECT * FROM document_inbox_batches WHERE id = ?",
+            (int(batch_id),),
+        ).fetchone()
+
+        if not batch:
+            raise ValueError(f"No existe el grupo documental #{batch_id}")
+
+        conn.execute(
+            """
+            UPDATE document_inbox_batches
+            SET updated_at = ?,
+                name = ?,
+                notes = ?,
+                client_id = ?,
+                expedient_id = ?,
+                target_box_folder = ?,
+                status = ?
+            WHERE id = ?
+            """,
+            (
+                now,
+                clean_name,
+                str(notes or "").strip(),
+                int(client_id) if client_id else None,
+                int(expedient_id) if expedient_id else None,
+                str(target_box_folder or "").strip(),
+                clean_status,
+                int(batch_id),
+            ),
+        )
+
+        item_rows = conn.execute(
+            """
+            SELECT inbox_item_id
+            FROM document_inbox_batch_items
+            WHERE batch_id = ?
+            """,
+            (int(batch_id),),
+        ).fetchall()
+
+        for row in item_rows:
+            try:
+                item_id = int(row["inbox_item_id"])
+            except Exception:
+                continue
+
+            try:
+                _record_event(
+                    conn,
+                    item_id,
+                    "batch_update",
+                    f"Grupo documental #{int(batch_id)} actualizado: {clean_name}",
+                    {
+                        "batch_id": int(batch_id),
+                        "batch_name": clean_name,
+                        "client_id": int(client_id) if client_id else None,
+                        "expedient_id": int(expedient_id) if expedient_id else None,
+                        "target_box_folder": str(target_box_folder or "").strip(),
+                        "status": clean_status,
+                    },
+                )
+            except TypeError:
+                try:
+                    _record_event(
+                        conn,
+                        item_id,
+                        "batch_update",
+                        f"Grupo documental #{int(batch_id)} actualizado: {clean_name}",
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        conn.commit()
+
+    return get_document_inbox_batch(batch_id)
+
+
 def update_document_inbox_batch_status(batch_id: int, status: str):
     """
     Cambia estado del grupo documental.
