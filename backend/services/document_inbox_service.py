@@ -505,14 +505,54 @@ def create_document_inbox_batch(
     if not clean_name:
         raise ValueError("El grupo documental necesita un nombre.")
 
-    item_ids = []
+    raw_item_ids = []
     for raw_id in inbox_item_ids or []:
         try:
             item_id = int(raw_id)
         except Exception:
             continue
-        if item_id not in item_ids:
+        if item_id not in raw_item_ids:
+            raw_item_ids.append(item_id)
+
+    item_ids = []
+    skipped_items = []
+
+    if raw_item_ids:
+        placeholders = ", ".join("?" for _ in raw_item_ids)
+        with _connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, status, client_id, expedient_id, original_filename
+                FROM document_inbox_items
+                WHERE id IN ({placeholders})
+                """,
+                tuple(raw_item_ids),
+            ).fetchall()
+
+        by_id = {int(row["id"]): dict(row) for row in rows}
+
+        for item_id in raw_item_ids:
+            item = by_id.get(int(item_id))
+            if not item:
+                skipped_items.append({
+                    "id": item_id,
+                    "reason": "not_found",
+                })
+                continue
+
+            status_value = str(item.get("status") or "").strip().lower()
+            if status_value in {"duplicate", "discarded"}:
+                skipped_items.append({
+                    "id": item_id,
+                    "reason": f"status_{status_value}",
+                    "filename": item.get("original_filename"),
+                })
+                continue
+
             item_ids.append(item_id)
+
+    if raw_item_ids and not item_ids:
+        raise ValueError("No hay documentos válidos para crear el grupo. Se omiten duplicados y descartados.")
 
     now = datetime.now().isoformat(timespec="seconds")
 
@@ -535,7 +575,15 @@ def create_document_inbox_batch(
                 int(expedient_id) if expedient_id else None,
                 str(target_box_folder or "").strip(),
                 str(notes or "").strip(),
-                json.dumps({"source": "document_inbox"}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "source": "document_inbox",
+                        "skipped_on_create": skipped_items,
+                        "original_selection_count": len(raw_item_ids),
+                        "accepted_selection_count": len(item_ids),
+                    },
+                    ensure_ascii=False,
+                ),
             ),
         )
 
