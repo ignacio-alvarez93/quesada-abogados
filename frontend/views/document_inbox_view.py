@@ -2414,6 +2414,84 @@ def document_inbox_view(page: ft.Page):
             except Exception:
                 pass
 
+    def add_selected_items_to_open_batch(e=None):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            selected_ids = list(state.get("selected_item_ids") or [])
+            if not selected_ids:
+                raise ValueError("Selecciona documentos en la bandeja antes de añadirlos al grupo.")
+
+            result = document_inbox_service.add_items_to_document_inbox_batch(batch_id, selected_ids)
+            add_result = result.get("add_result") or {}
+
+            batch_detail_message.content = success_alert(
+                f"Añadidos: {add_result.get('added_count', 0)} · "
+                f"Omitidos: {add_result.get('skipped_count', 0)}"
+            )
+
+            state["selected_item_ids"] = set()
+            selected_label.value = "Ningún documento seleccionado."
+
+            open_batch_detail_dialog(batch_id)
+            refresh_items()
+            refresh_batches_panel()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudieron añadir documentos al grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def remove_item_from_open_batch(item_id):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            document_inbox_service.remove_item_from_document_inbox_batch(batch_id, int(item_id))
+
+            batch_detail_message.content = success_alert(f"Documento #{item_id} quitado del grupo.")
+            open_batch_detail_dialog(batch_id)
+            refresh_batches_panel()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo quitar el documento del grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def set_open_batch_status(new_status):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            document_inbox_service.update_document_inbox_batch_status(batch_id, new_status)
+            batch_detail_message.content = success_alert(f"Estado del grupo actualizado a {new_status}.")
+            open_batch_detail_dialog(batch_id)
+            refresh_batches_panel()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo cambiar el estado del grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
     def close_batch_detail_dialog(e=None):
         batch_detail_dialog.open = False
         try:
@@ -2491,6 +2569,36 @@ def document_inbox_view(page: ft.Page):
 
             rows.append(
                 ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=10,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Gestionar grupo", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(
+                                "Añade documentos seleccionados en la bandeja, cambia el estado del grupo o revisa el lote.",
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    secondary_button("Añadir seleccionados al grupo", add_selected_items_to_open_batch),
+                                    secondary_button("Estado: draft", lambda e: set_open_batch_status("draft")),
+                                    secondary_button("Estado: reviewed", lambda e: set_open_batch_status("reviewed")),
+                                    secondary_button("Estado: copied_to_box", lambda e: set_open_batch_status("copied_to_box")),
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                )
+            )
+
+            rows.append(
+                ft.Container(
                     bgcolor="#F8FAFC",
                     border=ft.border.all(1, Q_BORDER),
                     border_radius=12,
@@ -2556,6 +2664,7 @@ def document_inbox_view(page: ft.Page):
                                 ),
                                 secondary_button("Ver", lambda e, item=item: show_batch_item_preview(item)),
                                 secondary_button("Abrir externo", lambda e, item=item: open_batch_item_external(item)),
+                                danger_button("Quitar", lambda e, item=item: remove_item_from_open_batch(item.get("id"))),
                             ],
                             spacing=8,
                             vertical_alignment=ft.CrossAxisAlignment.CENTER,
