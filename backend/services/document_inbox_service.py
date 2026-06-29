@@ -85,6 +85,31 @@ def _table_columns(conn, table_name: str) -> set[str]:
         return set()
 
 
+def _connect():
+    """
+    Helper local de conexión para las funciones añadidas de Bandeja Documental.
+
+    Se usa como compatibilidad interna para no acoplar las nuevas funciones
+    al nombre exacto del helper de conexión usado por otros servicios.
+    """
+    try:
+        from database.connection import get_connection
+        return get_connection()
+    except ImportError:
+        from database.connection import get_db_connection
+        return get_db_connection()
+
+
+def _dict_row_factory(cursor, row):
+    """
+    Convierte filas sqlite3 en diccionarios.
+
+    Helper local usado por las funciones de Bandeja Documental que necesitan
+    devolver estructuras dict limpias al frontend.
+    """
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+
 def ensure_document_inbox_schema() -> None:
     _ensure_dirs()
 
@@ -247,42 +272,465 @@ def import_file_to_inbox(
     return get_inbox_item(item_id)
 
 
-def list_inbox_items(
-    status: Optional[str] = None,
-    client_id: Optional[int] = None,
-    expedient_id: Optional[int] = None,
-    limit: int = 300,
-) -> List[Dict[str, Any]]:
+
+# === QUESADA DOCUMENT INBOX BATCHES START ===
+
+def ensure_document_inbox_batch_schema():
+    """
+    Crea las tablas de grupos documentales de Bandeja.
+
+    Un grupo documental es un lote lógico interno:
+    - no toca Box;
+    - no mueve documentos;
+    - agrupa items de document_inbox_items para trabajo posterior:
+      PDF tools, preparación, revisión y eventual copia a Box.
+    """
     ensure_document_inbox_schema()
 
-    conditions = []
-    params: List[Any] = []
+    with _connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS document_inbox_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT DEFAULT 'draft',
+                client_id INTEGER,
+                expedient_id INTEGER,
+                target_box_folder TEXT,
+                notes TEXT,
+                metadata_json TEXT
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS document_inbox_batch_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL,
+                inbox_item_id INTEGER NOT NULL,
+                order_index INTEGER DEFAULT 0,
+                role TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(batch_id, inbox_item_id),
+                FOREIGN KEY (batch_id) REFERENCES document_inbox_batches(id),
+                FOREIGN KEY (inbox_item_id) REFERENCES document_inbox_items(id)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_inbox_batches_status
+            ON document_inbox_batches(status)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_inbox_batches_expedient
+            ON document_inbox_batches(expedient_id)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_inbox_batch_items_batch
+            ON document_inbox_batch_items(batch_id)
+            """
+        )
+
+        conn.commit()
+
+
+def create_document_inbox_batch(
+    name: str,
+    inbox_item_ids=None,
+    client_id=None,
+    expedient_id=None,
+    target_box_folder: str = "",
+    notes: str = "",
+    status: str = "draft",
+):
+    """
+    Crea un grupo documental y opcionalmente añade items seleccionados.
+    """
+    import json
+    from datetime import datetime
+
+    ensure_document_inbox_batch_schema()
+
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise ValueError("El grupo documental necesita un nombre.")
+
+    item_ids = []
+    for raw_id in inbox_item_ids or []:
+        try:
+            item_id = int(raw_id)
+        except Exception:
+            continue
+        if item_id not in item_ids:
+            item_ids.append(item_id)
+
+    now = datetime.now().isoformat(timespec="seconds")
+
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO document_inbox_batches (
+                created_at, updated_at, name, status,
+                client_id, expedient_id, target_box_folder,
+                notes, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                now,
+                clean_name,
+                status or "draft",
+                int(client_id) if client_id else None,
+                int(expedient_id) if expedient_id else None,
+                str(target_box_folder or "").strip(),
+                str(notes or "").strip(),
+                json.dumps({"source": "document_inbox"}, ensure_ascii=False),
+            ),
+        )
+
+        batch_id = int(cur.lastrowid)
+
+        for index, item_id in enumerate(item_ids, start=1):
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO document_inbox_batch_items (
+                    batch_id, inbox_item_id, order_index, role, notes, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (batch_id, item_id, index, "", "", now),
+            )
+
+            try:
+                _record_event(
+                    conn,
+                    item_id,
+                    "batch_add",
+                    f"Documento añadido al grupo documental #{batch_id}: {clean_name}",
+                    {"batch_id": batch_id, "batch_name": clean_name},
+                )
+            except TypeError:
+                try:
+                    _record_event(
+                        conn,
+                        item_id,
+                        "batch_add",
+                        f"Documento añadido al grupo documental #{batch_id}: {clean_name}",
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        conn.commit()
+
+    return get_document_inbox_batch(batch_id)
+
+
+def list_document_inbox_batches(status=None, expedient_id=None, client_id=None, limit=200):
+    """
+    Lista grupos documentales con contador de documentos.
+    """
+    ensure_document_inbox_batch_schema()
+
+    where = []
+    params = []
 
     if status and status != "all":
-        conditions.append("status = ?")
+        where.append("b.status = ?")
         params.append(status)
 
-    if client_id:
-        conditions.append("client_id = ?")
-        params.append(int(client_id))
-
     if expedient_id:
-        conditions.append("expedient_id = ?")
+        where.append("b.expedient_id = ?")
         params.append(int(expedient_id))
 
-    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    if client_id:
+        where.append("b.client_id = ?")
+        params.append(int(client_id))
 
-    sql = f"""
-        SELECT *
-        FROM document_inbox_items
-        {where}
-        ORDER BY id DESC
+    sql = """
+        SELECT
+            b.*,
+            COUNT(bi.id) AS item_count
+        FROM document_inbox_batches b
+        LEFT JOIN document_inbox_batch_items bi ON bi.batch_id = b.id
+    """
+
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+
+    sql += """
+        GROUP BY b.id
+        ORDER BY b.updated_at DESC, b.id DESC
         LIMIT ?
     """
-    params.append(int(limit or 300))
+    params.append(int(limit or 200))
 
-    with get_connection() as conn:
-        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+    with _connect() as conn:
+        conn.row_factory = _dict_row_factory
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_document_inbox_batch(batch_id: int):
+    """
+    Devuelve un grupo documental con sus documentos.
+    """
+    ensure_document_inbox_batch_schema()
+
+    with _connect() as conn:
+        conn.row_factory = _dict_row_factory
+
+        batch = conn.execute(
+            "SELECT * FROM document_inbox_batches WHERE id = ?",
+            (int(batch_id),),
+        ).fetchone()
+
+        if not batch:
+            raise ValueError(f"No existe el grupo documental #{batch_id}")
+
+        items = conn.execute(
+            """
+            SELECT
+                bi.id AS batch_item_id,
+                bi.batch_id,
+                bi.inbox_item_id,
+                bi.order_index,
+                bi.role,
+                bi.notes AS batch_item_notes,
+                i.*
+            FROM document_inbox_batch_items bi
+            JOIN document_inbox_items i ON i.id = bi.inbox_item_id
+            WHERE bi.batch_id = ?
+            ORDER BY bi.order_index ASC, bi.id ASC
+            """,
+            (int(batch_id),),
+        ).fetchall()
+
+        result = dict(batch)
+        result["items"] = [dict(row) for row in items]
+        result["item_count"] = len(result["items"])
+        return result
+
+
+def add_items_to_document_inbox_batch(batch_id: int, inbox_item_ids):
+    """
+    Añade documentos a un grupo existente.
+    """
+    from datetime import datetime
+
+    ensure_document_inbox_batch_schema()
+
+    now = datetime.now().isoformat(timespec="seconds")
+    clean_ids = []
+
+    for raw_id in inbox_item_ids or []:
+        try:
+            item_id = int(raw_id)
+        except Exception:
+            continue
+        if item_id not in clean_ids:
+            clean_ids.append(item_id)
+
+    if not clean_ids:
+        return get_document_inbox_batch(batch_id)
+
+    with _connect() as conn:
+        current_max = conn.execute(
+            """
+            SELECT COALESCE(MAX(order_index), 0)
+            FROM document_inbox_batch_items
+            WHERE batch_id = ?
+            """,
+            (int(batch_id),),
+        ).fetchone()[0] or 0
+
+        for offset, item_id in enumerate(clean_ids, start=1):
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO document_inbox_batch_items (
+                    batch_id, inbox_item_id, order_index, role, notes, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (int(batch_id), item_id, int(current_max) + offset, "", "", now),
+            )
+
+        conn.execute(
+            """
+            UPDATE document_inbox_batches
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            (now, int(batch_id)),
+        )
+
+        conn.commit()
+
+    return get_document_inbox_batch(batch_id)
+
+
+def update_document_inbox_batch_status(batch_id: int, status: str):
+    """
+    Cambia estado del grupo documental.
+    """
+    from datetime import datetime
+
+    ensure_document_inbox_batch_schema()
+
+    clean_status = str(status or "").strip() or "draft"
+    now = datetime.now().isoformat(timespec="seconds")
+
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE document_inbox_batches
+            SET status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (clean_status, now, int(batch_id)),
+        )
+        conn.commit()
+
+    return get_document_inbox_batch(batch_id)
+
+
+# === QUESADA DOCUMENT INBOX BATCHES END ===
+
+
+def _inbox_items_filter_sql(status: Optional[str] = None):
+    """
+    Construye WHERE compartido para listado y conteo de Bandeja.
+    """
+    where = []
+    params = []
+
+    if status and status != "all":
+        where.append("status = ?")
+        params.append(status)
+
+    where_sql = ""
+    if where:
+        where_sql = "WHERE " + " AND ".join(where)
+
+    return where_sql, params
+
+
+def count_inbox_items(status: Optional[str] = None) -> int:
+    """
+    Cuenta documentos de Bandeja aplicando los mismos filtros que el listado.
+    """
+    ensure_document_inbox_schema()
+
+    where_sql, params = _inbox_items_filter_sql(status)
+
+    with _connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM document_inbox_items
+            {where_sql}
+            """,
+            params,
+        ).fetchone()
+
+        if row is None:
+            return 0
+
+        try:
+            return int(row["total"])
+        except Exception:
+            return int(row[0])
+
+
+
+def count_inbox_items_by_status() -> Dict[str, int]:
+    """
+    Devuelve contadores agregados de Bandeja Documental por estado.
+
+    Evita cargar documentos en frontend solo para pintar chips.
+    """
+    ensure_document_inbox_schema()
+
+    conn = _connect()
+    conn.row_factory = _dict_row_factory
+    try:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(status, 'pending') AS status, COUNT(*) AS total
+            FROM document_inbox_items
+            GROUP BY COALESCE(status, 'pending')
+            """
+        ).fetchall()
+
+        counts: Dict[str, int] = {}
+        total = 0
+
+        for row in rows:
+            status = str(row["status"] or "pending")
+            value = int(row["total"] or 0)
+            counts[status] = value
+            total += value
+
+        counts["all"] = total
+        return counts
+    finally:
+        conn.close()
+
+def list_inbox_items(
+    status: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """
+    Lista documentos de Bandeja con paginación real.
+
+    limit:
+        Número máximo de registros a devolver.
+
+    offset:
+        Desplazamiento SQL. Página 1 con tamaño 10 = offset 0.
+        Página 2 con tamaño 10 = offset 10.
+    """
+    ensure_document_inbox_schema()
+
+    safe_limit = max(1, min(int(limit or 200), 500))
+    safe_offset = max(0, int(offset or 0))
+
+    where_sql, params = _inbox_items_filter_sql(status)
+
+    with _connect() as conn:
+        try:
+            conn.row_factory = _dict_row_factory
+        except NameError:
+            conn.row_factory = lambda cursor, row: {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM document_inbox_items
+            {where_sql}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            OFFSET ?
+            """,
+            [*params, safe_limit, safe_offset],
+        ).fetchall()
+
+        return [dict(row) for row in rows]
 
 
 def get_inbox_item(item_id: int) -> Dict[str, Any]:
@@ -685,4 +1133,175 @@ def expedient_autocomplete_options_for_client(client_id: int, limit: int = 200) 
         }
         for expedient in expedients
     ]
+
+
+# === QUESADA DOCUMENT INBOX BOX IMPORT START ===
+
+def _safe_relative_to(child_path: Path, parent_path: Path) -> bool:
+    try:
+        child_path.resolve().relative_to(parent_path.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _get_expedient_box_context(expedient_id: int) -> Dict[str, Any]:
+    """
+    Devuelve contexto mínimo del expediente para trabajar con su carpeta Box vinculada.
+    No modifica Box.
+    """
+    with _connect() as conn:
+        expedient = _get_expedient_for_box(conn, int(expedient_id))
+
+    box_folder = Path(str(expedient.get("box_folder_path") or "")).expanduser()
+    if not box_folder.exists() or not box_folder.is_dir():
+        raise FileNotFoundError(f"La carpeta Box del expediente no existe o no es accesible: {box_folder}")
+
+    return {
+        "expedient": expedient,
+        "box_folder": box_folder,
+        "client_id": expedient.get("cliente_id") or expedient.get("client_id"),
+        "expedient_id": int(expedient_id),
+    }
+
+
+def list_expedient_box_files_for_inbox(expedient_id: int, max_files: int = 500) -> List[Dict[str, Any]]:
+    """
+    Lista archivos físicos de la carpeta Box vinculada al expediente.
+    Se usa para elegir qué documentos copiar a Bandeja Documental.
+    No copia ni modifica nada.
+    """
+    ctx = _get_expedient_box_context(int(expedient_id))
+    base_folder: Path = ctx["box_folder"]
+
+    allowed_extensions = {
+        ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff",
+        ".doc", ".docx", ".xls", ".xlsx", ".txt",
+    }
+
+    result = []
+    for file_path in base_folder.rglob("*"):
+        if len(result) >= int(max_files or 500):
+            break
+
+        try:
+            if not file_path.is_file():
+                continue
+            if file_path.name.startswith("~$"):
+                continue
+            if file_path.suffix.lower() not in allowed_extensions:
+                continue
+
+            stat = file_path.stat()
+            result.append({
+                "path": str(file_path),
+                "relative_path": str(file_path.relative_to(base_folder)),
+                "filename": file_path.name,
+                "extension": file_path.suffix.lower(),
+                "size_bytes": stat.st_size,
+                "modified_at": stat.st_mtime,
+                "client_id": ctx["client_id"],
+                "expedient_id": ctx["expedient_id"],
+                "box_folder_path": str(base_folder),
+            })
+        except Exception:
+            continue
+
+    result.sort(key=lambda item: str(item.get("relative_path") or "").lower())
+    return result
+
+
+def import_box_file_to_inbox(
+    box_file_path: str,
+    expedient_id: int,
+    source_label: str = "Box expediente",
+) -> Dict[str, Any]:
+    """
+    Copia un archivo existente en la carpeta Box vinculada del expediente a Bandeja.
+    No mueve ni modifica el archivo original de Box.
+    """
+    ctx = _get_expedient_box_context(int(expedient_id))
+    base_folder: Path = ctx["box_folder"]
+
+    source_path = Path(str(box_file_path or "")).expanduser()
+    if not source_path.exists() or not source_path.is_file():
+        raise FileNotFoundError(f"No existe el archivo Box indicado: {source_path}")
+
+    if not _safe_relative_to(source_path, base_folder):
+        raise ValueError("Por seguridad, solo se pueden copiar a Bandeja archivos dentro de la carpeta Box vinculada al expediente.")
+
+    metadata = {
+        "box_original_path": str(source_path),
+        "box_relative_path": str(source_path.relative_to(base_folder)),
+        "box_folder_path": str(base_folder),
+        "origin": "expedient_box",
+    }
+
+    # import_file_to_inbox ha ido evolucionando. Pasamos solo los argumentos que acepte.
+    import inspect
+    sig = inspect.signature(import_file_to_inbox)
+    candidate_kwargs = {
+        "source_type": "box",
+        "source_label": source_label or "Box expediente",
+        "client_id": ctx["client_id"],
+        "expedient_id": ctx["expedient_id"],
+        "notes": f"Copiado desde Box: {metadata['box_relative_path']}",
+        "metadata": metadata,
+        "metadata_json": metadata,
+    }
+    kwargs = {key: value for key, value in candidate_kwargs.items() if key in sig.parameters}
+
+    item = import_file_to_inbox(str(source_path), **kwargs)
+
+    # Si la firma actual no soportaba metadata, al menos dejamos un evento adicional si existe _record_event compatible.
+    try:
+        item_id = int(item.get("id"))
+        with _connect() as conn:
+            _record_event(
+                conn,
+                item_id,
+                "box_copied_to_inbox",
+                f"Copiado desde Box a bandeja: {metadata['box_relative_path']}",
+                metadata,
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+    return item
+
+
+def bulk_import_box_files_to_inbox(
+    expedient_id: int,
+    box_file_paths: List[str],
+    source_label: str = "Box expediente",
+) -> Dict[str, Any]:
+    """
+    Copia varios archivos de Box a Bandeja.
+    Devuelve resultado agregado para UI/dialogs.
+    """
+    imported = []
+    errors = []
+
+    for file_path in box_file_paths or []:
+        try:
+            imported.append(import_box_file_to_inbox(
+                file_path,
+                expedient_id=int(expedient_id),
+                source_label=source_label,
+            ))
+        except Exception as exc:
+            errors.append({
+                "path": str(file_path),
+                "error": str(exc),
+            })
+
+    return {
+        "imported_count": len(imported),
+        "error_count": len(errors),
+        "imported": imported,
+        "errors": errors,
+    }
+
+# === QUESADA DOCUMENT INBOX BOX IMPORT END ===
 

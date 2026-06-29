@@ -15,6 +15,7 @@ from backend.services import document_generation_service
 from backend.services import document_docx_service
 from backend.services import pdf_fill_service
 from backend.services import pdf_template_service
+from backend.services import document_inbox_watch_service
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -2583,6 +2584,174 @@ def settings_view(page: ft.Page):
         )
 
 
+    def build_documentos_vigilancia_bandeja():
+        ruta_field = required_text_input("Ruta local a vigilar", "", width=760)
+        nombre_field = text_input("Nombre", "", width=260)
+        recursive_checkbox = ft.Checkbox(label="Escaneo recursivo", value=False)
+        result_box = ft.Container()
+
+        def refresh_settings(e=None):
+            refresh()
+
+        def add_watch_folder(e=None):
+            ruta = (ruta_field.value or "").strip()
+            nombre = (nombre_field.value or "").strip()
+
+            if not ruta:
+                result_box.content = error_alert("Indica una ruta local a vigilar.")
+                try:
+                    result_box.update()
+                except Exception:
+                    pass
+                return
+
+            try:
+                folder = document_inbox_watch_service.upsert_watch_folder(
+                    ruta,
+                    name=nombre or None,
+                    source_label=f"Vigilancia carpeta: {nombre or ruta}",
+                    recursive=bool(recursive_checkbox.value),
+                    notes="Configurada desde Settings > Documentos > Vigilancia Bandeja.",
+                )
+                ruta_field.value = ""
+                nombre_field.value = ""
+                recursive_checkbox.value = False
+                result_box.content = success_alert(f"Ruta vigilada guardada: {folder.get('folder_path')}")
+                refresh()
+            except Exception as exc:
+                result_box.content = error_alert(f"No se pudo guardar la ruta vigilada: {exc}")
+                try:
+                    result_box.update()
+                except Exception:
+                    pass
+
+        def activate_downloads(e=None):
+            try:
+                folder = document_inbox_watch_service.ensure_default_downloads_watch_folder()
+                result_box.content = success_alert(f"Descargas activada: {folder.get('folder_path')}")
+                refresh()
+            except Exception as exc:
+                result_box.content = error_alert(f"No se pudo activar Descargas: {exc}")
+                try:
+                    result_box.update()
+                except Exception:
+                    pass
+
+        def scan_folder(folder_id):
+            try:
+                result = document_inbox_watch_service.scan_watch_folder(int(folder_id), max_files=150)
+                result_box.content = success_alert(
+                    f"Escaneo finalizado. Importados: {len(result.get('imported') or [])}. "
+                    f"Saltados: {len(result.get('skipped') or [])}. "
+                    f"Errores: {len(result.get('errors') or [])}."
+                )
+                refresh()
+            except Exception as exc:
+                result_box.content = error_alert(f"No se pudo escanear la ruta: {exc}")
+                try:
+                    result_box.update()
+                except Exception:
+                    pass
+
+        try:
+            folders = document_inbox_watch_service.list_watch_folders(active_only=False)
+        except Exception as exc:
+            folders = []
+            result_box.content = error_alert(f"No se pudieron cargar rutas vigiladas: {exc}")
+
+        rows = []
+
+        if not folders:
+            rows.append(empty_state("No hay rutas vigiladas configuradas"))
+        else:
+            for folder in folders:
+                folder_id = folder.get("id")
+                name = folder.get("name") or "Carpeta vigilada"
+                folder_path = folder.get("folder_path") or ""
+                is_active = bool(int(folder.get("is_active") or 0))
+                recursive = bool(int(folder.get("recursive") or 0))
+
+                rows.append(
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=10,
+                        content=ft.Row(
+                            controls=[
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            f"#{folder_id} · {name}",
+                                            size=13,
+                                            weight=ft.FontWeight.W_600,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            folder_path,
+                                            size=10,
+                                            color=Q_MUTED,
+                                            selectable=True,
+                                        ),
+                                        ft.Text(
+                                            f"Activa: {'sí' if is_active else 'no'} · Recursiva: {'sí' if recursive else 'no'}",
+                                            size=10,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                primary_button("Escanear", lambda e, folder_id=folder_id: scan_folder(folder_id)),
+                            ],
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    )
+                )
+
+        return config_section_card(
+            "Vigilancia de Bandeja Documental",
+            "Configura carpetas locales que la Bandeja puede escanear para copiar documentos nuevos. No mueve ni borra los originales.",
+            ft.Column(
+                controls=[
+                    ft.Text(
+                        "Añadir ruta vigilada",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ruta_field,
+                            nombre_field,
+                            recursive_checkbox,
+                        ],
+                        wrap=True,
+                        spacing=10,
+                    ),
+                    ft.Row(
+                        controls=[
+                            primary_button("Guardar ruta vigilada", add_watch_folder),
+                            secondary_button("Activar Descargas", activate_downloads),
+                        ],
+                        spacing=8,
+                    ),
+                    result_box,
+                    ft.Divider(),
+                    ft.Text(
+                        "Rutas configuradas",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Column(controls=rows, spacing=8),
+                ],
+                spacing=12,
+            ),
+        )
+
+
     def build_documentos():
         try:
             required_count = len(config_service.get_documentos_requeridos())
@@ -2595,7 +2764,12 @@ def settings_view(page: ft.Page):
             template_count = 0
 
         tab = state.get("documentos_tab", "requeridos")
-        body = build_plantillas_documentales() if tab == "plantillas" else build_documentos_requeridos()
+        if tab == "plantillas":
+            body = build_plantillas_documentales()
+        elif tab == "vigilancia_bandeja":
+            body = build_documentos_vigilancia_bandeja()
+        else:
+            body = build_documentos_requeridos()
 
         return ft.Column(
             controls=[
@@ -2639,6 +2813,7 @@ def settings_view(page: ft.Page):
                     controls=[
                         _documentos_tab_button("Documentos requeridos", "requeridos", ft.Icons.CHECKLIST, "Reglas por expediente"),
                         _documentos_tab_button("Plantillas documentales", "plantillas", ft.Icons.ARTICLE, "EX y modelos internos"),
+                        _documentos_tab_button("Vigilancia Bandeja", "vigilancia_bandeja", ft.Icons.FOLDER, "Rutas vigiladas"),
                     ],
                     spacing=10,
                     wrap=True,

@@ -10,6 +10,7 @@ from datetime import datetime
 from backend.services import expedient_service
 from backend.services import box_watch_service
 from backend.services import document_viewer_service
+from backend.services import document_inbox_service
 from backend.services import expedient_document_state_service as document_state_service
 from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
@@ -5146,6 +5147,184 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
 
         selected_docs = state.setdefault("document_viewer_selected_docs", {})
 
+        box_to_inbox_selected_paths = set()
+        box_to_inbox_files = []
+        box_to_inbox_list = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
+        box_to_inbox_message = ft.Container()
+
+        def close_box_to_inbox_dialog(e=None):
+            box_to_inbox_dialog.open = False
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        def render_box_to_inbox_files():
+            rows = []
+
+            if not box_to_inbox_files:
+                rows.append(empty_state("No hay documentos Box copiables en este expediente"))
+            else:
+                for file_info in box_to_inbox_files:
+                    file_path = str(file_info.get("path") or "")
+                    relative_path = str(file_info.get("relative_path") or file_info.get("name") or file_path)
+                    size_bytes = file_info.get("size_bytes") or file_info.get("size") or 0
+                    selected = file_path in box_to_inbox_selected_paths
+
+                    try:
+                        size_label = f"{int(size_bytes) / 1024:.1f} KB" if size_bytes else "—"
+                    except Exception:
+                        size_label = "—"
+
+                    rows.append(
+                        ft.Container(
+                            bgcolor="#EFF6FF" if selected else "#FFFFFF",
+                            border=ft.border.all(1, Q_PRIMARY if selected else Q_BORDER),
+                            border_radius=10,
+                            padding=8,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Checkbox(
+                                        value=selected,
+                                        on_change=lambda e, p=file_path: toggle_box_to_inbox_selection(p),
+                                    ),
+                                    ft.Column(
+                                        controls=[
+                                            ft.Text(relative_path, size=12, weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
+                                            ft.Text(file_path, size=10, color=Q_MUTED, selectable=True),
+                                        ],
+                                        spacing=2,
+                                        expand=True,
+                                    ),
+                                    ft.Text(size_label, size=11, color=Q_MUTED),
+                                ],
+                                spacing=8,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                        )
+                    )
+
+            box_to_inbox_list.controls = rows
+
+        def toggle_box_to_inbox_selection(file_path):
+            file_path = str(file_path or "")
+            if not file_path:
+                return
+
+            if file_path in box_to_inbox_selected_paths:
+                box_to_inbox_selected_paths.remove(file_path)
+            else:
+                box_to_inbox_selected_paths.add(file_path)
+
+            render_box_to_inbox_files()
+            try:
+                box_to_inbox_list.update()
+            except Exception:
+                pass
+
+        def load_box_to_inbox_files():
+            box_to_inbox_selected_paths.clear()
+            box_to_inbox_files.clear()
+
+            try:
+                files = document_inbox_service.list_expedient_box_files_for_inbox(
+                    int(expediente_id),
+                    max_files=500,
+                )
+                box_to_inbox_files.extend(files or [])
+                box_to_inbox_message.content = ft.Text(
+                    f"{len(box_to_inbox_files)} documento(s) encontrados en Box.",
+                    size=12,
+                    color=Q_MUTED,
+                )
+            except Exception as exc:
+                box_to_inbox_message.content = error_alert(f"No se pudieron cargar documentos Box: {exc}")
+
+            render_box_to_inbox_files()
+
+        def copy_selected_box_files_to_inbox(e=None):
+            if not box_to_inbox_selected_paths:
+                box_to_inbox_message.content = error_alert("Selecciona al menos un documento Box.")
+                try:
+                    box_to_inbox_message.update()
+                except Exception:
+                    pass
+                return
+
+            copied = 0
+            errors = []
+
+            for file_path in list(box_to_inbox_selected_paths):
+                try:
+                    document_inbox_service.import_box_file_to_inbox(
+                        file_path,
+                        expedient_id=int(expediente_id),
+                        source_label="Box expediente",
+                    )
+                    copied += 1
+                except Exception as exc:
+                    errors.append(f"{Path(file_path).name}: {exc}")
+
+            if errors:
+                box_to_inbox_message.content = error_alert(
+                    f"Copiados {copied}. Errores: " + " | ".join(errors[:3])
+                )
+            else:
+                box_to_inbox_selected_paths.clear()
+                box_to_inbox_message.content = success_alert(
+                    f"{copied} documento(s) copiado(s) a Bandeja Documental."
+                )
+
+            render_box_to_inbox_files()
+
+            try:
+                box_to_inbox_message.update()
+                box_to_inbox_list.update()
+            except Exception:
+                pass
+
+        def open_box_to_inbox_dialog(e=None):
+            load_box_to_inbox_files()
+
+            if box_to_inbox_dialog not in page.overlay:
+                page.overlay.append(box_to_inbox_dialog)
+
+            box_to_inbox_dialog.open = True
+            page.update()
+
+        box_to_inbox_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Copiar documentos Box a Bandeja", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+            content=ft.Container(
+                width=980,
+                height=720,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            "Selecciona documentos de la carpeta Box del expediente. Se copiarán a Bandeja; el original de Box no se modifica.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                        box_to_inbox_message,
+                        ft.Container(
+                            expand=True,
+                            border=ft.border.all(1, Q_BORDER),
+                            border_radius=12,
+                            padding=8,
+                            content=box_to_inbox_list,
+                        ),
+                    ],
+                    spacing=10,
+                    expand=True,
+                ),
+            ),
+            actions=[
+                secondary_button("Cerrar", close_box_to_inbox_dialog),
+                primary_button("Copiar seleccionados a bandeja", copy_selected_box_files_to_inbox),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
         def toggle_document_selection(e, file_path, file_name):
             if e.control.value:
                 selected_docs[file_path] = {"path": file_path, "name": file_name}
@@ -5209,7 +5388,15 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         controls = [
             ft.Row(
                 controls=[
-                    ft.Text("Documentación Box", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Row(
+                        controls=[
+                            ft.Text("Documentación Box", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Container(expand=True),
+                            primary_button("Copiar Box a bandeja", open_box_to_inbox_dialog),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
                     ft.Text("Escaneando expediente...", size=12, color=Q_MUTED, visible=scanning),
                 ],
                 spacing=12,
