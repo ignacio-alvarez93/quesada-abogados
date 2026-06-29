@@ -26,6 +26,7 @@ VALID_STATUSES = {
     "copied_to_box",
     "reviewed",
     "discarded",
+    "duplicate",
     "error",
 }
 

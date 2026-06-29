@@ -25,6 +25,7 @@ STATUS_LABELS = {
     "copied_to_box": "Copiados a Box",
     "reviewed": "Revisados",
     "discarded": "Descartados",
+    "duplicate": "Duplicados",
     "error": "Error",
 }
 
@@ -50,6 +51,7 @@ def _status_chip(status):
         "copied_to_box": ("#ECFDF3", "#027A48"),
         "reviewed": ("#F0F9FF", "#026AA2"),
         "discarded": ("#F2F4F7", "#475467"),
+        "duplicate": ("#FEF0C7", "#B54708"),
         "error": ("#FEF3F2", "#B42318"),
     }
     bg, fg = colors.get(status, ("#F8FAFC", Q_MUTED))
@@ -995,6 +997,7 @@ def document_inbox_view(page: ft.Page):
                         secondary_button("Vincular", link_selected),
                         primary_button("Copiar a Box expediente", copy_to_box),
                         secondary_button("Revisado", lambda e: set_status("reviewed")),
+                        secondary_button("Duplicado", lambda e: set_status("duplicate")),
                         danger_button("Descartar", lambda e: set_status("discarded")),
                     ],
                     spacing=10,
