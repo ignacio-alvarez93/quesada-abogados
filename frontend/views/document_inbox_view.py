@@ -2258,17 +2258,31 @@ def document_inbox_view(page: ft.Page):
 
             # Reutiliza el mismo lenguaje visual de la pestaña Documentos:
             # chip de estado + contador compacto.
-            visual_status = "pending" if status_value == "all" else status_value
-            if status_value == "draft":
-                visual_status = "pending"
-            elif status_value == "archived":
-                visual_status = "reviewed"
-            elif status_value == "partial":
-                visual_status = "linked"
-            elif status_value == "error":
-                visual_status = "discarded"
+            if status_value == "all":
+                chip = ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=999,
+                    padding=ft.padding.symmetric(horizontal=8, vertical=3),
+                    content=ft.Text(
+                        "Todos",
+                        size=10,
+                        color=Q_MUTED,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                )
+            else:
+                visual_status = status_value
+                if status_value == "draft":
+                    visual_status = "pending"
+                elif status_value == "archived":
+                    visual_status = "reviewed"
+                elif status_value == "partial":
+                    visual_status = "linked"
+                elif status_value == "error":
+                    visual_status = "discarded"
 
-            chip = _status_chip(visual_status)
+                chip = _status_chip(visual_status)
 
             return ft.Container(
                 bgcolor="#FFFFFF" if not is_active else "#EEF2FF",
