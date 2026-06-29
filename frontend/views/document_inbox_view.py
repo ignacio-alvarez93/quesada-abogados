@@ -1238,9 +1238,14 @@ def document_inbox_view(page: ft.Page):
                 if not principal_id:
                     raise ValueError("Este duplicado no tiene documento principal asociado.")
 
+                dialog = state.get("document_detail_dialog")
+                if dialog:
+                    dialog.open = False
+
                 state["selected_item_id"] = principal_id
+                state["selected_item_ids"] = set()
+
                 refresh_items()
-                close_document_detail_dialog()
                 open_document_detail_dialog()
             except Exception as exc:
                 show_error(exc)
