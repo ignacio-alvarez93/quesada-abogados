@@ -827,6 +827,64 @@ def count_inbox_items_by_status() -> Dict[str, int]:
     finally:
         conn.close()
 
+
+def _inbox_duplicate_key(item: Dict[str, Any]):
+    metadata = _metadata_dict(item.get("metadata_json") or "")
+
+    origin_path = _norm_document_path(
+        metadata.get("imported_from")
+        or metadata.get("box_original_path")
+        or metadata.get("source_path")
+        or ""
+    )
+    digest = str(
+        item.get("sha256")
+        or metadata.get("sha256")
+        or metadata.get("file_sha256")
+        or ""
+    ).strip().lower()
+    filename = str(item.get("original_filename") or "").strip().lower()
+    size = str(item.get("size_bytes") or "").strip()
+
+    if origin_path:
+        return ("origin_path", origin_path)
+
+    if digest:
+        return ("sha256", digest)
+
+    if filename and size:
+        return ("filename_size", filename, size)
+
+    return None
+
+
+def _annotate_inbox_duplicates(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Marca duplicados históricos sin borrar ni modificar datos.
+
+    Conserva como principal el item con ID menor.
+    """
+    seen = {}
+
+    for item in sorted(items, key=lambda x: int(x.get("id") or 0)):
+        item["is_duplicate"] = False
+        item["duplicate_of_id"] = None
+        item["duplicate_reason"] = ""
+
+        key = _inbox_duplicate_key(item)
+        if not key:
+            continue
+
+        if key in seen:
+            item["is_duplicate"] = True
+            item["duplicate_of_id"] = seen[key]
+            item["duplicate_reason"] = str(key[0])
+        else:
+            seen[key] = int(item.get("id") or 0)
+
+    return items
+
+
 def list_inbox_items(
     status: Optional[str] = None,
     limit: int = 200,
@@ -867,7 +925,8 @@ def list_inbox_items(
             [*params, safe_limit, safe_offset],
         ).fetchall()
 
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        return _annotate_inbox_duplicates(items)
 
 
 def get_inbox_item(item_id: int) -> Dict[str, Any]:
