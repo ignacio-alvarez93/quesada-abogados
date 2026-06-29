@@ -2325,11 +2325,18 @@ def document_inbox_view(page: ft.Page):
                             controls=[
                                 ft.Column(
                                     controls=[
-                                        ft.Text(
-                                            f"#{batch_id} · {name}",
-                                            size=13,
-                                            weight=ft.FontWeight.W_600,
-                                            color=Q_PRIMARY_DARK,
+                                        ft.Row(
+                                            controls=[
+                                                ft.Text(
+                                                    f"#{batch_id} · {name}",
+                                                    size=13,
+                                                    weight=ft.FontWeight.W_600,
+                                                    color=Q_PRIMARY_DARK,
+                                                ),
+                                                _batch_status_chip(status),
+                                            ],
+                                            spacing=8,
+                                            wrap=True,
                                         ),
                                         ft.Text(
                                             f"{item_count} documento(s) · Estado: {status} · {updated_at}",
@@ -2410,9 +2417,80 @@ def document_inbox_view(page: ft.Page):
     batch_edit_name_field = text_input("Nombre del grupo", width=680)
     batch_edit_notes_field = multiline_input("Notas del grupo", width=680)
     batch_edit_subfolder_field = text_input("Subcarpeta Box destino", width=360)
-    batch_edit_status_field = text_input("Estado del grupo", width=220)
     batch_edit_client_label_to_id = {}
     batch_edit_expedient_label_to_id = {}
+
+    BATCH_STATUS_OPTIONS = [
+        ("draft", "Borrador"),
+        ("reviewed", "Revisado"),
+        ("copied_to_box", "Copiado a Box"),
+        ("partial", "Parcial"),
+        ("error", "Error"),
+        ("archived", "Archivado"),
+    ]
+
+    BATCH_STATUS_LABELS = {key: label for key, label in BATCH_STATUS_OPTIONS}
+
+    def _batch_status_label(status):
+        return BATCH_STATUS_LABELS.get(str(status or "draft"), str(status or "draft"))
+
+    def _batch_status_chip(status):
+        status_value = str(status or "draft")
+        label = _batch_status_label(status_value)
+
+        bg = "#F8FAFC"
+        border = Q_BORDER
+        color = Q_MUTED
+
+        if status_value == "draft":
+            bg = "#F8FAFC"
+            border = "#CBD5E1"
+            color = "#475569"
+        elif status_value == "reviewed":
+            bg = "#EFF6FF"
+            border = "#BFDBFE"
+            color = "#1D4ED8"
+        elif status_value == "copied_to_box":
+            bg = "#ECFDF3"
+            border = "#ABEFC6"
+            color = "#027A48"
+        elif status_value == "partial":
+            bg = "#FFF7E6"
+            border = "#FEDF89"
+            color = "#B54708"
+        elif status_value == "error":
+            bg = "#FEF3F2"
+            border = "#FECDCA"
+            color = "#B42318"
+        elif status_value == "archived":
+            bg = "#F4F3FF"
+            border = "#D9D6FE"
+            color = "#5925DC"
+
+        return ft.Container(
+            bgcolor=bg,
+            border=ft.border.all(1, border),
+            border_radius=999,
+            padding=ft.padding.symmetric(horizontal=8, vertical=3),
+            content=ft.Text(label, size=10, color=color, weight=ft.FontWeight.BOLD),
+        )
+
+    def _set_batch_edit_status(status):
+        state["batch_edit_status"] = str(status or "draft")
+        try:
+            open_batch_detail_dialog(state.get("open_batch_id"))
+        except Exception:
+            page.update()
+
+    def _batch_status_buttons():
+        current = str(state.get("batch_edit_status") or "draft")
+        controls = []
+        for status_value, label in BATCH_STATUS_OPTIONS:
+            button_factory = primary_button if status_value == current else secondary_button
+            controls.append(
+                button_factory(label, lambda e, status_value=status_value: _set_batch_edit_status(status_value))
+            )
+        return ft.Row(controls=controls, spacing=8, wrap=True)
 
     def _batch_metadata_dict(raw):
         try:
@@ -2585,7 +2663,7 @@ def document_inbox_view(page: ft.Page):
                 client_id=int(client_id) if client_id else None,
                 expedient_id=int(expedient_id) if expedient_id else None,
                 target_box_folder=batch_edit_subfolder_field.value or "",
-                status=batch_edit_status_field.value or "draft",
+                status=state.get("batch_edit_status") or "draft",
             )
 
             batch_detail_message.content = success_alert(
@@ -2741,7 +2819,7 @@ def document_inbox_view(page: ft.Page):
             batch_edit_name_field.value = str(batch.get("name") or "")
             batch_edit_notes_field.value = str(batch.get("notes") or "")
             batch_edit_subfolder_field.value = str(batch.get("target_box_folder") or "")
-            batch_edit_status_field.value = str(batch.get("status") or "draft")
+            state["batch_edit_status"] = str(batch.get("status") or "draft")
 
             state["batch_edit_client_id"] = int(batch.get("client_id")) if batch.get("client_id") else None
             state["batch_edit_expedient_id"] = int(batch.get("expedient_id")) if batch.get("expedient_id") else None
@@ -2762,10 +2840,17 @@ def document_inbox_view(page: ft.Page):
                     weight=ft.FontWeight.BOLD,
                     color=Q_PRIMARY_DARK,
                 ),
-                ft.Text(
-                    f"Estado: {batch.get('status') or 'draft'} · Documentos: {batch.get('item_count') or 0}",
-                    size=12,
-                    color=Q_MUTED,
+                ft.Row(
+                    controls=[
+                        _batch_status_chip(batch.get("status") or "draft"),
+                        ft.Text(
+                            f"Documentos: {batch.get('item_count') or 0}",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=8,
+                    wrap=True,
                 ),
             ]
 
@@ -2842,12 +2927,13 @@ def document_inbox_view(page: ft.Page):
                             ft.Row(
                                 controls=[
                                     batch_edit_subfolder_field,
-                                    batch_edit_status_field,
+                                    _batch_status_chip(state.get("batch_edit_status") or "draft"),
                                     primary_button("Guardar cambios", save_open_batch_changes),
                                 ],
                                 spacing=10,
                                 wrap=True,
                             ),
+                            _batch_status_buttons(),
                         ],
                         spacing=8,
                     ),
@@ -2871,9 +2957,12 @@ def document_inbox_view(page: ft.Page):
                             ft.Row(
                                 controls=[
                                     secondary_button("Añadir seleccionados al grupo", add_selected_items_to_open_batch),
-                                    secondary_button("Estado: draft", lambda e: set_open_batch_status("draft")),
-                                    secondary_button("Estado: reviewed", lambda e: set_open_batch_status("reviewed")),
-                                    secondary_button("Estado: copied_to_box", lambda e: set_open_batch_status("copied_to_box")),
+                                    secondary_button("Borrador", lambda e: set_open_batch_status("draft")),
+                                    secondary_button("Revisado", lambda e: set_open_batch_status("reviewed")),
+                                    secondary_button("Copiado", lambda e: set_open_batch_status("copied_to_box")),
+                                    secondary_button("Parcial", lambda e: set_open_batch_status("partial")),
+                                    secondary_button("Error", lambda e: set_open_batch_status("error")),
+                                    secondary_button("Archivado", lambda e: set_open_batch_status("archived")),
                                 ],
                                 spacing=8,
                                 wrap=True,
