@@ -1224,6 +1224,25 @@ def document_inbox_view(page: ft.Page):
                 )
 
                 copy_to_box(e)
+
+                refreshed = document_inbox_service.get_inbox_item(item_id)
+                detail_relation_text.value = (
+                    f"Cliente ID: {refreshed.get('client_id') or '-'} · "
+                    f"Expediente ID: {refreshed.get('expedient_id') or '-'} · "
+                    f"Estado: {refreshed.get('status') or '-'} · "
+                    f"Box destino: {refreshed.get('copied_to_box_path') or '-'}"
+                )
+                detail_events_box.content = build_events_panel()
+
+                try:
+                    detail_relation_text.update()
+                except Exception:
+                    pass
+
+                try:
+                    detail_events_box.update()
+                except Exception:
+                    pass
             except Exception as exc:
                 show_error(exc)
 
