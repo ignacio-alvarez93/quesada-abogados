@@ -208,11 +208,114 @@ def _record_event(
     )
 
 
+
+def _norm_document_path(value: str) -> str:
+    return str(value or "").replace("\\", "/").strip().lower()
+
+
+def _metadata_dict(value) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            loaded = json.loads(value)
+            return loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _find_existing_inbox_item_for_source(
+    source_path: Path,
+    original_filename: str = "",
+    source_type: str = "",
+    client_id=None,
+    expedient_id=None,
+    sha256: str = "",
+    size_bytes: int = 0,
+) -> Dict[str, Any]:
+    """
+    Evita duplicados reales en Bandeja Documental.
+
+    Criterios:
+    - misma ruta de origen en metadata imported_from / box_original_path;
+    - mismo stored_path, especialmente si intentan reimportar desde data/document_inbox;
+    - mismo SHA256 global;
+    - fallback: mismo nombre + tamaño + source_type + expediente.
+    """
+    ensure_document_inbox_schema()
+
+    src_norm = _norm_document_path(str(source_path))
+    digest = str(sha256 or "").strip().lower()
+    filename_norm = str(original_filename or "").strip().lower()
+    source_type_norm = str(source_type or "manual").strip().lower()
+    expedient_key = str(expedient_id or "")
+
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM document_inbox_items
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+        for row in rows:
+            item = dict(row)
+            metadata = _metadata_dict(item.get("metadata_json") or "")
+
+            item_stored = _norm_document_path(item.get("stored_path") or "")
+            item_imported_from = _norm_document_path(
+                metadata.get("imported_from")
+                or metadata.get("box_original_path")
+                or metadata.get("source_path")
+                or ""
+            )
+            item_sha = str(
+                item.get("sha256")
+                or metadata.get("sha256")
+                or metadata.get("file_sha256")
+                or ""
+            ).strip().lower()
+
+            if src_norm and item_stored and src_norm == item_stored:
+                item["already_imported"] = True
+                item["dedupe_reason"] = "stored_path"
+                return item
+
+            if src_norm and item_imported_from and src_norm == item_imported_from:
+                item["already_imported"] = True
+                item["dedupe_reason"] = "imported_from"
+                return item
+
+            if digest and item_sha and digest == item_sha:
+                item["already_imported"] = True
+                item["dedupe_reason"] = "sha256"
+                return item
+
+            same_name = filename_norm and filename_norm == str(item.get("original_filename") or "").strip().lower()
+            same_size = bool(size_bytes) and int(item.get("size_bytes") or 0) == int(size_bytes)
+            same_source = source_type_norm == str(item.get("source_type") or "manual").strip().lower()
+            same_expedient = expedient_key == str(item.get("expedient_id") or "")
+
+            if same_name and same_size and same_source and same_expedient:
+                item["already_imported"] = True
+                item["dedupe_reason"] = "filename_size_source_expedient"
+                return item
+
+    return {}
+
+
 def import_file_to_inbox(
     file_path: str,
     source_type: str = "manual",
     source_label: str = "",
     notes: str = "",
+    client_id=None,
+    expedient_id=None,
+    metadata=None,
+    metadata_json=None,
 ) -> Dict[str, Any]:
     ensure_document_inbox_schema()
 
@@ -221,6 +324,21 @@ def import_file_to_inbox(
         raise FileNotFoundError(f"No existe el archivo indicado: {file_path}")
 
     original_filename = src.name
+    source_stat = src.stat()
+    source_digest = _sha256(src)
+
+    existing = _find_existing_inbox_item_for_source(
+        source_path=src,
+        original_filename=original_filename,
+        source_type=source_type or "manual",
+        client_id=client_id,
+        expedient_id=expedient_id,
+        sha256=source_digest,
+        size_bytes=source_stat.st_size,
+    )
+    if existing:
+        return existing
+
     stored_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_safe_filename(original_filename)}"
     dest = _unique_destination(INBOX_ORIGINALS, stored_filename)
 
@@ -231,6 +349,17 @@ def import_file_to_inbox(
     mime_type = mimetypes.guess_type(str(dest))[0] or ""
     file_ext = dest.suffix.lower().lstrip(".")
 
+    metadata_payload = {}
+    metadata_payload.update(_metadata_dict(metadata))
+    metadata_payload.update(_metadata_dict(metadata_json))
+    metadata_payload.setdefault("imported_from", str(src))
+    metadata_payload.setdefault("source_path", str(src))
+    metadata_payload["sha256"] = digest
+    metadata_payload["file_sha256"] = digest
+    metadata_payload["size_bytes"] = size_bytes
+    metadata_payload["source_size_bytes"] = source_stat.st_size
+    metadata_payload["source_modified_at"] = source_stat.st_mtime
+
     with get_connection() as conn:
         cur = conn.execute(
             """
@@ -239,9 +368,10 @@ def import_file_to_inbox(
                 source_type, source_label,
                 original_filename, stored_filename, stored_path,
                 file_ext, mime_type, size_bytes, sha256,
-                status, notes, metadata_json
+                status, notes, metadata_json,
+                client_id, expedient_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
             """,
             (
                 _now(),
@@ -256,7 +386,9 @@ def import_file_to_inbox(
                 size_bytes,
                 digest,
                 notes or "",
-                json.dumps({"imported_from": str(src)}, ensure_ascii=False),
+                json.dumps(metadata_payload, ensure_ascii=False),
+                int(client_id) if client_id else None,
+                int(expedient_id) if expedient_id else None,
             ),
         )
         item_id = int(cur.lastrowid)
@@ -265,7 +397,12 @@ def import_file_to_inbox(
             item_id,
             "imported",
             f"Documento importado desde {source_type or 'manual'}",
-            {"source_path": str(src), "stored_path": str(dest)},
+            {
+                "source_path": str(src),
+                "stored_path": str(dest),
+                "sha256": digest,
+                "already_imported": False,
+            },
         )
         conn.commit()
 
