@@ -1677,19 +1677,132 @@ def _expedient_display_name(expedient: Dict[str, Any]) -> str:
     return f"#{expedient.get('id')} · {number} · {kind}{suffix} · {box}"
 
 
-def expedient_autocomplete_options_for_client(client_id: int, limit: int = 200) -> List[Dict[str, Any]]:
-    expedients = list_expedients_for_client(client_id=client_id, limit=limit)
-    return [
-        {
-            "id": int(expedient.get("id")),
-            "label": _expedient_display_name(expedient),
-            "expedient": expedient,
-        }
-        for expedient in expedients
+
+def _resolve_expedient_type_label(conn, expedient: Dict[str, Any]) -> str:
+    """
+    Devuelve el TIPO de expediente para etiquetas UI.
+
+    Regla:
+    - Usar tipo_expediente / tipo / procedimiento si existen.
+    - Si solo hay tipo_expediente_id, intentar resolverlo contra tablas conocidas.
+    - Nunca usar subtipo_expediente como sustituto del tipo.
+    """
+    for key in ["tipo_expediente", "tipo", "procedimiento"]:
+        value = str(expedient.get(key) or "").strip()
+        if value:
+            return value
+
+    tipo_id = expedient.get("tipo_expediente_id")
+    if not tipo_id:
+        return ""
+
+    candidate_tables = [
+        "config_tipos_expediente",
+        "tipos_expediente",
+        "tipo_expediente",
+        "expedient_types",
+        "expediente_tipos",
     ]
 
+    candidate_name_cols = [
+        "nombre",
+        "name",
+        "codigo",
+        "code",
+        "descripcion",
+        "description",
+        "label",
+    ]
 
-# === QUESADA DOCUMENT INBOX BOX IMPORT START ===
+    for table in candidate_tables:
+        try:
+            columns = _table_columns(conn, table)
+        except Exception:
+            continue
+
+        if "id" not in columns:
+            continue
+
+        name_col = None
+        for col in candidate_name_cols:
+            if col in columns:
+                name_col = col
+                break
+
+        if not name_col:
+            continue
+
+        try:
+            row = conn.execute(
+                f"SELECT {name_col} FROM {table} WHERE id = ?",
+                (int(tipo_id),),
+            ).fetchone()
+        except Exception:
+            continue
+
+        if row:
+            try:
+                value = str(row[name_col] or "").strip()
+            except Exception:
+                value = str(row[0] or "").strip()
+
+            if value:
+                return value
+
+    return ""
+
+
+def expedient_autocomplete_options_for_client(client_id: int, limit: int = 200) -> List[Dict[str, Any]]:
+    """
+    Opciones de expedientes para AppAutocomplete.
+
+    La etiqueta debe mostrar el TIPO del expediente, no el subtipo.
+    """
+    ensure_document_inbox_schema()
+
+    expedients = list_expedients_for_client(client_id, limit=limit)
+    options = []
+
+    with get_connection() as conn:
+        for expedient in expedients:
+            expedient_id = int(expedient.get("id"))
+            numero = (
+                expedient.get("numero_expediente")
+                or expedient.get("numero_expediente_mercurio")
+                or f"EXPEDIENTE #{expedient_id}"
+            )
+
+            tipo_label = _resolve_expedient_type_label(conn, expedient)
+            if not tipo_label:
+                tipo_label = "Tipo pendiente"
+
+            estado = (
+                expedient.get("estado_documental")
+                or expedient.get("estado_administrativo")
+                or ""
+            )
+
+            parts = [
+                f"#{expedient_id}",
+                str(numero).strip(),
+                str(tipo_label).strip(),
+            ]
+
+            if str(estado or "").strip():
+                parts.append(str(estado).strip())
+
+            label = " · ".join(part for part in parts if part)
+
+            options.append(
+                {
+                    "id": expedient_id,
+                    "label": label,
+                    "expedient": expedient,
+                }
+            )
+
+    return options
+
 
 def _safe_relative_to(child_path: Path, parent_path: Path) -> bool:
     try:
