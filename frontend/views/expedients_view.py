@@ -5169,12 +5169,25 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     file_path = str(file_info.get("path") or "")
                     relative_path = str(file_info.get("relative_path") or file_info.get("name") or file_path)
                     size_bytes = file_info.get("size_bytes") or file_info.get("size") or 0
+                    already_imported = bool(file_info.get("already_imported"))
+                    inbox_item_id = file_info.get("inbox_item_id")
+                    dedupe_reason = str(file_info.get("dedupe_reason") or "")
                     selected = file_path in box_to_inbox_selected_paths
+
+                    if already_imported and file_path in box_to_inbox_selected_paths:
+                        box_to_inbox_selected_paths.discard(file_path)
+                        selected = False
 
                     try:
                         size_label = f"{int(size_bytes) / 1024:.1f} KB" if size_bytes else "—"
                     except Exception:
                         size_label = "—"
+
+                    status_label = ""
+                    if already_imported:
+                        status_label = f"Ya en Bandeja #{inbox_item_id or '-'}"
+                        if dedupe_reason:
+                            status_label += f" · {dedupe_reason}"
 
                     rows.append(
                         ft.Container(
@@ -5186,12 +5199,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                                 controls=[
                                     ft.Checkbox(
                                         value=selected,
+                                        disabled=already_imported,
                                         on_change=lambda e, p=file_path: toggle_box_to_inbox_selection(p),
                                     ),
                                     ft.Column(
                                         controls=[
                                             ft.Text(relative_path, size=12, weight=ft.FontWeight.W_600, color=Q_PRIMARY_DARK),
                                             ft.Text(file_path, size=10, color=Q_MUTED, selectable=True),
+                                            ft.Text(status_label, size=11, color="#027A48", visible=already_imported),
                                         ],
                                         spacing=2,
                                         expand=True,
@@ -5209,6 +5224,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         def toggle_box_to_inbox_selection(file_path):
             file_path = str(file_path or "")
             if not file_path:
+                return
+
+            file_info = next((f for f in box_to_inbox_files if str(f.get("path") or "") == file_path), None)
+            if file_info and file_info.get("already_imported"):
+                box_to_inbox_selected_paths.discard(file_path)
                 return
 
             if file_path in box_to_inbox_selected_paths:
@@ -5232,8 +5252,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     max_files=500,
                 )
                 box_to_inbox_files.extend(files or [])
+                already_count = sum(1 for item in box_to_inbox_files if item.get("already_imported"))
+                pending_count = len(box_to_inbox_files) - already_count
                 box_to_inbox_message.content = ft.Text(
-                    f"{len(box_to_inbox_files)} documento(s) encontrados en Box.",
+                    f"{len(box_to_inbox_files)} documento(s) encontrados en Box · "
+                    f"{pending_count} pendiente(s) · {already_count} ya en Bandeja.",
                     size=12,
                     color=Q_MUTED,
                 )
@@ -5252,16 +5275,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                 return
 
             copied = 0
+            already = 0
             errors = []
 
             for file_path in list(box_to_inbox_selected_paths):
                 try:
-                    document_inbox_service.import_box_file_to_inbox(
+                    item = document_inbox_service.import_box_file_to_inbox(
                         file_path,
                         expedient_id=int(expediente_id),
                         source_label="Box expediente",
                     )
-                    copied += 1
+                    if item.get("already_imported"):
+                        already += 1
+                    else:
+                        copied += 1
                 except Exception as exc:
                     errors.append(f"{Path(file_path).name}: {exc}")
 
@@ -5272,8 +5299,10 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             else:
                 box_to_inbox_selected_paths.clear()
                 box_to_inbox_message.content = success_alert(
-                    f"{copied} documento(s) copiado(s) a Bandeja Documental."
+                    f"{copied} nuevo(s) copiado(s) a Bandeja Documental · "
+                    f"{already} ya estaba(n) importado(s)."
                 )
+                load_box_to_inbox_files()
 
             render_box_to_inbox_files()
 

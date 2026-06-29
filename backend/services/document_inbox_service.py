@@ -1193,13 +1193,39 @@ def list_expedient_box_files_for_inbox(expedient_id: int, max_files: int = 500) 
                 continue
 
             stat = file_path.stat()
+            relative_path = str(file_path.relative_to(base_folder))
+
+            already_imported = False
+            dedupe_reason = ""
+            inbox_item_id = None
+
+            try:
+                file_sha256 = _calculate_file_sha256(file_path)
+                existing = _find_existing_box_inbox_item(
+                    expedient_id=int(ctx["expedient_id"]),
+                    box_original_path=str(file_path),
+                    box_relative_path=relative_path,
+                    sha256=file_sha256,
+                )
+                if existing:
+                    already_imported = True
+                    dedupe_reason = str(existing.get("dedupe_reason") or "")
+                    inbox_item_id = existing.get("id")
+            except Exception:
+                file_sha256 = ""
+
             result.append({
                 "path": str(file_path),
-                "relative_path": str(file_path.relative_to(base_folder)),
+                "relative_path": relative_path,
                 "filename": file_path.name,
                 "extension": file_path.suffix.lower(),
                 "size_bytes": stat.st_size,
                 "modified_at": stat.st_mtime,
+                "sha256": file_sha256,
+                "file_sha256": file_sha256,
+                "already_imported": already_imported,
+                "dedupe_reason": dedupe_reason,
+                "inbox_item_id": inbox_item_id,
                 "client_id": ctx["client_id"],
                 "expedient_id": ctx["expedient_id"],
                 "box_folder_path": str(base_folder),
@@ -1209,6 +1235,89 @@ def list_expedient_box_files_for_inbox(expedient_id: int, max_files: int = 500) 
 
     result.sort(key=lambda item: str(item.get("relative_path") or "").lower())
     return result
+
+
+
+def _calculate_file_sha256(file_path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """
+    Calcula SHA256 para deduplicación documental.
+    Lee por bloques para no cargar documentos grandes en memoria.
+    """
+    digest = hashlib.sha256()
+    with Path(file_path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            if chunk:
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _find_existing_box_inbox_item(
+    expedient_id: int,
+    box_original_path: str = "",
+    box_relative_path: str = "",
+    sha256: str = "",
+) -> Dict[str, Any]:
+    """
+    Busca si un archivo de Box ya fue importado a Bandeja Documental.
+
+    Estrategia:
+    - Primero por expediente + metadata_json con ruta original/relativa.
+    - Después por expediente + SHA256.
+    """
+    ensure_document_inbox_schema()
+
+    original = str(box_original_path or "").replace("\\", "/").strip()
+    relative = str(box_relative_path or "").replace("\\", "/").strip()
+    digest = str(sha256 or "").strip().lower()
+
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM document_inbox_items
+            WHERE expedient_id = ?
+              AND source_type = 'box'
+            ORDER BY id DESC
+            """,
+            (int(expedient_id),),
+        ).fetchall()
+
+        for row in rows:
+            item = dict(row)
+            raw_metadata = item.get("metadata_json") or ""
+            try:
+                metadata = json.loads(raw_metadata) if raw_metadata else {}
+            except Exception:
+                metadata = {}
+
+            item_original = str(metadata.get("box_original_path") or "").replace("\\", "/").strip()
+            item_relative = str(metadata.get("box_relative_path") or "").replace("\\", "/").strip()
+            item_imported_from = str(metadata.get("imported_from") or "").replace("\\", "/").strip()
+            item_sha = str(metadata.get("sha256") or metadata.get("file_sha256") or "").strip().lower()
+
+            if original and item_original and original.lower() == item_original.lower():
+                item["already_imported"] = True
+                item["dedupe_reason"] = "box_original_path"
+                return item
+
+            if original and item_imported_from and original.lower() == item_imported_from.lower():
+                item["already_imported"] = True
+                item["dedupe_reason"] = "legacy_imported_from"
+                return item
+
+            if relative and item_relative and relative.lower() == item_relative.lower():
+                item["already_imported"] = True
+                item["dedupe_reason"] = "box_relative_path"
+                return item
+
+            if digest and item_sha and digest == item_sha:
+                item["already_imported"] = True
+                item["dedupe_reason"] = "sha256"
+                return item
+
+    return {}
 
 
 def import_box_file_to_inbox(
@@ -1230,12 +1339,29 @@ def import_box_file_to_inbox(
     if not _safe_relative_to(source_path, base_folder):
         raise ValueError("Por seguridad, solo se pueden copiar a Bandeja archivos dentro de la carpeta Box vinculada al expediente.")
 
+    stat = source_path.stat()
+    box_relative_path = str(source_path.relative_to(base_folder))
+    file_sha256 = _calculate_file_sha256(source_path)
+
     metadata = {
         "box_original_path": str(source_path),
-        "box_relative_path": str(source_path.relative_to(base_folder)),
+        "box_relative_path": box_relative_path,
         "box_folder_path": str(base_folder),
         "origin": "expedient_box",
+        "sha256": file_sha256,
+        "file_sha256": file_sha256,
+        "size_bytes": stat.st_size,
+        "modified_at": stat.st_mtime,
     }
+
+    existing = _find_existing_box_inbox_item(
+        expedient_id=int(expedient_id),
+        box_original_path=str(source_path),
+        box_relative_path=box_relative_path,
+        sha256=file_sha256,
+    )
+    if existing:
+        return existing
 
     # import_file_to_inbox ha ido evolucionando. Pasamos solo los argumentos que acepte.
     import inspect
