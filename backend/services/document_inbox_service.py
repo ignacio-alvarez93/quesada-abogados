@@ -930,6 +930,111 @@ def list_inbox_items(
         return _annotate_inbox_duplicates(items)
 
 
+
+def mark_detected_inbox_duplicates(status_filter: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Marca como duplicate los items detectados como duplicados históricos.
+
+    No borra archivos.
+    No mueve documentos.
+    No toca el item principal.
+    """
+    items = list_inbox_items(status=status_filter, limit=500, offset=0)
+
+    marked = []
+    skipped = []
+    errors = []
+
+    for item in items:
+        item_id = int(item.get("id") or 0)
+        if not item_id:
+            continue
+
+        if not item.get("is_duplicate"):
+            skipped.append(item_id)
+            continue
+
+        duplicate_of_id = item.get("duplicate_of_id")
+        duplicate_reason = item.get("duplicate_reason") or "detected_duplicate"
+
+        already_duplicate_status = str(item.get("status") or "") == "duplicate"
+
+        try:
+            with get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT * FROM document_inbox_items WHERE id = ?",
+                    (item_id,),
+                ).fetchone()
+
+                if not row:
+                    errors.append({"id": item_id, "error": "No existe el item"})
+                    continue
+
+                current = dict(row)
+                metadata = _metadata_dict(current.get("metadata_json") or "")
+                metadata["duplicate_of_id"] = duplicate_of_id
+                metadata["duplicate_reason"] = duplicate_reason
+                metadata["duplicate_marked_at"] = _now()
+
+                conn.execute(
+                    """
+                    UPDATE document_inbox_items
+                    SET status = 'duplicate',
+                        updated_at = ?,
+                        metadata_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        _now(),
+                        json.dumps(metadata, ensure_ascii=False),
+                        item_id,
+                    ),
+                )
+
+                event_exists = conn.execute(
+                    """
+                    SELECT 1
+                    FROM document_inbox_events
+                    WHERE item_id = ?
+                      AND event_type = 'duplicate_marked'
+                    LIMIT 1
+                    """,
+                    (item_id,),
+                ).fetchone()
+
+                if not event_exists:
+                    _record_event(
+                        conn,
+                        item_id,
+                        "duplicate_marked",
+                        f"Documento marcado como duplicado de #{duplicate_of_id}",
+                        {
+                            "duplicate_of_id": duplicate_of_id,
+                            "duplicate_reason": duplicate_reason,
+                            "repaired": already_duplicate_status,
+                        },
+                    )
+
+                conn.commit()
+
+            if already_duplicate_status:
+                skipped.append(item_id)
+            else:
+                marked.append(item_id)
+        except Exception as exc:
+            errors.append({"id": item_id, "error": str(exc)})
+
+    return {
+        "marked_count": len(marked),
+        "skipped_count": len(skipped),
+        "error_count": len(errors),
+        "marked": marked,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
 def get_inbox_item(item_id: int) -> Dict[str, Any]:
     ensure_document_inbox_schema()
 

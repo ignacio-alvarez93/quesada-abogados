@@ -846,6 +846,20 @@ def document_inbox_view(page: ft.Page):
         except Exception as exc:
             show_error(exc)
 
+    def mark_detected_duplicates(e=None):
+        try:
+            result = document_inbox_service.mark_detected_inbox_duplicates(
+                status_filter=state.get("status_filter"),
+            )
+            show_success(
+                f"Duplicados marcados: {result.get('marked_count', 0)} · "
+                f"Omitidos: {result.get('skipped_count', 0)} · "
+                f"Errores: {result.get('error_count', 0)}"
+            )
+            refresh_items()
+        except Exception as exc:
+            show_error(exc)
+
     def render_items():
         selected_ids = set(state.get("selected_item_ids") or set())
         rows = []
@@ -943,6 +957,7 @@ def document_inbox_view(page: ft.Page):
             ft.Container(expand=True),
             status_dropdown,
             secondary_button("Actualizar", refresh_items),
+            secondary_button("Marcar duplicados detectados", mark_detected_duplicates),
         ],
         spacing=12,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
