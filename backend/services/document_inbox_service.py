@@ -626,9 +626,15 @@ def create_document_inbox_batch(
     return get_document_inbox_batch(batch_id)
 
 
-def list_document_inbox_batches(status=None, expedient_id=None, client_id=None, limit=200):
+def list_document_inbox_batches(status=None, expedient_id=None, client_id=None, search=None, limit=200):
     """
     Lista grupos documentales con contador de documentos.
+
+    Filtros:
+    - status
+    - expedient_id
+    - client_id
+    - search: busca en nombre, notas y carpeta destino.
     """
     ensure_document_inbox_batch_schema()
 
@@ -637,7 +643,7 @@ def list_document_inbox_batches(status=None, expedient_id=None, client_id=None, 
 
     if status and status != "all":
         where.append("b.status = ?")
-        params.append(status)
+        params.append(str(status).strip())
 
     if expedient_id:
         where.append("b.expedient_id = ?")
@@ -646,6 +652,19 @@ def list_document_inbox_batches(status=None, expedient_id=None, client_id=None, 
     if client_id:
         where.append("b.client_id = ?")
         params.append(int(client_id))
+
+    clean_search = str(search or "").strip()
+    if clean_search:
+        like_value = f"%{clean_search}%"
+        where.append(
+            "("
+            "b.name LIKE ? OR "
+            "b.notes LIKE ? OR "
+            "b.target_box_folder LIKE ? OR "
+            "CAST(b.id AS TEXT) LIKE ?"
+            ")"
+        )
+        params.extend([like_value, like_value, like_value, like_value])
 
     sql = """
         SELECT
