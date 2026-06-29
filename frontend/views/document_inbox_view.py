@@ -2894,11 +2894,12 @@ def document_inbox_view(page: ft.Page):
 
 
     batch_name_field = text_input("Nombre del grupo documental", width=680)
-    batch_target_expedient_id_create_field = text_input("Expediente ID destino", width=220)
     batch_target_folder_create_field = text_input("Subcarpeta destino sugerida", width=360)
     batch_notes_field = multiline_input("Notas del grupo", width=680)
     batch_dialog_message = ft.Container()
     batch_selected_docs_box = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO)
+    batch_create_client_label_to_id = {}
+    batch_create_expedient_label_to_id = {}
 
     def close_create_batch_dialog(e=None):
         create_batch_dialog.open = False
@@ -2906,6 +2907,88 @@ def document_inbox_view(page: ft.Page):
             page.update()
         except Exception:
             pass
+
+    def _batch_create_client_labels():
+        batch_create_client_label_to_id.clear()
+        options = document_inbox_service.client_autocomplete_options()
+        for item in options:
+            label = item.get("label")
+            if label:
+                batch_create_client_label_to_id[label] = int(item.get("id"))
+        return list(batch_create_client_label_to_id.keys())
+
+    def _batch_create_expedient_labels_for_client(client_id):
+        batch_create_expedient_label_to_id.clear()
+        if not client_id:
+            return []
+
+        options = document_inbox_service.expedient_autocomplete_options_for_client(int(client_id))
+        for item in options:
+            label = item.get("label")
+            if label:
+                batch_create_expedient_label_to_id[label] = int(item.get("id"))
+        return list(batch_create_expedient_label_to_id.keys())
+
+    def _batch_find_client_label(client_id):
+        if not client_id:
+            return ""
+        target = int(client_id)
+        for label, value in batch_create_client_label_to_id.items():
+            if int(value) == target:
+                return label
+        _batch_create_client_labels()
+        for label, value in batch_create_client_label_to_id.items():
+            if int(value) == target:
+                return label
+        return ""
+
+    def _batch_find_expedient_label(expedient_id):
+        if not expedient_id:
+            return ""
+        target = int(expedient_id)
+        for label, value in batch_create_expedient_label_to_id.items():
+            if int(value) == target:
+                return label
+        return ""
+
+    def on_batch_create_client_selected(value):
+        client_id = batch_create_client_label_to_id.get(value)
+        state["batch_create_client_id"] = int(client_id) if client_id else None
+        state["batch_create_expedient_id"] = None
+
+        expedient_labels = _batch_create_expedient_labels_for_client(state.get("batch_create_client_id"))
+        batch_create_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+        batch_create_expedient_autocomplete.input.label = (
+            f"Expediente destino ({len(expedient_labels)})"
+            if expedient_labels
+            else "Expediente destino (sin expedientes)"
+        )
+        page.update()
+
+    def on_batch_create_expedient_selected(value):
+        expedient_id = batch_create_expedient_label_to_id.get(value)
+        state["batch_create_expedient_id"] = int(expedient_id) if expedient_id else None
+        page.update()
+
+    batch_create_client_autocomplete = AppAutocomplete(
+        page=page,
+        label="Cliente destino",
+        options=_batch_create_client_labels(),
+        width=520,
+        max_results=12,
+        on_select=on_batch_create_client_selected,
+        allow_free_text=False,
+    )
+
+    batch_create_expedient_autocomplete = AppAutocomplete(
+        page=page,
+        label="Expediente destino",
+        options=[],
+        width=520,
+        max_results=12,
+        on_select=on_batch_create_expedient_selected,
+        allow_free_text=False,
+    )
 
     def analyze_batch_selection(selected_ids):
         valid_items = []
@@ -3028,9 +3111,12 @@ def document_inbox_view(page: ft.Page):
 
         batch_dialog_message.content = None
         batch_name_field.value = ""
-        batch_target_expedient_id_create_field.value = ""
         batch_target_folder_create_field.value = "PARA PRESENTAR"
         batch_notes_field.value = ""
+        state["batch_create_client_id"] = None
+        state["batch_create_expedient_id"] = None
+        batch_create_client_autocomplete.set_options(_batch_create_client_labels(), clear_value=True)
+        batch_create_expedient_autocomplete.set_options([], clear_value=True)
 
         analysis = analyze_batch_selection(selected_ids)
         valid_items = analysis.get("valid_items") or []
@@ -3040,7 +3126,21 @@ def document_inbox_view(page: ft.Page):
 
         if len(expedient_ids) == 1:
             expedient_id = next(iter(expedient_ids))
-            batch_target_expedient_id_create_field.value = str(expedient_id)
+            state["batch_create_expedient_id"] = int(expedient_id)
+
+            if len(client_ids) == 1:
+                client_id = next(iter(client_ids))
+                state["batch_create_client_id"] = int(client_id)
+                client_label = _batch_find_client_label(client_id)
+                if client_label:
+                    batch_create_client_autocomplete.input.value = client_label
+
+                expedient_labels = _batch_create_expedient_labels_for_client(client_id)
+                batch_create_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+                expedient_label = _batch_find_expedient_label(expedient_id)
+                if expedient_label:
+                    batch_create_expedient_autocomplete.input.value = expedient_label
+
             batch_name_field.value = f"EXPEDIENTE #{expedient_id} - PARA PRESENTAR ({len(valid_items)} documentos)"
         elif valid_items:
             batch_name_field.value = f"Grupo documental ({len(valid_items)} documentos válidos)"
@@ -3095,14 +3195,15 @@ def document_inbox_view(page: ft.Page):
             return
 
         try:
-            raw_expedient_id = str(batch_target_expedient_id_create_field.value or "").strip()
-            expedient_id = int(raw_expedient_id) if raw_expedient_id else None
+            client_id = state.get("batch_create_client_id")
+            expedient_id = state.get("batch_create_expedient_id")
             target_folder = str(batch_target_folder_create_field.value or "").strip()
 
             batch = document_inbox_service.create_document_inbox_batch(
                 name=name,
                 inbox_item_ids=valid_ids,
-                expedient_id=expedient_id,
+                client_id=int(client_id) if client_id else None,
+                expedient_id=int(expedient_id) if expedient_id else None,
                 target_box_folder=target_folder,
                 notes=batch_notes_field.value or "",
             )
@@ -3160,7 +3261,14 @@ def document_inbox_view(page: ft.Page):
                     batch_name_field,
                     ft.Row(
                         controls=[
-                            batch_target_expedient_id_create_field,
+                            batch_create_client_autocomplete.control,
+                            batch_create_expedient_autocomplete.control,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
                             batch_target_folder_create_field,
                         ],
                         spacing=10,
