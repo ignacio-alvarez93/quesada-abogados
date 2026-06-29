@@ -788,6 +788,36 @@ def document_inbox_view(page: ft.Page):
         except Exception as exc:
             show_error(exc)
 
+    def _normalize_box_subfolder_for_copy(selected_directory: str = "", base_box_folder: str = "") -> str:
+        raw = str(selected_directory or "").strip()
+        base = str(base_box_folder or "").strip()
+
+        if not raw:
+            return ""
+
+        try:
+            from pathlib import Path as _Path
+            raw_path = _Path(raw).expanduser()
+            base_path = _Path(base).expanduser() if base else None
+
+            if base_path and raw_path.is_absolute():
+                try:
+                    return str(raw_path.relative_to(base_path)).replace("\\", "/").strip("/")
+                except ValueError:
+                    pass
+        except Exception:
+            pass
+
+        return raw.replace("\\", "/").strip("/")
+
+
+    def _resolve_box_subfolder_for_copy() -> str:
+        override = state.pop("copy_to_box_subfolder_override", None)
+        if override is not None:
+            return str(override or "").strip()
+        return str(box_subfolder.value or "").strip()
+
+
     def copy_to_box(e=None):
         try:
             item = selected_item()
@@ -798,7 +828,7 @@ def document_inbox_view(page: ft.Page):
             updated = document_inbox_service.copy_inbox_item_to_expedient_box(
                 item["id"],
                 expedient_id=int(eid),
-                subfolder=box_subfolder.value or "",
+                subfolder=_resolve_box_subfolder_for_copy(),
             )
             show_success(f"Documento copiado a Box: {updated.get('copied_to_box_path')}")
             refresh_items()
@@ -1185,6 +1215,13 @@ def document_inbox_view(page: ft.Page):
 
                 if detail_expedient_id:
                     state["selected_expedient_id"] = int(detail_expedient_id)
+
+                selected_directory = state.get("detail_selected_directory")
+                base_box_folder = state.get("detail_selected_expedient_box_folder_path")
+                state["copy_to_box_subfolder_override"] = _normalize_box_subfolder_for_copy(
+                    selected_directory,
+                    base_box_folder,
+                )
 
                 copy_to_box(e)
             except Exception as exc:
