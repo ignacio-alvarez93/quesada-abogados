@@ -1,3 +1,5 @@
+import json
+
 import flet as ft
 
 from backend.services import document_inbox_service
@@ -2312,6 +2314,18 @@ def document_inbox_view(page: ft.Page):
     batch_target_expedient_id_field = text_input("Expediente ID destino", width=220)
     batch_target_subfolder_field = text_input("Subcarpeta Box destino", width=360)
 
+    def _batch_metadata_dict(raw):
+        try:
+            if isinstance(raw, dict):
+                return raw
+            if not raw:
+                return {}
+            parsed = json.loads(str(raw))
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+
     def show_batch_item_preview(item):
         file_path = item.get("stored_path") or item.get("linked_document_path") or ""
         if not file_path:
@@ -2432,6 +2446,48 @@ def document_inbox_view(page: ft.Page):
             notes = str(batch.get("notes") or "").strip()
             if notes:
                 rows.append(ft.Text(notes, size=12, color=Q_MUTED, selectable=True))
+
+            metadata = _batch_metadata_dict(batch.get("metadata_json"))
+            last_copy = metadata.get("last_copy_to_box") if isinstance(metadata, dict) else None
+            if isinstance(last_copy, dict):
+                rows.append(
+                    ft.Container(
+                        bgcolor="#ECFDF3" if int(last_copy.get("error_count") or 0) == 0 else "#FFF7E6",
+                        border=ft.border.all(
+                            1,
+                            "#ABEFC6" if int(last_copy.get("error_count") or 0) == 0 else "#F79009",
+                        ),
+                        border_radius=12,
+                        padding=10,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Último traslado a Box",
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#027A48" if int(last_copy.get("error_count") or 0) == 0 else "#B54708",
+                                ),
+                                ft.Text(
+                                    f"Fecha: {last_copy.get('at') or '-'} · "
+                                    f"Expediente: {last_copy.get('expedient_id') or '-'} · "
+                                    f"Subcarpeta: {last_copy.get('subfolder') or '-'}",
+                                    size=11,
+                                    color=Q_MUTED,
+                                    selectable=True,
+                                ),
+                                ft.Text(
+                                    f"Copiados: {last_copy.get('copied_count', 0)} · "
+                                    f"Omitidos: {last_copy.get('skipped_count', 0)} · "
+                                    f"Errores: {last_copy.get('error_count', 0)}",
+                                    size=12,
+                                    color=Q_PRIMARY_DARK,
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                            ],
+                            spacing=6,
+                        ),
+                    )
+                )
 
             rows.append(
                 ft.Container(
