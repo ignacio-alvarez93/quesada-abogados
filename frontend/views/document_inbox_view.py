@@ -2894,9 +2894,12 @@ def document_inbox_view(page: ft.Page):
 
 
     batch_name_field = text_input("Nombre del grupo documental", width=680)
+    batch_target_folder_create_field = text_input("Subcarpeta destino sugerida", width=360)
     batch_notes_field = multiline_input("Notas del grupo", width=680)
     batch_dialog_message = ft.Container()
     batch_selected_docs_box = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO)
+    batch_create_client_label_to_id = {}
+    batch_create_expedient_label_to_id = {}
 
     def close_create_batch_dialog(e=None):
         create_batch_dialog.open = False
@@ -2905,42 +2908,201 @@ def document_inbox_view(page: ft.Page):
         except Exception:
             pass
 
+    def _batch_create_client_labels():
+        batch_create_client_label_to_id.clear()
+        options = document_inbox_service.client_autocomplete_options()
+        for item in options:
+            label = item.get("label")
+            if label:
+                batch_create_client_label_to_id[label] = int(item.get("id"))
+        return list(batch_create_client_label_to_id.keys())
+
+    def _batch_create_expedient_labels_for_client(client_id):
+        batch_create_expedient_label_to_id.clear()
+        if not client_id:
+            return []
+
+        options = document_inbox_service.expedient_autocomplete_options_for_client(int(client_id))
+        for item in options:
+            label = item.get("label")
+            if label:
+                batch_create_expedient_label_to_id[label] = int(item.get("id"))
+        return list(batch_create_expedient_label_to_id.keys())
+
+    def _batch_find_client_label(client_id):
+        if not client_id:
+            return ""
+        target = int(client_id)
+        for label, value in batch_create_client_label_to_id.items():
+            if int(value) == target:
+                return label
+        _batch_create_client_labels()
+        for label, value in batch_create_client_label_to_id.items():
+            if int(value) == target:
+                return label
+        return ""
+
+    def _batch_find_expedient_label(expedient_id):
+        if not expedient_id:
+            return ""
+        target = int(expedient_id)
+        for label, value in batch_create_expedient_label_to_id.items():
+            if int(value) == target:
+                return label
+        return ""
+
+    def on_batch_create_client_selected(value):
+        client_id = batch_create_client_label_to_id.get(value)
+        state["batch_create_client_id"] = int(client_id) if client_id else None
+        state["batch_create_expedient_id"] = None
+
+        expedient_labels = _batch_create_expedient_labels_for_client(state.get("batch_create_client_id"))
+        batch_create_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+        batch_create_expedient_autocomplete.input.label = (
+            f"Expediente destino ({len(expedient_labels)})"
+            if expedient_labels
+            else "Expediente destino (sin expedientes)"
+        )
+        page.update()
+
+    def on_batch_create_expedient_selected(value):
+        expedient_id = batch_create_expedient_label_to_id.get(value)
+        state["batch_create_expedient_id"] = int(expedient_id) if expedient_id else None
+        page.update()
+
+    batch_create_client_autocomplete = AppAutocomplete(
+        page=page,
+        label="Cliente destino",
+        options=_batch_create_client_labels(),
+        width=520,
+        max_results=12,
+        on_select=on_batch_create_client_selected,
+        allow_free_text=False,
+    )
+
+    batch_create_expedient_autocomplete = AppAutocomplete(
+        page=page,
+        label="Expediente destino",
+        options=[],
+        width=520,
+        max_results=12,
+        on_select=on_batch_create_expedient_selected,
+        allow_free_text=False,
+    )
+
+    def analyze_batch_selection(selected_ids):
+        valid_items = []
+        skipped_items = []
+        expedient_ids = set()
+        client_ids = set()
+
+        for item_id in selected_ids:
+            try:
+                item = document_inbox_service.get_inbox_item(int(item_id))
+            except Exception as exc:
+                skipped_items.append({
+                    "id": item_id,
+                    "reason": f"error: {exc}",
+                    "filename": "-",
+                })
+                continue
+
+            status_value = str(item.get("status") or "").strip().lower()
+            if status_value in {"duplicate", "discarded"}:
+                skipped_items.append({
+                    "id": item.get("id"),
+                    "reason": f"status_{status_value}",
+                    "filename": item.get("original_filename") or "-",
+                })
+                continue
+
+            valid_items.append(item)
+
+            if item.get("expedient_id"):
+                expedient_ids.add(int(item.get("expedient_id")))
+
+            if item.get("client_id"):
+                client_ids.add(int(item.get("client_id")))
+
+        return {
+            "valid_items": valid_items,
+            "skipped_items": skipped_items,
+            "expedient_ids": expedient_ids,
+            "client_ids": client_ids,
+        }
+
     def render_batch_selected_docs():
         selected_ids = list(state.get("selected_item_ids") or [])
+        analysis = analyze_batch_selection(selected_ids)
+        valid_items = analysis.get("valid_items") or []
+        skipped_items = analysis.get("skipped_items") or []
+
         rows = []
 
         if not selected_ids:
-            rows.append(empty_state("No hay documentos seleccionados"))
+            rows.append(empty_state("No hay documentos seleccionados."))
         else:
-            selected_set = set(int(x) for x in selected_ids)
-            items = document_inbox_service.list_inbox_items(status=None, limit=1000)
-            selected_items = [item for item in items if int(item.get("id")) in selected_set]
-
-            for item in selected_items:
-                rows.append(
-                    ft.Container(
-                        bgcolor="#F8FAFC",
-                        border=ft.border.all(1, Q_BORDER),
-                        border_radius=10,
-                        padding=8,
-                        content=ft.Column(
-                            controls=[
-                                ft.Text(
-                                    f"#{item.get('id')} · {item.get('original_filename') or '-'}",
-                                    size=12,
-                                    weight=ft.FontWeight.W_600,
-                                    color=Q_PRIMARY_DARK,
-                                ),
-                                ft.Text(
-                                    f"Origen: {item.get('source_type') or '-'} · Estado: {item.get('status') or '-'}",
-                                    size=10,
-                                    color=Q_MUTED,
-                                ),
-                            ],
-                            spacing=2,
-                        ),
-                    )
+            rows.append(
+                ft.Text(
+                    f"Selección: {len(selected_ids)} · Válidos: {len(valid_items)} · Omitidos: {len(skipped_items)}",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
                 )
+            )
+
+        if skipped_items:
+            rows.append(
+                ft.Container(
+                    bgcolor="#FFF7E6",
+                    border=ft.border.all(1, "#F79009"),
+                    border_radius=10,
+                    padding=8,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Documentos que no entrarán en el grupo", size=12, weight=ft.FontWeight.BOLD, color="#B54708"),
+                            *[
+                                ft.Text(
+                                    f"#{item.get('id')} · {item.get('filename')} · {item.get('reason')}",
+                                    size=11,
+                                    color="#B54708",
+                                )
+                                for item in skipped_items[:8]
+                            ],
+                        ],
+                        spacing=4,
+                    ),
+                )
+            )
+
+        if valid_items:
+            rows.append(ft.Text("Documentos válidos", size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK))
+
+        for item in valid_items:
+            rows.append(
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=10,
+                    padding=8,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                f"#{item.get('id')} · {item.get('original_filename') or '-'}",
+                                size=12,
+                                weight=ft.FontWeight.W_600,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                f"Estado: {item.get('status') or '-'} · Cliente: {item.get('client_id') or '-'} · Expediente: {item.get('expedient_id') or '-'}",
+                                size=10,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=2,
+                    ),
+                )
+            )
 
         batch_selected_docs_box.controls = rows
 
@@ -2949,10 +3111,54 @@ def document_inbox_view(page: ft.Page):
 
         batch_dialog_message.content = None
         batch_name_field.value = ""
+        batch_target_folder_create_field.value = "PARA PRESENTAR"
         batch_notes_field.value = ""
+        state["batch_create_client_id"] = None
+        state["batch_create_expedient_id"] = None
+        batch_create_client_autocomplete.set_options(_batch_create_client_labels(), clear_value=True)
+        batch_create_expedient_autocomplete.set_options([], clear_value=True)
 
-        if selected_ids:
-            batch_name_field.value = f"Grupo documental ({len(selected_ids)} documentos)"
+        analysis = analyze_batch_selection(selected_ids)
+        valid_items = analysis.get("valid_items") or []
+        skipped_items = analysis.get("skipped_items") or []
+        expedient_ids = analysis.get("expedient_ids") or set()
+        client_ids = analysis.get("client_ids") or set()
+
+        if len(expedient_ids) == 1:
+            expedient_id = next(iter(expedient_ids))
+            state["batch_create_expedient_id"] = int(expedient_id)
+
+            if len(client_ids) == 1:
+                client_id = next(iter(client_ids))
+                state["batch_create_client_id"] = int(client_id)
+                client_label = _batch_find_client_label(client_id)
+                if client_label:
+                    batch_create_client_autocomplete.input.value = client_label
+
+                expedient_labels = _batch_create_expedient_labels_for_client(client_id)
+                batch_create_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+                expedient_label = _batch_find_expedient_label(expedient_id)
+                if expedient_label:
+                    batch_create_expedient_autocomplete.input.value = expedient_label
+
+            batch_name_field.value = f"EXPEDIENTE #{expedient_id} - PARA PRESENTAR ({len(valid_items)} documentos)"
+        elif valid_items:
+            batch_name_field.value = f"Grupo documental ({len(valid_items)} documentos válidos)"
+        elif selected_ids:
+            batch_name_field.value = f"Grupo documental ({len(selected_ids)} seleccionados)"
+        else:
+            batch_name_field.value = "Grupo documental"
+
+        messages = []
+        if skipped_items:
+            messages.append(f"Se omitirán {len(skipped_items)} documento(s) duplicate/discarded/no válidos.")
+        if len(expedient_ids) > 1:
+            messages.append("Aviso: los documentos válidos pertenecen a expedientes distintos.")
+        if len(client_ids) > 1:
+            messages.append("Aviso: los documentos válidos pertenecen a clientes distintos.")
+
+        if messages:
+            batch_dialog_message.content = error_alert(" ".join(messages))
 
         render_batch_selected_docs()
 
@@ -2964,9 +3170,15 @@ def document_inbox_view(page: ft.Page):
 
     def create_batch_from_selection(e=None):
         selected_ids = list(state.get("selected_item_ids") or [])
+        analysis = analyze_batch_selection(selected_ids)
+        valid_items = analysis.get("valid_items") or []
+        skipped_items = analysis.get("skipped_items") or []
+        valid_ids = [int(item.get("id")) for item in valid_items if item.get("id")]
 
-        if not selected_ids:
-            batch_dialog_message.content = error_alert("Selecciona al menos un documento para crear el grupo.")
+        if not valid_ids:
+            batch_dialog_message.content = error_alert(
+                "No hay documentos válidos para crear el grupo. Se omiten duplicados y descartados."
+            )
             try:
                 batch_dialog_message.update()
             except Exception:
@@ -2983,31 +3195,34 @@ def document_inbox_view(page: ft.Page):
             return
 
         try:
+            client_id = state.get("batch_create_client_id")
+            expedient_id = state.get("batch_create_expedient_id")
+            target_folder = str(batch_target_folder_create_field.value or "").strip()
+
             batch = document_inbox_service.create_document_inbox_batch(
                 name=name,
-                inbox_item_ids=selected_ids,
+                inbox_item_ids=valid_ids,
+                client_id=int(client_id) if client_id else None,
+                expedient_id=int(expedient_id) if expedient_id else None,
+                target_box_folder=target_folder,
                 notes=batch_notes_field.value or "",
             )
 
             state["selected_item_ids"] = set()
             selected_label.value = "Ningún documento seleccionado."
-            bulk_actions_box.content = build_bulk_actions_content()
-            render_items()
 
-            batch_dialog_message.content = success_alert(
-                f"Grupo #{batch.get('id')} creado con {batch.get('item_count')} documento(s)."
-            )
+            msg = f"Grupo #{batch.get('id')} creado con {batch.get('item_count')} documento(s)."
+            if skipped_items:
+                msg += f" Omitidos: {len(skipped_items)}."
+
+            batch_dialog_message.content = success_alert(msg)
+
+            refresh_items()
+            refresh_batches_panel()
+            render_batch_selected_docs()
 
             try:
                 selected_label.update()
-            except Exception:
-                pass
-            try:
-                bulk_actions_box.update()
-            except Exception:
-                pass
-            try:
-                items_column.update()
             except Exception:
                 pass
             try:
@@ -3015,10 +3230,13 @@ def document_inbox_view(page: ft.Page):
             except Exception:
                 pass
             try:
+                batch_selected_docs_box.update()
+            except Exception:
+                pass
+            try:
                 page.update()
             except Exception:
                 pass
-
         except Exception as exc:
             batch_dialog_message.content = error_alert(f"No se pudo crear el grupo: {exc}")
             try:
@@ -3041,6 +3259,21 @@ def document_inbox_view(page: ft.Page):
                     ),
                     batch_dialog_message,
                     batch_name_field,
+                    ft.Row(
+                        controls=[
+                            batch_create_client_autocomplete.control,
+                            batch_create_expedient_autocomplete.control,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            batch_target_folder_create_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
                     batch_notes_field,
                     ft.Text("Documentos incluidos", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                     ft.Container(
