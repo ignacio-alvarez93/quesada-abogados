@@ -2241,6 +2241,36 @@ def document_inbox_view(page: ft.Page):
     def apply_batch_filters(e=None):
         refresh_batches_panel()
 
+    def apply_batch_status_filter(status_value):
+        batch_filter_status_field.value = "" if status_value in (None, "", "all") else str(status_value)
+        refresh_batches_panel()
+
+    def build_batch_status_counter_row():
+        try:
+            counts = document_inbox_service.count_document_inbox_batches_by_status()
+        except Exception as exc:
+            return error_alert(f"No se pudieron cargar contadores de grupos: {exc}")
+
+        controls = [
+            secondary_button(
+                f"Todos {counts.get('all', 0)}",
+                lambda e: apply_batch_status_filter("all"),
+            )
+        ]
+
+        for status_value, label in BATCH_STATUS_OPTIONS:
+            count = counts.get(status_value, 0)
+            button_factory = primary_button if str(batch_filter_status_field.value or "").strip() == status_value else secondary_button
+            controls.append(
+                button_factory(
+                    f"{label} {count}",
+                    lambda e, status_value=status_value: apply_batch_status_filter(status_value),
+                )
+            )
+
+        return ft.Row(controls=controls, spacing=8, wrap=True)
+
+
     def quick_copy_batch_from_list(batch_id):
         try:
             batch = document_inbox_service.get_document_inbox_batch(int(batch_id))
@@ -2378,6 +2408,7 @@ def document_inbox_view(page: ft.Page):
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
+                    build_batch_status_counter_row(),
                     ft.Row(
                         controls=[
                             batch_filter_search_field,
@@ -2389,6 +2420,11 @@ def document_inbox_view(page: ft.Page):
                         ],
                         spacing=8,
                         wrap=True,
+                    ),
+                    ft.Text(
+                        f"Resultados mostrados: {len(rows)}",
+                        size=11,
+                        color=Q_MUTED,
                     ),
                     batches_panel_message,
                     ft.Column(controls=rows, spacing=6),
