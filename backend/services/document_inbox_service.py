@@ -484,6 +484,59 @@ def ensure_document_inbox_batch_schema():
         conn.commit()
 
 
+DOCUMENT_INBOX_BATCH_STATUSES = {
+    "draft",
+    "reviewed",
+    "copied_to_box",
+    "partial",
+    "error",
+    "archived",
+}
+
+DOCUMENT_INBOX_BATCH_STATUS_LABELS = {
+    "draft": "Borrador",
+    "reviewed": "Revisado",
+    "copied_to_box": "Copiado a Box",
+    "partial": "Parcial",
+    "error": "Error",
+    "archived": "Archivado",
+}
+
+
+def _normalize_document_inbox_batch_status(status):
+    """
+    Normaliza estados de grupos documentales.
+
+    Evita estados libres inconsistentes en la cabecera del grupo.
+    """
+    clean_status = str(status or "draft").strip().lower() or "draft"
+
+    aliases = {
+        "borrador": "draft",
+        "pendiente": "draft",
+        "revisado": "reviewed",
+        "review": "reviewed",
+        "copiado": "copied_to_box",
+        "copied": "copied_to_box",
+        "copy": "copied_to_box",
+        "box": "copied_to_box",
+        "parcial": "partial",
+        "partial_copy": "partial",
+        "error_copy": "error",
+        "archivado": "archived",
+        "archive": "archived",
+    }
+
+    clean_status = aliases.get(clean_status, clean_status)
+
+    if clean_status not in DOCUMENT_INBOX_BATCH_STATUSES:
+        allowed = ", ".join(sorted(DOCUMENT_INBOX_BATCH_STATUSES))
+        raise ValueError(f"Estado de grupo documental no válido: {clean_status}. Permitidos: {allowed}")
+
+    return clean_status
+
+
+
 def create_document_inbox_batch(
     name: str,
     inbox_item_ids=None,
@@ -570,7 +623,7 @@ def create_document_inbox_batch(
                 now,
                 now,
                 clean_name,
-                status or "draft",
+                _normalize_document_inbox_batch_status(status),
                 int(client_id) if client_id else None,
                 int(expedient_id) if expedient_id else None,
                 str(target_box_folder or "").strip(),
@@ -1001,7 +1054,7 @@ def update_document_inbox_batch(
     if not clean_name:
         raise ValueError("El nombre del grupo documental es obligatorio.")
 
-    clean_status = str(status or "draft").strip() or "draft"
+    clean_status = _normalize_document_inbox_batch_status(status)
     now = datetime.now().isoformat(timespec="seconds")
 
     with _connect() as conn:
@@ -1095,7 +1148,7 @@ def update_document_inbox_batch_status(batch_id: int, status: str):
 
     ensure_document_inbox_batch_schema()
 
-    clean_status = str(status or "").strip() or "draft"
+    clean_status = _normalize_document_inbox_batch_status(status)
     now = datetime.now().isoformat(timespec="seconds")
 
     with _connect() as conn:
