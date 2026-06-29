@@ -2251,22 +2251,57 @@ def document_inbox_view(page: ft.Page):
         except Exception as exc:
             return error_alert(f"No se pudieron cargar contadores de grupos: {exc}")
 
-        controls = [
-            secondary_button(
-                f"Todos {counts.get('all', 0)}",
-                lambda e: apply_batch_status_filter("all"),
-            )
-        ]
+        current_status = str(batch_filter_status_field.value or "").strip() or "all"
 
-        for status_value, label in BATCH_STATUS_OPTIONS:
-            count = counts.get(status_value, 0)
-            button_factory = primary_button if str(batch_filter_status_field.value or "").strip() == status_value else secondary_button
-            controls.append(
-                button_factory(
-                    f"{label} {count}",
-                    lambda e, status_value=status_value: apply_batch_status_filter(status_value),
-                )
+        def counter_chip(status_value, label, count):
+            is_active = current_status == status_value or (status_value == "all" and current_status == "all")
+
+            # Reutiliza el mismo lenguaje visual de la pestaña Documentos:
+            # chip de estado + contador compacto.
+            visual_status = "pending" if status_value == "all" else status_value
+            if status_value == "draft":
+                visual_status = "pending"
+            elif status_value == "archived":
+                visual_status = "reviewed"
+            elif status_value == "partial":
+                visual_status = "linked"
+            elif status_value == "error":
+                visual_status = "discarded"
+
+            chip = _status_chip(visual_status)
+
+            return ft.Container(
+                bgcolor="#FFFFFF" if not is_active else "#EEF2FF",
+                border=ft.border.all(1, Q_BORDER if not is_active else Q_PRIMARY),
+                border_radius=999,
+                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                ink=True,
+                on_click=lambda e, status_value=status_value: apply_batch_status_filter(status_value),
+                content=ft.Row(
+                    controls=[
+                        chip,
+                        ft.Text(
+                            str(count),
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK if is_active else Q_MUTED,
+                        ),
+                    ],
+                    spacing=6,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                ),
             )
+
+        controls = [
+            counter_chip("all", "Todos", counts.get("all", 0)),
+            counter_chip("draft", "Borrador", counts.get("draft", 0)),
+            counter_chip("reviewed", "Revisado", counts.get("reviewed", 0)),
+            counter_chip("copied_to_box", "Copiado", counts.get("copied_to_box", 0)),
+            counter_chip("partial", "Parcial", counts.get("partial", 0)),
+            counter_chip("error", "Error", counts.get("error", 0)),
+            counter_chip("archived", "Archivado", counts.get("archived", 0)),
+        ]
 
         return ft.Row(controls=controls, spacing=8, wrap=True)
 
