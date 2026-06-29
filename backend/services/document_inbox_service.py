@@ -743,6 +743,39 @@ def list_document_inbox_batches(status=None, expedient_id=None, client_id=None, 
         return [dict(row) for row in rows]
 
 
+def count_document_inbox_batches_by_status():
+    """
+    Devuelve contadores de grupos documentales por estado oficial.
+    """
+    ensure_document_inbox_batch_schema()
+
+    counts = {status: 0 for status in DOCUMENT_INBOX_BATCH_STATUSES}
+    counts["all"] = 0
+
+    with _connect() as conn:
+        conn.row_factory = _dict_row_factory
+        rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS total
+            FROM document_inbox_batches
+            GROUP BY status
+            """
+        ).fetchall()
+
+    for row in rows:
+        raw_status = row["status"] or "draft"
+        try:
+            status = _normalize_document_inbox_batch_status(raw_status)
+        except Exception:
+            status = "error"
+
+        total = int(row["total"] or 0)
+        counts[status] = counts.get(status, 0) + total
+        counts["all"] += total
+
+    return counts
+
+
 def get_document_inbox_batch(batch_id: int):
     """
     Devuelve un grupo documental con sus documentos.

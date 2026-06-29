@@ -2241,6 +2241,85 @@ def document_inbox_view(page: ft.Page):
     def apply_batch_filters(e=None):
         refresh_batches_panel()
 
+    def apply_batch_status_filter(status_value):
+        batch_filter_status_field.value = "" if status_value in (None, "", "all") else str(status_value)
+        refresh_batches_panel()
+
+    def build_batch_status_counter_row():
+        try:
+            counts = document_inbox_service.count_document_inbox_batches_by_status()
+        except Exception as exc:
+            return error_alert(f"No se pudieron cargar contadores de grupos: {exc}")
+
+        current_status = str(batch_filter_status_field.value or "").strip() or "all"
+
+        def counter_chip(status_value, label, count):
+            is_active = current_status == status_value or (status_value == "all" and current_status == "all")
+
+            # Reutiliza el mismo lenguaje visual de la pestaña Documentos:
+            # chip de estado + contador compacto.
+            if status_value == "all":
+                chip = ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=999,
+                    padding=ft.padding.symmetric(horizontal=8, vertical=3),
+                    content=ft.Text(
+                        "Todos",
+                        size=10,
+                        color=Q_MUTED,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                )
+            else:
+                visual_status = status_value
+                if status_value == "draft":
+                    visual_status = "pending"
+                elif status_value == "archived":
+                    visual_status = "reviewed"
+                elif status_value == "partial":
+                    visual_status = "linked"
+                elif status_value == "error":
+                    visual_status = "discarded"
+
+                chip = _status_chip(visual_status)
+
+            return ft.Container(
+                bgcolor="#FFFFFF" if not is_active else "#EEF2FF",
+                border=ft.border.all(1, Q_BORDER if not is_active else Q_PRIMARY),
+                border_radius=999,
+                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                ink=True,
+                on_click=lambda e, status_value=status_value: apply_batch_status_filter(status_value),
+                content=ft.Row(
+                    controls=[
+                        chip,
+                        ft.Text(
+                            str(count),
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK if is_active else Q_MUTED,
+                        ),
+                    ],
+                    spacing=6,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                ),
+            )
+
+        controls = [
+            counter_chip("all", "Todos", counts.get("all", 0)),
+            counter_chip("draft", "Borrador", counts.get("draft", 0)),
+            counter_chip("reviewed", "Revisado", counts.get("reviewed", 0)),
+            counter_chip("copied_to_box", "Copiado", counts.get("copied_to_box", 0)),
+            counter_chip("partial", "Parcial", counts.get("partial", 0)),
+            counter_chip("error", "Error", counts.get("error", 0)),
+            counter_chip("archived", "Archivado", counts.get("archived", 0)),
+        ]
+
+        return ft.Row(controls=controls, spacing=8, wrap=True)
+
+
     def quick_copy_batch_from_list(batch_id):
         try:
             batch = document_inbox_service.get_document_inbox_batch(int(batch_id))
@@ -2378,6 +2457,7 @@ def document_inbox_view(page: ft.Page):
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
+                    build_batch_status_counter_row(),
                     ft.Row(
                         controls=[
                             batch_filter_search_field,
@@ -2389,6 +2469,11 @@ def document_inbox_view(page: ft.Page):
                         ],
                         spacing=8,
                         wrap=True,
+                    ),
+                    ft.Text(
+                        f"Resultados mostrados: {len(rows)}",
+                        size=11,
+                        color=Q_MUTED,
                     ),
                     batches_panel_message,
                     ft.Column(controls=rows, spacing=6),
