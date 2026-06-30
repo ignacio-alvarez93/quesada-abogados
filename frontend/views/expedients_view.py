@@ -26,6 +26,7 @@ from backend.services import pdf_fill_service
 from backend.services import form_mapper_admin_service
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from frontend.components.app_button import primary_button, secondary_button, danger_button
+from frontend.components.document_file_card import document_file_card
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
 from frontend.components.app_dialog import form_dialog
@@ -5866,47 +5867,16 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             previewable = bool(doc.get("previewable"))
 
             document_cards.append(
-                ft.Container(
-                    padding=10,
-                    border_radius=10,
-                    border=ft.border.all(1, Q_BORDER),
-                    bgcolor="#FFFFFF",
-                    content=ft.Column(
-                        controls=[
-                            ft.Row(
-                                controls=[
-                                    ft.Icon(
-                                        ft.Icons.PICTURE_AS_PDF if doc_type == "pdf" else ft.Icons.IMAGE if doc_type == "image" else ft.Icons.DESCRIPTION,
-                                        color=Q_PRIMARY,
-                                        size=20,
-                                    ),
-                                    ft.Text(name, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK, expand=True),
-                                    ft.Text(size_label, size=11, color=Q_MUTED),
-                                ],
-                                spacing=8,
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                            ),
-                            ft.Text(f"Carpeta: {folder}", size=11, color=Q_MUTED),
-                            ft.Text(rel, size=11, color=Q_MUTED),
-                            ft.Text(f"Modificado: {modified_at}", size=11, color=Q_MUTED),
-                            ft.Row(
-                                controls=[
-                                    ft.Checkbox(
-                                label="Ver",
-                                value=False,
-                                on_change=lambda e, p=path, n=name: (
-                                    show_document_preview(p, n),
-                                    setattr(e.control, "value", False),
-                                    page.update(),
-                                ) if e.control.value else None,
-                            ),
-                                    secondary_button("Abrir", lambda e, p=path: open_document_with_system(p)),
-                                ],
-                                spacing=8,
-                            ),
-                        ],
-                        spacing=5,
-                    ),
+                document_file_card(
+                    name=name,
+                    path=path,
+                    relative_path=rel,
+                    folder=folder,
+                    size_label=size_label,
+                    modified_at=f"Modificado: {modified_at}",
+                    file_type=doc_type,
+                    on_preview=lambda e, p=path, n=name: show_document_preview(p, n),
+                    on_open=lambda e, p=path: open_document_with_system(p),
                 )
             )
 
