@@ -2392,53 +2392,42 @@ def document_inbox_view(page: ft.Page):
                     )
 
                 rows.append(
-                    ft.Container(
-                        bgcolor="#F8FAFC",
-                        border=ft.border.all(1, Q_BORDER),
-                        border_radius=12,
-                        padding=10,
-                        content=ft.Row(
-                            controls=[
-                                ft.Column(
-                                    controls=[
-                                        ft.Row(
-                                            controls=[
-                                                ft.Text(
-                                                    f"#{batch_id} · {name}",
-                                                    size=13,
-                                                    weight=ft.FontWeight.W_600,
-                                                    color=Q_PRIMARY_DARK,
-                                                ),
-                                                _batch_status_chip(status),
-                                            ],
-                                            spacing=8,
-                                            wrap=True,
-                                        ),
-                                        ft.Text(
-                                            f"{item_count} documento(s) · Estado: {status} · {updated_at}",
-                                            size=11,
-                                            color=Q_MUTED,
-                                        ),
-                                        ft.Text(
-                                            f"Cliente: {client_id} · Expediente: {expedient_id} · Carpeta: {target_folder}",
-                                            size=10,
-                                            color=Q_MUTED,
-                                            selectable=True,
-                                        ),
-                                        *extra_lines,
-                                    ],
-                                    spacing=2,
-                                    expand=True,
-                                ),
-                                secondary_button("Ver grupo", lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id)),
-                                secondary_button(
-                                    "Revisar copia" if already_copied else "Copiar a Box",
-                                    lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id) if already_copied else quick_copy_batch_from_list(batch_id),
-                                ),
-                            ],
-                            spacing=8,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        ),
+                    card_item(
+                        title=f"#{batch_id} · {name}",
+                        highlight=False,
+                        border_color=Q_BORDER,
+                        border_width=1,
+                        selected_color="#EFF8FF",
+                        title_controls=[
+                            ft.Text(
+                                f"#{batch_id} · {name}",
+                                size=13,
+                                weight=ft.FontWeight.W_600,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            _batch_status_chip(status),
+                        ],
+                        body=[
+                            ft.Text(
+                                f"{item_count} documento(s) · Estado: {status} · {updated_at}",
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                f"Cliente: {client_id} · Expediente: {expedient_id} · Carpeta: {target_folder}",
+                                size=10,
+                                color=Q_MUTED,
+                                selectable=True,
+                            ),
+                            *extra_lines,
+                        ],
+                        actions=[
+                            secondary_button("Ver grupo", lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id)),
+                            secondary_button(
+                                "Revisar copia" if already_copied else "Copiar a Box",
+                                lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id) if already_copied else quick_copy_batch_from_list(batch_id),
+                            ),
+                        ],
                     )
                 )
 

@@ -50,7 +50,9 @@ def card_item(
         header_controls.append(leading)
 
     if title_controls is not None:
-        header_row_controls = [control for control in title_controls if control is not None]
+        header_row_controls = [
+            control for control in [*title_controls, *badges, *actions] if control is not None
+        ]
     else:
         header_row_controls = [
             ft.Text(
