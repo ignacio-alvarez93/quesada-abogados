@@ -60,6 +60,7 @@ class AppAutocomplete:
         self.show_empty = show_empty
         self.helper_text = helper_text
         self.error_text = error_text
+        self._mouse_over_results = False
 
         self.selected_option = None
 
@@ -76,6 +77,7 @@ class AppAutocomplete:
             content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
             on_change=self._on_change,
             on_focus=self._on_focus,
+            on_blur=self._on_blur,
         )
 
         self.results_list = ft.ListView(
@@ -96,6 +98,7 @@ class AppAutocomplete:
             height=self.visible_rows * 42,
             visible=False,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            on_hover=self._on_results_hover,
         )
 
         self.control = ft.Container(
@@ -153,6 +156,17 @@ class AppAutocomplete:
 
         self._refresh_results(self.input.value or "", show_all=True)
         self._safe_update()
+
+    def _on_results_hover(self, e=None):
+        self._mouse_over_results = str(getattr(e, "data", "")).lower() == "true"
+
+    def _on_blur(self, e=None):
+        # Si el usuario está pulsando una opción, no cerramos aquí:
+        # dejamos que el on_click de la opción ejecute select().
+        if self._mouse_over_results:
+            return
+
+        self.close_results(update=True)
 
     def _on_change(self, e=None):
         typed = self.input.value or ""
@@ -302,6 +316,13 @@ class AppAutocomplete:
 
     def set_disabled(self, disabled=True, update=True):
         self.input.disabled = disabled
+        self.results_list.controls.clear()
+        self.results_box.visible = False
+
+        if update:
+            self._safe_update()
+
+    def close_results(self, update=True):
         self.results_list.controls.clear()
         self.results_box.visible = False
 
