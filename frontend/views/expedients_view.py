@@ -5704,25 +5704,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         page_preview_path = ""
 
                     if page_preview_path:
-                        preview_controls.extend(
-                            [
-                                ft.Container(
-                                    padding=ft.padding.only(top=8, bottom=2),
-                                    content=ft.Text(
-                                        f"Página {page_idx} de {total_pages}",
-                                        size=12,
-                                        weight=ft.FontWeight.BOLD,
-                                        color=Q_PRIMARY_DARK,
-                                    ),
-                                ),
-                                ft.Image(
-                                    src=page_preview_path,
-                                    fit="contain",
-                                    width=int(900 * (current_zoom / 1.6)),
-                                ),
-                                ft.Divider(),
-                            ]
-                        )
+                        preview_controls.extend(_viewer_page_controls(page_idx, page_preview_path))
             else:
                 preview_controls.append(
                     _zoomed_preview_image(preview_path, current_page)
