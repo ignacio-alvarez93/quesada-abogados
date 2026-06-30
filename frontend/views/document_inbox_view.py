@@ -46,29 +46,25 @@ def _format_size(size_bytes):
     return f"{size / (1024 * 1024):.1f} MB"
 
 
+DOCUMENT_STATUS_CHIP_MAP = {
+    "all": ("Todos", "#EEF2FF", "#3730A3"),
+    "pending": ("Pendientes", "#FFF7ED", "#B54708"),
+    "linked": ("Vinculados", "#EFF8FF", "#175CD3"),
+    "copied_to_box": ("Copiados a Box", "#ECFDF3", "#027A48"),
+    "reviewed": ("Revisados", "#F0F9FF", "#026AA2"),
+    "discarded": ("Descartados", "#F2F4F7", "#475467"),
+    "duplicate": ("Duplicados", "#FEF0C7", "#B54708"),
+    "error": ("Error", "#FEF3F2", "#B42318"),
+}
+
+
 def _status_chip(status):
-    status = status or "pending"
-    colors = {
-        "all": ("#EEF2FF", "#3730A3"),
-        "pending": ("#FFF7ED", "#B54708"),
-        "linked": ("#EFF8FF", "#175CD3"),
-        "copied_to_box": ("#ECFDF3", "#027A48"),
-        "reviewed": ("#F0F9FF", "#026AA2"),
-        "discarded": ("#F2F4F7", "#475467"),
-        "duplicate": ("#FEF0C7", "#B54708"),
-        "error": ("#FEF3F2", "#B42318"),
-    }
-    bg, fg = colors.get(status, ("#F8FAFC", Q_MUTED))
-    return ft.Container(
-        bgcolor=bg,
-        border_radius=999,
-        padding=ft.padding.symmetric(horizontal=10, vertical=4),
-        content=ft.Text(
-            STATUS_LABELS.get(status, status),
-            size=11,
-            color=fg,
-            weight=ft.FontWeight.BOLD,
-        ),
+    status_value = status or "pending"
+    return status_chip(
+        status_value,
+        label=STATUS_LABELS.get(status_value, status_value),
+        status_map=DOCUMENT_STATUS_CHIP_MAP,
+        compact=False,
     )
 
 
