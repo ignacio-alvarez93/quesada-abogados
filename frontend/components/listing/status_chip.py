@@ -21,6 +21,7 @@ def status_chip(
     label=None,
     status_map=None,
     compact=True,
+    bordered=False,
 ):
     """
     Chip visual reutilizable para estados.
@@ -32,10 +33,16 @@ def status_chip(
     visual_map = status_map or DEFAULT_STATUS_MAP
 
     default_label = label or normalized_status or "-"
-    resolved_label, bg, fg = visual_map.get(
+    resolved = visual_map.get(
         normalized_status,
         (default_label, "#F8FAFC", Q_MUTED),
     )
+
+    if len(resolved) == 4:
+        resolved_label, bg, fg, border_color = resolved
+    else:
+        resolved_label, bg, fg = resolved
+        border_color = bg
 
     if label:
         resolved_label = label
@@ -52,6 +59,7 @@ def status_chip(
             color=fg,
         ),
         bgcolor=bg,
+        border=ft.border.all(1, border_color) if bordered else None,
         border_radius=20,
         padding=ft.padding.symmetric(
             horizontal=horizontal_padding,

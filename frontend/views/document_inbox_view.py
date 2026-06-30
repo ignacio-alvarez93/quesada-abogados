@@ -12,6 +12,7 @@ from frontend.components.app_empty_state import empty_state
 from frontend.components.app_text_field import text_input, multiline_input
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.listing.status_chip import status_chip
 
 
 Q_PRIMARY_DARK = "#003B7A"
@@ -2577,45 +2578,22 @@ def document_inbox_view(page: ft.Page):
     def _batch_status_label(status):
         return BATCH_STATUS_LABELS.get(str(status or "draft"), str(status or "draft"))
 
+    BATCH_STATUS_CHIP_MAP = {
+        "draft": ("Borrador", "#F8FAFC", "#475569", "#CBD5E1"),
+        "reviewed": ("Revisado", "#EFF6FF", "#1D4ED8", "#BFDBFE"),
+        "copied_to_box": ("Copiado a Box", "#ECFDF3", "#027A48", "#ABEFC6"),
+        "partial": ("Parcial", "#FFF7E6", "#B54708", "#FEDF89"),
+        "error": ("Error", "#FEF3F2", "#B42318", "#FECDCA"),
+        "archived": ("Archivado", "#F4F3FF", "#5925DC", "#D9D6FE"),
+    }
+
     def _batch_status_chip(status):
-        status_value = str(status or "draft")
-        label = _batch_status_label(status_value)
-
-        bg = "#F8FAFC"
-        border = Q_BORDER
-        color = Q_MUTED
-
-        if status_value == "draft":
-            bg = "#F8FAFC"
-            border = "#CBD5E1"
-            color = "#475569"
-        elif status_value == "reviewed":
-            bg = "#EFF6FF"
-            border = "#BFDBFE"
-            color = "#1D4ED8"
-        elif status_value == "copied_to_box":
-            bg = "#ECFDF3"
-            border = "#ABEFC6"
-            color = "#027A48"
-        elif status_value == "partial":
-            bg = "#FFF7E6"
-            border = "#FEDF89"
-            color = "#B54708"
-        elif status_value == "error":
-            bg = "#FEF3F2"
-            border = "#FECDCA"
-            color = "#B42318"
-        elif status_value == "archived":
-            bg = "#F4F3FF"
-            border = "#D9D6FE"
-            color = "#5925DC"
-
-        return ft.Container(
-            bgcolor=bg,
-            border=ft.border.all(1, border),
-            border_radius=999,
-            padding=ft.padding.symmetric(horizontal=8, vertical=3),
-            content=ft.Text(label, size=10, color=color, weight=ft.FontWeight.BOLD),
+        return status_chip(
+            status or "draft",
+            label=_batch_status_label(status),
+            status_map=BATCH_STATUS_CHIP_MAP,
+            compact=True,
+            bordered=True,
         )
 
     def _set_batch_edit_status(status):
