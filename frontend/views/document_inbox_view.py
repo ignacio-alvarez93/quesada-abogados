@@ -12,6 +12,7 @@ from frontend.components.app_empty_state import empty_state
 from frontend.components.app_text_field import text_input, multiline_input
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.listing import counter_chips
 from frontend.components.listing.status_chip import status_chip
 
 
@@ -2254,72 +2255,29 @@ def document_inbox_view(page: ft.Page):
 
         current_status = str(batch_filter_status_field.value or "").strip() or "all"
 
-        def counter_chip(status_value, label, count):
-            is_active = current_status == status_value or (status_value == "all" and current_status == "all")
-
-            # Reutiliza el mismo lenguaje visual de la pestaña Documentos:
-            # chip de estado + contador compacto.
-            if status_value == "all":
-                chip = ft.Container(
-                    bgcolor="#F8FAFC",
-                    border=ft.border.all(1, Q_BORDER),
-                    border_radius=999,
-                    padding=ft.padding.symmetric(horizontal=8, vertical=3),
-                    content=ft.Text(
-                        "Todos",
-                        size=10,
-                        color=Q_MUTED,
-                        weight=ft.FontWeight.BOLD,
-                    ),
-                )
-            else:
-                visual_status = status_value
-                if status_value == "draft":
-                    visual_status = "pending"
-                elif status_value == "archived":
-                    visual_status = "reviewed"
-                elif status_value == "partial":
-                    visual_status = "linked"
-                elif status_value == "error":
-                    visual_status = "discarded"
-
-                chip = _status_chip(visual_status)
-
-            return ft.Container(
-                bgcolor="#FFFFFF" if not is_active else "#EEF2FF",
-                border=ft.border.all(1, Q_BORDER if not is_active else Q_PRIMARY),
-                border_radius=999,
-                padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                ink=True,
-                on_click=lambda e, status_value=status_value: apply_batch_status_filter(status_value),
-                content=ft.Row(
-                    controls=[
-                        chip,
-                        ft.Text(
-                            str(count),
-                            size=11,
-                            weight=ft.FontWeight.BOLD,
-                            color=Q_PRIMARY_DARK if is_active else Q_MUTED,
-                        ),
-                    ],
-                    spacing=6,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    tight=True,
-                ),
-            )
-
-        controls = [
-            counter_chip("all", "Todos", counts.get("all", 0)),
-            counter_chip("draft", "Borrador", counts.get("draft", 0)),
-            counter_chip("reviewed", "Revisado", counts.get("reviewed", 0)),
-            counter_chip("copied_to_box", "Copiado", counts.get("copied_to_box", 0)),
-            counter_chip("partial", "Parcial", counts.get("partial", 0)),
-            counter_chip("error", "Error", counts.get("error", 0)),
-            counter_chip("archived", "Archivado", counts.get("archived", 0)),
-        ]
-
-        return ft.Row(controls=controls, spacing=8, wrap=True)
-
+        return counter_chips(
+            options=[
+                ("draft", "Borrador"),
+                ("reviewed", "Revisado"),
+                ("copied_to_box", "Copiado"),
+                ("partial", "Parcial"),
+                ("error", "Error"),
+                ("archived", "Archivado"),
+            ],
+            counts=counts,
+            active_value=current_status,
+            on_select=apply_batch_status_filter,
+            include_all=True,
+            all_label="Todos",
+            all_value="all",
+            status_aliases={
+                "draft": "pending",
+                "archived": "reviewed",
+                "partial": "linked",
+                "error": "discarded",
+            },
+            direction="row",
+        )
 
     def quick_copy_batch_from_list(batch_id):
         try:
