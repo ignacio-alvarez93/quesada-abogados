@@ -103,6 +103,7 @@ def document_inbox_view(page: ft.Page):
 
     selected_label = ft.Text("Ningún documento seleccionado", size=12, color=Q_MUTED)
     pagination_label = ft.Text("Página 1", color=Q_MUTED, size=12)
+    pagination_controls_box = ft.Container()
     watch_scan_notice = ft.Text("", color=Q_MUTED, size=12)
     selected_relation_label = ft.Text("Cliente/expediente no seleccionado", size=12, color=Q_MUTED)
 
@@ -480,6 +481,25 @@ def document_inbox_view(page: ft.Page):
         page_size = max(1, int(state.get("page_size") or 10))
         return max(1, (total + page_size - 1) // page_size)
 
+    def _pagination_icon_button(label, target_page, disabled=False):
+        return ft.Container(
+            width=34,
+            height=30,
+            alignment=ft.Alignment(0, 0),
+            border=ft.border.all(1, "#CBD5E1"),
+            border_radius=8,
+            bgcolor="#F8FAFC" if not disabled else "#F1F5F9",
+            ink=not disabled,
+            on_click=None if disabled else lambda e, target_page=target_page: go_document_page(target_page),
+            content=ft.Text(
+                label,
+                size=13,
+                color=Q_PRIMARY_DARK if not disabled else "#94A3B8",
+                weight=ft.FontWeight.BOLD,
+            ),
+        )
+
+
     def refresh_pagination_label():
         total = int(state.get("total_items") or 0)
         page_size = max(1, int(state.get("page_size") or 10))
@@ -491,14 +511,40 @@ def document_inbox_view(page: ft.Page):
 
         pagination_label.value = f"Mostrando {start_index}-{end_index} de {total} · Página {page_number} de {pages}"
 
+        previous_disabled = page_number <= 1
+        next_disabled = page_number >= pages
+
+        pagination_controls_box.content = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=ft.padding.symmetric(horizontal=8, vertical=5),
+            content=ft.Row(
+                controls=[
+                    ft.Text("Página", size=11, color=Q_MUTED, weight=ft.FontWeight.BOLD),
+                    _pagination_icon_button("⏮", 1, previous_disabled),
+                    _pagination_icon_button("◀", page_number - 1, previous_disabled),
+                    pagination_label,
+                    _pagination_icon_button("▶", page_number + 1, next_disabled),
+                    _pagination_icon_button("⏭", pages, next_disabled),
+                ],
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
         try:
             pagination_label.update()
         except Exception:
             pass
 
+        try:
+            pagination_controls_box.update()
+        except Exception:
+            pass
+
     def go_document_page(page_number):
         state["page"] = max(1, min(int(page_number or 1), document_total_pages()))
-        state["selected_item_ids"] = set()
         refresh_items()
 
     def previous_document_page(e=None):
@@ -594,13 +640,6 @@ def document_inbox_view(page: ft.Page):
             limit=page_size,
             offset=offset,
         )
-
-        visible_ids = {int(item.get("id")) for item in state["items"] if item.get("id") is not None}
-        state["selected_item_ids"] = {
-            int(item_id)
-            for item_id in state.get("selected_item_ids", set())
-            if int(item_id) in visible_ids
-        }
 
         try:
             update_status_counters()
@@ -3335,7 +3374,14 @@ def document_inbox_view(page: ft.Page):
                     padding=12,
                     content=ft.Column(
                         controls=[
-                            status_counters_box,
+                            ft.Row(
+                                controls=[
+                                    ft.Container(content=status_counters_box, expand=True),
+                                    pagination_controls_box,
+                                ],
+                                spacing=10,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
                             ft.Row(
                                 controls=[
                                     ft.Text("Documentos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
@@ -3844,9 +3890,6 @@ def document_inbox_view(page: ft.Page):
                     controls=[
                         primary_button("Importar a bandeja", open_import_dialog),
                         secondary_button("Actualizar", lambda e: refresh_items(e, scan_watch=True)),
-                        secondary_button("Anterior", previous_document_page),
-                        secondary_button("Siguiente", next_document_page),
-                        pagination_label,
                         watch_scan_notice,
                         ft.Container(expand=True),
                         selected_label,
