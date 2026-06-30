@@ -12,7 +12,7 @@ from frontend.components.app_empty_state import empty_state
 from frontend.components.app_text_field import text_input, multiline_input
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.document_viewer_modal import open_document_viewer_modal
-from frontend.components.listing import counter_chips
+from frontend.components.listing import card_item, counter_chips
 from frontend.components.listing.status_chip import status_chip
 
 
@@ -889,64 +889,52 @@ def document_inbox_view(page: ft.Page):
                 )
 
             rows.append(
-                ft.Container(
-                    padding=10,
-                    border_radius=12,
-                    border=ft.border.all(
-                        2 if selected else 1,
-                        "#F79009" if is_duplicate else (Q_PRIMARY if selected else Q_BORDER),
-                    ),
-                    bgcolor="#FFF7E6" if is_duplicate else ("#EFF8FF" if selected else "#FFFFFF"),
+                card_item(
+                    title=item.get("original_filename") or "-",
+                    leading=ft.Text("📄", size=20),
+                    selected=selected,
+                    highlight=is_duplicate,
+                    border_color="#F79009" if is_duplicate else (Q_PRIMARY if selected else Q_BORDER),
+                    border_width=2 if selected else 1,
                     on_click=lambda e, item_id=item_id: toggle_item_selection(item_id),
-                    content=ft.Row(
-                        controls=[
-                            ft.Text("📄", size=20),
-                            ft.Column(
-                                controls=[
-                                    ft.Row(
-                                        controls=[
-                                            ft.Text(f"#{item_id}", size=12, color=Q_MUTED),
-                                            ft.Text(item.get("original_filename") or "-", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                            _status_chip(item.get("status")),
-                                            ft.Container(
-                                                visible=is_duplicate,
-                                                padding=ft.padding.symmetric(horizontal=8, vertical=3),
-                                                border_radius=999,
-                                                bgcolor="#FEF0C7",
-                                                content=ft.Text(
-                                                    duplicate_label,
-                                                    size=11,
-                                                    color="#B54708",
-                                                    weight=ft.FontWeight.BOLD,
-                                                ),
-                                            ),
-                                            secondary_button("Ficha", lambda e, item_id=item_id: open_item_detail(item_id)),
-                                        ],
-                                        spacing=8,
-                                        wrap=True,
-                                    ),
-                                    ft.Text(item.get("stored_path") or "-", size=11, color=Q_MUTED, selectable=True),
-                                    ft.Text(
-                                        f"Origen: {item.get('source_type') or '-'} · {item.get('source_label') or '-'} · "
-                                        f"Tamaño: {_format_size(item.get('size_bytes'))} · "
-                                        f"Cliente ID: {item.get('client_id') or '-'} · Expediente ID: {item.get('expedient_id') or '-'}",
-                                        size=11,
-                                        color=Q_MUTED,
-                                    ),
-                                    ft.Text(
-                                        f"Box destino: {item.get('copied_to_box_path') or '-'}",
-                                        size=11,
-                                        color=Q_MUTED,
-                                        selectable=True,
-                                    ),
-                                ],
-                                spacing=3,
-                                expand=True,
+                    title_controls=[
+                        ft.Text(f"#{item_id}", size=12, color=Q_MUTED),
+                        ft.Text(
+                            item.get("original_filename") or "-",
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        _status_chip(item.get("status")),
+                        ft.Container(
+                            visible=is_duplicate,
+                            padding=ft.padding.symmetric(horizontal=8, vertical=3),
+                            border_radius=999,
+                            bgcolor="#FEF0C7",
+                            content=ft.Text(
+                                duplicate_label,
+                                size=11,
+                                color="#B54708",
+                                weight=ft.FontWeight.BOLD,
                             ),
-                        ],
-                        spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.START,
-                    ),
+                        ),
+                        secondary_button("Ficha", lambda e, item_id=item_id: open_item_detail(item_id)),
+                    ],
+                    body=[
+                        ft.Text(item.get("stored_path") or "-", size=11, color=Q_MUTED, selectable=True),
+                        ft.Text(
+                            f"Origen: {item.get('source_type') or '-'} · {item.get('source_label') or '-'} · "
+                            f"Tamaño: {_format_size(item.get('size_bytes'))} · "
+                            f"Cliente ID: {item.get('client_id') or '-'} · Expediente ID: {item.get('expedient_id') or '-'}",
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                        ft.Text(
+                            f"Box destino: {item.get('copied_to_box_path') or '-'}",
+                            size=11,
+                            color=Q_MUTED,
+                            selectable=True,
+                        ),
+                    ],
                 )
             )
 
