@@ -19,6 +19,7 @@ def counter_chips(
     status_map=None,
     status_aliases=None,
     bordered_status=False,
+    direction="row",
 ):
     """
     Fila reutilizable de chips con contador.
@@ -83,8 +84,15 @@ def counter_chips(
                     ],
                     spacing=6,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
                 ),
             )
+        )
+
+    if str(direction or "row").lower() in ("column", "vertical"):
+        return ft.Column(
+            controls=controls,
+            spacing=8,
         )
 
     return ft.Row(
