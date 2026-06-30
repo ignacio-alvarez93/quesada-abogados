@@ -679,7 +679,7 @@ def create_document_inbox_batch(
     return get_document_inbox_batch(batch_id)
 
 
-def list_document_inbox_batches(status=None, expedient_id=None, client_id=None, search=None, limit=200):
+def list_document_inbox_batches(status=None, expedient_id=None, client_id=None, search=None, limit=200, offset=0):
     """
     Lista grupos documentales con contador de documentos.
 
@@ -733,14 +733,61 @@ def list_document_inbox_batches(status=None, expedient_id=None, client_id=None, 
     sql += """
         GROUP BY b.id
         ORDER BY b.updated_at DESC, b.id DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
     """
     params.append(int(limit or 200))
+    params.append(max(0, int(offset or 0)))
 
     with _connect() as conn:
         conn.row_factory = _dict_row_factory
         rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
+
+
+def count_document_inbox_batches(status=None, expedient_id=None, client_id=None, search=None):
+    """
+    Cuenta grupos documentales aplicando los mismos filtros de listado.
+
+    No agrupa por estado; sirve para paginación.
+    """
+    ensure_document_inbox_batch_schema()
+
+    where = []
+    params = []
+
+    if status and status != "all":
+        where.append("status = ?")
+        params.append(str(status).strip())
+
+    if expedient_id:
+        where.append("expedient_id = ?")
+        params.append(int(expedient_id))
+
+    if client_id:
+        where.append("client_id = ?")
+        params.append(int(client_id))
+
+    clean_search = str(search or "").strip()
+    if clean_search:
+        like_value = f"%{clean_search}%"
+        where.append(
+            "("
+            "name LIKE ? OR "
+            "notes LIKE ? OR "
+            "target_box_folder LIKE ? OR "
+            "CAST(id AS TEXT) LIKE ?"
+            ")"
+        )
+        params.extend([like_value, like_value, like_value, like_value])
+
+    sql = "SELECT COUNT(*) AS total FROM document_inbox_batches"
+
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+
+    with _connect() as conn:
+        row = conn.execute(sql, params).fetchone()
+        return int(row[0] or 0)
 
 
 def count_document_inbox_batches_by_status():
