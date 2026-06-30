@@ -3844,8 +3844,10 @@ def document_inbox_view(page: ft.Page):
                     controls=[
                         primary_button("Importar a bandeja", open_import_dialog),
                         secondary_button("Actualizar", lambda e: refresh_items(e, scan_watch=True)),
+                        secondary_button("Primera", lambda e: go_document_page(1)),
                         secondary_button("Anterior", previous_document_page),
                         secondary_button("Siguiente", next_document_page),
+                        secondary_button("Última", lambda e: go_document_page(document_total_pages())),
                         pagination_label,
                         watch_scan_notice,
                         ft.Container(expand=True),
