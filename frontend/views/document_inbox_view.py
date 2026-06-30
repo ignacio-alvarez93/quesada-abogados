@@ -2227,12 +2227,92 @@ def document_inbox_view(page: ft.Page):
     bulk_actions_box = ft.Container(content=build_bulk_actions_content())
 
     batches_panel_message = ft.Container()
-    batches_list_box = ft.Column(spacing=6)
+    batches_list_box = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
+    batch_pagination_label = ft.Text("Página 1", color=Q_MUTED, size=12)
+    batch_pagination_controls_box = ft.Container()
+
+    state["batch_page"] = int(state.get("batch_page") or 1)
+    state["batch_page_size"] = int(state.get("batch_page_size") or 10)
+    state["batch_total_items"] = int(state.get("batch_total_items") or 0)
 
     batch_filter_search_field = text_input("Buscar grupo", width=260)
     batch_filter_status_field = text_input("Estado", width=150)
     batch_filter_client_id_field = text_input("Cliente ID", width=120)
     batch_filter_expedient_id_field = text_input("Expediente ID", width=140)
+
+    def batch_total_pages():
+        total = int(state.get("batch_total_items") or 0)
+        page_size = max(1, int(state.get("batch_page_size") or 10))
+        return max(1, (total + page_size - 1) // page_size)
+
+
+    def _batch_pagination_icon_button(label, target_page, disabled=False):
+        return ft.Container(
+            width=34,
+            height=30,
+            alignment=ft.Alignment(0, 0),
+            border=ft.border.all(1, "#CBD5E1"),
+            border_radius=8,
+            bgcolor="#F8FAFC" if not disabled else "#F1F5F9",
+            ink=not disabled,
+            on_click=None if disabled else lambda e, target_page=target_page: go_batch_page(target_page),
+            content=ft.Text(
+                label,
+                size=13,
+                color=Q_PRIMARY_DARK if not disabled else "#94A3B8",
+                weight=ft.FontWeight.BOLD,
+            ),
+        )
+
+
+    def refresh_batch_pagination_label():
+        total = int(state.get("batch_total_items") or 0)
+        page_size = max(1, int(state.get("batch_page_size") or 10))
+        page_number = max(1, int(state.get("batch_page") or 1))
+        pages = batch_total_pages()
+
+        start_index = 0 if total == 0 else ((page_number - 1) * page_size) + 1
+        end_index = min(total, page_number * page_size)
+
+        batch_pagination_label.value = f"Mostrando {start_index}-{end_index} de {total} · Página {page_number} de {pages}"
+
+        previous_disabled = page_number <= 1
+        next_disabled = page_number >= pages
+
+        batch_pagination_controls_box.content = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=ft.padding.symmetric(horizontal=8, vertical=5),
+            content=ft.Row(
+                controls=[
+                    ft.Text("Página", size=11, color=Q_MUTED, weight=ft.FontWeight.BOLD),
+                    _batch_pagination_icon_button("⏮", 1, previous_disabled),
+                    _batch_pagination_icon_button("◀", page_number - 1, previous_disabled),
+                    batch_pagination_label,
+                    _batch_pagination_icon_button("▶", page_number + 1, next_disabled),
+                    _batch_pagination_icon_button("⏭", pages, next_disabled),
+                ],
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+        try:
+            batch_pagination_label.update()
+        except Exception:
+            pass
+
+        try:
+            batch_pagination_controls_box.update()
+        except Exception:
+            pass
+
+
+    def go_batch_page(page_number):
+        state["batch_page"] = max(1, min(int(page_number or 1), batch_total_pages()))
+        refresh_batches_panel()
+
 
     def _batch_filter_kwargs():
         raw_status = str(batch_filter_status_field.value or "").strip()
@@ -2240,7 +2320,7 @@ def document_inbox_view(page: ft.Page):
         raw_expedient_id = str(batch_filter_expedient_id_field.value or "").strip()
         raw_search = str(batch_filter_search_field.value or "").strip()
 
-        kwargs = {"limit": 50}
+        kwargs = {}
 
         if raw_status:
             kwargs["status"] = raw_status
@@ -2261,13 +2341,16 @@ def document_inbox_view(page: ft.Page):
         batch_filter_status_field.value = ""
         batch_filter_client_id_field.value = ""
         batch_filter_expedient_id_field.value = ""
+        state["batch_page"] = 1
         refresh_batches_panel()
 
     def apply_batch_filters(e=None):
+        state["batch_page"] = 1
         refresh_batches_panel()
 
     def apply_batch_status_filter(status_value):
         batch_filter_status_field.value = "" if status_value in (None, "", "all") else str(status_value)
+        state["batch_page"] = 1
         refresh_batches_panel()
 
     def build_batch_status_counter_row():
@@ -2371,7 +2454,22 @@ def document_inbox_view(page: ft.Page):
         rows = []
 
         try:
-            batches = document_inbox_service.list_document_inbox_batches(**_batch_filter_kwargs())
+            batch_filters = _batch_filter_kwargs()
+            page_size = max(1, int(state.get("batch_page_size") or 10))
+            total = document_inbox_service.count_document_inbox_batches(**batch_filters)
+            pages = max(1, (int(total or 0) + page_size - 1) // page_size)
+            page_number = max(1, min(int(state.get("batch_page") or 1), pages))
+            offset = (page_number - 1) * page_size
+
+            state["batch_page"] = page_number
+            state["batch_total_items"] = int(total or 0)
+
+            batches = document_inbox_service.list_document_inbox_batches(
+                **batch_filters,
+                limit=page_size,
+                offset=offset,
+            )
+            refresh_batch_pagination_label()
         except Exception as exc:
             return ft.Container(
                 bgcolor="#FFFFFF",
@@ -2486,7 +2584,14 @@ def document_inbox_view(page: ft.Page):
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
-                    build_batch_status_counter_row(),
+                    ft.Row(
+                        controls=[
+                            ft.Container(content=build_batch_status_counter_row(), expand=True),
+                            batch_pagination_controls_box,
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
                     ft.Row(
                         controls=[
                             batch_filter_search_field,
@@ -2505,7 +2610,15 @@ def document_inbox_view(page: ft.Page):
                         color=Q_MUTED,
                     ),
                     batches_panel_message,
-                    ft.Column(controls=rows, spacing=6),
+                    ft.Container(
+                        height=520,
+                        content=ft.Column(
+                            controls=rows,
+                            spacing=6,
+                            scroll=ft.ScrollMode.AUTO,
+                            expand=True,
+                        ),
+                    ),
                 ],
                 spacing=8,
             ),
