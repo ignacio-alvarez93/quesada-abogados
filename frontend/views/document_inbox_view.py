@@ -2323,6 +2323,37 @@ def document_inbox_view(page: ft.Page):
     def quick_copy_batch_from_list(batch_id):
         try:
             batch = document_inbox_service.get_document_inbox_batch(int(batch_id))
+            metadata = _batch_metadata_dict(batch.get("metadata_json"))
+            last_copy = metadata.get("last_copy_to_box") if isinstance(metadata, dict) else None
+
+            if isinstance(last_copy, dict):
+                batches_panel_message.content = ft.Container(
+                    bgcolor="#FFF7E6",
+                    border=ft.border.all(1, "#FEDF89"),
+                    border_radius=12,
+                    padding=10,
+                    content=ft.Text(
+                        f"El grupo #{batch_id} ya fue copiado a Box. "
+                        f"Última copia: {last_copy.get('at') or '-'} · "
+                        f"Expediente: {last_copy.get('expedient_id') or '-'} · "
+                        f"Carpeta: {last_copy.get('subfolder') or '-'}. "
+                        "Abre el grupo para revisar antes de volver a copiar.",
+                        size=12,
+                        color="#B54708",
+                        weight=ft.FontWeight.BOLD,
+                        selectable=True,
+                    ),
+                )
+                try:
+                    batches_panel_message.update()
+                except Exception:
+                    pass
+                try:
+                    page.update()
+                except Exception:
+                    pass
+                return
+
             expedient_id = batch.get("expedient_id")
             subfolder = str(batch.get("target_box_folder") or "").strip()
 
@@ -2393,6 +2424,29 @@ def document_inbox_view(page: ft.Page):
                 client_id = batch.get("client_id") or "-"
                 expedient_id = batch.get("expedient_id") or "-"
                 target_folder = batch.get("target_box_folder") or "-"
+                metadata = _batch_metadata_dict(batch.get("metadata_json"))
+                last_copy = metadata.get("last_copy_to_box") if isinstance(metadata, dict) else None
+                already_copied = isinstance(last_copy, dict)
+
+                extra_lines = []
+                if already_copied:
+                    extra_lines.append(
+                        ft.Container(
+                            bgcolor="#ECFDF3",
+                            border=ft.border.all(1, "#ABEFC6"),
+                            border_radius=10,
+                            padding=ft.padding.symmetric(horizontal=8, vertical=5),
+                            content=ft.Text(
+                                f"Ya copiado a Box · {last_copy.get('at') or '-'} · "
+                                f"Expediente: {last_copy.get('expedient_id') or '-'} · "
+                                f"Carpeta: {last_copy.get('subfolder') or '-'}",
+                                size=10,
+                                color="#027A48",
+                                weight=ft.FontWeight.BOLD,
+                                selectable=True,
+                            ),
+                        )
+                    )
 
                 rows.append(
                     ft.Container(
@@ -2428,12 +2482,16 @@ def document_inbox_view(page: ft.Page):
                                             color=Q_MUTED,
                                             selectable=True,
                                         ),
+                                        *extra_lines,
                                     ],
                                     spacing=2,
                                     expand=True,
                                 ),
                                 secondary_button("Ver grupo", lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id)),
-                                secondary_button("Copiar a Box", lambda e, batch_id=batch_id: quick_copy_batch_from_list(batch_id)),
+                                secondary_button(
+                                    "Revisar copia" if already_copied else "Copiar a Box",
+                                    lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id) if already_copied else quick_copy_batch_from_list(batch_id),
+                                ),
                             ],
                             spacing=8,
                             vertical_alignment=ft.CrossAxisAlignment.CENTER,
