@@ -12,6 +12,7 @@ def card_item(
     leading=None,
     badges=None,
     actions=None,
+    title_controls=None,
     body=None,
     footer=None,
     selected=False,
@@ -48,17 +49,22 @@ def card_item(
     if leading is not None:
         header_controls.append(leading)
 
+    if title_controls is not None:
+        header_row_controls = [control for control in title_controls if control is not None]
+    else:
+        header_row_controls = [
+            ft.Text(
+                str(title or "-"),
+                weight=ft.FontWeight.BOLD,
+                color=Q_PRIMARY_DARK,
+            ),
+            *badges,
+            *actions,
+        ]
+
     main_controls = [
         ft.Row(
-            controls=[
-                ft.Text(
-                    str(title or "-"),
-                    weight=ft.FontWeight.BOLD,
-                    color=Q_PRIMARY_DARK,
-                ),
-                *badges,
-                *actions,
-            ],
+            controls=header_row_controls,
             spacing=8,
             wrap=True,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
