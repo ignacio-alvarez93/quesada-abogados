@@ -3374,7 +3374,14 @@ def document_inbox_view(page: ft.Page):
                     padding=12,
                     content=ft.Column(
                         controls=[
-                            status_counters_box,
+                            ft.Row(
+                                controls=[
+                                    ft.Container(content=status_counters_box, expand=True),
+                                    pagination_controls_box,
+                                ],
+                                spacing=10,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
                             ft.Row(
                                 controls=[
                                     ft.Text("Documentos", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
@@ -3883,7 +3890,6 @@ def document_inbox_view(page: ft.Page):
                     controls=[
                         primary_button("Importar a bandeja", open_import_dialog),
                         secondary_button("Actualizar", lambda e: refresh_items(e, scan_watch=True)),
-                        pagination_controls_box,
                         watch_scan_notice,
                         ft.Container(expand=True),
                         selected_label,
