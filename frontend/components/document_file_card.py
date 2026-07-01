@@ -42,6 +42,7 @@ def document_file_card(
     open_label="Abrir",
     extra_lines=None,
     extra_actions=None,
+    action_groups=None,
     compact=False,
 ):
     """
@@ -128,6 +129,64 @@ def document_file_card(
     for action in extra_actions or []:
         if action is not None:
             actions.append(action)
+
+    def _popup_menu_item(item):
+        if isinstance(item, ft.PopupMenuItem):
+            return item
+
+        if isinstance(item, dict):
+            label = str(item.get("label") or item.get("text") or "-")
+            on_click = item.get("on_click")
+            disabled = bool(item.get("disabled") or False)
+            return ft.PopupMenuItem(
+                text=label,
+                disabled=disabled,
+                on_click=on_click,
+            )
+
+        return ft.PopupMenuItem(text=str(item))
+
+    def _action_group_button(group):
+        if isinstance(group, ft.Control):
+            return group
+
+        if not isinstance(group, dict):
+            return None
+
+        label = str(group.get("label") or group.get("title") or "Acciones")
+        items = group.get("items") or []
+
+        menu_items = [
+            _popup_menu_item(item)
+            for item in items
+            if item is not None
+        ]
+
+        if not menu_items:
+            return None
+
+        return ft.PopupMenuButton(
+            content=ft.Container(
+                padding=ft.padding.symmetric(horizontal=10, vertical=7),
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=8,
+                bgcolor="#FFFFFF",
+                content=ft.Row(
+                    controls=[
+                        ft.Text(label, size=12, color=Q_PRIMARY_DARK, weight=ft.FontWeight.BOLD),
+                        ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=16, color=Q_MUTED),
+                    ],
+                    spacing=4,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
+            items=menu_items,
+        )
+
+    for group in action_groups or []:
+        group_button = _action_group_button(group)
+        if group_button is not None:
+            actions.append(group_button)
 
     if actions:
         controls.append(
