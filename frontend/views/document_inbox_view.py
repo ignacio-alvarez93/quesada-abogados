@@ -2901,11 +2901,82 @@ def document_inbox_view(page: ft.Page):
 
             document_inbox_service.remove_item_from_document_inbox_batch(batch_id, int(item_id))
 
+            selected_ids = set(state.get("open_batch_selected_item_ids") or [])
+            selected_ids.discard(int(item_id))
+            state["open_batch_selected_item_ids"] = selected_ids
+
             batch_detail_message.content = success_alert(f"Documento #{item_id} quitado del grupo.")
             open_batch_detail_dialog(batch_id)
             refresh_batches_panel()
         except Exception as exc:
             batch_detail_message.content = error_alert(f"No se pudo quitar el documento del grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def toggle_open_batch_item_selection(e, item_id):
+        selected_ids = set(state.get("open_batch_selected_item_ids") or [])
+        item_id = int(item_id)
+
+        if bool(e.control.value):
+            selected_ids.add(item_id)
+        else:
+            selected_ids.discard(item_id)
+
+        state["open_batch_selected_item_ids"] = selected_ids
+        try:
+            open_batch_detail_dialog(state.get("open_batch_id"))
+        except Exception:
+            page.update()
+
+    def clear_open_batch_item_selection(e=None):
+        state["open_batch_selected_item_ids"] = set()
+        try:
+            open_batch_detail_dialog(state.get("open_batch_id"))
+        except Exception:
+            page.update()
+
+    def remove_selected_items_from_open_batch(e=None):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            selected_ids = [int(item_id) for item_id in (state.get("open_batch_selected_item_ids") or [])]
+            if not selected_ids:
+                raise ValueError("Selecciona uno o varios documentos del grupo.")
+
+            removed_count = 0
+            errors = []
+
+            for item_id in selected_ids:
+                try:
+                    document_inbox_service.remove_item_from_document_inbox_batch(batch_id, int(item_id))
+                    removed_count += 1
+                except Exception as exc:
+                    errors.append(f"#{item_id}: {exc}")
+
+            state["open_batch_selected_item_ids"] = set()
+
+            if errors:
+                batch_detail_message.content = error_alert(
+                    f"Quitados: {removed_count}. Errores: {len(errors)} · " + " | ".join(errors[:3])
+                )
+            else:
+                batch_detail_message.content = success_alert(
+                    f"Documentos quitados del grupo: {removed_count}."
+                )
+
+            open_batch_detail_dialog(batch_id)
+            refresh_batches_panel()
+
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudieron quitar seleccionados: {exc}")
             try:
                 batch_detail_message.update()
             except Exception:
@@ -2945,7 +3016,11 @@ def document_inbox_view(page: ft.Page):
 
     def open_batch_detail_dialog(batch_id):
         batch_detail_message.content = None
+        previous_open_batch_id = state.get("open_batch_id")
         state["open_batch_id"] = int(batch_id)
+
+        if int(previous_open_batch_id or 0) != int(batch_id):
+            state["open_batch_selected_item_ids"] = set()
 
         try:
             batch = document_inbox_service.get_document_inbox_batch(int(batch_id))
@@ -3141,9 +3216,50 @@ def document_inbox_view(page: ft.Page):
             )
 
             rows.append(ft.Divider())
-            rows.append(ft.Text("Documentos del grupo", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK))
 
-            for item in batch.get("items") or []:
+            selected_batch_item_ids = set(state.get("open_batch_selected_item_ids") or [])
+            batch_items = batch.get("items") or []
+
+            has_selected_batch_items = len(selected_batch_item_ids) > 0
+
+            rows.append(
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=10,
+                    padding=8,
+                    content=ft.Row(
+                        controls=[
+                            ft.Text("Documentos del grupo", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(
+                                f"Seleccionados: {len(selected_batch_item_ids)}",
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color="#B42318" if has_selected_batch_items else "#98A2B3",
+                                tooltip="Quitar seleccionados del grupo",
+                                disabled=not has_selected_batch_items,
+                                on_click=remove_selected_items_from_open_batch,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CLEAR_ALL,
+                                icon_color=Q_PRIMARY_DARK if has_selected_batch_items else "#98A2B3",
+                                tooltip="Limpiar selección",
+                                disabled=not has_selected_batch_items,
+                                on_click=clear_open_batch_item_selection,
+                            ),
+                        ],
+                        spacing=6,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                )
+            )
+
+            for item in batch_items:
+                item_id = int(item.get("id") or 0)
                 rows.append(
                     document_file_card(
                         name=f"#{item.get('id')} · {item.get('original_filename') or item.get('stored_filename') or '-'}",
@@ -3151,6 +3267,10 @@ def document_inbox_view(page: ft.Page):
                         size_label=f"Estado: {item.get('status') or '-'}",
                         modified_at=f"Origen: {item.get('source_type') or '-'}",
                         file_type=item.get("preview_type") or item.get("type"),
+                        selected=False,
+                        selectable=True,
+                        checkbox_value=item_id in selected_batch_item_ids,
+                        on_select=lambda e, item_id=item_id: toggle_open_batch_item_selection(e, item_id),
                         action_groups=[
                             {
                                 "label": "Ver",

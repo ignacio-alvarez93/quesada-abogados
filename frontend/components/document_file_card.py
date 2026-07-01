@@ -35,6 +35,7 @@ def document_file_card(
     file_type=None,
     selected=False,
     selectable=False,
+    checkbox_value=None,
     on_select=None,
     on_preview=None,
     on_open=None,
@@ -145,12 +146,12 @@ def document_file_card(
                     selectable=True,
                     size=12 if compact else 13,
                 ),
-                grouped_actions_menu or ft.Container(width=0, height=0),
+                *([grouped_actions_menu] if grouped_actions_menu is not None else []),
                 *(
                     [
                         ft.Checkbox(
                             label="" if compact else "Sel.",
-                            value=bool(selected),
+                            value=bool(selected) if checkbox_value is None else bool(checkbox_value),
                             on_change=on_select,
                         )
                     ]
@@ -203,7 +204,7 @@ def document_file_card(
         padding=8 if compact else 10,
         border_radius=10,
         border=ft.border.all(1, Q_BORDER),
-        bgcolor="#EFF8FF" if selected else "#FFFFFF",
+        bgcolor="#EFF8FF" if (selected and not selectable) else "#FFFFFF",
         content=ft.Column(
             controls=controls,
             spacing=4 if compact else 5,
