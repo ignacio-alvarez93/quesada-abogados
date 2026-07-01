@@ -3220,6 +3220,8 @@ def document_inbox_view(page: ft.Page):
             selected_batch_item_ids = set(state.get("open_batch_selected_item_ids") or [])
             batch_items = batch.get("items") or []
 
+            has_selected_batch_items = len(selected_batch_item_ids) > 0
+
             rows.append(
                 ft.Container(
                     bgcolor="#FFFFFF",
@@ -3234,13 +3236,22 @@ def document_inbox_view(page: ft.Page):
                                 size=11,
                                 color=Q_MUTED,
                             ),
-                            danger_button(
-                                "Quitar seleccionados",
-                                remove_selected_items_from_open_batch,
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color="#B42318" if has_selected_batch_items else "#98A2B3",
+                                tooltip="Quitar seleccionados del grupo",
+                                disabled=not has_selected_batch_items,
+                                on_click=remove_selected_items_from_open_batch,
                             ),
-                            secondary_button("Limpiar selección", clear_open_batch_item_selection),
+                            ft.IconButton(
+                                icon=ft.Icons.CLEAR_ALL,
+                                icon_color=Q_PRIMARY_DARK if has_selected_batch_items else "#98A2B3",
+                                tooltip="Limpiar selección",
+                                disabled=not has_selected_batch_items,
+                                on_click=clear_open_batch_item_selection,
+                            ),
                         ],
-                        spacing=8,
+                        spacing=6,
                         wrap=True,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
