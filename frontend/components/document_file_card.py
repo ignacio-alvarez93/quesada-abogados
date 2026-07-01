@@ -2,7 +2,7 @@ from pathlib import Path
 
 import flet as ft
 
-from frontend.components.app_button import primary_button, secondary_button, danger_button
+from frontend.components.app_button import primary_button, secondary_button
 
 
 Q_PRIMARY = "#0057B8"
@@ -62,6 +62,65 @@ def document_file_card(
     display_size = str(size_label or "")
     display_modified = str(modified_at or "")
 
+    grouped_actions_menu = None
+
+    def _popup_menu_item(item):
+        if isinstance(item, ft.PopupMenuItem):
+            return item
+
+        if isinstance(item, dict):
+            label = str(item.get("label") or item.get("text") or "-")
+            on_click = item.get("on_click")
+            disabled = bool(item.get("disabled") or False)
+            danger = bool(item.get("danger") or False)
+
+            text_control = ft.Text(
+                label,
+                color="#B42318" if danger else Q_PRIMARY_DARK,
+                weight=ft.FontWeight.BOLD if danger else None,
+            )
+
+            return ft.PopupMenuItem(
+                content=text_control,
+                on_click=None if disabled else on_click,
+            )
+
+        return ft.PopupMenuItem(content=ft.Text(str(item)))
+
+    def _flatten_action_group_items(groups):
+        flattened = []
+
+        for group in groups or []:
+            if isinstance(group, ft.PopupMenuItem):
+                flattened.append(group)
+                continue
+
+            if isinstance(group, ft.Control):
+                continue
+
+            if not isinstance(group, dict):
+                continue
+
+            for item in group.get("items") or []:
+                if item is not None:
+                    flattened.append(item)
+
+        return flattened
+
+    def _action_groups_menu(groups):
+        items = _flatten_action_group_items(groups)
+
+        if not items:
+            return None
+
+        return ft.PopupMenuButton(
+            icon=ft.Icons.MORE_VERT,
+            tooltip="Acciones",
+            items=[_popup_menu_item(item) for item in items],
+        )
+
+    grouped_actions_menu = _action_groups_menu(action_groups)
+
     metadata = []
 
     if display_folder:
@@ -86,6 +145,7 @@ def document_file_card(
                     selectable=True,
                     size=12 if compact else 13,
                 ),
+                grouped_actions_menu or ft.Container(width=0, height=0),
                 *(
                     [
                         ft.Checkbox(
@@ -129,70 +189,6 @@ def document_file_card(
     for action in extra_actions or []:
         if action is not None:
             actions.append(action)
-
-    def _action_group_item_button(item):
-        if isinstance(item, ft.Control):
-            return item
-
-        if isinstance(item, dict):
-            label = str(item.get("label") or item.get("text") or "-")
-            on_click = item.get("on_click")
-            disabled = bool(item.get("disabled") or False)
-            danger = bool(item.get("danger") or False)
-
-            button_factory = danger_button if danger else secondary_button
-            button = button_factory(label, on_click or (lambda e: None))
-            button.disabled = disabled
-            return button
-
-        return secondary_button(str(item), lambda e: None)
-
-    def _action_group_button(group):
-        if isinstance(group, ft.Control):
-            return group
-
-        if not isinstance(group, dict):
-            return None
-
-        label = str(group.get("label") or group.get("title") or "Acciones")
-        items = [item for item in (group.get("items") or []) if item is not None]
-
-        if not items:
-            return None
-
-        return ft.Container(
-            border=ft.border.all(1, Q_BORDER),
-            border_radius=10,
-            bgcolor="#FFFFFF",
-            content=ft.ExpansionTile(
-                title=ft.Text(
-                    label,
-                    size=12,
-                    color=Q_PRIMARY_DARK,
-                    weight=ft.FontWeight.BOLD,
-                ),
-                subtitle=ft.Text(
-                    f"{len(items)} accion(es)",
-                    size=10,
-                    color=Q_MUTED,
-                ),
-                controls=[
-                    ft.Container(
-                        padding=ft.padding.only(left=10, right=10, bottom=10),
-                        content=ft.Row(
-                            controls=[_action_group_item_button(item) for item in items],
-                            spacing=8,
-                            wrap=True,
-                        ),
-                    )
-                ],
-            ),
-        )
-
-    for group in action_groups or []:
-        group_button = _action_group_button(group)
-        if group_button is not None:
-            actions.append(group_button)
 
     if actions:
         controls.append(
