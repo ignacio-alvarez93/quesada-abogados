@@ -3151,11 +3151,20 @@ def document_inbox_view(page: ft.Page):
                         size_label=f"Estado: {item.get('status') or '-'}",
                         modified_at=f"Origen: {item.get('source_type') or '-'}",
                         file_type=item.get("preview_type") or item.get("type"),
-                        on_preview=lambda e, item=item: show_batch_item_preview(item),
-                        on_open=lambda e, item=item: open_batch_item_external(item),
-                        open_label="Abrir externo",
-                        extra_actions=[
-                            danger_button("Quitar", lambda e, item=item: remove_item_from_open_batch(item.get("id"))),
+                        action_groups=[
+                            {
+                                "label": "Ver",
+                                "items": [
+                                    {"label": "Previsualizar", "on_click": lambda e, item=item: show_batch_item_preview(item)},
+                                    {"label": "Abrir externo", "on_click": lambda e, item=item: open_batch_item_external(item)},
+                                ],
+                            },
+                            {
+                                "label": "Grupo",
+                                "items": [
+                                    {"label": "Quitar del grupo", "danger": True, "on_click": lambda e, item=item: remove_item_from_open_batch(item.get("id"))},
+                                ],
+                            },
                         ],
                         compact=True,
                     )

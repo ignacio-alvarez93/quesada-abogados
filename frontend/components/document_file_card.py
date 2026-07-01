@@ -2,7 +2,7 @@ from pathlib import Path
 
 import flet as ft
 
-from frontend.components.app_button import primary_button, secondary_button
+from frontend.components.app_button import primary_button, secondary_button, danger_button
 
 
 Q_PRIMARY = "#0057B8"
@@ -130,21 +130,22 @@ def document_file_card(
         if action is not None:
             actions.append(action)
 
-    def _popup_menu_item(item):
-        if isinstance(item, ft.PopupMenuItem):
+    def _action_group_item_button(item):
+        if isinstance(item, ft.Control):
             return item
 
         if isinstance(item, dict):
             label = str(item.get("label") or item.get("text") or "-")
             on_click = item.get("on_click")
             disabled = bool(item.get("disabled") or False)
-            return ft.PopupMenuItem(
-                text=label,
-                disabled=disabled,
-                on_click=on_click,
-            )
+            danger = bool(item.get("danger") or False)
 
-        return ft.PopupMenuItem(text=str(item))
+            button_factory = danger_button if danger else secondary_button
+            button = button_factory(label, on_click or (lambda e: None))
+            button.disabled = disabled
+            return button
+
+        return secondary_button(str(item), lambda e: None)
 
     def _action_group_button(group):
         if isinstance(group, ft.Control):
@@ -154,33 +155,38 @@ def document_file_card(
             return None
 
         label = str(group.get("label") or group.get("title") or "Acciones")
-        items = group.get("items") or []
+        items = [item for item in (group.get("items") or []) if item is not None]
 
-        menu_items = [
-            _popup_menu_item(item)
-            for item in items
-            if item is not None
-        ]
-
-        if not menu_items:
+        if not items:
             return None
 
-        return ft.PopupMenuButton(
-            content=ft.Container(
-                padding=ft.padding.symmetric(horizontal=10, vertical=7),
-                border=ft.border.all(1, Q_BORDER),
-                border_radius=8,
-                bgcolor="#FFFFFF",
-                content=ft.Row(
-                    controls=[
-                        ft.Text(label, size=12, color=Q_PRIMARY_DARK, weight=ft.FontWeight.BOLD),
-                        ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=16, color=Q_MUTED),
-                    ],
-                    spacing=4,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        return ft.Container(
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=10,
+            bgcolor="#FFFFFF",
+            content=ft.ExpansionTile(
+                title=ft.Text(
+                    label,
+                    size=12,
+                    color=Q_PRIMARY_DARK,
+                    weight=ft.FontWeight.BOLD,
                 ),
+                subtitle=ft.Text(
+                    f"{len(items)} accion(es)",
+                    size=10,
+                    color=Q_MUTED,
+                ),
+                controls=[
+                    ft.Container(
+                        padding=ft.padding.only(left=10, right=10, bottom=10),
+                        content=ft.Row(
+                            controls=[_action_group_item_button(item) for item in items],
+                            spacing=8,
+                            wrap=True,
+                        ),
+                    )
+                ],
             ),
-            items=menu_items,
         )
 
     for group in action_groups or []:
