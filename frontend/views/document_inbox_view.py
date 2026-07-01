@@ -79,6 +79,7 @@ def document_inbox_view(page: ft.Page):
         "items": [],
         "selected_item_id": None,
         "selected_item_ids": set(),
+        "selected_batch_ids": set(),
         "page": 1,
         "page_size": 10,
         "total_items": 0,
@@ -2429,8 +2430,62 @@ def document_inbox_view(page: ft.Page):
             except Exception:
                 pass
 
+    def toggle_batch_selection(batch_id):
+        batch_id = int(batch_id)
+        selected_ids = set(state.get("selected_batch_ids") or set())
+
+        if batch_id in selected_ids:
+            selected_ids.remove(batch_id)
+        else:
+            selected_ids.add(batch_id)
+
+        state["selected_batch_ids"] = selected_ids
+        refresh_batches_panel()
+
+    def clear_batch_selection(e=None):
+        state["selected_batch_ids"] = set()
+        refresh_batches_panel()
+
+    def update_selected_batches_status(new_status, success_label):
+        selected_ids = list(state.get("selected_batch_ids") or [])
+        if not selected_ids:
+            batches_panel_message.content = error_alert("Selecciona uno o varios grupos documentales.")
+            try:
+                batches_panel_message.update()
+            except Exception:
+                pass
+            return
+
+        ok = 0
+        errors = []
+
+        for batch_id in selected_ids:
+            try:
+                document_inbox_service.update_document_inbox_batch_status(int(batch_id), new_status)
+                ok += 1
+            except Exception as exc:
+                errors.append(f"#{batch_id}: {exc}")
+
+        state["selected_batch_ids"] = set()
+
+        if errors:
+            batches_panel_message.content = error_alert(
+                f"{success_label}: {ok}. Errores: " + " | ".join(errors[:3])
+            )
+        else:
+            batches_panel_message.content = success_alert(f"{success_label}: {ok} grupo(s).")
+
+        refresh_batches_panel()
+
+    def mark_selected_batches_reviewed(e=None):
+        update_selected_batches_status("reviewed", "Grupos marcados como revisados")
+
+    def archive_selected_batches(e=None):
+        update_selected_batches_status("archived", "Grupos archivados")
+
     def build_batches_panel_content():
         rows = []
+        selected_batch_ids = set(state.get("selected_batch_ids") or set())
 
         try:
             batch_filters = _batch_filter_kwargs()
@@ -2486,6 +2541,7 @@ def document_inbox_view(page: ft.Page):
                 metadata = _batch_metadata_dict(batch.get("metadata_json"))
                 last_copy = metadata.get("last_copy_to_box") if isinstance(metadata, dict) else None
                 already_copied = isinstance(last_copy, dict)
+                selected_batch = int(batch_id or 0) in selected_batch_ids
 
                 extra_lines = []
                 if already_copied:
@@ -2507,43 +2563,47 @@ def document_inbox_view(page: ft.Page):
                         )
                     )
 
+                batch_extra_lines = [
+                    _batch_status_chip(status),
+                    ft.Text(
+                        f"{item_count} documento(s) · Estado: {status} · {updated_at}",
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        f"Cliente: {client_id} · Expediente: {expedient_id} · Carpeta: {target_folder}",
+                        size=10,
+                        color=Q_MUTED,
+                        selectable=True,
+                    ),
+                    *extra_lines,
+                ]
+
                 rows.append(
-                    card_item(
-                        title=f"#{batch_id} · {name}",
-                        highlight=False,
-                        border_color=Q_BORDER,
-                        border_width=1,
-                        selected_color="#EFF8FF",
-                        title_controls=[
-                            ft.Text(
-                                f"#{batch_id} · {name}",
-                                size=13,
-                                weight=ft.FontWeight.W_600,
-                                color=Q_PRIMARY_DARK,
-                            ),
-                            _batch_status_chip(status),
+                    document_file_card(
+                        name=f"#{batch_id} · {name}",
+                        path=f"Grupo documental · {item_count} documento(s)",
+                        size_label=f"Estado: {status}",
+                        modified_at=f"Actualizado: {updated_at or '-'}",
+                        file_type="folder",
+                        selected=False,
+                        selectable=True,
+                        checkbox_value=selected_batch,
+                        on_select=lambda e, batch_id=batch_id: toggle_batch_selection(batch_id),
+                        extra_lines=batch_extra_lines,
+                        action_groups=[
+                            {
+                                "label": "Grupo",
+                                "items": [
+                                    {"label": "Abrir grupo", "on_click": lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id)},
+                                    {
+                                        "label": "Revisar copia" if already_copied else "Copiar a Box",
+                                        "on_click": lambda e, batch_id=batch_id, already_copied=already_copied: open_batch_detail_dialog(batch_id) if already_copied else quick_copy_batch_from_list(batch_id),
+                                    },
+                                ],
+                            },
                         ],
-                        body=[
-                            ft.Text(
-                                f"{item_count} documento(s) · Estado: {status} · {updated_at}",
-                                size=11,
-                                color=Q_MUTED,
-                            ),
-                            ft.Text(
-                                f"Cliente: {client_id} · Expediente: {expedient_id} · Carpeta: {target_folder}",
-                                size=10,
-                                color=Q_MUTED,
-                                selectable=True,
-                            ),
-                            *extra_lines,
-                        ],
-                        actions=[
-                            secondary_button("Ver grupo", lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id)),
-                            secondary_button(
-                                "Revisar copia" if already_copied else "Copiar a Box",
-                                lambda e, batch_id=batch_id: open_batch_detail_dialog(batch_id) if already_copied else quick_copy_batch_from_list(batch_id),
-                            ),
-                        ],
+                        compact=True,
                     )
                 )
 
@@ -2557,10 +2617,36 @@ def document_inbox_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             ft.Text("Grupos documentales", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ft.Container(expand=True),
+                            ft.Text(
+                                f"Seleccionados: {len(selected_batch_ids)}",
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CLEAR_ALL,
+                                icon_color=Q_PRIMARY_DARK if selected_batch_ids else "#98A2B3",
+                                tooltip="Limpiar selección de grupos",
+                                disabled=not bool(selected_batch_ids),
+                                on_click=clear_batch_selection,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
+                                icon_color=Q_PRIMARY_DARK if selected_batch_ids else "#98A2B3",
+                                tooltip="Marcar grupos revisados",
+                                disabled=not bool(selected_batch_ids),
+                                on_click=mark_selected_batches_reviewed,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.ARCHIVE_OUTLINED,
+                                icon_color=Q_PRIMARY_DARK if selected_batch_ids else "#98A2B3",
+                                tooltip="Archivar grupos seleccionados",
+                                disabled=not bool(selected_batch_ids),
+                                on_click=archive_selected_batches,
+                            ),
                             secondary_button("Refrescar grupos", refresh_batches_panel),
                         ],
-                        spacing=8,
+                        spacing=6,
+                        wrap=True,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     ft.Row(
