@@ -5355,11 +5355,52 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
+        selected_docs_count_label = ft.Text(
+            f"Seleccionados: {len(selected_docs)}",
+            size=11,
+            color=Q_MUTED,
+        )
+
+        selected_docs_view_button = ft.IconButton(
+            icon=ft.Icons.VISIBILITY,
+            icon_color=Q_PRIMARY_DARK if selected_docs else "#98A2B3",
+            tooltip="Ver seleccionados",
+            disabled=not bool(selected_docs),
+            on_click=lambda e: open_selected_documents(e),
+        )
+
+        selected_docs_clear_button = ft.IconButton(
+            icon=ft.Icons.CLEAR_ALL,
+            icon_color=Q_PRIMARY_DARK if selected_docs else "#98A2B3",
+            tooltip="Limpiar selección",
+            disabled=not bool(selected_docs),
+            on_click=lambda e: clear_selected_documents(e),
+        )
+
+        def refresh_selected_docs_bulk_controls():
+            has_selected = bool(selected_docs)
+            selected_docs_count_label.value = f"Seleccionados: {len(selected_docs)}"
+            selected_docs_view_button.disabled = not has_selected
+            selected_docs_view_button.icon_color = Q_PRIMARY_DARK if has_selected else "#98A2B3"
+            selected_docs_clear_button.disabled = not has_selected
+            selected_docs_clear_button.icon_color = Q_PRIMARY_DARK if has_selected else "#98A2B3"
+
+        def clear_selected_documents(e=None):
+            selected_docs.clear()
+            refresh_selected_docs_bulk_controls()
+
+            try:
+                open_document_folder(data.get("current_path") or current_path)
+            except Exception:
+                page.update()
+
         def toggle_document_selection(e, file_path, file_name):
             if e.control.value:
                 selected_docs[file_path] = {"path": file_path, "name": file_name}
             else:
                 selected_docs.pop(file_path, None)
+
+            refresh_selected_docs_bulk_controls()
             page.update()
 
         def open_selected_documents(e=None):
@@ -5390,11 +5431,19 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     size_label=_format_file_size(file.get("size")),
                     modified_at=f"Orden: {_mercurio_file_order_label(file)}",
                     file_type=file.get("type"),
-                    selected=file_path in selected_docs,
+                    selected=False,
                     selectable=True,
+                    checkbox_value=file_path in selected_docs,
                     on_select=lambda e, p=file_path, n=file_name: toggle_document_selection(e, p, n),
-                    on_preview=lambda e, p=file_path, n=file_name: show_document_preview(p, n, expediente_id),
-                    on_open=lambda e, p=file_path: open_document_with_system(p, expediente_id),
+                    action_groups=[
+                        {
+                            "label": "Documento",
+                            "items": [
+                                {"label": "Previsualizar", "on_click": lambda e, p=file_path, n=file_name: show_document_preview(p, n, expediente_id)},
+                                {"label": "Abrir externo", "on_click": lambda e, p=file_path: open_document_with_system(p, expediente_id)},
+                            ],
+                        },
+                    ],
                     compact=True,
                 )
             )
@@ -5440,11 +5489,26 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     secondary_button("Subir nivel", lambda e: open_document_parent_folder(data.get("current_path"), root_path)),
                     primary_button("Abrir carpeta Windows", lambda e: open_current_document_folder(data.get("current_path") or current_path)),
                     secondary_button("Ir a PARA PRESENTAR", open_para_presentar_in_browser),
-                    primary_button("Ver seleccionados", open_selected_documents),
                     secondary_button("Volcar datos en formulario", volcar_datos_formulario),
                 ],
                 spacing=10,
                 wrap=True,
+            ),
+            ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=10,
+                padding=8,
+                content=ft.Row(
+                    controls=[
+                        selected_docs_count_label,
+                        selected_docs_view_button,
+                        selected_docs_clear_button,
+                    ],
+                    spacing=6,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
             ),
             ft.Divider(),
             ft.Text(f"Carpetas ({len(folder_controls)})", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
