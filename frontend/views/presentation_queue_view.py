@@ -5,6 +5,7 @@ from frontend.components.app_button import primary_button, secondary_button, dan
 from frontend.components.app_alert import error_alert, success_alert
 from frontend.components.app_card import metric_card
 from frontend.components.app_empty_state import empty_state
+from frontend.components.document_file_card import document_file_card
 
 Q_PRIMARY_DARK = "#003B7A"
 Q_MUTED = "#64748B"
@@ -116,63 +117,47 @@ def presentation_queue_view(page: ft.Page, on_open_expediente=None):
         if can_cancel:
             actions.append(danger_button("Cancelar", lambda e, qid=item["id"]: cancel_item(qid)))
 
-        return ft.Container(
-            bgcolor="#FFFFFF",
-            border=ft.border.all(1, Q_BORDER),
-            border_radius=14,
-            padding=14,
-            content=ft.Column(
-                spacing=10,
+        extra_lines = [
+            ft.Row(
                 controls=[
-                    ft.Row(
-                        controls=[
-                            ft.Column(
-                                expand=True,
-                                spacing=2,
-                                controls=[
-                                    ft.Text(
-                                        item.get("numero_expediente") or f"Expediente #{item.get('expediente_id')}",
-                                        size=15,
-                                        weight=ft.FontWeight.BOLD,
-                                        color=Q_PRIMARY_DARK,
-                                    ),
-                                    ft.Text(item.get("cliente_nombre") or "Cliente no indicado", size=12, color=Q_MUTED),
-                                    ft.Text(item.get("tipo_expediente") or "Tipo no indicado", size=12, color=Q_MUTED),
-                                ],
-                            ),
-                            _estado_badge(estado),
-                        ],
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    ft.Row(
-                        controls=[
-                            ft.Text(f"Expediente ID: {item.get('expediente_id')}", size=11, color=Q_MUTED),
-                            ft.Text(f"Cola ID: {item.get('id')}", size=11, color=Q_MUTED),
-                            ft.Text(f"Intentos: {item.get('intentos') or 0}", size=11, color=Q_MUTED),
-                            ft.Text(f"Creado: {item.get('created_at') or '-'}", size=11, color=Q_MUTED),
-                            ft.Text(f"Lanzado: {item.get('started_at') or '-'}", size=11, color=Q_MUTED),
-                            ft.Text(f"PID: {item.get('pid') or '-'}", size=11, color=Q_MUTED),
-                        ],
-                        spacing=12,
-                        wrap=True,
-                    ),
-                    ft.Text(
-                        "Pendiente de justificante de presentación",
-                        size=12,
-                        color="#3538CD",
-                        weight=ft.FontWeight.BOLD,
-                        visible=estado == "lanzado",
-                    ),
-                    ft.Text(
-                        item.get("last_error") or "",
-                        size=12,
-                        color="#B42318",
-                        visible=bool(item.get("last_error")),
-                        selectable=True,
-                    ),
-                    ft.Row(controls=actions, spacing=8, wrap=True),
+                    ft.Text(item.get("cliente_nombre") or "Cliente no indicado", size=12, color=Q_MUTED),
+                    _estado_badge(estado),
                 ],
+                spacing=8,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
+            item.get("tipo_expediente") or "Tipo no indicado",
+            f"Expediente ID: {item.get('expediente_id')} · Cola ID: {item.get('id')} · Intentos: {item.get('intentos') or 0}",
+            f"Creado: {item.get('created_at') or '-'} · Lanzado: {item.get('started_at') or '-'} · PID: {item.get('pid') or '-'}",
+        ]
+
+        if estado == "lanzado":
+            extra_lines.append(
+                ft.Text(
+                    "Pendiente de justificante de presentación",
+                    size=12,
+                    color="#3538CD",
+                    weight=ft.FontWeight.BOLD,
+                )
+            )
+
+        if item.get("last_error"):
+            extra_lines.append(
+                ft.Text(
+                    item.get("last_error") or "",
+                    size=12,
+                    color="#B42318",
+                    selectable=True,
+                )
+            )
+
+        return document_file_card(
+            name=item.get("numero_expediente") or f"Expediente #{item.get('expediente_id')}",
+            file_type="queue",
+            extra_lines=extra_lines,
+            extra_actions=actions,
+            compact=False,
         )
 
     def build_content():
