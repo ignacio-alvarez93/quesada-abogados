@@ -42,6 +42,7 @@ def document_file_card(
     open_label="Abrir",
     extra_lines=None,
     extra_actions=None,
+    action_groups=None,
     compact=False,
 ):
     """
@@ -60,6 +61,65 @@ def document_file_card(
     display_folder = str(folder or "")
     display_size = str(size_label or "")
     display_modified = str(modified_at or "")
+
+    grouped_actions_menu = None
+
+    def _popup_menu_item(item):
+        if isinstance(item, ft.PopupMenuItem):
+            return item
+
+        if isinstance(item, dict):
+            label = str(item.get("label") or item.get("text") or "-")
+            on_click = item.get("on_click")
+            disabled = bool(item.get("disabled") or False)
+            danger = bool(item.get("danger") or False)
+
+            text_control = ft.Text(
+                label,
+                color="#B42318" if danger else Q_PRIMARY_DARK,
+                weight=ft.FontWeight.BOLD if danger else None,
+            )
+
+            return ft.PopupMenuItem(
+                content=text_control,
+                on_click=None if disabled else on_click,
+            )
+
+        return ft.PopupMenuItem(content=ft.Text(str(item)))
+
+    def _flatten_action_group_items(groups):
+        flattened = []
+
+        for group in groups or []:
+            if isinstance(group, ft.PopupMenuItem):
+                flattened.append(group)
+                continue
+
+            if isinstance(group, ft.Control):
+                continue
+
+            if not isinstance(group, dict):
+                continue
+
+            for item in group.get("items") or []:
+                if item is not None:
+                    flattened.append(item)
+
+        return flattened
+
+    def _action_groups_menu(groups):
+        items = _flatten_action_group_items(groups)
+
+        if not items:
+            return None
+
+        return ft.PopupMenuButton(
+            icon=ft.Icons.MORE_VERT,
+            tooltip="Acciones",
+            items=[_popup_menu_item(item) for item in items],
+        )
+
+    grouped_actions_menu = _action_groups_menu(action_groups)
 
     metadata = []
 
@@ -85,6 +145,7 @@ def document_file_card(
                     selectable=True,
                     size=12 if compact else 13,
                 ),
+                grouped_actions_menu or ft.Container(width=0, height=0),
                 *(
                     [
                         ft.Checkbox(
