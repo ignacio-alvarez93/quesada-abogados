@@ -27,6 +27,7 @@ from backend.services import form_mapper_admin_service
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.document_file_card import document_file_card
+from frontend.components.bulk_action_bar import bulk_action_bar
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
 from frontend.components.app_dialog import form_dialog
@@ -5387,7 +5388,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
 
         def clear_selected_documents(e=None):
             selected_docs.clear()
-            refresh_selected_docs_bulk_controls()
 
             try:
                 open_document_folder(data.get("current_path") or current_path)
@@ -5400,8 +5400,10 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             else:
                 selected_docs.pop(file_path, None)
 
-            refresh_selected_docs_bulk_controls()
-            page.update()
+            try:
+                open_document_folder(data.get("current_path") or current_path)
+            except Exception:
+                page.update()
 
         def open_selected_documents(e=None):
             selected = list(selected_docs.values())
@@ -5494,21 +5496,19 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                 spacing=10,
                 wrap=True,
             ),
-            ft.Container(
-                bgcolor="#FFFFFF",
-                border=ft.border.all(1, Q_BORDER),
-                border_radius=10,
-                padding=8,
-                content=ft.Row(
-                    controls=[
-                        selected_docs_count_label,
-                        selected_docs_view_button,
-                        selected_docs_clear_button,
-                    ],
-                    spacing=6,
-                    wrap=True,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
+            bulk_action_bar(
+                title="Documentos",
+                selected_count=len(selected_docs),
+                on_clear=clear_selected_documents,
+                clear_tooltip="Limpiar selección",
+                actions=[
+                    {
+                        "icon": ft.Icons.VISIBILITY,
+                        "tooltip": "Ver seleccionados",
+                        "on_click": open_selected_documents,
+                    },
+                ],
+                compact=True,
             ),
             ft.Divider(),
             ft.Text(f"Carpetas ({len(folder_controls)})", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
