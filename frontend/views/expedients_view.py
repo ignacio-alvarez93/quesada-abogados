@@ -5381,37 +5381,21 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
 
         file_controls = []
         for file in sorted(data.get("files", []), key=_mercurio_file_sort_key):
+            file_path = file.get("path") or ""
+            file_name = file.get("name") or "-"
             file_controls.append(
-                ft.Container(
-                    padding=10,
-                    border_radius=10,
-                    border=ft.border.all(1, Q_BORDER),
-                    bgcolor="#FFFFFF",
-                    content=ft.Row(
-                        controls=[
-                            ft.Text("📄", size=18),
-                            ft.Container(
-                                width=34,
-                                content=ft.Text(_mercurio_file_order_label(file), size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ),
-                            ft.Checkbox(
-                                value=(file.get("path") or "") in selected_docs,
-                                tooltip="Seleccionar para visor",
-                                on_change=lambda e, p=file.get("path") or "", n=file.get("name") or "-": toggle_document_selection(e, p, n),
-                            ),
-                            ft.Column(
-                                controls=[
-                                    ft.Text(file.get("name") or "-", weight=ft.FontWeight.W_500),
-                                    ft.Text(file.get("path") or "", size=11, color=Q_MUTED),
-                                ],
-                                spacing=2,
-                                expand=True,
-                            ),
-                            ft.Text(_format_file_size(file.get("size")), color=Q_MUTED, size=12),
-                        ],
-                        spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
+                document_file_card(
+                    name=file_name,
+                    path=file_path,
+                    size_label=_format_file_size(file.get("size")),
+                    modified_at=f"Orden: {_mercurio_file_order_label(file)}",
+                    file_type=file.get("type"),
+                    selected=file_path in selected_docs,
+                    selectable=True,
+                    on_select=lambda e, p=file_path, n=file_name: toggle_document_selection(e, p, n),
+                    on_preview=lambda e, p=file_path, n=file_name: show_document_preview(p, n, expediente_id),
+                    on_open=lambda e, p=file_path: open_document_with_system(p, expediente_id),
+                    compact=True,
                 )
             )
 
