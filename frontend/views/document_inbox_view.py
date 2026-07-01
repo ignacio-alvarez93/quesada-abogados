@@ -11,6 +11,7 @@ from frontend.components.app_button import primary_button, secondary_button, dan
 from frontend.components.app_empty_state import empty_state
 from frontend.components.app_text_field import text_input, multiline_input
 from frontend.components.app_autocomplete import AppAutocomplete
+from frontend.components.document_file_card import document_file_card
 from frontend.components.document_viewer_modal import open_document_viewer_modal
 from frontend.components.listing import card_item, compact_pagination_bar, counter_chips
 from frontend.components.listing.status_chip import status_chip
@@ -3144,43 +3145,19 @@ def document_inbox_view(page: ft.Page):
 
             for item in batch.get("items") or []:
                 rows.append(
-                    ft.Container(
-                        bgcolor="#F8FAFC",
-                        border=ft.border.all(1, Q_BORDER),
-                        border_radius=10,
-                        padding=8,
-                        content=ft.Row(
-                            controls=[
-                                ft.Column(
-                                    controls=[
-                                        ft.Text(
-                                            f"#{item.get('id')} · {item.get('original_filename') or '-'}",
-                                            size=12,
-                                            weight=ft.FontWeight.W_600,
-                                            color=Q_PRIMARY_DARK,
-                                        ),
-                                        ft.Text(
-                                            f"Estado: {item.get('status') or '-'} · Origen: {item.get('source_type') or '-'}",
-                                            size=10,
-                                            color=Q_MUTED,
-                                        ),
-                                        ft.Text(
-                                            item.get("stored_path") or "",
-                                            size=10,
-                                            color=Q_MUTED,
-                                            selectable=True,
-                                        ),
-                                    ],
-                                    spacing=2,
-                                    expand=True,
-                                ),
-                                secondary_button("Ver", lambda e, item=item: show_batch_item_preview(item)),
-                                secondary_button("Abrir externo", lambda e, item=item: open_batch_item_external(item)),
-                                danger_button("Quitar", lambda e, item=item: remove_item_from_open_batch(item.get("id"))),
-                            ],
-                            spacing=8,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        ),
+                    document_file_card(
+                        name=f"#{item.get('id')} · {item.get('original_filename') or item.get('stored_filename') or '-'}",
+                        path=item.get("stored_path") or item.get("linked_document_path") or "",
+                        size_label=f"Estado: {item.get('status') or '-'}",
+                        modified_at=f"Origen: {item.get('source_type') or '-'}",
+                        file_type=item.get("preview_type") or item.get("type"),
+                        on_preview=lambda e, item=item: show_batch_item_preview(item),
+                        on_open=lambda e, item=item: open_batch_item_external(item),
+                        open_label="Abrir externo",
+                        extra_actions=[
+                            danger_button("Quitar", lambda e, item=item: remove_item_from_open_batch(item.get("id"))),
+                        ],
+                        compact=True,
                     )
                 )
 
