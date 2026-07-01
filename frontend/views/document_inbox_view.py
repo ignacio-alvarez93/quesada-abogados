@@ -894,53 +894,69 @@ def document_inbox_view(page: ft.Page):
                     f" · {item.get('duplicate_reason') or 'posible duplicado'}"
                 )
 
-            rows.append(
-                card_item(
-                    title=item.get("original_filename") or "-",
-                    leading=ft.Text("📄", size=20),
-                    selected=selected,
-                    highlight=is_duplicate,
-                    border_color="#F79009" if is_duplicate else (Q_PRIMARY if selected else Q_BORDER),
-                    border_width=2 if selected else 1,
-                    on_click=lambda e, item_id=item_id: toggle_item_selection(item_id),
-                    title_controls=[
-                        ft.Text(f"#{item_id}", size=12, color=Q_MUTED),
-                        ft.Text(
-                            item.get("original_filename") or "-",
+            extra_lines = [
+                _status_chip(item.get("status")),
+                ft.Text(
+                    f"Origen: {item.get('source_type') or '-'} · {item.get('source_label') or '-'} · "
+                    f"Tamaño: {_format_size(item.get('size_bytes'))} · "
+                    f"Cliente ID: {item.get('client_id') or '-'} · Expediente ID: {item.get('expedient_id') or '-'}",
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                ft.Text(
+                    f"Box destino: {item.get('copied_to_box_path') or '-'}",
+                    size=11,
+                    color=Q_MUTED,
+                    selectable=True,
+                ),
+            ]
+
+            if is_duplicate:
+                extra_lines.append(
+                    ft.Container(
+                        padding=ft.padding.symmetric(horizontal=8, vertical=3),
+                        border_radius=999,
+                        bgcolor="#FEF0C7",
+                        content=ft.Text(
+                            duplicate_label,
+                            size=11,
+                            color="#B54708",
                             weight=ft.FontWeight.BOLD,
-                            color=Q_PRIMARY_DARK,
                         ),
-                        _status_chip(item.get("status")),
-                        ft.Container(
-                            visible=is_duplicate,
-                            padding=ft.padding.symmetric(horizontal=8, vertical=3),
-                            border_radius=999,
-                            bgcolor="#FEF0C7",
-                            content=ft.Text(
-                                duplicate_label,
-                                size=11,
-                                color="#B54708",
-                                weight=ft.FontWeight.BOLD,
-                            ),
-                        ),
-                        secondary_button("Ficha", lambda e, item_id=item_id: open_item_detail(item_id)),
+                    )
+                )
+
+            rows.append(
+                document_file_card(
+                    name=f"#{item_id} · {item.get('original_filename') or '-'}",
+                    path=item.get("stored_path") or "-",
+                    size_label="",
+                    modified_at="",
+                    file_type=item.get("preview_type") or item.get("type"),
+                    selected=False,
+                    selectable=True,
+                    checkbox_value=selected,
+                    on_select=lambda e, item_id=item_id: toggle_item_selection(item_id),
+                    extra_lines=extra_lines,
+                    action_groups=[
+                        {
+                            "label": "Documento",
+                            "items": [
+                                {"label": "Ficha", "on_click": lambda e, item_id=item_id: open_item_detail(item_id)},
+                                {"label": "Previsualizar", "on_click": lambda e, item_id=item_id: select_item(item_id) or show_preview(e)},
+                                {"label": "Abrir externo", "on_click": lambda e, item_id=item_id: select_item(item_id) or open_system(e)},
+                            ],
+                        },
+                        {
+                            "label": "Estado",
+                            "items": [
+                                {"label": "Marcar revisado", "on_click": lambda e, item_id=item_id: select_item(item_id) or set_status("reviewed")},
+                                {"label": "Marcar duplicado", "on_click": lambda e, item_id=item_id: select_item(item_id) or set_status("duplicate")},
+                                {"label": "Descartar", "danger": True, "on_click": lambda e, item_id=item_id: select_item(item_id) or set_status("discarded")},
+                            ],
+                        },
                     ],
-                    body=[
-                        ft.Text(item.get("stored_path") or "-", size=11, color=Q_MUTED, selectable=True),
-                        ft.Text(
-                            f"Origen: {item.get('source_type') or '-'} · {item.get('source_label') or '-'} · "
-                            f"Tamaño: {_format_size(item.get('size_bytes'))} · "
-                            f"Cliente ID: {item.get('client_id') or '-'} · Expediente ID: {item.get('expedient_id') or '-'}",
-                            size=11,
-                            color=Q_MUTED,
-                        ),
-                        ft.Text(
-                            f"Box destino: {item.get('copied_to_box_path') or '-'}",
-                            size=11,
-                            color=Q_MUTED,
-                            selectable=True,
-                        ),
-                    ],
+                    compact=True,
                 )
             )
 
@@ -2175,14 +2191,44 @@ def document_inbox_view(page: ft.Page):
                                 weight=ft.FontWeight.BOLD,
                                 color=Q_PRIMARY_DARK,
                             ),
-                            ft.Container(expand=True),
-                            secondary_button("Limpiar selección", clear_bulk_selection),
-                            secondary_button("Marcar revisados", mark_selected_reviewed),
-                            danger_button("Descartar", discard_selected_documents),
-                            secondary_button("Agrupar documentos", lambda e: open_create_batch_dialog(e)),
-                            secondary_button("Herramientas PDF", lambda e: None),
+                            ft.IconButton(
+                                icon=ft.Icons.CLEAR_ALL,
+                                icon_color=Q_PRIMARY_DARK if selected_count else "#98A2B3",
+                                tooltip="Limpiar selección",
+                                disabled=not bool(selected_count),
+                                on_click=clear_bulk_selection,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
+                                icon_color=Q_PRIMARY_DARK if selected_count else "#98A2B3",
+                                tooltip="Marcar revisados",
+                                disabled=not bool(selected_count),
+                                on_click=mark_selected_reviewed,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color="#B42318" if selected_count else "#98A2B3",
+                                tooltip="Descartar seleccionados",
+                                disabled=not bool(selected_count),
+                                on_click=discard_selected_documents,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CREATE_NEW_FOLDER_OUTLINED,
+                                icon_color=Q_PRIMARY_DARK if selected_count else "#98A2B3",
+                                tooltip="Agrupar documentos",
+                                disabled=not bool(selected_count),
+                                on_click=lambda e: open_create_batch_dialog(e),
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.PICTURE_AS_PDF,
+                                icon_color=Q_PRIMARY_DARK if selected_count else "#98A2B3",
+                                tooltip="Herramientas PDF",
+                                disabled=not bool(selected_count),
+                                on_click=lambda e: None,
+                            ),
                         ],
-                        spacing=8,
+                        spacing=6,
+                        wrap=True,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     bulk_actions_message,
