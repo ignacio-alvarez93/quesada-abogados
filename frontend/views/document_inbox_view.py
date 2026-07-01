@@ -12,6 +12,7 @@ from frontend.components.app_empty_state import empty_state
 from frontend.components.app_text_field import text_input, multiline_input
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.document_file_card import document_file_card
+from frontend.components.bulk_action_bar import bulk_action_bar
 from frontend.components.document_viewer_modal import open_document_viewer_modal
 from frontend.components.listing import card_item, compact_pagination_bar, counter_chips
 from frontend.components.listing.status_chip import status_chip
@@ -2177,65 +2178,36 @@ def document_inbox_view(page: ft.Page):
     def build_bulk_actions_content():
         selected_count = len(state.get("selected_item_ids") or [])
 
-        return ft.Container(
-            bgcolor="#FFFFFF",
-            border=ft.border.all(1, Q_BORDER),
-            border_radius=14,
-            padding=10,
-            content=ft.Column(
-                controls=[
-                    ft.Row(
-                        controls=[
-                            ft.Text(
-                                f"Seleccionados: {selected_count}",
-                                size=13,
-                                weight=ft.FontWeight.BOLD,
-                                color=Q_PRIMARY_DARK,
-                            ),
-                            ft.IconButton(
-                                icon=ft.Icons.CLEAR_ALL,
-                                icon_color=Q_PRIMARY_DARK if selected_count else "#98A2B3",
-                                tooltip="Limpiar selección",
-                                disabled=not bool(selected_count),
-                                on_click=clear_bulk_selection,
-                            ),
-                            ft.IconButton(
-                                icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
-                                icon_color=Q_PRIMARY_DARK if selected_count else "#98A2B3",
-                                tooltip="Marcar revisados",
-                                disabled=not bool(selected_count),
-                                on_click=mark_selected_reviewed,
-                            ),
-                            ft.IconButton(
-                                icon=ft.Icons.DELETE_OUTLINE,
-                                icon_color="#B42318" if selected_count else "#98A2B3",
-                                tooltip="Descartar seleccionados",
-                                disabled=not bool(selected_count),
-                                on_click=discard_selected_documents,
-                            ),
-                            ft.IconButton(
-                                icon=ft.Icons.CREATE_NEW_FOLDER_OUTLINED,
-                                icon_color=Q_PRIMARY_DARK if selected_count else "#98A2B3",
-                                tooltip="Agrupar documentos",
-                                disabled=not bool(selected_count),
-                                on_click=lambda e: open_create_batch_dialog(e),
-                            ),
-                            ft.IconButton(
-                                icon=ft.Icons.PICTURE_AS_PDF,
-                                icon_color=Q_PRIMARY_DARK if selected_count else "#98A2B3",
-                                tooltip="Herramientas PDF",
-                                disabled=not bool(selected_count),
-                                on_click=lambda e: None,
-                            ),
-                        ],
-                        spacing=6,
-                        wrap=True,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    bulk_actions_message,
-                ],
-                spacing=8,
-            ),
+        return bulk_action_bar(
+            title="Documentos",
+            selected_count=selected_count,
+            on_clear=clear_bulk_selection,
+            clear_tooltip="Limpiar selección",
+            message_control=bulk_actions_message,
+            actions=[
+                {
+                    "icon": ft.Icons.CHECK_CIRCLE_OUTLINE,
+                    "tooltip": "Marcar revisados",
+                    "on_click": mark_selected_reviewed,
+                },
+                {
+                    "icon": ft.Icons.DELETE_OUTLINE,
+                    "tooltip": "Descartar seleccionados",
+                    "on_click": discard_selected_documents,
+                    "danger": True,
+                },
+                {
+                    "icon": ft.Icons.CREATE_NEW_FOLDER_OUTLINED,
+                    "tooltip": "Agrupar documentos",
+                    "on_click": lambda e: open_create_batch_dialog(e),
+                },
+                {
+                    "icon": ft.Icons.PICTURE_AS_PDF,
+                    "tooltip": "Herramientas PDF",
+                    "on_click": lambda e: None,
+                },
+            ],
+            compact=True,
         )
 
     bulk_actions_box = ft.Container(content=build_bulk_actions_content())
