@@ -4227,6 +4227,164 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
 
 
 
+def _qa_list_direct_child_dirs(path):
+    """
+    Lista subcarpetas directas de una raíz Box sin hacer recorrido recursivo.
+
+    No modifica Box.
+    No toca inventario.
+    Se usa para dividir rutas masivas en lotes seguros.
+    """
+    base = _safe_path(str(path))
+    if not base.exists() or not base.is_dir():
+        raise ValueError("La ruta base no existe o no es una carpeta accesible.")
+
+    children = []
+    try:
+        with os.scandir(base) as iterator:
+            for entry in iterator:
+                try:
+                    if not entry.is_dir():
+                        continue
+                    child = Path(entry.path)
+                    children.append({
+                        "name": entry.name,
+                        "path": str(child),
+                        "ruta": str(child),
+                    })
+                except Exception:
+                    continue
+    except Exception as exc:
+        raise RuntimeError(
+            "Box Drive no permite listar la ruta. Operación cancelada para evitar un escaneo inseguro."
+        ) from exc
+
+    children.sort(key=lambda item: str(item.get("name") or "").casefold())
+    return children
+
+
+def list_massive_root_children(root_path, page=1, page_size=50):
+    """
+    Devuelve subcarpetas directas de una raíz masiva de Box.
+
+    Sirve para que la UI pueda mostrar lotes sin hacer os.walk completo.
+    """
+    page = max(1, int(page or 1))
+    page_size = max(1, min(200, int(page_size or 50)))
+
+    children = _qa_list_direct_child_dirs(root_path)
+    total = len(children)
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    rows = children[start:end]
+    return {
+        "root_path": str(_safe_path(str(root_path))),
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": (total + page_size - 1) // page_size if page_size else 0,
+        "offset": start,
+        "limit": page_size,
+        "rows": rows,
+    }
+
+
+def scan_massive_root_batch(root_path, offset=0, limit=25, progress_callback=None, calculate_hash=False):
+    """
+    Escanea un lote de subcarpetas directas de una raíz masiva.
+
+    En vez de hacer os.walk(root_path), ejecuta scan_local_box_path() sobre
+    cada subcarpeta directa seleccionada. Así se evita saturar Box Drive.
+    """
+    offset = max(0, int(offset or 0))
+    limit = max(1, min(100, int(limit or 25)))
+
+    root = _safe_path(str(root_path))
+    children = _qa_list_direct_child_dirs(root)
+    selected = children[offset:offset + limit]
+
+    results = []
+    total_files = 0
+    total_folders = 0
+    total_new = 0
+    total_modified = 0
+    total_alerts = 0
+
+    total_selected = len(selected)
+
+    for index, child in enumerate(selected, start=1):
+        child_path = child.get("path") or child.get("ruta")
+        if progress_callback:
+            try:
+                progress_callback({
+                    "processed": index - 1,
+                    "processed_folders": index - 1,
+                    "total": total_selected,
+                    "total_folders": total_selected,
+                    "percent": int(((index - 1) / total_selected) * 100) if total_selected else 0,
+                    "current_file": f"Lote Box {index}/{total_selected}: {child.get('name')}",
+                    "current_route": str(child_path),
+                })
+            except Exception:
+                pass
+
+        try:
+            result = scan_local_box_path(
+                child_path,
+                progress_callback=None,
+                calculate_hash=calculate_hash,
+            )
+            result["batch_child_name"] = child.get("name")
+            result["batch_child_path"] = child_path
+            result["batch_status"] = "OK"
+            results.append(result)
+
+            total_files += int(result.get("total_archivos") or result.get("files") or 0)
+            total_folders += int(result.get("total_carpetas") or result.get("folders") or 0)
+            total_new += int(result.get("nuevos") or 0)
+            total_modified += int(result.get("modificados") or 0)
+            total_alerts += int(result.get("alertas") or 0)
+
+        except Exception as exc:
+            results.append({
+                "batch_child_name": child.get("name"),
+                "batch_child_path": child_path,
+                "batch_status": "ERROR",
+                "error": str(exc),
+            })
+
+    if progress_callback:
+        try:
+            progress_callback({
+                "processed": total_selected,
+                "processed_folders": total_selected,
+                "total": total_selected,
+                "total_folders": total_selected,
+                "percent": 100,
+                "current_file": "Lote Box completado",
+                "current_route": str(root),
+            })
+        except Exception:
+            pass
+
+    return {
+        "root_path": str(root),
+        "offset": offset,
+        "limit": limit,
+        "selected": total_selected,
+        "total_children": len(children),
+        "next_offset": offset + total_selected,
+        "has_more": (offset + total_selected) < len(children),
+        "total_archivos": total_files,
+        "total_carpetas": total_folders,
+        "nuevos": total_new,
+        "modificados": total_modified,
+        "alertas": total_alerts,
+        "results": results,
+    }
+
+
 def refresh_box_folder_before_inspection(folder_path, calculate_hash=False):
     """
     Refresca una carpeta concreta antes de inspeccionarla.
