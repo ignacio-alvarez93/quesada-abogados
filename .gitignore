@@ -23,3 +23,7 @@ exports/
 
 # Runtime previews/document cache
 data/
+
+# SQLite runtime files
+database/*.db-wal
+database/*.db-shm

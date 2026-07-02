@@ -38,6 +38,32 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _qa_fail_stale_running_scans(conn):
+    """
+    Marca como ERROR escaneos antiguos que quedaron EN CURSO por cierre forzado
+    de la aplicación o interrupción del proceso.
+
+    No toca Box.
+    No marca documentos como FALTANTE.
+    Solo sanea el historial de ejecuciones para no considerar válido un escaneo abortado.
+    """
+    try:
+        conn.execute(
+            """
+            UPDATE box_watch_scan_runs
+            SET fecha_fin = COALESCE(fecha_fin, CURRENT_TIMESTAMP),
+                estado = ?,
+                observaciones = COALESCE(observaciones, '') || ' | Escaneo abortado detectado al iniciar nuevo escaneo. Se conserva último inventario válido.'
+            WHERE estado = 'EN CURSO'
+              AND fecha_fin IS NULL
+            """,
+            (ESTADO_ERROR,),
+        )
+    except Exception:
+        # Compatibilidad con esquemas antiguos o ejecuciones previas a la tabla.
+        pass
+
+
 def initialize_box_watch_schema():
     with _connect() as conn:
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -540,7 +566,13 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
         except Exception as exc:
             conn.execute(
                 "UPDATE box_watch_scan_runs SET fecha_fin = ?, estado = ?, observaciones = ? WHERE id = ?",
-                (_now(), ESTADO_ERROR, str(exc), run_id),
+                (
+                    _now(),
+                    ESTADO_ERROR,
+                    "Escaneo abortado o incompleto. Se conserva el inventario anterior y no se marcan documentos como FALTANTE. Error: "
+                    + str(exc),
+                    run_id,
+                ),
             )
             conn.commit()
             raise
@@ -3538,10 +3570,17 @@ def _qa_mark_missing_after_scan(conn, base, run_id):
     for row in folders:
         ruta = str(row["ruta"] or "")
         try:
-            if not Path(ruta).exists() or not Path(ruta).is_dir():
+            folder_path = Path(ruta)
+            parent_path = folder_path.parent
+
+            # Box Drive puede devolver errores temporales o tardar en hidratar carpetas.
+            # Solo marcamos FALTANTE si el padre existe y es legible, pero la carpeta ya no existe.
+            # Si no podemos comprobarlo con seguridad, conservamos el inventario anterior.
+            if parent_path.exists() and parent_path.is_dir() and not folder_path.exists():
                 missing_folder_ids.append(row["id"])
         except Exception:
-            missing_folder_ids.append(row["id"])
+            # No interpretar errores temporales de Box Drive como eliminación real.
+            continue
 
     if missing_folder_ids:
         conn.executemany(
@@ -3574,11 +3613,17 @@ def _qa_mark_missing_after_scan(conn, base, run_id):
         ruta = str(row["ruta"] or "")
         nombre = str(row["nombre_archivo"] or "")
         try:
-            file_path = Path(ruta) / nombre
-            if not file_path.exists() or not file_path.is_file():
+            folder_path = Path(ruta)
+            file_path = folder_path / nombre
+
+            # Solo marcamos FALTANTE si la carpeta contenedora existe y es legible,
+            # pero el archivo ya no existe. Si Box Drive no permite comprobarlo,
+            # conservamos el último estado válido.
+            if folder_path.exists() and folder_path.is_dir() and not file_path.exists():
                 missing_item_ids.append(row["id"])
         except Exception:
-            missing_item_ids.append(row["id"])
+            # No interpretar errores temporales de Box Drive como eliminación real.
+            continue
 
     if missing_item_ids:
         conn.executemany(
@@ -3745,6 +3790,8 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
         except Exception:
             pass
 
+        _qa_fail_stale_running_scans(conn)
+
         cur = conn.execute(
             """
             INSERT INTO box_watch_scan_runs (fecha_inicio, ruta_base, estado, observaciones)
@@ -3903,10 +3950,16 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                 if total_carpetas % 300 == 0:
                     conn.commit()
 
-            # Autolimpieza segura: registros activos que no reaparecen y ya no existen físicamente.
-            missing_result = _qa_mark_missing_after_scan(conn, base, run_id)
-            faltantes_carpetas = int(missing_result.get("folders") or 0)
-            faltantes_archivos = int(missing_result.get("files") or 0)
+            scan_completed = True
+
+            # Autolimpieza segura:
+            # Solo se ejecuta si el recorrido completo termina sin excepción.
+            # Si la app se cierra a la fuerza, si Box Drive no responde o si el escaneo aborta,
+            # este bloque no llega a ejecutarse y se conserva el inventario anterior.
+            if scan_completed:
+                missing_result = _qa_mark_missing_after_scan(conn, base, run_id)
+                faltantes_carpetas = int(missing_result.get("folders") or 0)
+                faltantes_archivos = int(missing_result.get("files") or 0)
 
             # No ejecutamos _evaluate_missing_required en cada escaneo incremental.
             # Es costoso y debe pasar a una revisión documental separada/profunda.
