@@ -32,6 +32,8 @@ from backend.services.economic_service import get_deuda_cliente
 from frontend.components.client_context_panel import client_context_panel
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.views.client_detail_view import client_detail_view
+from frontend.components.listing import card_item, compact_pagination_bar
+
 from frontend.components import (
     app_table,
     empty_state,
@@ -890,6 +892,8 @@ def clients_view(page: ft.Page, on_create_expediente=None):
         "detail_index": 0,
         "context_client_id": None,
         "context_index": 0,
+        "page": 1,
+        "page_size": 10,
     }
 
     nacionalidad_options = safe_master_list(get_nacionalidades)
@@ -2030,6 +2034,7 @@ def clients_view(page: ft.Page, on_create_expediente=None):
 
     def set_quick_filter(key):
         state["quick_filter"] = key
+        state["page"] = 1
         refresh_quick_filters()
         refresh_table()
 
@@ -2238,79 +2243,177 @@ def clients_view(page: ft.Page, on_create_expediente=None):
             expand=True,
         )
 
+    def set_page(page_number):
+        state["page"] = max(1, int(page_number or 1))
+        table_container.content = build_table()
+        refresh_selection_bar()
+        refresh_context_panel()
+        page.update()
+
+    def client_action_menu(cliente):
+        items = [
+            ft.PopupMenuItem(
+                content=ft.Text("Ver ficha", color="#003B7A", weight=ft.FontWeight.BOLD),
+                on_click=lambda e, c=cliente: ver_ficha(c),
+            ),
+            ft.PopupMenuItem(
+                content=ft.Text("Editar", color="#003B7A"),
+                on_click=lambda e, c=cliente: abrir_editar_cliente(c),
+            ),
+        ]
+
+        if on_create_expediente:
+            items.append(
+                ft.PopupMenuItem(
+                    content=ft.Text("Crear expediente", color="#003B7A"),
+                    on_click=lambda e, cid=cliente["id"]: crear_expediente_desde_cliente(cid),
+                )
+            )
+
+        return ft.PopupMenuButton(
+            icon=ft.Icons.MORE_VERT,
+            tooltip="Acciones",
+            items=items,
+        )
+
+    def build_client_card(cliente, index=0):
+        is_selected = cliente["id"] in state["selected_client_ids"]
+
+        checkbox = ft.Checkbox(
+            value=is_selected,
+            on_change=lambda e, cid=cliente["id"]: toggle_client_selection(cid),
+        )
+
+        documento = documento_cliente(cliente) or "Sin documento"
+        telefono = cliente.get("telefono") or "Sin teléfono"
+        email = cliente.get("email") or "Sin email"
+        nacionalidad = cliente.get("nacionalidad") or "Sin nacionalidad"
+        edad = calcular_edad(cliente.get("fecha_nacimiento")) or "-"
+        localidad = cliente.get("localidad") or ""
+        provincia = cliente.get("provincia") or ""
+
+        ubicacion = " · ".join([part for part in [localidad, provincia] if part]) or "Sin localidad"
+
+        body = [
+            ft.Row(
+                controls=[
+                    ft.Text(f"Documento: {documento}", size=11, color="#64748B", selectable=True),
+                    ft.Text(f"Tel: {telefono}", size=11, color="#64748B", selectable=True),
+                    ft.Text(f"Email: {email}", size=11, color="#64748B", selectable=True),
+                ],
+                spacing=12,
+                wrap=True,
+            ),
+            ft.Row(
+                controls=[
+                    ft.Text(f"Nacionalidad: {nacionalidad}", size=11, color="#64748B", selectable=True),
+                    ft.Text(f"Edad: {edad}", size=11, color="#64748B"),
+                    ft.Text(f"Ubicación: {ubicacion}", size=11, color="#64748B", selectable=True),
+                ],
+                spacing=12,
+                wrap=True,
+            ),
+            ft.Row(
+                controls=[
+                    estado_cliente_priorizado_badge(cliente),
+                    estado_economico_cliente_badge(cliente),
+                    deuda_badge(cliente),
+                    ficha_badge(cliente),
+                ],
+                spacing=8,
+                wrap=True,
+            ),
+            deuda_tramites_cell(cliente),
+        ]
+
+        return card_item(
+            title=nombre_completo(cliente) or f"Cliente #{cliente.get('id')}",
+            subtitle=f"ID cliente: {cliente.get('id')}",
+            leading=checkbox,
+            actions=[client_action_menu(cliente)],
+            body=body,
+            selected=is_selected,
+            selected_color="#FFFFFF",
+            on_click=lambda e, cid=cliente["id"]: toggle_client_selection(cid),
+            padding=10,
+        )
+
     def build_table():
         clients = clientes_filtrados()
+
         if not clients:
-            return empty_state("No hay clientes que coincidan con la búsqueda")
+            return ft.Column(
+                controls=[
+                    selection_bar,
+                    empty_state("No hay clientes que coincidan con la búsqueda"),
+                ],
+                spacing=8,
+                expand=True,
+            )
 
         visible_ids = {c["id"] for c in clients}
         all_selected = bool(visible_ids) and visible_ids.issubset(state["selected_client_ids"])
         select_all_checkbox = ft.Checkbox(value=all_selected, on_change=toggle_all_visible_clients)
 
-        configured_columns = client_table_columns()
+        total_items = len(clients)
+        page_size = int(state.get("page_size") or 20)
+        current_page = max(1, int(state.get("page") or 1))
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        current_page = min(current_page, total_pages)
+        state["page"] = current_page
 
-        headers = [
-            {
-                "key": "__select__",
-                "label": ft.Row(
-                    controls=[
-                        select_all_checkbox,
-                        ft.Text("Sel.", weight=ft.FontWeight.W_600, size=13, color="#0057B8"),
-                    ],
-                    spacing=4,
-                ),
-                "width": 90,
-            }
+        start = (current_page - 1) * page_size
+        end = start + page_size
+        page_clients = clients[start:end]
+
+        cards_controls = [
+            build_client_card(cliente, index=start + index)
+            for index, cliente in enumerate(page_clients)
         ]
 
-        for column in configured_columns:
-            field = column.get("campo")
-            headers.append(
-                {
-                    "key": field,
-                    "label": client_table_label(field),
-                    "width": int(column.get("ancho") or 160),
-                }
-            )
-
-        rows = []
-
-        for index, c in enumerate(clients):
-            is_selected = c["id"] in state["selected_client_ids"]
-            row_ref = ft.Ref()
-            checkbox_ref = ft.Ref()
-
-            row_checkbox = ft.Checkbox(
-                ref=checkbox_ref,
-                value=is_selected,
-                on_change=lambda e, cid=c["id"], rr=row_ref, cr=checkbox_ref, idx=index: toggle_client_selection(cid, rr, cr, idx),
-            )
-
-            row_values = [
-                {
-                    "selected": is_selected,
-                    "row_ref": row_ref,
-                    "on_click": lambda e, cid=c["id"], rr=row_ref, cr=checkbox_ref, idx=index: toggle_client_selection(cid, rr, cr, idx),
-                },
-                row_checkbox,
-            ]
-
-            for column in configured_columns:
-                field = column.get("campo")
-                row_values.append(client_table_value(c, field))
-
-            rows.append(row_values)
+        toolbar = ft.Row(
+            controls=[
+                ft.Row(
+                    controls=[
+                        select_all_checkbox,
+                        ft.Text(
+                            "Seleccionar visibles",
+                            size=12,
+                            color="#64748B",
+                            weight=ft.FontWeight.BOLD,
+                        ),
+                    ],
+                    spacing=4,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                compact_pagination_bar(
+                    page=current_page,
+                    page_size=page_size,
+                    total_items=total_items,
+                    on_page_change=set_page,
+                    label_prefix="Clientes",
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+        )
 
         return ft.Column(
             controls=[
                 selection_bar,
-                app_table(
-                    headers=headers,
-                    rows=rows,
-                    height=390,
+                toolbar,
+                ft.Container(
+                    expand=True,
+                    content=ft.Column(
+                        controls=cards_controls,
+                        spacing=8,
+                        expand=True,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
                 ),
             ],
-            spacing=4,
+            spacing=8,
             expand=True,
         )
 
