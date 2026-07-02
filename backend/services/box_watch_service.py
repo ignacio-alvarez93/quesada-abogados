@@ -4239,26 +4239,48 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
                 "percent": 0,
             })
 
-        direct_dirs = _qa_count_top_level_dirs_safe(_safe_path(str(resolved)), limit=301)
+        direct_dirs = None
 
-        if direct_dirs is not None and direct_dirs >= 301:
-            result = scan_massive_root_all_batches(
-                resolved,
-                batch_size=25,
-                progress_callback=progress_callback,
-                calculate_hash=calculate_hash,
-                stop_on_box_error=False,
-            )
-            result["scan_mode"] = "BATCH_MASSIVE_ROOT"
-            result["direct_dirs"] = direct_dirs
-        else:
-            result = scan_local_box_path(
-                resolved,
-                progress_callback=progress_callback,
-                calculate_hash=calculate_hash,
-            )
-            result["scan_mode"] = "NORMAL"
-            result["direct_dirs"] = direct_dirs
+        try:
+            direct_dirs = _qa_count_top_level_dirs_safe(_safe_path(str(resolved)), limit=301)
+
+            if direct_dirs is not None and direct_dirs >= 301:
+                result = scan_massive_root_all_batches(
+                    resolved,
+                    batch_size=25,
+                    progress_callback=progress_callback,
+                    calculate_hash=calculate_hash,
+                    stop_on_box_error=False,
+                )
+                result["scan_mode"] = "BATCH_MASSIVE_ROOT"
+                result["direct_dirs"] = direct_dirs
+            else:
+                result = scan_local_box_path(
+                    resolved,
+                    progress_callback=progress_callback,
+                    calculate_hash=calculate_hash,
+                )
+                result["scan_mode"] = "NORMAL"
+                result["direct_dirs"] = direct_dirs
+
+        except KeyboardInterrupt:
+            raise
+
+        except Exception as exc:
+            # Una ruta fallida no debe tumbar el escaneo diario completo.
+            # Se registra el error y se continúa con las siguientes rutas.
+            result = {
+                "scan_mode": "ERROR",
+                "direct_dirs": direct_dirs,
+                "estado": "ERROR",
+                "error": str(exc),
+                "total_archivos": 0,
+                "total_carpetas": 0,
+                "nuevos": 0,
+                "modificados": 0,
+                "sin_clasificar": 0,
+                "alertas": 0,
+            }
 
         duration_seconds = __import__("time").perf_counter() - route_started_at
         result["duration_seconds"] = round(duration_seconds, 3)
