@@ -3411,6 +3411,106 @@ def list_root_folders_python_fallback_for_all_routes(ruta_contains=None, limit_p
 # === QUESADA BOX INCREMENTAL SCAN OVERRIDE START ===
 
 
+def _qa_box_fk_exists(conn, table, value):
+    """
+    Comprueba existencia de FK opcional.
+    Si no hay valor, devuelve None.
+    Si la comprobación falla, devuelve None para no romper el escaneo.
+    """
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        int_value = int(value)
+    except Exception:
+        return None
+    try:
+        row = conn.execute(f"SELECT 1 FROM {table} WHERE id = ? LIMIT 1", (int_value,)).fetchone()
+        return int_value if row else None
+    except Exception:
+        return None
+
+
+def _qa_sanitize_box_match(conn, match):
+    """
+    Evita que el escaneo escriba cliente_id/expediente_id inexistentes.
+
+    Box Watch es observador documental: si el vínculo a CRM está obsoleto,
+    se conserva el documento/carpeta y se deja el vínculo a NULL.
+    """
+    match = dict(match or {})
+    cliente_id = _qa_box_fk_exists(conn, "clientes", match.get("cliente_id"))
+    expediente_id = _qa_box_fk_exists(conn, "expedientes", match.get("expediente_id"))
+
+    if not expediente_id:
+        match["tipo_expediente_id"] = None
+
+    match["cliente_id"] = cliente_id
+    match["expediente_id"] = expediente_id
+    return match
+
+
+def _qa_cleanup_stale_box_watch_links(conn):
+    """
+    Limpia vínculos rotos dentro del inventario Box Watch.
+
+    No borra documentos.
+    No borra carpetas.
+    No modifica Box.
+    Solo pone a NULL cliente_id/expediente_id que ya no existen en CRM,
+    para que las FKs no bloqueen escaneos posteriores.
+    """
+    statements = [
+        """
+        UPDATE box_watch_folders
+        SET cliente_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE cliente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM clientes c WHERE c.id = box_watch_folders.cliente_id)
+        """,
+        """
+        UPDATE box_watch_folders
+        SET expediente_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE expediente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM expedientes e WHERE e.id = box_watch_folders.expediente_id)
+        """,
+        """
+        UPDATE box_watch_items
+        SET cliente_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE cliente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM clientes c WHERE c.id = box_watch_items.cliente_id)
+        """,
+        """
+        UPDATE box_watch_items
+        SET expediente_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE expediente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM expedientes e WHERE e.id = box_watch_items.expediente_id)
+        """,
+        """
+        UPDATE box_watch_alerts
+        SET cliente_id = NULL
+        WHERE cliente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM clientes c WHERE c.id = box_watch_alerts.cliente_id)
+        """,
+        """
+        UPDATE box_watch_alerts
+        SET expediente_id = NULL
+        WHERE expediente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM expedientes e WHERE e.id = box_watch_alerts.expediente_id)
+        """,
+        """
+        UPDATE box_watch_alerts
+        SET item_id = NULL
+        WHERE item_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM box_watch_items i WHERE i.id = box_watch_alerts.item_id)
+        """,
+    ]
+    try:
+        for sql in statements:
+            conn.execute(sql)
+    except Exception:
+        # No bloquear el arranque/escaneo si el esquema antiguo no tiene alguna tabla/columna.
+        pass
+
+
 def _qa_load_expedient_links(conn):
     """
     Carga vínculos expediente -> carpeta Box una sola vez por escaneo.
@@ -3434,11 +3534,19 @@ def _qa_load_expedient_links(conn):
         folder = str(row["box_folder_path"] or "").replace("\\", "/").rstrip("/").lower()
         if not folder:
             continue
-        links.append({
-            "folder": folder,
+
+        match = _qa_sanitize_box_match(conn, {
             "expediente_id": row["expediente_id"],
             "cliente_id": row["cliente_id"],
             "tipo_expediente_id": row["tipo_expediente_id"],
+        })
+
+        # Si el expediente activo tiene FK rota hacia cliente, no rompemos Box Watch.
+        links.append({
+            "folder": folder,
+            "expediente_id": match.get("expediente_id"),
+            "cliente_id": match.get("cliente_id"),
+            "tipo_expediente_id": match.get("tipo_expediente_id"),
         })
     # Primero rutas largas para que gane el vínculo más específico.
     links.sort(key=lambda item: len(item["folder"]), reverse=True)
@@ -3647,7 +3755,7 @@ def _qa_upsert_folder_incremental(conn, existing_folders, expedient_links, base,
     ruta_norm = ruta.replace("\\", "/").rstrip("/")
     ruta_padre = str(root.parent) if root != base else ""
     nombre = root.name or str(root)
-    match = _qa_match_loaded_expedient(ruta, expedient_links)
+    match = _qa_sanitize_box_match(conn, _qa_match_loaded_expedient(ruta, expedient_links))
 
     existing = existing_folders.get(ruta) or existing_folders.get(ruta_norm)
     changed = True
@@ -3791,6 +3899,8 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
             pass
 
         _qa_fail_stale_running_scans(conn)
+        _qa_cleanup_stale_box_watch_links(conn)
+        conn.commit()
 
         cur = conn.execute(
             """
