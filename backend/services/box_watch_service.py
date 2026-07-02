@@ -38,6 +38,32 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _qa_fail_stale_running_scans(conn):
+    """
+    Marca como ERROR escaneos antiguos que quedaron EN CURSO por cierre forzado
+    de la aplicación o interrupción del proceso.
+
+    No toca Box.
+    No marca documentos como FALTANTE.
+    Solo sanea el historial de ejecuciones para no considerar válido un escaneo abortado.
+    """
+    try:
+        conn.execute(
+            """
+            UPDATE box_watch_scan_runs
+            SET fecha_fin = COALESCE(fecha_fin, CURRENT_TIMESTAMP),
+                estado = ?,
+                observaciones = COALESCE(observaciones, '') || ' | Escaneo abortado detectado al iniciar nuevo escaneo. Se conserva último inventario válido.'
+            WHERE estado = 'EN CURSO'
+              AND fecha_fin IS NULL
+            """,
+            (ESTADO_ERROR,),
+        )
+    except Exception:
+        # Compatibilidad con esquemas antiguos o ejecuciones previas a la tabla.
+        pass
+
+
 def initialize_box_watch_schema():
     with _connect() as conn:
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -540,7 +566,13 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
         except Exception as exc:
             conn.execute(
                 "UPDATE box_watch_scan_runs SET fecha_fin = ?, estado = ?, observaciones = ? WHERE id = ?",
-                (_now(), ESTADO_ERROR, str(exc), run_id),
+                (
+                    _now(),
+                    ESTADO_ERROR,
+                    "Escaneo abortado o incompleto. Se conserva el inventario anterior y no se marcan documentos como FALTANTE. Error: "
+                    + str(exc),
+                    run_id,
+                ),
             )
             conn.commit()
             raise
@@ -3379,6 +3411,106 @@ def list_root_folders_python_fallback_for_all_routes(ruta_contains=None, limit_p
 # === QUESADA BOX INCREMENTAL SCAN OVERRIDE START ===
 
 
+def _qa_box_fk_exists(conn, table, value):
+    """
+    Comprueba existencia de FK opcional.
+    Si no hay valor, devuelve None.
+    Si la comprobación falla, devuelve None para no romper el escaneo.
+    """
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        int_value = int(value)
+    except Exception:
+        return None
+    try:
+        row = conn.execute(f"SELECT 1 FROM {table} WHERE id = ? LIMIT 1", (int_value,)).fetchone()
+        return int_value if row else None
+    except Exception:
+        return None
+
+
+def _qa_sanitize_box_match(conn, match):
+    """
+    Evita que el escaneo escriba cliente_id/expediente_id inexistentes.
+
+    Box Watch es observador documental: si el vínculo a CRM está obsoleto,
+    se conserva el documento/carpeta y se deja el vínculo a NULL.
+    """
+    match = dict(match or {})
+    cliente_id = _qa_box_fk_exists(conn, "clientes", match.get("cliente_id"))
+    expediente_id = _qa_box_fk_exists(conn, "expedientes", match.get("expediente_id"))
+
+    if not expediente_id:
+        match["tipo_expediente_id"] = None
+
+    match["cliente_id"] = cliente_id
+    match["expediente_id"] = expediente_id
+    return match
+
+
+def _qa_cleanup_stale_box_watch_links(conn):
+    """
+    Limpia vínculos rotos dentro del inventario Box Watch.
+
+    No borra documentos.
+    No borra carpetas.
+    No modifica Box.
+    Solo pone a NULL cliente_id/expediente_id que ya no existen en CRM,
+    para que las FKs no bloqueen escaneos posteriores.
+    """
+    statements = [
+        """
+        UPDATE box_watch_folders
+        SET cliente_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE cliente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM clientes c WHERE c.id = box_watch_folders.cliente_id)
+        """,
+        """
+        UPDATE box_watch_folders
+        SET expediente_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE expediente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM expedientes e WHERE e.id = box_watch_folders.expediente_id)
+        """,
+        """
+        UPDATE box_watch_items
+        SET cliente_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE cliente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM clientes c WHERE c.id = box_watch_items.cliente_id)
+        """,
+        """
+        UPDATE box_watch_items
+        SET expediente_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE expediente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM expedientes e WHERE e.id = box_watch_items.expediente_id)
+        """,
+        """
+        UPDATE box_watch_alerts
+        SET cliente_id = NULL
+        WHERE cliente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM clientes c WHERE c.id = box_watch_alerts.cliente_id)
+        """,
+        """
+        UPDATE box_watch_alerts
+        SET expediente_id = NULL
+        WHERE expediente_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM expedientes e WHERE e.id = box_watch_alerts.expediente_id)
+        """,
+        """
+        UPDATE box_watch_alerts
+        SET item_id = NULL
+        WHERE item_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM box_watch_items i WHERE i.id = box_watch_alerts.item_id)
+        """,
+    ]
+    try:
+        for sql in statements:
+            conn.execute(sql)
+    except Exception:
+        # No bloquear el arranque/escaneo si el esquema antiguo no tiene alguna tabla/columna.
+        pass
+
+
 def _qa_load_expedient_links(conn):
     """
     Carga vínculos expediente -> carpeta Box una sola vez por escaneo.
@@ -3402,11 +3534,19 @@ def _qa_load_expedient_links(conn):
         folder = str(row["box_folder_path"] or "").replace("\\", "/").rstrip("/").lower()
         if not folder:
             continue
-        links.append({
-            "folder": folder,
+
+        match = _qa_sanitize_box_match(conn, {
             "expediente_id": row["expediente_id"],
             "cliente_id": row["cliente_id"],
             "tipo_expediente_id": row["tipo_expediente_id"],
+        })
+
+        # Si el expediente activo tiene FK rota hacia cliente, no rompemos Box Watch.
+        links.append({
+            "folder": folder,
+            "expediente_id": match.get("expediente_id"),
+            "cliente_id": match.get("cliente_id"),
+            "tipo_expediente_id": match.get("tipo_expediente_id"),
         })
     # Primero rutas largas para que gane el vínculo más específico.
     links.sort(key=lambda item: len(item["folder"]), reverse=True)
@@ -3538,10 +3678,17 @@ def _qa_mark_missing_after_scan(conn, base, run_id):
     for row in folders:
         ruta = str(row["ruta"] or "")
         try:
-            if not Path(ruta).exists() or not Path(ruta).is_dir():
+            folder_path = Path(ruta)
+            parent_path = folder_path.parent
+
+            # Box Drive puede devolver errores temporales o tardar en hidratar carpetas.
+            # Solo marcamos FALTANTE si el padre existe y es legible, pero la carpeta ya no existe.
+            # Si no podemos comprobarlo con seguridad, conservamos el inventario anterior.
+            if parent_path.exists() and parent_path.is_dir() and not folder_path.exists():
                 missing_folder_ids.append(row["id"])
         except Exception:
-            missing_folder_ids.append(row["id"])
+            # No interpretar errores temporales de Box Drive como eliminación real.
+            continue
 
     if missing_folder_ids:
         conn.executemany(
@@ -3574,11 +3721,17 @@ def _qa_mark_missing_after_scan(conn, base, run_id):
         ruta = str(row["ruta"] or "")
         nombre = str(row["nombre_archivo"] or "")
         try:
-            file_path = Path(ruta) / nombre
-            if not file_path.exists() or not file_path.is_file():
+            folder_path = Path(ruta)
+            file_path = folder_path / nombre
+
+            # Solo marcamos FALTANTE si la carpeta contenedora existe y es legible,
+            # pero el archivo ya no existe. Si Box Drive no permite comprobarlo,
+            # conservamos el último estado válido.
+            if folder_path.exists() and folder_path.is_dir() and not file_path.exists():
                 missing_item_ids.append(row["id"])
         except Exception:
-            missing_item_ids.append(row["id"])
+            # No interpretar errores temporales de Box Drive como eliminación real.
+            continue
 
     if missing_item_ids:
         conn.executemany(
@@ -3602,7 +3755,7 @@ def _qa_upsert_folder_incremental(conn, existing_folders, expedient_links, base,
     ruta_norm = ruta.replace("\\", "/").rstrip("/")
     ruta_padre = str(root.parent) if root != base else ""
     nombre = root.name or str(root)
-    match = _qa_match_loaded_expedient(ruta, expedient_links)
+    match = _qa_sanitize_box_match(conn, _qa_match_loaded_expedient(ruta, expedient_links))
 
     existing = existing_folders.get(ruta) or existing_folders.get(ruta_norm)
     changed = True
@@ -3744,6 +3897,10 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
             conn.execute("PRAGMA temp_store = MEMORY")
         except Exception:
             pass
+
+        _qa_fail_stale_running_scans(conn)
+        _qa_cleanup_stale_box_watch_links(conn)
+        conn.commit()
 
         cur = conn.execute(
             """
@@ -3903,10 +4060,16 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                 if total_carpetas % 300 == 0:
                     conn.commit()
 
-            # Autolimpieza segura: registros activos que no reaparecen y ya no existen físicamente.
-            missing_result = _qa_mark_missing_after_scan(conn, base, run_id)
-            faltantes_carpetas = int(missing_result.get("folders") or 0)
-            faltantes_archivos = int(missing_result.get("files") or 0)
+            scan_completed = True
+
+            # Autolimpieza segura:
+            # Solo se ejecuta si el recorrido completo termina sin excepción.
+            # Si la app se cierra a la fuerza, si Box Drive no responde o si el escaneo aborta,
+            # este bloque no llega a ejecutarse y se conserva el inventario anterior.
+            if scan_completed:
+                missing_result = _qa_mark_missing_after_scan(conn, base, run_id)
+                faltantes_carpetas = int(missing_result.get("folders") or 0)
+                faltantes_archivos = int(missing_result.get("files") or 0)
 
             # No ejecutamos _evaluate_missing_required en cada escaneo incremental.
             # Es costoso y debe pasar a una revisión documental separada/profunda.
