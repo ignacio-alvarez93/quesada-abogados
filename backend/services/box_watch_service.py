@@ -4053,11 +4053,11 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
                         rules,
                     )
 
-                    if total_archivos % 1000 == 0:
+                    if total_archivos % 200 == 0:
                         conn.commit()
                         report(file_name)
 
-                if total_carpetas % 300 == 0:
+                if total_carpetas % 50 == 0:
                     conn.commit()
 
             scan_completed = True
