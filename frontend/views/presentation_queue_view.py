@@ -344,16 +344,29 @@ def presentation_queue_view(page: ft.Page, on_open_expediente=None):
                 )
             )
 
+        cards_controls = []
+
         if not items:
-            controls.append(empty_state("No hay expedientes en esta cola"))
+            cards_controls.append(empty_state("No hay expedientes en esta cola"))
         else:
-            controls.extend(queue_card(item) for item in page_items)
+            cards_controls.extend(queue_card(item) for item in page_items)
+
+        controls.append(
+            ft.Container(
+                expand=True,
+                content=ft.Column(
+                    controls=cards_controls,
+                    spacing=8,
+                    expand=True,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            )
+        )
 
         return ft.Column(
             controls=controls,
             spacing=18,
             expand=True,
-            scroll=ft.ScrollMode.AUTO,
         )
 
     load()
