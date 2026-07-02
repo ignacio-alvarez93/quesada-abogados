@@ -893,7 +893,7 @@ def clients_view(page: ft.Page, on_create_expediente=None):
         "context_client_id": None,
         "context_index": 0,
         "page": 1,
-        "page_size": 20,
+        "page_size": 10,
     }
 
     nacionalidad_options = safe_master_list(get_nacionalidades)
