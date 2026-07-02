@@ -145,6 +145,13 @@ def ensure_box_watch_indexes():
         "CREATE INDEX IF NOT EXISTS idx_box_watch_alerts_severidad ON box_watch_alerts(severidad)",
         "CREATE INDEX IF NOT EXISTS idx_box_watch_alerts_created ON box_watch_alerts(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_box_watch_runs_id ON box_watch_scan_runs(id)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_items_ruta ON box_watch_items(ruta)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_items_ruta_nombre ON box_watch_items(ruta, nombre_archivo)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_items_activo_ruta ON box_watch_items(activo, ruta)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_items_last_seen ON box_watch_items(last_seen_scan_id)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_folders_ruta ON box_watch_folders(ruta)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_folders_activo_ruta ON box_watch_folders(activo, ruta)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_folders_last_seen ON box_watch_folders(last_seen_scan_id)",
     ]
 
     with _connect() as conn:
