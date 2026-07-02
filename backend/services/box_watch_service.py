@@ -4385,6 +4385,130 @@ def scan_massive_root_batch(root_path, offset=0, limit=25, progress_callback=Non
     }
 
 
+def scan_massive_root_all_batches(
+    root_path,
+    batch_size=25,
+    progress_callback=None,
+    calculate_hash=False,
+    stop_on_box_error=False,
+    max_batches=None,
+):
+    """
+    Escanea una raíz masiva completa dividiéndola internamente en lotes.
+
+    Uso previsto:
+    - El usuario lanza una sola acción.
+    - El sistema procesa todos los lotes hasta completar la raíz.
+    - Nunca ejecuta os.walk(root_path) sobre la raíz masiva.
+    - Cada subcarpeta directa se escanea con scan_local_box_path().
+    - Si una carpeta falla, se registra el error y se continúa, salvo stop_on_box_error=True.
+    """
+    batch_size = max(1, min(100, int(batch_size or 25)))
+
+    root = _safe_path(str(root_path))
+    children = _qa_list_direct_child_dirs(root)
+
+    total_children = len(children)
+    total_batches = (total_children + batch_size - 1) // batch_size if batch_size else 0
+
+    all_results = []
+    total_files = 0
+    total_folders = 0
+    total_new = 0
+    total_modified = 0
+    total_alerts = 0
+    total_errors = 0
+
+    for batch_index, offset in enumerate(range(0, total_children, batch_size), start=1):
+        if max_batches is not None and batch_index > int(max_batches):
+            break
+
+        selected = children[offset:offset + batch_size]
+
+        if progress_callback:
+            try:
+                progress_callback({
+                    "processed": offset,
+                    "processed_folders": offset,
+                    "total": total_children,
+                    "total_folders": total_children,
+                    "percent": int((offset / total_children) * 100) if total_children else 0,
+                    "current_file": f"Lote {batch_index}/{total_batches} · {len(selected)} carpetas",
+                    "current_route": str(root),
+                    "batch_index": batch_index,
+                    "total_batches": total_batches,
+                    "batch_size": batch_size,
+                })
+            except Exception:
+                pass
+
+        batch_result = scan_massive_root_batch(
+            root,
+            offset=offset,
+            limit=batch_size,
+            progress_callback=None,
+            calculate_hash=calculate_hash,
+        )
+
+        all_results.append(batch_result)
+
+        total_files += int(batch_result.get("total_archivos") or 0)
+        total_folders += int(batch_result.get("total_carpetas") or 0)
+        total_new += int(batch_result.get("nuevos") or 0)
+        total_modified += int(batch_result.get("modificados") or 0)
+        total_alerts += int(batch_result.get("alertas") or 0)
+
+        batch_errors = [
+            item for item in batch_result.get("results", [])
+            if item.get("batch_status") == "ERROR"
+        ]
+        total_errors += len(batch_errors)
+
+        if stop_on_box_error and batch_errors:
+            break
+
+    processed_children = 0
+    for batch in all_results:
+        processed_children += int(batch.get("selected") or 0)
+
+    completed = processed_children >= total_children and total_errors == 0
+
+    if progress_callback:
+        try:
+            progress_callback({
+                "processed": processed_children,
+                "processed_folders": processed_children,
+                "total": total_children,
+                "total_folders": total_children,
+                "percent": 100 if total_children == 0 else int((processed_children / total_children) * 100),
+                "current_file": "Escaneo masivo por lotes completado",
+                "current_route": str(root),
+                "batch_index": total_batches,
+                "total_batches": total_batches,
+                "batch_size": batch_size,
+            })
+        except Exception:
+            pass
+
+    return {
+        "root_path": str(root),
+        "batch_size": batch_size,
+        "total_children": total_children,
+        "processed_children": processed_children,
+        "total_batches": total_batches,
+        "max_batches": max_batches,
+        "completed": completed,
+        "has_errors": total_errors > 0,
+        "total_errors": total_errors,
+        "total_archivos": total_files,
+        "total_carpetas": total_folders,
+        "nuevos": total_new,
+        "modificados": total_modified,
+        "alertas": total_alerts,
+        "batches": all_results,
+    }
+
+
 def refresh_box_folder_before_inspection(folder_path, calculate_hash=False):
     """
     Refresca una carpeta concreta antes de inspeccionarla.
