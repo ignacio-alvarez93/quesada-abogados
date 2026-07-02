@@ -4227,11 +4227,27 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
                 "percent": 0,
             })
 
-        result = scan_local_box_path(
-            resolved,
-            progress_callback=progress_callback,
-            calculate_hash=calculate_hash,
-        )
+        direct_dirs = _qa_count_top_level_dirs_safe(_safe_path(str(resolved)), limit=301)
+
+        if direct_dirs is not None and direct_dirs >= 301:
+            result = scan_massive_root_all_batches(
+                resolved,
+                batch_size=25,
+                progress_callback=progress_callback,
+                calculate_hash=calculate_hash,
+                stop_on_box_error=False,
+            )
+            result["scan_mode"] = "BATCH_MASSIVE_ROOT"
+            result["direct_dirs"] = direct_dirs
+        else:
+            result = scan_local_box_path(
+                resolved,
+                progress_callback=progress_callback,
+                calculate_hash=calculate_hash,
+            )
+            result["scan_mode"] = "NORMAL"
+            result["direct_dirs"] = direct_dirs
+
         result["config_route_id"] = route.get("id")
         result["config_route_relative"] = route.get("ruta_box")
         result["config_route_resolved"] = resolved
