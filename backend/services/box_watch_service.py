@@ -1331,6 +1331,7 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
     total_routes = len(routes)
 
     for index, route in enumerate(routes, start=1):
+        route_started_at = __import__("time").perf_counter()
         resolved = route.get("ruta_resuelta")
         if not resolved:
             continue
@@ -1369,6 +1370,9 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
             result["scan_mode"] = "NORMAL"
             result["direct_dirs"] = direct_dirs
 
+        duration_seconds = __import__("time").perf_counter() - route_started_at
+        result["duration_seconds"] = round(duration_seconds, 3)
+        result["duration_minutes"] = round(duration_seconds / 60, 3)
         result["config_route_id"] = route.get("id")
         result["config_route_relative"] = route.get("ruta_box")
         result["config_route_resolved"] = resolved
@@ -4217,6 +4221,7 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
     total_routes = len(routes)
 
     for index, route in enumerate(routes, start=1):
+        route_started_at = __import__("time").perf_counter()
         resolved = route.get("ruta_resuelta")
         if not resolved:
             continue
@@ -4255,6 +4260,9 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
             result["scan_mode"] = "NORMAL"
             result["direct_dirs"] = direct_dirs
 
+        duration_seconds = __import__("time").perf_counter() - route_started_at
+        result["duration_seconds"] = round(duration_seconds, 3)
+        result["duration_minutes"] = round(duration_seconds / 60, 3)
         result["config_route_id"] = route.get("id")
         result["config_route_relative"] = route.get("ruta_box")
         result["config_route_resolved"] = resolved
