@@ -145,6 +145,13 @@ def ensure_box_watch_indexes():
         "CREATE INDEX IF NOT EXISTS idx_box_watch_alerts_severidad ON box_watch_alerts(severidad)",
         "CREATE INDEX IF NOT EXISTS idx_box_watch_alerts_created ON box_watch_alerts(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_box_watch_runs_id ON box_watch_scan_runs(id)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_items_ruta ON box_watch_items(ruta)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_items_ruta_nombre ON box_watch_items(ruta, nombre_archivo)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_items_activo_ruta ON box_watch_items(activo, ruta)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_items_last_seen ON box_watch_items(last_seen_scan_id)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_folders_ruta ON box_watch_folders(ruta)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_folders_activo_ruta ON box_watch_folders(activo, ruta)",
+        "CREATE INDEX IF NOT EXISTS idx_box_watch_folders_last_seen ON box_watch_folders(last_seen_scan_id)",
     ]
 
     with _connect() as conn:
@@ -1341,11 +1348,27 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
                 "percent": 0,
             })
 
-        result = scan_local_box_path(
-            resolved,
-            progress_callback=progress_callback,
-            calculate_hash=calculate_hash,
-        )
+        direct_dirs = _qa_count_top_level_dirs_safe(_safe_path(str(resolved)), limit=301)
+
+        if direct_dirs is not None and direct_dirs >= 301:
+            result = scan_massive_root_all_batches(
+                resolved,
+                batch_size=25,
+                progress_callback=progress_callback,
+                calculate_hash=calculate_hash,
+                stop_on_box_error=False,
+            )
+            result["scan_mode"] = "BATCH_MASSIVE_ROOT"
+            result["direct_dirs"] = direct_dirs
+        else:
+            result = scan_local_box_path(
+                resolved,
+                progress_callback=progress_callback,
+                calculate_hash=calculate_hash,
+            )
+            result["scan_mode"] = "NORMAL"
+            result["direct_dirs"] = direct_dirs
+
         result["config_route_id"] = route.get("id")
         result["config_route_relative"] = route.get("ruta_box")
         result["config_route_resolved"] = resolved
@@ -4211,11 +4234,27 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
                 "percent": 0,
             })
 
-        result = scan_local_box_path(
-            resolved,
-            progress_callback=progress_callback,
-            calculate_hash=calculate_hash,
-        )
+        direct_dirs = _qa_count_top_level_dirs_safe(_safe_path(str(resolved)), limit=301)
+
+        if direct_dirs is not None and direct_dirs >= 301:
+            result = scan_massive_root_all_batches(
+                resolved,
+                batch_size=25,
+                progress_callback=progress_callback,
+                calculate_hash=calculate_hash,
+                stop_on_box_error=False,
+            )
+            result["scan_mode"] = "BATCH_MASSIVE_ROOT"
+            result["direct_dirs"] = direct_dirs
+        else:
+            result = scan_local_box_path(
+                resolved,
+                progress_callback=progress_callback,
+                calculate_hash=calculate_hash,
+            )
+            result["scan_mode"] = "NORMAL"
+            result["direct_dirs"] = direct_dirs
+
         result["config_route_id"] = route.get("id")
         result["config_route_relative"] = route.get("ruta_box")
         result["config_route_resolved"] = resolved
@@ -4225,6 +4264,288 @@ def scan_configured_routes(route_ids=None, progress_callback=None, calculate_has
     # Era otro N+1 masivo al finalizar el escaneo.
     return results
 
+
+
+def _qa_list_direct_child_dirs(path):
+    """
+    Lista subcarpetas directas de una raíz Box sin hacer recorrido recursivo.
+
+    No modifica Box.
+    No toca inventario.
+    Se usa para dividir rutas masivas en lotes seguros.
+    """
+    base = _safe_path(str(path))
+    if not base.exists() or not base.is_dir():
+        raise ValueError("La ruta base no existe o no es una carpeta accesible.")
+
+    children = []
+    try:
+        with os.scandir(base) as iterator:
+            for entry in iterator:
+                try:
+                    if not entry.is_dir():
+                        continue
+                    child = Path(entry.path)
+                    children.append({
+                        "name": entry.name,
+                        "path": str(child),
+                        "ruta": str(child),
+                    })
+                except Exception:
+                    continue
+    except Exception as exc:
+        raise RuntimeError(
+            "Box Drive no permite listar la ruta. Operación cancelada para evitar un escaneo inseguro."
+        ) from exc
+
+    children.sort(key=lambda item: str(item.get("name") or "").casefold())
+    return children
+
+
+def list_massive_root_children(root_path, page=1, page_size=50):
+    """
+    Devuelve subcarpetas directas de una raíz masiva de Box.
+
+    Sirve para que la UI pueda mostrar lotes sin hacer os.walk completo.
+    """
+    page = max(1, int(page or 1))
+    page_size = max(1, min(200, int(page_size or 50)))
+
+    children = _qa_list_direct_child_dirs(root_path)
+    total = len(children)
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    rows = children[start:end]
+    return {
+        "root_path": str(_safe_path(str(root_path))),
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": (total + page_size - 1) // page_size if page_size else 0,
+        "offset": start,
+        "limit": page_size,
+        "rows": rows,
+    }
+
+
+def scan_massive_root_batch(root_path, offset=0, limit=25, progress_callback=None, calculate_hash=False):
+    """
+    Escanea un lote de subcarpetas directas de una raíz masiva.
+
+    En vez de hacer os.walk(root_path), ejecuta scan_local_box_path() sobre
+    cada subcarpeta directa seleccionada. Así se evita saturar Box Drive.
+    """
+    offset = max(0, int(offset or 0))
+    limit = max(1, min(100, int(limit or 25)))
+
+    root = _safe_path(str(root_path))
+    children = _qa_list_direct_child_dirs(root)
+    selected = children[offset:offset + limit]
+
+    results = []
+    total_files = 0
+    total_folders = 0
+    total_new = 0
+    total_modified = 0
+    total_alerts = 0
+
+    total_selected = len(selected)
+
+    for index, child in enumerate(selected, start=1):
+        child_path = child.get("path") or child.get("ruta")
+        if progress_callback:
+            try:
+                progress_callback({
+                    "processed": index - 1,
+                    "processed_folders": index - 1,
+                    "total": total_selected,
+                    "total_folders": total_selected,
+                    "percent": int(((index - 1) / total_selected) * 100) if total_selected else 0,
+                    "current_file": f"Lote Box {index}/{total_selected}: {child.get('name')}",
+                    "current_route": str(child_path),
+                })
+            except Exception:
+                pass
+
+        try:
+            result = scan_local_box_path(
+                child_path,
+                progress_callback=None,
+                calculate_hash=calculate_hash,
+            )
+            result["batch_child_name"] = child.get("name")
+            result["batch_child_path"] = child_path
+            result["batch_status"] = "OK"
+            results.append(result)
+
+            total_files += int(result.get("total_archivos") or result.get("files") or 0)
+            total_folders += int(result.get("total_carpetas") or result.get("folders") or 0)
+            total_new += int(result.get("nuevos") or 0)
+            total_modified += int(result.get("modificados") or 0)
+            total_alerts += int(result.get("alertas") or 0)
+
+        except Exception as exc:
+            results.append({
+                "batch_child_name": child.get("name"),
+                "batch_child_path": child_path,
+                "batch_status": "ERROR",
+                "error": str(exc),
+            })
+
+    if progress_callback:
+        try:
+            progress_callback({
+                "processed": total_selected,
+                "processed_folders": total_selected,
+                "total": total_selected,
+                "total_folders": total_selected,
+                "percent": 100,
+                "current_file": "Lote Box completado",
+                "current_route": str(root),
+            })
+        except Exception:
+            pass
+
+    return {
+        "root_path": str(root),
+        "offset": offset,
+        "limit": limit,
+        "selected": total_selected,
+        "total_children": len(children),
+        "next_offset": offset + total_selected,
+        "has_more": (offset + total_selected) < len(children),
+        "total_archivos": total_files,
+        "total_carpetas": total_folders,
+        "nuevos": total_new,
+        "modificados": total_modified,
+        "alertas": total_alerts,
+        "results": results,
+    }
+
+
+def scan_massive_root_all_batches(
+    root_path,
+    batch_size=25,
+    progress_callback=None,
+    calculate_hash=False,
+    stop_on_box_error=False,
+    max_batches=None,
+):
+    """
+    Escanea una raíz masiva completa dividiéndola internamente en lotes.
+
+    Uso previsto:
+    - El usuario lanza una sola acción.
+    - El sistema procesa todos los lotes hasta completar la raíz.
+    - Nunca ejecuta os.walk(root_path) sobre la raíz masiva.
+    - Cada subcarpeta directa se escanea con scan_local_box_path().
+    - Si una carpeta falla, se registra el error y se continúa, salvo stop_on_box_error=True.
+    """
+    batch_size = max(1, min(100, int(batch_size or 25)))
+
+    root = _safe_path(str(root_path))
+    children = _qa_list_direct_child_dirs(root)
+
+    total_children = len(children)
+    total_batches = (total_children + batch_size - 1) // batch_size if batch_size else 0
+
+    all_results = []
+    total_files = 0
+    total_folders = 0
+    total_new = 0
+    total_modified = 0
+    total_alerts = 0
+    total_errors = 0
+
+    for batch_index, offset in enumerate(range(0, total_children, batch_size), start=1):
+        if max_batches is not None and batch_index > int(max_batches):
+            break
+
+        selected = children[offset:offset + batch_size]
+
+        if progress_callback:
+            try:
+                progress_callback({
+                    "processed": offset,
+                    "processed_folders": offset,
+                    "total": total_children,
+                    "total_folders": total_children,
+                    "percent": int((offset / total_children) * 100) if total_children else 0,
+                    "current_file": f"Lote {batch_index}/{total_batches} · {len(selected)} carpetas",
+                    "current_route": str(root),
+                    "batch_index": batch_index,
+                    "total_batches": total_batches,
+                    "batch_size": batch_size,
+                })
+            except Exception:
+                pass
+
+        batch_result = scan_massive_root_batch(
+            root,
+            offset=offset,
+            limit=batch_size,
+            progress_callback=None,
+            calculate_hash=calculate_hash,
+        )
+
+        all_results.append(batch_result)
+
+        total_files += int(batch_result.get("total_archivos") or 0)
+        total_folders += int(batch_result.get("total_carpetas") or 0)
+        total_new += int(batch_result.get("nuevos") or 0)
+        total_modified += int(batch_result.get("modificados") or 0)
+        total_alerts += int(batch_result.get("alertas") or 0)
+
+        batch_errors = [
+            item for item in batch_result.get("results", [])
+            if item.get("batch_status") == "ERROR"
+        ]
+        total_errors += len(batch_errors)
+
+        if stop_on_box_error and batch_errors:
+            break
+
+    processed_children = 0
+    for batch in all_results:
+        processed_children += int(batch.get("selected") or 0)
+
+    completed = processed_children >= total_children and total_errors == 0
+
+    if progress_callback:
+        try:
+            progress_callback({
+                "processed": processed_children,
+                "processed_folders": processed_children,
+                "total": total_children,
+                "total_folders": total_children,
+                "percent": 100 if total_children == 0 else int((processed_children / total_children) * 100),
+                "current_file": "Escaneo masivo por lotes completado",
+                "current_route": str(root),
+                "batch_index": total_batches,
+                "total_batches": total_batches,
+                "batch_size": batch_size,
+            })
+        except Exception:
+            pass
+
+    return {
+        "root_path": str(root),
+        "batch_size": batch_size,
+        "total_children": total_children,
+        "processed_children": processed_children,
+        "total_batches": total_batches,
+        "max_batches": max_batches,
+        "completed": completed,
+        "has_errors": total_errors > 0,
+        "total_errors": total_errors,
+        "total_archivos": total_files,
+        "total_carpetas": total_folders,
+        "nuevos": total_new,
+        "modificados": total_modified,
+        "alertas": total_alerts,
+        "batches": all_results,
+    }
 
 
 def refresh_box_folder_before_inspection(folder_path, calculate_hash=False):
