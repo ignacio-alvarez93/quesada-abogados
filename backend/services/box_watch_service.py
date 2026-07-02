@@ -38,6 +38,51 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _qa_count_top_level_dirs_safe(path, limit=301):
+    """
+    Cuenta solo subcarpetas directas, sin recorrer recursivamente.
+
+    Sirve para detectar raíces masivas de Box Drive antes de lanzar un os.walk
+    que pueda saturar/desconectar Box.
+    """
+    try:
+        count = 0
+        with os.scandir(path) as iterator:
+            for entry in iterator:
+                try:
+                    if entry.is_dir():
+                        count += 1
+                        if count >= limit:
+                            return count
+                except Exception:
+                    continue
+        return count
+    except Exception:
+        return None
+
+
+def _qa_assert_not_massive_box_root(path):
+    """
+    Evita escaneos recursivos sobre raíces con demasiadas subcarpetas directas.
+
+    Para rutas masivas como REGULARIZACION MASIVA / INDIVIDUALES, el sistema
+    debe escanear por lotes o por subcarpetas de expediente, no toda la raíz.
+    """
+    direct_dirs = _qa_count_top_level_dirs_safe(path, limit=301)
+    if direct_dirs is None:
+        raise RuntimeError(
+            "Box Drive no permite listar la ruta. Escaneo cancelado para conservar el inventario anterior."
+        )
+
+    if direct_dirs >= 301:
+        raise RuntimeError(
+            "Ruta Box demasiado masiva para escaneo recursivo completo "
+            f"({direct_dirs}+ subcarpetas directas). "
+            "Escaneo cancelado para evitar desconexion de Box Drive. "
+            "Use escaneo por subcarpetas/lotes."
+        )
+
+
 def _qa_fail_stale_running_scans(conn):
     """
     Marca como ERROR escaneos antiguos que quedaron EN CURSO por cierre forzado
@@ -419,6 +464,7 @@ def scan_local_box_path(ruta_base, progress_callback=None, calculate_hash=False)
     """
     initialize_box_watch_schema()
     base = _safe_path(ruta_base)
+    _qa_assert_not_massive_box_root(base)
     start = _now()
     total_carpetas_estimadas, total_archivos_estimados = _count_tree(base)
     total_archivos = total_carpetas = nuevos = modificados = sin_clasificar = alertas = 0
