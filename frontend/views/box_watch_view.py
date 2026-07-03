@@ -1,4 +1,5 @@
 import threading
+import time
 import unicodedata
 from datetime import datetime
 
@@ -657,6 +658,74 @@ def box_watch_view(page: ft.Page):
         content_area.content = build_layout()
         safe_update()
 
+    def watch_external_job_until_finished(job_id, interval_seconds=5):
+        """
+        Vigila un job externo desde la UI sin ejecutar escaneo en Flet.
+
+        Motivo:
+        El runner externo escribe el estado en SQLite, pero la vista no recibe
+        un evento automático al terminar. Este watcher consulta el job cada pocos
+        segundos y actualiza el panel/aviso cuando finaliza.
+        """
+        def _watch():
+            last_estado = None
+
+            while True:
+                time.sleep(interval_seconds)
+
+                try:
+                    job = box_watch_job_service.get_job(job_id)
+                except Exception as exc:
+                    print(f"[Box Watch] No se pudo consultar job #{job_id}: {exc}")
+                    return
+
+                if not job:
+                    return
+
+                estado = str(job.get("estado") or "").upper()
+                state["latest_scan_job"] = job
+
+                # Refresco ligero cuando cambia el estado.
+                if estado != last_estado:
+                    content_area.content = build_layout()
+                    safe_update()
+                    last_estado = estado
+
+                if estado in ("DONE", "ERROR", "INTERRUPTED"):
+                    total_routes = int(job.get("total_routes") or 0)
+                    completed_routes = int(job.get("completed_routes") or 0)
+                    total_archivos = int(job.get("total_archivos") or 0)
+                    total_carpetas = int(job.get("total_carpetas") or 0)
+                    total_errores = int(job.get("total_errores") or 0)
+
+                    if estado == "DONE":
+                        notify_ok(
+                            f"Job Box Watch #{job_id} finalizado: "
+                            f"{completed_routes}/{total_routes} ruta(s), "
+                            f"{total_carpetas} carpeta(s), "
+                            f"{total_archivos} archivo(s), "
+                            f"{total_errores} error(es)."
+                        )
+                    else:
+                        notify_error(
+                            f"Job Box Watch #{job_id} terminó en estado {estado}: "
+                            f"{job.get('error') or 'sin detalle'}"
+                        )
+
+                    content_area.content = build_layout()
+                    safe_update()
+                    return
+
+        try:
+            runner = getattr(page, "run_thread", None)
+            if callable(runner):
+                runner(_watch)
+                return
+        except Exception:
+            pass
+
+        threading.Thread(target=_watch, daemon=True).start()
+
     def launch_external_scan_job(route_ids, label):
         try:
             running_job_id = box_watch_job_service.has_running_job()
@@ -679,8 +748,9 @@ def box_watch_view(page: ft.Page):
 
             notify_ok(
                 f"Job Box Watch #{job_id} lanzado en CMD externo. "
-                "Puedes seguir trabajando. Pulsa Refrescar job para ver estado."
+                "Puedes seguir trabajando. La app avisará cuando termine."
             )
+            watch_external_job_until_finished(job_id)
             content_area.content = build_layout()
             safe_update()
         except Exception as exc:
