@@ -4,9 +4,12 @@ from datetime import datetime
 
 import flet as ft
 
-from backend.services import box_watch_service
+from backend.services import box_watch_job_service, box_watch_service
 from frontend.components.app_alert import error_alert, success_alert
 from frontend.components.app_button import primary_button, secondary_button
+from frontend.components.document_file_card import document_file_card
+from frontend.components.bulk_action_bar import bulk_action_bar
+from frontend.components.listing import compact_pagination_bar
 from frontend.components.app_card import metric_card, info_card
 from frontend.components.app_empty_state import empty_state
 from frontend.components.app_table import app_table
@@ -234,6 +237,10 @@ def box_watch_view(page: ft.Page):
         "box_screen": BOX_WATCH_VIEW_CACHE.get("box_screen", "routes"),
         "last_scan_results": list(BOX_WATCH_VIEW_CACHE.get("last_scan_results") or []),
         "last_scan_finished_at": BOX_WATCH_VIEW_CACHE.get("last_scan_finished_at", ""),
+        "latest_scan_job": None,
+        "route_page": int(BOX_WATCH_VIEW_CACHE.get("route_page") or 1),
+        "route_page_size": 10,
+        "selected_scan_route_ids": list(BOX_WATCH_VIEW_CACHE.get("selected_scan_route_ids") or []),
         "scanning": bool(BOX_WATCH_PROGRESS_STATE.get("scanning")),
         "loading_folders": bool(BOX_WATCH_PROGRESS_STATE.get("loading_folders")),
         "loading_label": BOX_WATCH_PROGRESS_STATE.get("loading_label", ""),
@@ -638,6 +645,49 @@ def box_watch_view(page: ft.Page):
         # Evita barras, bloqueos visuales y parpadeos mientras Box se escanea en segundo plano.
 
 
+    def refresh_latest_scan_job():
+        try:
+            state["latest_scan_job"] = box_watch_job_service.get_latest_job()
+        except Exception:
+            state["latest_scan_job"] = None
+        return state.get("latest_scan_job")
+
+    def refresh_job_panel(e=None):
+        refresh_latest_scan_job()
+        content_area.content = build_layout()
+        safe_update()
+
+    def launch_external_scan_job(route_ids, label):
+        try:
+            running_job_id = box_watch_job_service.has_running_job()
+            if running_job_id:
+                state["latest_scan_job"] = box_watch_job_service.get_job(running_job_id)
+                notify_error(f"Ya hay un job Box Watch en curso: #{running_job_id}.")
+                content_area.content = build_layout()
+                safe_update()
+                return
+
+            job_id = box_watch_job_service.create_scan_job(route_ids=route_ids)
+            box_watch_job_service.launch_scan_job(job_id)
+
+            state["latest_scan_job"] = box_watch_job_service.get_job(job_id)
+            state["scanning"] = False
+            state["progress_file"] = f"Job externo lanzado: #{job_id}"
+            state["progress_route"] = label or "Box Watch"
+            save_progress_state()
+            save_cache()
+
+            notify_ok(
+                f"Job Box Watch #{job_id} lanzado en CMD externo. "
+                "Puedes seguir trabajando. Pulsa Refrescar job para ver estado."
+            )
+            content_area.content = build_layout()
+            safe_update()
+        except Exception as exc:
+            state["scanning"] = False
+            notify_error(f"No se pudo lanzar job externo Box Watch: {exc}")
+            safe_update()
+
     def start_background_worker(target, *args):
         """
         Ejecuta trabajos en segundo plano usando el mecanismo de Flet cuando existe.
@@ -687,40 +737,26 @@ def box_watch_view(page: ft.Page):
             safe_update()
 
     def scan_selected(e=None):
-        if state["scanning"]:
-            return
         refresh_routes()
         route_ids = selected_route_ids()
         if not route_ids:
             notify_error("No hay rutas activas configuradas.")
             safe_update()
             return
-        state["scanning"] = True
-        state["message"] = None
-        state["progress_file"] = "Escaneando en segundo plano..."
-        state["progress_route"] = selected_route_label()
-        save_progress_state()
-        # No hacemos safe_update inicial: la tabla no queda bloqueada por barras de progreso.
-        start_background_worker(scan_worker, route_ids)
+
+        launch_external_scan_job(route_ids, selected_route_label())
 
     def scan_all(e=None):
-        if state["scanning"]:
-            return
         refresh_routes()
         route_ids = [int(r["id"]) for r in state.get("routes", [])]
         if not route_ids:
             notify_error("No hay rutas activas configuradas.")
             safe_update()
             return
+
         route_dd.value = "TODAS"
         state["selected_route"] = "TODAS"
-        state["scanning"] = True
-        state["message"] = None
-        state["progress_file"] = "Escaneando todas las rutas en segundo plano..."
-        state["progress_route"] = "Todas las rutas configuradas"
-        save_progress_state()
-        # No hacemos safe_update inicial: la tabla no queda bloqueada por barras de progreso.
-        start_background_worker(scan_worker, route_ids)
+        launch_external_scan_job(route_ids, "Todas las rutas configuradas")
 
     def _load_root_rows():
         selected = state.get("selected_route") or "TODAS"
@@ -2010,24 +2046,116 @@ def box_watch_view(page: ft.Page):
         save_cache()
         load_root_folders(show_loading=True, refresh_routes_before=False)
 
-    def scan_route_from_card(route_id):
-        if state["scanning"]:
-            notify_error("Ya hay un escaneo en curso.")
+    def selected_scan_route_ids():
+        raw_ids = state.get("selected_scan_route_ids") or []
+        return {str(x) for x in raw_ids if str(x or "").strip()}
+
+    def persist_scan_route_selection(selected_ids):
+        state["selected_scan_route_ids"] = sorted({str(x) for x in selected_ids if str(x or "").strip()})
+        save_cache()
+
+    def toggle_route_scan_selection(route_id):
+        selected = selected_scan_route_ids()
+        route_id_str = str(route_id or "")
+        if not route_id_str:
+            return
+
+        if route_id_str in selected:
+            selected.remove(route_id_str)
+        else:
+            selected.add(route_id_str)
+
+        persist_scan_route_selection(selected)
+        content_area.content = build_layout()
+        safe_update()
+
+    def clear_route_scan_selection(e=None):
+        persist_scan_route_selection(set())
+        content_area.content = build_layout()
+        safe_update()
+
+    def select_only_route(route_id):
+        persist_scan_route_selection({str(route_id)})
+        content_area.content = build_layout()
+        safe_update()
+
+    def select_visible_routes(visible_routes):
+        selected = selected_scan_route_ids()
+        for route in visible_routes or []:
+            rid = route.get("id")
+            if rid is not None:
+                selected.add(str(rid))
+        persist_scan_route_selection(selected)
+        content_area.content = build_layout()
+        safe_update()
+
+    def scan_selected_route_cards(e=None):
+        route_ids = []
+        for rid in sorted(selected_scan_route_ids(), key=lambda x: int(x) if str(x).isdigit() else 999999):
+            try:
+                route_ids.append(int(rid))
+            except Exception:
+                pass
+
+        if not route_ids:
+            notify_error("Selecciona al menos una ruta para escanear.")
             safe_update()
             return
 
-        route = next((r for r in state.get("routes", []) if str(r.get("id")) == str(route_id)), None)
-        route_label = f"{route.get('tipo_expediente_nombre')} · {route.get('ruta_box')}" if route else f"Ruta {route_id}"
+        launch_external_scan_job(route_ids, f"{len(route_ids)} ruta(s) seleccionada(s)")
 
-        state["scanning"] = True
-        state["message"] = None
-        state["progress_file"] = "Escaneando ruta desde panel..."
-        state["progress_route"] = route_label
-        save_progress_state()
+    def set_route_cards_page(page_number):
+        try:
+            page_number = int(page_number or 1)
+        except Exception:
+            page_number = 1
+
+        total = len(state.get("routes") or [])
+        page_size = max(1, int(state.get("route_page_size") or 10))
+        pages = max(1, (total + page_size - 1) // page_size)
+        state["route_page"] = max(1, min(page_number, pages))
         save_cache()
         content_area.content = build_layout()
         safe_update()
-        start_background_worker(scan_worker, [int(route_id)])
+
+    def paginated_route_cards(routes):
+        page_size = max(1, int(state.get("route_page_size") or 10))
+        total = len(routes or [])
+        pages = max(1, (total + page_size - 1) // page_size)
+        page_number = max(1, min(int(state.get("route_page") or 1), pages))
+        state["route_page"] = page_number
+
+        offset = (page_number - 1) * page_size
+        return list(routes or [])[offset: offset + page_size], page_number, page_size, total
+
+    def build_route_bulk_bar(visible_routes):
+        selected_count = len(selected_scan_route_ids())
+        if not selected_count:
+            return ft.Container()
+
+        return bulk_action_bar(
+            title="Rutas seleccionadas",
+            selected_count=selected_count,
+            on_clear=clear_route_scan_selection,
+            actions=[
+                {
+                    "icon": ft.Icons.PLAY_ARROW,
+                    "tooltip": "Escanear seleccionadas",
+                    "on_click": scan_selected_route_cards,
+                },
+                {
+                    "icon": ft.Icons.SELECT_ALL,
+                    "tooltip": "Seleccionar página",
+                    "on_click": lambda e, items=visible_routes: select_visible_routes(items),
+                },
+            ],
+        )
+
+    def scan_route_from_card(route_id):
+        route = next((r for r in state.get("routes", []) if str(r.get("id")) == str(route_id)), None)
+        route_label = f"{route.get('tipo_expediente_nombre')} · {route.get('ruta_box')}" if route else f"Ruta {route_id}"
+
+        launch_external_scan_job([int(route_id)], route_label)
 
     def build_route_card(route):
         route_id = route.get("id")
@@ -2037,47 +2165,108 @@ def box_watch_view(page: ft.Page):
 
         route_text = _short_box_path(route_box or route_resolved)
         resolved_text = _short_box_path(route_resolved, max_len=120)
-
-        badges = [
-            status_chip("active", status_map=_route_status_map(), compact=True, bordered=True),
-        ]
-
         route_id_str = str(route_id or "")
-        if route_id_str == str(state.get("selected_route") or ""):
-            badges.append(status_chip("normal", label="Seleccionada", status_map=_route_status_map(), compact=True, bordered=True))
+        is_selected_for_scan = route_id_str in selected_scan_route_ids()
 
-        body = [
-            ft.Text(route_text or "Ruta sin definir", size=12, color=Q_PRIMARY_DARK, selectable=True),
+        extra_lines = [
+            f"ID: {route_id} · Tipo: {tipo}",
         ]
 
         if resolved_text and resolved_text != route_text:
-            body.append(ft.Text(resolved_text, size=10, color=Q_MUTED, selectable=True))
+            extra_lines.append(f"Ruta local: {resolved_text}")
 
-        body.append(
-            ft.Row(
-                controls=[
-                    ft.Text(f"ID: {route_id}", size=11, color=Q_MUTED),
-                    ft.Text(f"Tipo: {tipo}", size=11, color=Q_MUTED),
-                ],
-                spacing=12,
-                wrap=True,
-            )
+        if route_id_str == str(state.get("selected_route") or ""):
+            extra_lines.append("Vista técnica seleccionada actualmente")
+
+        return document_file_card(
+            name=tipo,
+            path=route_text or "Ruta sin definir",
+            relative_path=resolved_text if resolved_text != route_text else "",
+            folder="Ruta Box configurada",
+            size_label="",
+            modified_at="",
+            file_type="BOX",
+            selected=is_selected_for_scan,
+            selectable=True,
+            checkbox_value=is_selected_for_scan,
+            on_select=lambda e, rid=route_id: toggle_route_scan_selection(rid),
+            extra_lines=extra_lines,
+            action_groups=[
+                {
+                    "items": [
+                        {"label": "Ver carpetas", "on_click": lambda e, rid=route_id: open_route_table(rid)},
+                        {"label": "Escanear esta ruta", "on_click": lambda e, rid=route_id: scan_route_from_card(rid)},
+                        {"label": "Seleccionar solo esta ruta", "on_click": lambda e, rid=route_id: select_only_route(rid)},
+                        {"label": "Limpiar selección", "on_click": clear_route_scan_selection},
+                    ]
+                }
+            ],
+            compact=False,
         )
 
-        actions = [
-            primary_button("Ver carpetas", lambda e, rid=route_id: open_route_table(rid)),
-            secondary_button("Escanear ruta", lambda e, rid=route_id: scan_route_from_card(rid)),
-        ]
+    def build_latest_job_panel():
+        job = refresh_latest_scan_job()
+        if not job:
+            return ft.Container()
 
-        return card_item(
-            title=tipo,
-            subtitle=route_text,
-            leading=ft.Icon(ft.Icons.FOLDER_OPEN, color=Q_PRIMARY, size=22),
-            badges=badges,
-            actions=actions,
-            body=body,
-            selected=route_id_str == str(state.get("selected_route") or ""),
-            padding=12,
+        estado = job.get("estado") or "-"
+        total_routes = job.get("total_routes") or 0
+        completed_routes = job.get("completed_routes") or 0
+        total_archivos = job.get("total_archivos") or 0
+        total_carpetas = job.get("total_carpetas") or 0
+        total_errores = job.get("total_errores") or 0
+        progress = float(job.get("progress_percent") or 0)
+        label = job.get("progress_label") or "-"
+
+        status_key = "normal"
+        if estado == "RUNNING":
+            status_key = "active"
+        elif estado in ("ERROR", "INTERRUPTED"):
+            status_key = "inactive"
+
+        return ft.Container(
+            padding=10,
+            border_radius=12,
+            border=ft.border.all(1, "#D0D5DD"),
+            bgcolor="#FFFFFF",
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                f"Último job Box Watch #{job.get('id')}",
+                                size=14,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            status_chip(
+                                status_key,
+                                label=estado,
+                                status_map=_route_status_map(),
+                                compact=True,
+                                bordered=True,
+                            ),
+                            secondary_button("Refrescar job", refresh_job_panel),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Text(label, size=12, color=Q_MUTED),
+                    ft.Row(
+                        controls=[
+                            metric_card("Progreso", f"{progress:.1f}%"),
+                            metric_card("Rutas", f"{completed_routes}/{total_routes}"),
+                            metric_card("Archivos", total_archivos),
+                            metric_card("Carpetas", total_carpetas),
+                            metric_card("Errores", total_errores),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                ],
+                spacing=8,
+            ),
         )
 
     def build_routes_dashboard():
@@ -2095,21 +2284,39 @@ def box_watch_view(page: ft.Page):
                 ),
             )
 
-        controls = [
+        visible_routes, page_number, page_size, total_routes = paginated_route_cards(routes)
+
+        header_controls = [
             ft.Row(
                 controls=[
                     ft.Text("Rutas configuradas", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                     secondary_button("Refrescar rutas", lambda e: refresh_routes()),
                     secondary_button("Reescanear todas", scan_all),
+                    primary_button("Escanear seleccionadas", scan_selected_route_cards),
+                    secondary_button("Seleccionar página", lambda e, items=visible_routes: select_visible_routes(items)),
+                    secondary_button("Limpiar selección", clear_route_scan_selection),
                 ],
                 spacing=8,
                 wrap=True,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
+            ft.Text(
+                f"{len(selected_scan_route_ids())} seleccionada(s) · {total_routes} ruta(s) activas · {page_size} por página",
+                size=12,
+                color=Q_MUTED,
+            ),
+            build_route_bulk_bar(visible_routes),
+            compact_pagination_bar(
+                page=page_number,
+                page_size=page_size,
+                total_items=total_routes,
+                on_page_change=set_route_cards_page,
+                label_prefix="Rutas",
+            ),
         ]
 
         if state.get("scanning"):
-            controls.append(
+            header_controls.append(
                 ft.Text(
                     f"Escaneo en curso: {state.get('progress_route') or 'ruta seleccionada'}",
                     size=12,
@@ -2117,11 +2324,17 @@ def box_watch_view(page: ft.Page):
                 )
             )
 
-        controls.append(
-            ft.Column(
-                controls=[build_route_card(route) for route in routes],
-                spacing=10,
-            )
+        cards_column = ft.Column(
+            controls=[build_route_card(route) for route in visible_routes],
+            spacing=10,
+        )
+
+        bottom_pagination = compact_pagination_bar(
+            page=page_number,
+            page_size=page_size,
+            total_items=total_routes,
+            on_page_change=set_route_cards_page,
+            label_prefix="Rutas",
         )
 
         return ft.Column(
@@ -2132,11 +2345,13 @@ def box_watch_view(page: ft.Page):
                     border=ft.border.all(1, "#D0D5DD"),
                     bgcolor="#FFFFFF",
                     content=ft.Column(
-                        controls=controls[:-1],
+                        controls=header_controls,
                         spacing=8,
                     ),
                 ),
-                controls[-1],
+                build_latest_job_panel(),
+                cards_column,
+                bottom_pagination,
             ],
             spacing=10,
         )
