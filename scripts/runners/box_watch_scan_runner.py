@@ -1,5 +1,6 @@
 import argparse
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -11,6 +12,24 @@ from backend.services import box_watch_job_service, box_watch_service  # noqa: E
 
 
 def _progress_adapter(job_id, totals):
+    """
+    Adaptador de progreso del runner externo.
+
+    Importante:
+    No debe escribir en SQLite en cada archivo/carpeta porque ralentiza mucho
+    el escaneo y puede provocar database is locked si la UI lee a la vez.
+
+    Regla:
+    - actualizar como máximo cada 3 segundos;
+    - actualizar siempre al cambiar de ruta;
+    - el resumen final se guarda completo en finish_job().
+    """
+    throttle_seconds = 3.0
+    state = {
+        "last_update_at": 0.0,
+        "last_route_index": None,
+    }
+
     def on_progress(payload):
         payload = payload or {}
 
@@ -19,6 +38,13 @@ def _progress_adapter(job_id, totals):
         processed = int(payload.get("processed") or 0)
         processed_folders = int(payload.get("processed_folders") or 0)
         label = payload.get("current_file") or payload.get("route_label") or "Escaneando Box"
+
+        now = time.monotonic()
+        route_changed = route_index != state.get("last_route_index")
+        enough_time = (now - float(state.get("last_update_at") or 0)) >= throttle_seconds
+
+        if not route_changed and not enough_time:
+            return
 
         if total_routes > 0 and route_index > 0:
             percent = min(99.0, max(0.0, ((route_index - 1) / total_routes) * 100))
@@ -40,6 +66,9 @@ def _progress_adapter(job_id, totals):
             total_carpetas=totals["total_carpetas"],
             total_errores=totals.get("total_errores") or 0,
         )
+
+        state["last_update_at"] = now
+        state["last_route_index"] = route_index
 
     return on_progress
 
@@ -71,9 +100,13 @@ def run_job(job_id):
     )
 
     try:
+        # IMPORTANTE:
+        # No pasamos progress_callback granular.
+        # En rutas grandes, el callback por archivo/carpeta ralentiza mucho el escaneo
+        # aunque se limite la escritura a SQLite. El resumen final se registra en finish_job().
         results = box_watch_service.scan_configured_routes(
             route_ids=route_ids,
-            progress_callback=_progress_adapter(job_id, totals),
+            progress_callback=None,
             calculate_hash=False,
         )
 
