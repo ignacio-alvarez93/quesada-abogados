@@ -294,7 +294,7 @@ def box_watch_view(page: ft.Page):
     root_toolbar_container = ft.Container()
     filter_timer = {"timer": None}
     filter_job = {"seq": 0, "last_applied": None}
-    root_filter_input = text_input("Buscar cliente / expediente", value=BOX_WATCH_VIEW_CACHE.get("root_filter", ""), width=300)
+    root_filter_input = text_input("Filtrar nombre / expediente", value=BOX_WATCH_VIEW_CACHE.get("root_filter", ""), width=360)
     route_dd = ft.Dropdown(label="Ruta Box configurada", width=420, options=[])
     sort_by_dd = ft.Dropdown(
         label="Ordenar por",
@@ -565,6 +565,57 @@ def box_watch_view(page: ft.Page):
         end = start + page_size
         return rows[start:end]
 
+    def _folder_matches_root_filter(folder, text):
+        needle = _filter_norm(text)
+        if not needle:
+            return True
+
+        values = [
+            folder.get("_client_folder"),
+            folder.get("_case_label"),
+            folder.get("_document_year"),
+            folder.get("_route_label"),
+            folder.get("nombre_carpeta"),
+            folder.get("ruta_relativa"),
+            folder.get("ruta"),
+            folder.get("cliente_nombre"),
+            folder.get("expediente_codigo"),
+            folder.get("tramite"),
+        ]
+
+        haystack = " ".join(_filter_norm(v) for v in values if v is not None)
+        return needle in haystack
+
+
+    def apply_root_filter_in_memory(text=None, reset_page=True):
+        """
+        Filtra la tabla técnica usando all_root_rows ya cargado en memoria.
+        No consulta SQLite y no reconstruye toda la pantalla.
+        """
+        raw_text = (root_filter_input.value if text is None else text) or ""
+        filter_text = raw_text.strip()
+
+        source_rows = list(state.get("all_root_rows") or state.get("root_rows") or [])
+        if filter_text:
+            filtered_rows = [row for row in source_rows if _folder_matches_root_filter(row, filter_text)]
+        else:
+            filtered_rows = list(source_rows)
+
+        state["root_filter"] = filter_text
+        state["root_rows"] = _sorted_root_rows(filtered_rows)
+        state["root_total_rows"] = len(state["root_rows"])
+
+        if reset_page:
+            state["root_page"] = 1
+
+        state["selected_paths"] = {
+            p for p in state.get("selected_paths", set())
+            if any((r.get("ruta") == p) for r in state["root_rows"])
+        }
+
+        _clamp_root_page()
+        save_cache()
+
     def on_page_size_change(e=None):
         state["root_page_size"] = _root_page_size()
         state["root_page"] = 1
@@ -605,9 +656,8 @@ def box_watch_view(page: ft.Page):
             return
         try:
             filter_job["last_applied"] = text
-            state["root_filter"] = text
-            state["root_page"] = 1
-            load_root_folders(show_loading=False, refresh_routes_before=False)
+            apply_root_filter_in_memory(text, reset_page=True)
+            refresh_root_table()
         except Exception:
             pass
 
@@ -632,9 +682,8 @@ def box_watch_view(page: ft.Page):
         # No esperamos al debounce porque Flet puede no disparar otro evento y la tabla queda filtrada.
         if not text:
             filter_job["last_applied"] = ""
-            state["root_filter"] = ""
-            state["root_page"] = 1
-            load_root_folders(show_loading=False, refresh_routes_before=False)
+            apply_root_filter_in_memory("", reset_page=True)
+            refresh_root_table()
             return
 
         # Con texto, sí aplicamos debounce para no reconstruir la tabla por cada pulsación.
@@ -924,15 +973,24 @@ def box_watch_view(page: ft.Page):
                     state["selected_route"] = selected_before_refresh
                     route_dd.value = selected_before_refresh
 
-            state["root_filter"] = (root_filter_input.value or state.get("root_filter") or "").strip()
+            requested_filter = (root_filter_input.value or state.get("root_filter") or "").strip()
+
+            # Carga base sin filtro backend: el filtro de nombre se aplica en memoria
+            # para que escribir en el buscador sea fluido.
+            state["root_filter"] = ""
+            previous_filter_value = root_filter_input.value
+            root_filter_input.value = ""
+
             data = _load_root_rows()
+
+            root_filter_input.value = requested_filter or previous_filter_value or ""
             rows = data.get("rows") if isinstance(data, dict) else (data or [])
             prepared_rows = [_prepare_folder_for_memory(row) for row in (rows or [])]
-            state["root_rows"] = _sorted_root_rows(prepared_rows)
-            state["all_root_rows"] = list(state["root_rows"])
-            state["root_total_rows"] = len(state["root_rows"])
+            all_rows = _sorted_root_rows(prepared_rows)
+
+            state["all_root_rows"] = list(all_rows)
             state["root_loaded"] = True
-            _clamp_root_page()
+            apply_root_filter_in_memory(requested_filter, reset_page=True)
             state["inspection"] = None
             state["inspection_stack"] = []
             state["selected_paths"] = {
@@ -2569,10 +2627,19 @@ def box_watch_view(page: ft.Page):
     def build_table_screen():
         return ft.Column(
             controls=[
-                build_route_controls(),
-                info_card("3. Carpetas raíz detectadas", root_table_container),
+                info_card(
+                    "3. Tabla técnica Box",
+                    ft.Column(
+                        controls=[
+                            build_route_controls(),
+                            root_table_container,
+                        ],
+                        spacing=10,
+                    ),
+                ),
             ],
             spacing=14,
+            expand=True,
         )
 
     def build_layout():
