@@ -705,36 +705,20 @@ def box_watch_view(page: ft.Page):
         threading.Thread(target=target, args=args, daemon=True).start()
 
     def scan_worker(route_ids):
-        try:
-            results = box_watch_service.scan_configured_routes(
-                route_ids=route_ids,
-                progress_callback=on_progress,
-                calculate_hash=False,
-            )
-            total_folders = sum(int(r.get("total_carpetas", 0) or 0) for r in results)
-            total_files = sum(int(r.get("total_archivos", 0) or 0) for r in results)
-            total_errors = sum(1 for r in results if str(r.get("estado") or "").upper() == "ERROR" or str(r.get("scan_mode") or "").upper() == "ERROR")
-            total_minutes = sum(float(r.get("duration_minutes") or 0) for r in results)
-
-            state["last_scan_results"] = list(results or [])
-            state["last_scan_finished_at"] = datetime.now().isoformat(timespec="seconds")
-
-            # No recalculamos contadores recursivos aquí: era uno de los cuellos de botella.
-            # La vista permanece usable durante el escaneo.
-            notify_ok(
-                f"Escaneado finalizado: {len(results)} ruta(s), "
-                f"{total_folders} carpetas, {total_files} archivos, "
-                f"{total_errors} error(es), {total_minutes:.2f} min. "
-                "Pulsa Recargar para refrescar la tabla."
-            )
-            state["selected_paths"] = set()
-            save_cache()
-        except Exception as exc:
-            notify_error(f"No se pudo reescanear: {exc}")
-        finally:
-            state["scanning"] = False
-            save_progress_state()
-            safe_update()
+        """
+        Guard defensivo:
+        Los escaneos Box Watch pesados no deben ejecutarse dentro del hilo/UI Flet.
+        La vía oficial es launch_external_scan_job(), que crea un job observable y
+        delega el trabajo en scripts/runners/box_watch_scan_runner.py.
+        """
+        state["scanning"] = False
+        notify_error(
+            "Escaneo interno deshabilitado por seguridad. "
+            "Usa el job externo de Box Watch para permitir seguir trabajando en el CRM."
+        )
+        content_area.content = build_layout()
+        safe_update()
+        return
 
     def scan_selected(e=None):
         refresh_routes()
@@ -1148,7 +1132,6 @@ def box_watch_view(page: ft.Page):
         controls = [
             ft.Text("Vigilancia Box", size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
             ft.Text("Rutas configuradas → carpetas de cliente/expediente → inspección documental", size=14, color=Q_MUTED),
-            ft.Text("El ERP solo observa Box. No borra, no mueve, no renombra y no modifica archivos.", size=13, color=Q_DANGER),
         ]
         if state["message"]:
             controls.append(state["message"])
@@ -2130,14 +2113,22 @@ def box_watch_view(page: ft.Page):
 
     def build_route_bulk_bar(visible_routes):
         selected_count = len(selected_scan_route_ids())
-        if not selected_count:
-            return ft.Container()
 
         return bulk_action_bar(
             title="Rutas seleccionadas",
             selected_count=selected_count,
             on_clear=clear_route_scan_selection,
             actions=[
+                {
+                    "icon": ft.Icons.REFRESH,
+                    "tooltip": "Refrescar rutas",
+                    "on_click": lambda e: refresh_routes(),
+                },
+                {
+                    "icon": ft.Icons.SYNC,
+                    "tooltip": "Reescanear todas",
+                    "on_click": scan_all,
+                },
                 {
                     "icon": ft.Icons.PLAY_ARROW,
                     "tooltip": "Escanear seleccionadas",
@@ -2147,6 +2138,11 @@ def box_watch_view(page: ft.Page):
                     "icon": ft.Icons.SELECT_ALL,
                     "tooltip": "Seleccionar página",
                     "on_click": lambda e, items=visible_routes: select_visible_routes(items),
+                },
+                {
+                    "icon": ft.Icons.CLEAR_ALL,
+                    "tooltip": "Limpiar selección",
+                    "on_click": clear_route_scan_selection,
                 },
             ],
         )
@@ -2290,29 +2286,17 @@ def box_watch_view(page: ft.Page):
             ft.Row(
                 controls=[
                     ft.Text("Rutas configuradas", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                    secondary_button("Refrescar rutas", lambda e: refresh_routes()),
-                    secondary_button("Reescanear todas", scan_all),
-                    primary_button("Escanear seleccionadas", scan_selected_route_cards),
-                    secondary_button("Seleccionar página", lambda e, items=visible_routes: select_visible_routes(items)),
-                    secondary_button("Limpiar selección", clear_route_scan_selection),
+                    ft.Text(
+                        f"{len(selected_scan_route_ids())} seleccionada(s) · {total_routes} ruta(s) activas · {page_size} por página",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
                 ],
-                spacing=8,
+                spacing=10,
                 wrap=True,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            ft.Text(
-                f"{len(selected_scan_route_ids())} seleccionada(s) · {total_routes} ruta(s) activas · {page_size} por página",
-                size=12,
-                color=Q_MUTED,
-            ),
             build_route_bulk_bar(visible_routes),
-            compact_pagination_bar(
-                page=page_number,
-                page_size=page_size,
-                total_items=total_routes,
-                on_page_change=set_route_cards_page,
-                label_prefix="Rutas",
-            ),
         ]
 
         if state.get("scanning"):
@@ -2324,17 +2308,23 @@ def box_watch_view(page: ft.Page):
                 )
             )
 
-        cards_column = ft.Column(
-            controls=[build_route_card(route) for route in visible_routes],
-            spacing=10,
-        )
-
-        bottom_pagination = compact_pagination_bar(
+        pagination = compact_pagination_bar(
             page=page_number,
             page_size=page_size,
             total_items=total_routes,
             on_page_change=set_route_cards_page,
             label_prefix="Rutas",
+        )
+
+        cards_scroll = ft.Container(
+            expand=True,
+            content=ft.ListView(
+                controls=[build_route_card(route) for route in visible_routes],
+                spacing=10,
+                padding=ft.padding.only(bottom=48),
+                auto_scroll=False,
+                expand=True,
+            ),
         )
 
         return ft.Column(
@@ -2350,10 +2340,11 @@ def box_watch_view(page: ft.Page):
                     ),
                 ),
                 build_latest_job_panel(),
-                cards_column,
-                bottom_pagination,
+                pagination,
+                cards_scroll,
             ],
             spacing=10,
+            expand=True,
         )
 
     def build_table_screen():
@@ -2389,7 +2380,6 @@ def box_watch_view(page: ft.Page):
                 controls=layout_controls,
                 spacing=14,
                 expand=True,
-                scroll=ft.ScrollMode.AUTO,
             ),
         )
 

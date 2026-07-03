@@ -7,6 +7,7 @@ from pathlib import Path
 
 from backend.services.box_classifier import classify_file, classify_folder
 from backend.services import config_service
+from backend.services.sqlite_runtime_service import configure_sqlite_runtime
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "database" / "box_watch_schema.sql"
@@ -23,10 +24,13 @@ NOMBRES_SOSPECHOSOS = ("copia de copia", "sin titulo", "sin título", "nuevo doc
 
 
 def _connect():
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    configure_sqlite_runtime(DB_PATH)
+
+    conn = sqlite3.connect(DB_PATH, timeout=60)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA busy_timeout = 60000")
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 

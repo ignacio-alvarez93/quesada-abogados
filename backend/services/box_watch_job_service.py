@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from database.connection import get_connection
+from backend.services.sqlite_runtime_service import configure_sqlite_runtime
 
 
 JOB_PENDING = "PENDING"
@@ -41,9 +42,11 @@ def _json_loads(value, default=None):
 
 
 def ensure_job_schema():
+    configure_sqlite_runtime()
+
     conn = get_connection()
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS box_watch_scan_jobs (
@@ -79,7 +82,7 @@ def mark_stale_running_jobs_as_interrupted():
     now = _now()
     conn = get_connection()
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         conn.execute(
             """
             UPDATE box_watch_scan_jobs
@@ -108,7 +111,7 @@ def create_scan_job(route_ids=None, scope=None):
 
     conn = get_connection()
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         cur = conn.execute(
             """
             INSERT INTO box_watch_scan_jobs (
@@ -137,7 +140,7 @@ def get_job(job_id):
     ensure_job_schema()
     conn = get_connection()
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         cur = conn.execute(
             """
             SELECT id, estado, scope, route_ids_json, started_at, finished_at,
@@ -171,7 +174,7 @@ def get_latest_job():
     ensure_job_schema()
     conn = get_connection()
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         cur = conn.execute("SELECT id FROM box_watch_scan_jobs ORDER BY id DESC LIMIT 1")
         row = cur.fetchone()
         return get_job(row[0]) if row else None
@@ -183,7 +186,7 @@ def has_running_job():
     ensure_job_schema()
     conn = get_connection()
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         cur = conn.execute(
             "SELECT id FROM box_watch_scan_jobs WHERE estado = ? ORDER BY id DESC LIMIT 1",
             (JOB_RUNNING,),
@@ -199,7 +202,7 @@ def mark_job_running(job_id, total_routes=0, label=None):
     now = _now()
     conn = get_connection()
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         conn.execute(
             """
             UPDATE box_watch_scan_jobs
@@ -242,7 +245,7 @@ def update_job_progress(
 
     conn = get_connection()
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         conn.execute(
             """
             UPDATE box_watch_scan_jobs
@@ -288,7 +291,7 @@ def finish_job(job_id, results):
 
     conn = get_connection()
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         conn.execute(
             """
             UPDATE box_watch_scan_jobs
@@ -328,7 +331,7 @@ def fail_job(job_id, error):
     ensure_job_schema()
     conn = get_connection()
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         conn.execute(
             """
             UPDATE box_watch_scan_jobs
@@ -354,6 +357,7 @@ def fail_job(job_id, error):
 
 
 def launch_scan_job(job_id, keep_console_open=True):
+    configure_sqlite_runtime()
     runner = _runner_path()
     if not runner.exists():
         raise FileNotFoundError(f"No existe runner Box Watch: {runner}")
