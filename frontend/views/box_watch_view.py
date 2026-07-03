@@ -2089,28 +2089,27 @@ def box_watch_view(page: ft.Page):
             else secondary_button("Panel de rutas", lambda e: set_box_screen("routes"))
         )
 
+        summary_btn = (
+            primary_button("Estado escaneos", lambda e: set_box_screen("summary"))
+            if active == "summary"
+            else secondary_button("Estado escaneos", lambda e: set_box_screen("summary"))
+        )
+
         table_btn = (
             primary_button("Tabla técnica", lambda e: set_box_screen("table"))
             if active == "table"
             else secondary_button("Tabla técnica", lambda e: set_box_screen("table"))
         )
 
-        return ft.Container(
-            padding=ft.padding.symmetric(horizontal=2, vertical=2),
-            content=ft.Row(
-                controls=[
-                    routes_btn,
-                    table_btn,
-                    ft.Text(
-                        "Panel operativo por rutas · tabla técnica separada",
-                        size=12,
-                        color=Q_MUTED,
-                    ),
-                ],
-                spacing=8,
-                wrap=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+        return ft.Row(
+            controls=[
+                routes_btn,
+                summary_btn,
+                table_btn,
+            ],
+            spacing=8,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
     def _route_status_map():
@@ -2121,11 +2120,13 @@ def box_watch_view(page: ft.Page):
             "inactive": ("Inactiva", "#F1F5F9", Q_MUTED),
         }
 
+
     def _short_box_path(value, max_len=110):
         raw = str(value or "").replace("\\", "/").strip()
         if len(raw) <= max_len:
             return raw
         return "…" + raw[-max_len:]
+
 
     def open_route_table(route_id):
         route_dd.value = str(route_id)
@@ -2466,6 +2467,24 @@ def box_watch_view(page: ft.Page):
             ),
         )
 
+    def build_scan_status_screen():
+        return ft.Column(
+            controls=[
+                info_card(
+                    "2. Estado de escaneos Box Watch",
+                    ft.Column(
+                        controls=[
+                            build_latest_job_panel(),
+                            build_runtime_diagnostic_panel(),
+                        ],
+                        spacing=10,
+                    ),
+                ),
+            ],
+            spacing=14,
+            expand=True,
+        )
+
     def build_routes_dashboard():
         routes = list(state.get("routes") or [])
 
@@ -2540,8 +2559,6 @@ def box_watch_view(page: ft.Page):
                         spacing=8,
                     ),
                 ),
-                build_latest_job_panel(),
-                build_runtime_diagnostic_panel(),
                 pagination,
                 cards_scroll,
             ],
@@ -2560,7 +2577,12 @@ def box_watch_view(page: ft.Page):
 
     def build_layout():
         active = state.get("box_screen") or "routes"
-        screen_content = build_routes_dashboard() if active == "routes" else build_table_screen()
+        if active == "routes":
+            screen_content = build_routes_dashboard()
+        elif active == "summary":
+            screen_content = build_scan_status_screen()
+        else:
+            screen_content = build_table_screen()
 
         layout_controls = [
             header(),
