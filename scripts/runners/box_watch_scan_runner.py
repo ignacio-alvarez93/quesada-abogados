@@ -8,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from backend.services.sqlite_runtime_service import configure_sqlite_runtime  # noqa: E402
 from backend.services import box_watch_job_service, box_watch_service  # noqa: E402
 
 
@@ -74,6 +75,8 @@ def _progress_adapter(job_id, totals):
 
 
 def run_job(job_id):
+    configure_sqlite_runtime()
+
     job = box_watch_job_service.get_job(job_id)
     if not job:
         raise SystemExit(f"No existe job Box Watch #{job_id}")
@@ -131,6 +134,8 @@ def run_job(job_id):
 
 
 def main():
+    configure_sqlite_runtime()
+
     parser = argparse.ArgumentParser(description="Runner externo de escaneo Box Watch")
     parser.add_argument("--job-id", type=int, required=True)
     args = parser.parse_args()

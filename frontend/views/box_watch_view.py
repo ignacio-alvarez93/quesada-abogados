@@ -1,4 +1,5 @@
 import threading
+import time
 import unicodedata
 from datetime import datetime
 
@@ -65,6 +66,41 @@ def _filter_norm(value):
     raw = unicodedata.normalize("NFD", raw)
     raw = "".join(ch for ch in raw if unicodedata.category(ch) != "Mn")
     return raw
+
+
+def _parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def _duration_label(started_at, finished_at=None):
+    started = _parse_iso_datetime(started_at)
+    if not started:
+        return "—"
+
+    finished = _parse_iso_datetime(finished_at) or datetime.now()
+    seconds = max(0, int((finished - started).total_seconds()))
+
+    if seconds < 60:
+        return f"{seconds}s"
+
+    minutes, rem_seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {rem_seconds}s"
+
+    hours, rem_minutes = divmod(minutes, 60)
+    return f"{hours}h {rem_minutes}m"
+
+
+def _short_datetime_label(value):
+    parsed = _parse_iso_datetime(value)
+    if not parsed:
+        return "—"
+    return parsed.strftime("%H:%M:%S")
 
 
 def _size_label(value):
@@ -657,6 +693,74 @@ def box_watch_view(page: ft.Page):
         content_area.content = build_layout()
         safe_update()
 
+    def watch_external_job_until_finished(job_id, interval_seconds=5):
+        """
+        Vigila un job externo desde la UI sin ejecutar escaneo en Flet.
+
+        Motivo:
+        El runner externo escribe el estado en SQLite, pero la vista no recibe
+        un evento automático al terminar. Este watcher consulta el job cada pocos
+        segundos y actualiza el panel/aviso cuando finaliza.
+        """
+        def _watch():
+            last_estado = None
+
+            while True:
+                time.sleep(interval_seconds)
+
+                try:
+                    job = box_watch_job_service.get_job(job_id)
+                except Exception as exc:
+                    print(f"[Box Watch] No se pudo consultar job #{job_id}: {exc}")
+                    return
+
+                if not job:
+                    return
+
+                estado = str(job.get("estado") or "").upper()
+                state["latest_scan_job"] = job
+
+                # Refresco ligero cuando cambia el estado.
+                if estado != last_estado:
+                    content_area.content = build_layout()
+                    safe_update()
+                    last_estado = estado
+
+                if estado in ("DONE", "ERROR", "INTERRUPTED"):
+                    total_routes = int(job.get("total_routes") or 0)
+                    completed_routes = int(job.get("completed_routes") or 0)
+                    total_archivos = int(job.get("total_archivos") or 0)
+                    total_carpetas = int(job.get("total_carpetas") or 0)
+                    total_errores = int(job.get("total_errores") or 0)
+
+                    if estado == "DONE":
+                        notify_ok(
+                            f"Job Box Watch #{job_id} finalizado: "
+                            f"{completed_routes}/{total_routes} ruta(s), "
+                            f"{total_carpetas} carpeta(s), "
+                            f"{total_archivos} archivo(s), "
+                            f"{total_errores} error(es)."
+                        )
+                    else:
+                        notify_error(
+                            f"Job Box Watch #{job_id} terminó en estado {estado}: "
+                            f"{job.get('error') or 'sin detalle'}"
+                        )
+
+                    content_area.content = build_layout()
+                    safe_update()
+                    return
+
+        try:
+            runner = getattr(page, "run_thread", None)
+            if callable(runner):
+                runner(_watch)
+                return
+        except Exception:
+            pass
+
+        threading.Thread(target=_watch, daemon=True).start()
+
     def launch_external_scan_job(route_ids, label):
         try:
             running_job_id = box_watch_job_service.has_running_job()
@@ -679,8 +783,9 @@ def box_watch_view(page: ft.Page):
 
             notify_ok(
                 f"Job Box Watch #{job_id} lanzado en CMD externo. "
-                "Puedes seguir trabajando. Pulsa Refrescar job para ver estado."
+                "Puedes seguir trabajando. La app avisará cuando termine."
             )
+            watch_external_job_until_finished(job_id)
             content_area.content = build_layout()
             safe_update()
         except Exception as exc:
@@ -705,36 +810,20 @@ def box_watch_view(page: ft.Page):
         threading.Thread(target=target, args=args, daemon=True).start()
 
     def scan_worker(route_ids):
-        try:
-            results = box_watch_service.scan_configured_routes(
-                route_ids=route_ids,
-                progress_callback=on_progress,
-                calculate_hash=False,
-            )
-            total_folders = sum(int(r.get("total_carpetas", 0) or 0) for r in results)
-            total_files = sum(int(r.get("total_archivos", 0) or 0) for r in results)
-            total_errors = sum(1 for r in results if str(r.get("estado") or "").upper() == "ERROR" or str(r.get("scan_mode") or "").upper() == "ERROR")
-            total_minutes = sum(float(r.get("duration_minutes") or 0) for r in results)
-
-            state["last_scan_results"] = list(results or [])
-            state["last_scan_finished_at"] = datetime.now().isoformat(timespec="seconds")
-
-            # No recalculamos contadores recursivos aquí: era uno de los cuellos de botella.
-            # La vista permanece usable durante el escaneo.
-            notify_ok(
-                f"Escaneado finalizado: {len(results)} ruta(s), "
-                f"{total_folders} carpetas, {total_files} archivos, "
-                f"{total_errors} error(es), {total_minutes:.2f} min. "
-                "Pulsa Recargar para refrescar la tabla."
-            )
-            state["selected_paths"] = set()
-            save_cache()
-        except Exception as exc:
-            notify_error(f"No se pudo reescanear: {exc}")
-        finally:
-            state["scanning"] = False
-            save_progress_state()
-            safe_update()
+        """
+        Guard defensivo:
+        Los escaneos Box Watch pesados no deben ejecutarse dentro del hilo/UI Flet.
+        La vía oficial es launch_external_scan_job(), que crea un job observable y
+        delega el trabajo en scripts/runners/box_watch_scan_runner.py.
+        """
+        state["scanning"] = False
+        notify_error(
+            "Escaneo interno deshabilitado por seguridad. "
+            "Usa el job externo de Box Watch para permitir seguir trabajando en el CRM."
+        )
+        content_area.content = build_layout()
+        safe_update()
+        return
 
     def scan_selected(e=None):
         refresh_routes()
@@ -1148,7 +1237,6 @@ def box_watch_view(page: ft.Page):
         controls = [
             ft.Text("Vigilancia Box", size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
             ft.Text("Rutas configuradas → carpetas de cliente/expediente → inspección documental", size=14, color=Q_MUTED),
-            ft.Text("El ERP solo observa Box. No borra, no mueve, no renombra y no modifica archivos.", size=13, color=Q_DANGER),
         ]
         if state["message"]:
             controls.append(state["message"])
@@ -2001,28 +2089,27 @@ def box_watch_view(page: ft.Page):
             else secondary_button("Panel de rutas", lambda e: set_box_screen("routes"))
         )
 
+        summary_btn = (
+            primary_button("Estado escaneos", lambda e: set_box_screen("summary"))
+            if active == "summary"
+            else secondary_button("Estado escaneos", lambda e: set_box_screen("summary"))
+        )
+
         table_btn = (
             primary_button("Tabla técnica", lambda e: set_box_screen("table"))
             if active == "table"
             else secondary_button("Tabla técnica", lambda e: set_box_screen("table"))
         )
 
-        return ft.Container(
-            padding=ft.padding.symmetric(horizontal=2, vertical=2),
-            content=ft.Row(
-                controls=[
-                    routes_btn,
-                    table_btn,
-                    ft.Text(
-                        "Panel operativo por rutas · tabla técnica separada",
-                        size=12,
-                        color=Q_MUTED,
-                    ),
-                ],
-                spacing=8,
-                wrap=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+        return ft.Row(
+            controls=[
+                routes_btn,
+                summary_btn,
+                table_btn,
+            ],
+            spacing=8,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
     def _route_status_map():
@@ -2033,11 +2120,13 @@ def box_watch_view(page: ft.Page):
             "inactive": ("Inactiva", "#F1F5F9", Q_MUTED),
         }
 
+
     def _short_box_path(value, max_len=110):
         raw = str(value or "").replace("\\", "/").strip()
         if len(raw) <= max_len:
             return raw
         return "…" + raw[-max_len:]
+
 
     def open_route_table(route_id):
         route_dd.value = str(route_id)
@@ -2130,14 +2219,22 @@ def box_watch_view(page: ft.Page):
 
     def build_route_bulk_bar(visible_routes):
         selected_count = len(selected_scan_route_ids())
-        if not selected_count:
-            return ft.Container()
 
         return bulk_action_bar(
             title="Rutas seleccionadas",
             selected_count=selected_count,
             on_clear=clear_route_scan_selection,
             actions=[
+                {
+                    "icon": ft.Icons.REFRESH,
+                    "tooltip": "Refrescar rutas",
+                    "on_click": lambda e: refresh_routes(),
+                },
+                {
+                    "icon": ft.Icons.SYNC,
+                    "tooltip": "Reescanear todas",
+                    "on_click": scan_all,
+                },
                 {
                     "icon": ft.Icons.PLAY_ARROW,
                     "tooltip": "Escanear seleccionadas",
@@ -2147,6 +2244,11 @@ def box_watch_view(page: ft.Page):
                     "icon": ft.Icons.SELECT_ALL,
                     "tooltip": "Seleccionar página",
                     "on_click": lambda e, items=visible_routes: select_visible_routes(items),
+                },
+                {
+                    "icon": ft.Icons.CLEAR_ALL,
+                    "tooltip": "Limpiar selección",
+                    "on_click": clear_route_scan_selection,
                 },
             ],
         )
@@ -2209,23 +2311,39 @@ def box_watch_view(page: ft.Page):
         if not job:
             return ft.Container()
 
-        estado = job.get("estado") or "-"
-        total_routes = job.get("total_routes") or 0
-        completed_routes = job.get("completed_routes") or 0
-        total_archivos = job.get("total_archivos") or 0
-        total_carpetas = job.get("total_carpetas") or 0
-        total_errores = job.get("total_errores") or 0
+        estado = str(job.get("estado") or "-").upper()
+        total_routes = int(job.get("total_routes") or 0)
+        completed_routes = int(job.get("completed_routes") or 0)
+        total_archivos = int(job.get("total_archivos") or 0)
+        total_carpetas = int(job.get("total_carpetas") or 0)
+        total_errores = int(job.get("total_errores") or 0)
         progress = float(job.get("progress_percent") or 0)
         label = job.get("progress_label") or "-"
+        started_at = job.get("started_at")
+        finished_at = job.get("finished_at")
+        duration = _duration_label(started_at, finished_at)
 
         status_key = "normal"
+        operative_message = "Último escaneo registrado."
         if estado == "RUNNING":
             status_key = "active"
+            operative_message = (
+                "Escaneo externo activo. Puedes seguir trabajando en el CRM; "
+                "este panel se actualizará al refrescar o al finalizar el job."
+            )
+        elif estado == "DONE":
+            status_key = "active"
+            operative_message = "Último escaneo finalizado correctamente."
         elif estado in ("ERROR", "INTERRUPTED"):
             status_key = "inactive"
+            operative_message = job.get("error") or "El último escaneo terminó con incidencia."
+
+        progress_label = f"{progress:.1f}%"
+        if estado == "DONE" and total_routes and completed_routes >= total_routes:
+            progress_label = "100.0%"
 
         return ft.Container(
-            padding=10,
+            padding=12,
             border_radius=12,
             border=ft.border.all(1, "#D0D5DD"),
             bgcolor="#FFFFFF",
@@ -2252,14 +2370,94 @@ def box_watch_view(page: ft.Page):
                         wrap=True,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
+                    ft.Text(operative_message, size=12, color=Q_PRIMARY_DARK),
                     ft.Text(label, size=12, color=Q_MUTED),
                     ft.Row(
                         controls=[
-                            metric_card("Progreso", f"{progress:.1f}%"),
+                            metric_card("Progreso", progress_label),
                             metric_card("Rutas", f"{completed_routes}/{total_routes}"),
                             metric_card("Archivos", total_archivos),
                             metric_card("Carpetas", total_carpetas),
                             metric_card("Errores", total_errores),
+                            metric_card("Duración", duration),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Text(f"Inicio: {_short_datetime_label(started_at)}", size=12, color=Q_MUTED),
+                            ft.Text(f"Fin: {_short_datetime_label(finished_at)}", size=12, color=Q_MUTED),
+                            ft.Text(f"Scope: {job.get('scope') or '-'}", size=12, color=Q_MUTED),
+                        ],
+                        spacing=14,
+                        wrap=True,
+                    ),
+                ],
+                spacing=8,
+            ),
+        )
+
+    def build_runtime_diagnostic_panel():
+        try:
+            diag = box_watch_job_service.get_box_watch_runtime_diagnostic()
+        except Exception as exc:
+            return ft.Container(
+                padding=10,
+                border_radius=12,
+                border=ft.border.all(1, "#FDA29B"),
+                bgcolor="#FFFFFF",
+                content=ft.Text(
+                    f"No se pudo cargar diagnóstico Box Watch: {exc}",
+                    size=12,
+                    color=Q_DANGER,
+                ),
+            )
+
+        ok = bool(diag.get("ok"))
+        status_key = "active" if ok else "inactive"
+        message = (
+            "Runtime estable: SQLite WAL activo, timeout correcto y sin residuos críticos."
+            if ok
+            else "Revisar runtime: puede haber timeout bajo, WAL desactivado, jobs RUNNING o scan_runs residuales."
+        )
+
+        return ft.Container(
+            padding=10,
+            border_radius=12,
+            border=ft.border.all(1, "#D0D5DD"),
+            bgcolor="#FFFFFF",
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                "Diagnóstico runtime Box Watch",
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            status_chip(
+                                status_key,
+                                label="OK" if ok else "REVISAR",
+                                status_map=_route_status_map(),
+                                compact=True,
+                                bordered=True,
+                            ),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Text(message, size=12, color=Q_MUTED),
+                    ft.Row(
+                        controls=[
+                            metric_card("SQLite", str(diag.get("journal_mode") or "-").upper()),
+                            metric_card("Timeout", f"{diag.get('busy_timeout') or 0} ms"),
+                            metric_card("Jobs RUNNING", diag.get("running_jobs") or 0),
+                            metric_card("Runs EN CURSO", diag.get("running_scan_runs") or 0),
+                            metric_card("Último job", diag.get("latest_job_id") or "—"),
+                            metric_card("Estado", diag.get("latest_job_estado") or "—"),
                         ],
                         spacing=8,
                         wrap=True,
@@ -2267,6 +2465,24 @@ def box_watch_view(page: ft.Page):
                 ],
                 spacing=8,
             ),
+        )
+
+    def build_scan_status_screen():
+        return ft.Column(
+            controls=[
+                info_card(
+                    "2. Estado de escaneos Box Watch",
+                    ft.Column(
+                        controls=[
+                            build_latest_job_panel(),
+                            build_runtime_diagnostic_panel(),
+                        ],
+                        spacing=10,
+                    ),
+                ),
+            ],
+            spacing=14,
+            expand=True,
         )
 
     def build_routes_dashboard():
@@ -2290,29 +2506,17 @@ def box_watch_view(page: ft.Page):
             ft.Row(
                 controls=[
                     ft.Text("Rutas configuradas", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                    secondary_button("Refrescar rutas", lambda e: refresh_routes()),
-                    secondary_button("Reescanear todas", scan_all),
-                    primary_button("Escanear seleccionadas", scan_selected_route_cards),
-                    secondary_button("Seleccionar página", lambda e, items=visible_routes: select_visible_routes(items)),
-                    secondary_button("Limpiar selección", clear_route_scan_selection),
+                    ft.Text(
+                        f"{len(selected_scan_route_ids())} seleccionada(s) · {total_routes} ruta(s) activas · {page_size} por página",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
                 ],
-                spacing=8,
+                spacing=10,
                 wrap=True,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            ft.Text(
-                f"{len(selected_scan_route_ids())} seleccionada(s) · {total_routes} ruta(s) activas · {page_size} por página",
-                size=12,
-                color=Q_MUTED,
-            ),
             build_route_bulk_bar(visible_routes),
-            compact_pagination_bar(
-                page=page_number,
-                page_size=page_size,
-                total_items=total_routes,
-                on_page_change=set_route_cards_page,
-                label_prefix="Rutas",
-            ),
         ]
 
         if state.get("scanning"):
@@ -2324,17 +2528,23 @@ def box_watch_view(page: ft.Page):
                 )
             )
 
-        cards_column = ft.Column(
-            controls=[build_route_card(route) for route in visible_routes],
-            spacing=10,
-        )
-
-        bottom_pagination = compact_pagination_bar(
+        pagination = compact_pagination_bar(
             page=page_number,
             page_size=page_size,
             total_items=total_routes,
             on_page_change=set_route_cards_page,
             label_prefix="Rutas",
+        )
+
+        cards_scroll = ft.Container(
+            expand=True,
+            content=ft.ListView(
+                controls=[build_route_card(route) for route in visible_routes],
+                spacing=10,
+                padding=ft.padding.only(bottom=48),
+                auto_scroll=False,
+                expand=True,
+            ),
         )
 
         return ft.Column(
@@ -2349,11 +2559,11 @@ def box_watch_view(page: ft.Page):
                         spacing=8,
                     ),
                 ),
-                build_latest_job_panel(),
-                cards_column,
-                bottom_pagination,
+                pagination,
+                cards_scroll,
             ],
             spacing=10,
+            expand=True,
         )
 
     def build_table_screen():
@@ -2367,7 +2577,12 @@ def box_watch_view(page: ft.Page):
 
     def build_layout():
         active = state.get("box_screen") or "routes"
-        screen_content = build_routes_dashboard() if active == "routes" else build_table_screen()
+        if active == "routes":
+            screen_content = build_routes_dashboard()
+        elif active == "summary":
+            screen_content = build_scan_status_screen()
+        else:
+            screen_content = build_table_screen()
 
         layout_controls = [
             header(),
@@ -2389,7 +2604,6 @@ def box_watch_view(page: ft.Page):
                 controls=layout_controls,
                 spacing=14,
                 expand=True,
-                scroll=ft.ScrollMode.AUTO,
             ),
         )
 

@@ -1,5 +1,6 @@
 import flet as ft
 
+from backend.services.sqlite_runtime_service import configure_sqlite_runtime
 from database.connection import initialize_database
 from frontend.views.login_view import login_view
 from frontend.views.clients_view import clients_view
@@ -19,7 +20,9 @@ from frontend.layouts.sidebar import sidebar_menu
 def main(page: ft.Page):
     page.title = "Quesada Abogados ERP"
 
+    configure_sqlite_runtime()
     initialize_database()
+    configure_sqlite_runtime()
 
     page.window.width = 1650
     page.window.height = 920
