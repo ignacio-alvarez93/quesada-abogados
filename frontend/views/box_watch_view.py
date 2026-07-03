@@ -1459,80 +1459,97 @@ def box_watch_view(page: ft.Page):
         )
 
     def build_route_controls():
-        # No llamar a refresh_routes() en cada repaint: consulta backend y empeora el lag.
-        # Las rutas se refrescan al entrar en la vista y antes de cargar/escanear.
-        if not state.get("routes"):
-            return info_card(
-                "2. Rutas Box configuradas",
-                ft.Column(
-                    controls=[
-                        empty_state("No hay rutas Box activas en Configuración."),
-                        ft.Text("Ve a Configuración → Rutas Box y añade, por ejemplo: Box/NACIONALIDADES/2019", size=12, color=Q_MUTED),
-                    ],
-                    spacing=8,
-                ),
-            )
+        def clear_filter(e=None):
+            root_filter_input.value = ""
+            filter_job["last_applied"] = ""
+            if state.get("root_loaded"):
+                apply_root_filter_in_memory("", reset_page=True)
+                refresh_root_table()
+            else:
+                state["root_filter"] = ""
+                save_cache()
+                safe_update()
 
-        valid_sort_values = {"Última actividad", "Cliente", "Año", "Trámite", "Último escaneo", "Archivos", "Subcarpetas"}
-        if state.get("sort_by") not in valid_sort_values:
-            state["sort_by"] = "Última actividad"
-        if state.get("sort_dir") not in {"Ascendente", "Descendente"}:
-            state["sort_dir"] = "Descendente"
+        selected_label = route_dd.value or state.get("selected_route") or "TODAS"
+        loaded_total = len(state.get("all_root_rows") or [])
+        visible_total = len(state.get("root_rows") or [])
+        filter_text = (state.get("root_filter") or root_filter_input.value or "").strip()
 
-        sort_by_dd.value = state.get("sort_by") or "Última actividad"
-        sort_dir_dd.value = state.get("sort_dir") or "Descendente"
+        status_parts = []
+        if state.get("root_loaded"):
+            status_parts.append(f"{visible_total} visibles")
+            status_parts.append(f"{loaded_total} cargadas")
+        else:
+            status_parts.append("pendiente de carga")
 
-        left = ft.Column(
-            controls=[
-                ft.Row([route_dd, root_filter_input], spacing=8, wrap=True),
-                ft.Row([sort_by_dd, sort_dir_dd, page_size_dd, secondary_button("Ordenar", on_sort_change)], spacing=8, wrap=True),
-            ],
-            spacing=8,
-        )
+        if filter_text:
+            status_parts.append(f"filtro: {filter_text}")
 
-        right = ft.Column(
-            controls=[
-                ft.Row(
-                    controls=[
-                        primary_button("Cargar", load_root_folders),
-                        secondary_button("Todas", load_all_root_folders),
-                        secondary_button("Recargar", load_root_folders),
-                    ],
-                    spacing=8,
-                    wrap=True,
-                ),
-                ft.Row(
-                    controls=[
-                        primary_button("Reescanear", scan_selected),
-                        secondary_button("Reescanear todas", scan_all),
-                    ],
-                    spacing=8,
-                    wrap=True,
-                ),
-            ],
-            spacing=8,
-        )
+        status_text = " · ".join(status_parts)
 
         controls = [
-            ft.Row([left, right], spacing=14, wrap=True),
+            ft.Row(
+                controls=[
+                    ft.Text(
+                        "Tabla técnica Box",
+                        size=18,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(status_text, size=12, color=Q_MUTED),
+                ],
+                spacing=12,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            ft.Row(
+                controls=[
+                    route_dd,
+                    root_filter_input,
+                    primary_button("Cargar", load_root_folders),
+                    secondary_button("Actualizar", load_root_folders),
+                    secondary_button("Limpiar", clear_filter),
+                ],
+                spacing=8,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            ft.Row(
+                controls=[
+                    sort_by_dd,
+                    sort_dir_dd,
+                    page_size_dd,
+                    ft.Text(
+                        f"Ruta activa: {selected_label}",
+                        size=12,
+                        color=Q_MUTED,
+                        selectable=True,
+                    ),
+                ],
+                spacing=8,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
         ]
 
         if state.get("loading_folders"):
-            controls.extend([
-                ft.ProgressBar(value=None, width=760),
-                ft.Text(state.get("loading_label") or "Cargando carpetas...", size=12, color=Q_MUTED),
-            ])
-
-        if state["scanning"]:
             controls.append(
-                ft.Text(
-                    f"Escaneo en segundo plano: {state.get('progress_route') or 'ruta seleccionada'}. La tabla sigue disponible.",
-                    size=12,
-                    color=Q_MUTED,
+                ft.Row(
+                    controls=[
+                        ft.ProgressBar(value=None, width=260),
+                        ft.Text(state.get("loading_label") or "Cargando carpetas...", size=12, color=Q_MUTED),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 )
             )
 
-        return info_card("2. Rutas Box configuradas", ft.Column(controls=controls, spacing=10))
+        return ft.Column(
+            controls=controls,
+            spacing=8,
+        )
+
 
     def go_first_root_page(e=None):
         state["root_page"] = 1
@@ -1726,10 +1743,10 @@ def box_watch_view(page: ft.Page):
         return ft.Column(
             controls=[
                 root_toolbar_container,
-                app_table(headers=headers, rows=rows, height=560),
                 build_root_pagination(),
+                app_table(headers=headers, rows=rows, height=540),
             ],
-            spacing=10,
+            spacing=8,
         )
 
     def build_dialog_summary():
@@ -2627,20 +2644,13 @@ def box_watch_view(page: ft.Page):
     def build_table_screen():
         return ft.Column(
             controls=[
-                info_card(
-                    "3. Tabla técnica Box",
-                    ft.Column(
-                        controls=[
-                            build_route_controls(),
-                            root_table_container,
-                        ],
-                        spacing=10,
-                    ),
-                ),
+                build_route_controls(),
+                root_table_container,
             ],
-            spacing=14,
+            spacing=8,
             expand=True,
         )
+
 
     def build_layout():
         active = state.get("box_screen") or "routes"
@@ -2659,7 +2669,8 @@ def box_watch_view(page: ft.Page):
         # En el panel de rutas evitamos el resumen grande para que las cards queden arriba.
         # El resumen completo se mantiene en la tabla técnica.
         if active == "table":
-            layout_controls.append(build_summary())
+            if active == "routes":
+                layout_controls.append(build_summary())
 
         layout_controls.append(screen_content)
 
