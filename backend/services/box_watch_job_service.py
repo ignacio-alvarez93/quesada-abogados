@@ -353,16 +353,26 @@ def fail_job(job_id, error):
         conn.close()
 
 
-def launch_scan_job(job_id):
+def launch_scan_job(job_id, keep_console_open=True):
     runner = _runner_path()
     if not runner.exists():
         raise FileNotFoundError(f"No existe runner Box Watch: {runner}")
 
-    cmd = [sys.executable, str(runner), "--job-id", str(int(job_id))]
-
-    creationflags = 0
-    if os.name == "nt":
+    if os.name == "nt" and keep_console_open:
+        cmd = [
+            "cmd.exe",
+            "/k",
+            sys.executable,
+            str(runner),
+            "--job-id",
+            str(int(job_id)),
+        ]
         creationflags = subprocess.CREATE_NEW_CONSOLE
+    else:
+        cmd = [sys.executable, str(runner), "--job-id", str(int(job_id))]
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = subprocess.CREATE_NEW_CONSOLE
 
     return subprocess.Popen(
         cmd,

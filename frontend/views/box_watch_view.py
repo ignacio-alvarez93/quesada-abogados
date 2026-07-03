@@ -4,7 +4,7 @@ from datetime import datetime
 
 import flet as ft
 
-from backend.services import box_watch_service
+from backend.services import box_watch_job_service, box_watch_service
 from frontend.components.app_alert import error_alert, success_alert
 from frontend.components.app_button import primary_button, secondary_button
 from frontend.components.app_card import metric_card, info_card
@@ -234,6 +234,7 @@ def box_watch_view(page: ft.Page):
         "box_screen": BOX_WATCH_VIEW_CACHE.get("box_screen", "routes"),
         "last_scan_results": list(BOX_WATCH_VIEW_CACHE.get("last_scan_results") or []),
         "last_scan_finished_at": BOX_WATCH_VIEW_CACHE.get("last_scan_finished_at", ""),
+        "latest_scan_job": None,
         "scanning": bool(BOX_WATCH_PROGRESS_STATE.get("scanning")),
         "loading_folders": bool(BOX_WATCH_PROGRESS_STATE.get("loading_folders")),
         "loading_label": BOX_WATCH_PROGRESS_STATE.get("loading_label", ""),
@@ -638,6 +639,49 @@ def box_watch_view(page: ft.Page):
         # Evita barras, bloqueos visuales y parpadeos mientras Box se escanea en segundo plano.
 
 
+    def refresh_latest_scan_job():
+        try:
+            state["latest_scan_job"] = box_watch_job_service.get_latest_job()
+        except Exception:
+            state["latest_scan_job"] = None
+        return state.get("latest_scan_job")
+
+    def refresh_job_panel(e=None):
+        refresh_latest_scan_job()
+        content_area.content = build_layout()
+        safe_update()
+
+    def launch_external_scan_job(route_ids, label):
+        try:
+            running_job_id = box_watch_job_service.has_running_job()
+            if running_job_id:
+                state["latest_scan_job"] = box_watch_job_service.get_job(running_job_id)
+                notify_error(f"Ya hay un job Box Watch en curso: #{running_job_id}.")
+                content_area.content = build_layout()
+                safe_update()
+                return
+
+            job_id = box_watch_job_service.create_scan_job(route_ids=route_ids)
+            box_watch_job_service.launch_scan_job(job_id)
+
+            state["latest_scan_job"] = box_watch_job_service.get_job(job_id)
+            state["scanning"] = False
+            state["progress_file"] = f"Job externo lanzado: #{job_id}"
+            state["progress_route"] = label or "Box Watch"
+            save_progress_state()
+            save_cache()
+
+            notify_ok(
+                f"Job Box Watch #{job_id} lanzado en CMD externo. "
+                "Puedes seguir trabajando. Pulsa Refrescar job para ver estado."
+            )
+            content_area.content = build_layout()
+            safe_update()
+        except Exception as exc:
+            state["scanning"] = False
+            notify_error(f"No se pudo lanzar job externo Box Watch: {exc}")
+            safe_update()
+
     def start_background_worker(target, *args):
         """
         Ejecuta trabajos en segundo plano usando el mecanismo de Flet cuando existe.
@@ -687,40 +731,26 @@ def box_watch_view(page: ft.Page):
             safe_update()
 
     def scan_selected(e=None):
-        if state["scanning"]:
-            return
         refresh_routes()
         route_ids = selected_route_ids()
         if not route_ids:
             notify_error("No hay rutas activas configuradas.")
             safe_update()
             return
-        state["scanning"] = True
-        state["message"] = None
-        state["progress_file"] = "Escaneando en segundo plano..."
-        state["progress_route"] = selected_route_label()
-        save_progress_state()
-        # No hacemos safe_update inicial: la tabla no queda bloqueada por barras de progreso.
-        start_background_worker(scan_worker, route_ids)
+
+        launch_external_scan_job(route_ids, selected_route_label())
 
     def scan_all(e=None):
-        if state["scanning"]:
-            return
         refresh_routes()
         route_ids = [int(r["id"]) for r in state.get("routes", [])]
         if not route_ids:
             notify_error("No hay rutas activas configuradas.")
             safe_update()
             return
+
         route_dd.value = "TODAS"
         state["selected_route"] = "TODAS"
-        state["scanning"] = True
-        state["message"] = None
-        state["progress_file"] = "Escaneando todas las rutas en segundo plano..."
-        state["progress_route"] = "Todas las rutas configuradas"
-        save_progress_state()
-        # No hacemos safe_update inicial: la tabla no queda bloqueada por barras de progreso.
-        start_background_worker(scan_worker, route_ids)
+        launch_external_scan_job(route_ids, "Todas las rutas configuradas")
 
     def _load_root_rows():
         selected = state.get("selected_route") or "TODAS"
@@ -2011,23 +2041,10 @@ def box_watch_view(page: ft.Page):
         load_root_folders(show_loading=True, refresh_routes_before=False)
 
     def scan_route_from_card(route_id):
-        if state["scanning"]:
-            notify_error("Ya hay un escaneo en curso.")
-            safe_update()
-            return
-
         route = next((r for r in state.get("routes", []) if str(r.get("id")) == str(route_id)), None)
         route_label = f"{route.get('tipo_expediente_nombre')} · {route.get('ruta_box')}" if route else f"Ruta {route_id}"
 
-        state["scanning"] = True
-        state["message"] = None
-        state["progress_file"] = "Escaneando ruta desde panel..."
-        state["progress_route"] = route_label
-        save_progress_state()
-        save_cache()
-        content_area.content = build_layout()
-        safe_update()
-        start_background_worker(scan_worker, [int(route_id)])
+        launch_external_scan_job([int(route_id)], route_label)
 
     def build_route_card(route):
         route_id = route.get("id")
@@ -2078,6 +2095,71 @@ def box_watch_view(page: ft.Page):
             body=body,
             selected=route_id_str == str(state.get("selected_route") or ""),
             padding=12,
+        )
+
+    def build_latest_job_panel():
+        job = refresh_latest_scan_job()
+        if not job:
+            return ft.Container()
+
+        estado = job.get("estado") or "-"
+        total_routes = job.get("total_routes") or 0
+        completed_routes = job.get("completed_routes") or 0
+        total_archivos = job.get("total_archivos") or 0
+        total_carpetas = job.get("total_carpetas") or 0
+        total_errores = job.get("total_errores") or 0
+        progress = float(job.get("progress_percent") or 0)
+        label = job.get("progress_label") or "-"
+
+        status_key = "normal"
+        if estado == "RUNNING":
+            status_key = "active"
+        elif estado in ("ERROR", "INTERRUPTED"):
+            status_key = "inactive"
+
+        return ft.Container(
+            padding=10,
+            border_radius=12,
+            border=ft.border.all(1, "#D0D5DD"),
+            bgcolor="#FFFFFF",
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                f"Último job Box Watch #{job.get('id')}",
+                                size=14,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            status_chip(
+                                status_key,
+                                label=estado,
+                                status_map=_route_status_map(),
+                                compact=True,
+                                bordered=True,
+                            ),
+                            secondary_button("Refrescar job", refresh_job_panel),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Text(label, size=12, color=Q_MUTED),
+                    ft.Row(
+                        controls=[
+                            metric_card("Progreso", f"{progress:.1f}%"),
+                            metric_card("Rutas", f"{completed_routes}/{total_routes}"),
+                            metric_card("Archivos", total_archivos),
+                            metric_card("Carpetas", total_carpetas),
+                            metric_card("Errores", total_errores),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                ],
+                spacing=8,
+            ),
         )
 
     def build_routes_dashboard():
@@ -2136,6 +2218,7 @@ def box_watch_view(page: ft.Page):
                         spacing=8,
                     ),
                 ),
+                build_latest_job_panel(),
                 controls[-1],
             ],
             spacing=10,
