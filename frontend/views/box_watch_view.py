@@ -1043,8 +1043,7 @@ def box_watch_view(page: ft.Page):
             checkbox_ref.current.value = is_selected
 
         save_cache()
-        root_toolbar_container.content = build_root_toolbar()
-        page.update()
+        refresh_root_table()
 
     def select_all_visible(e=None):
         current = {r.get("ruta") for r in _current_page_rows() if r.get("ruta")}
@@ -1551,120 +1550,94 @@ def box_watch_view(page: ft.Page):
         )
 
 
-    def go_first_root_page(e=None):
-        state["root_page"] = 1
-        BOX_WATCH_VIEW_CACHE["root_page"] = 1
-        load_root_folders(show_loading=False, refresh_routes_before=False)
-
-    def go_prev_root_page(e=None):
-        state["root_page"] = max(1, int(state.get("root_page") or 1) - 1)
-        BOX_WATCH_VIEW_CACHE["root_page"] = state["root_page"]
-        load_root_folders(show_loading=False, refresh_routes_before=False)
-
-    def go_next_root_page(e=None):
-        state["root_page"] = min(_root_total_pages(), int(state.get("root_page") or 1) + 1)
-        BOX_WATCH_VIEW_CACHE["root_page"] = state["root_page"]
-        load_root_folders(show_loading=False, refresh_routes_before=False)
-
-    def go_last_root_page(e=None):
-        state["root_page"] = _root_total_pages()
-        BOX_WATCH_VIEW_CACHE["root_page"] = state["root_page"]
-        load_root_folders(show_loading=False, refresh_routes_before=False)
-
-    def go_to_root_page(page_number):
+    def set_root_table_page(page_number):
         try:
             page_number = int(page_number)
         except Exception:
             page_number = 1
+
         state["root_page"] = max(1, min(page_number, _root_total_pages()))
         BOX_WATCH_VIEW_CACHE["root_page"] = state["root_page"]
-        load_root_folders(show_loading=False, refresh_routes_before=False)
+        save_cache()
+        refresh_root_table()
 
-    def _root_page_numbers(current, total):
-        # Devuelve una paginación compacta: 1 2 3 4 5 ... última
-        if total <= 7:
-            return list(range(1, total + 1))
 
-        pages = {1, total, current - 1, current, current + 1}
-        if current <= 4:
-            pages.update(range(1, 6))
-        elif current >= total - 3:
-            pages.update(range(total - 4, total + 1))
+    def go_first_root_page(e=None):
+        set_root_table_page(1)
 
-        result = []
-        last = None
-        for num in sorted(p for p in pages if 1 <= p <= total):
-            if last is not None and num - last > 1:
-                result.append("...")
-            result.append(num)
-            last = num
-        return result
+
+    def go_prev_root_page(e=None):
+        set_root_table_page(max(1, int(state.get("root_page") or 1) - 1))
+
+
+    def go_next_root_page(e=None):
+        set_root_table_page(min(_root_total_pages(), int(state.get("root_page") or 1) + 1))
+
+
+    def go_last_root_page(e=None):
+        set_root_table_page(_root_total_pages())
+
+
+    def go_to_root_page(page_number):
+        set_root_table_page(page_number)
+
+
+    def _table_action_icon(symbol, tooltip, on_click, disabled=False):
+        btn = secondary_button(symbol, on_click)
+        btn.tooltip = tooltip
+        btn.disabled = disabled
+        btn.width = 44
+        return btn
+
 
     def build_root_pagination():
         root_folders = state.get("root_rows") or []
         total_rows = int(state.get("root_total_rows") or len(root_folders))
         page_number = int(state.get("root_page") or 1)
-        total_pages = _root_total_pages()
         page_size = _root_page_size()
         selection_count = len(state.get("selected_paths") or set())
         start_num = 0 if not total_rows else ((page_number - 1) * page_size) + 1
         end_num = min(total_rows, ((page_number - 1) * page_size) + len(root_folders))
 
-        first_btn = secondary_button("«", go_first_root_page)
-        prev_btn = secondary_button("‹", go_prev_root_page)
-        next_btn = secondary_button("›", go_next_root_page)
-        last_btn = secondary_button("»", go_last_root_page)
-        first_btn.disabled = page_number <= 1
-        prev_btn.disabled = page_number <= 1
-        next_btn.disabled = page_number >= total_pages
-        last_btn.disabled = page_number >= total_pages
+        pagination = compact_pagination_bar(
+            page=page_number,
+            page_size=page_size,
+            total_items=total_rows,
+            on_page_change=set_root_table_page,
+            label_prefix="Carpetas",
+        )
 
-        page_controls = [first_btn, prev_btn]
-        for item in _root_page_numbers(page_number, total_pages):
-            if item == "...":
-                page_controls.append(ft.Text("...", size=13, color=Q_MUTED))
-                continue
-            btn = primary_button(str(item), lambda e, n=item: go_to_root_page(n)) if item == page_number else secondary_button(str(item), lambda e, n=item: go_to_root_page(n))
-            btn.width = 42
-            page_controls.append(btn)
-        page_controls.extend([next_btn, last_btn])
-
-        return ft.Row(
+        actions = ft.Row(
             controls=[
-                ft.Text(
-                    f"Resultados: {total_rows} · Mostrando {start_num}-{end_num} · Marcadas: {selection_count}",
-                    size=12,
-                    color=Q_MUTED,
-                ),
-                ft.Row(controls=page_controls, spacing=4, wrap=True),
+                _table_action_icon("✓", "Marcar página visible", select_all_visible),
+                _table_action_icon("×", "Limpiar marcas", clear_selection, disabled=selection_count == 0),
+                _table_action_icon("🔎", "Inspeccionar carpeta marcada", inspect_marked_folder, disabled=selection_count != 1),
+                _table_action_icon("TXT", "Exportar árbol de marcadas a TXT", export_checked_trees, disabled=selection_count == 0),
+                _table_action_icon("📄", "Exportar árbol de página visible a TXT", export_visible_trees, disabled=not bool(root_folders)),
             ],
-            spacing=12,
+            spacing=2,
             wrap=True,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
-    def build_root_toolbar():
-        selection_count = len(state.get("selected_paths") or set())
-
-        inspect_btn = primary_button("Inspeccionar marcada", inspect_marked_folder)
-        inspect_btn.disabled = selection_count != 1
-
-        watchdog_btn = secondary_button("Vigilancia Watchdog", watchdog_placeholder)
-        watchdog_btn.disabled = True
-        watchdog_btn.tooltip = "Pendiente de desarrollo en módulo independiente"
-
         return ft.Row(
             controls=[
-                secondary_button("Marcar página", select_all_visible),
-                secondary_button("Limpiar marcas", clear_selection),
-                inspect_btn,
-                primary_button("Tree marcadas TXT", export_checked_trees),
-                secondary_button("Tree página TXT", export_visible_trees),
-                watchdog_btn,
+                ft.Text(
+                    f"Mostrando {start_num}-{end_num} de {total_rows} · Marcadas: {selection_count}",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                pagination,
+                actions,
             ],
-            spacing=8,
+            spacing=10,
             wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
+
+
+    def build_root_toolbar():
+        return ft.Container()
 
     def build_root_folders_table():
         if state.get("loading_folders"):
@@ -1742,7 +1715,6 @@ def box_watch_view(page: ft.Page):
 
         return ft.Column(
             controls=[
-                root_toolbar_container,
                 build_root_pagination(),
                 app_table(headers=headers, rows=rows, height=540),
             ],
@@ -2666,11 +2638,8 @@ def box_watch_view(page: ft.Page):
             build_box_screen_selector(),
         ]
 
-        # En el panel de rutas evitamos el resumen grande para que las cards queden arriba.
-        # El resumen completo se mantiene en la tabla técnica.
-        if active == "table":
-            if active == "routes":
-                layout_controls.append(build_summary())
+        if active == "routes":
+            layout_controls.append(build_summary())
 
         layout_controls.append(screen_content)
 
