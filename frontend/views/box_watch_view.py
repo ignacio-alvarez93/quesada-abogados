@@ -11,6 +11,8 @@ from frontend.components.app_card import metric_card, info_card
 from frontend.components.app_empty_state import empty_state
 from frontend.components.app_table import app_table
 from frontend.components.app_text_field import text_input
+from frontend.components.listing.card_item import card_item
+from frontend.components.listing.status_chip import status_chip
 
 Q_PRIMARY_DARK = "#003B7A"
 Q_PRIMARY = "#0057B8"
@@ -32,6 +34,9 @@ BOX_WATCH_VIEW_CACHE = {
     "root_total_rows": 0,
     "all_root_rows": [],
     "selected_paths": set(),
+    "last_scan_results": [],
+    "last_scan_finished_at": "",
+    "box_screen": "routes",
 }
 
 
@@ -226,6 +231,9 @@ def box_watch_view(page: ft.Page):
         "inspection": None,
         "inspection_stack": [],
         "dialog_tab": "Resumen",
+        "box_screen": BOX_WATCH_VIEW_CACHE.get("box_screen", "routes"),
+        "last_scan_results": list(BOX_WATCH_VIEW_CACHE.get("last_scan_results") or []),
+        "last_scan_finished_at": BOX_WATCH_VIEW_CACHE.get("last_scan_finished_at", ""),
         "scanning": bool(BOX_WATCH_PROGRESS_STATE.get("scanning")),
         "loading_folders": bool(BOX_WATCH_PROGRESS_STATE.get("loading_folders")),
         "loading_label": BOX_WATCH_PROGRESS_STATE.get("loading_label", ""),
@@ -325,6 +333,9 @@ def box_watch_view(page: ft.Page):
         BOX_WATCH_VIEW_CACHE["root_total_rows"] = int(state.get("root_total_rows") or len(state.get("root_rows") or []))
         BOX_WATCH_VIEW_CACHE["all_root_rows"] = []
         BOX_WATCH_VIEW_CACHE["selected_paths"] = set(state.get("selected_paths") or set())
+        BOX_WATCH_VIEW_CACHE["last_scan_results"] = list(state.get("last_scan_results") or [])
+        BOX_WATCH_VIEW_CACHE["last_scan_finished_at"] = state.get("last_scan_finished_at", "")
+        BOX_WATCH_VIEW_CACHE["box_screen"] = state.get("box_screen", "routes")
 
     def clear_cache():
         BOX_WATCH_VIEW_CACHE["loaded"] = False
@@ -652,9 +663,20 @@ def box_watch_view(page: ft.Page):
             )
             total_folders = sum(int(r.get("total_carpetas", 0) or 0) for r in results)
             total_files = sum(int(r.get("total_archivos", 0) or 0) for r in results)
+            total_errors = sum(1 for r in results if str(r.get("estado") or "").upper() == "ERROR" or str(r.get("scan_mode") or "").upper() == "ERROR")
+            total_minutes = sum(float(r.get("duration_minutes") or 0) for r in results)
+
+            state["last_scan_results"] = list(results or [])
+            state["last_scan_finished_at"] = datetime.now().isoformat(timespec="seconds")
+
             # No recalculamos contadores recursivos aquí: era uno de los cuellos de botella.
             # La vista permanece usable durante el escaneo.
-            notify_ok(f"Escaneado finalizado: {len(results)} ruta(s), {total_folders} carpetas, {total_files} archivos. Pulsa Recargar para refrescar la tabla.")
+            notify_ok(
+                f"Escaneado finalizado: {len(results)} ruta(s), "
+                f"{total_folders} carpetas, {total_files} archivos, "
+                f"{total_errors} error(es), {total_minutes:.2f} min. "
+                "Pulsa Recargar para refrescar la tabla."
+            )
             state["selected_paths"] = set()
             save_cache()
         except Exception as exc:
@@ -1100,16 +1122,26 @@ def box_watch_view(page: ft.Page):
         if state["scanning"]:
             return info_card(
                 "1. Resumen",
-                ft.Row(
+                ft.Column(
                     controls=[
-                        metric_card("Reescaneo", "En curso"),
-                        metric_card("Ruta", state.get("progress_route") or "—"),
-                        metric_card("Carpetas", state.get("progress_folders", 0)),
-                        metric_card("Archivos", state.get("progress_processed", 0)),
-                        metric_card("Progreso", f"{state.get('progress_percent', 0):.1f}%"),
+                        ft.Row(
+                            controls=[
+                                metric_card("Reescaneo", "En curso"),
+                                metric_card("Ruta", state.get("progress_route") or "—"),
+                                metric_card("Carpetas", state.get("progress_folders", 0)),
+                                metric_card("Archivos", state.get("progress_processed", 0)),
+                                metric_card("Progreso", f"{state.get('progress_percent', 0):.1f}%"),
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Text(
+                            state.get("progress_file") or "Escaneo en segundo plano. La tabla sigue disponible.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
                     ],
-                    spacing=12,
-                    wrap=True,
+                    spacing=8,
                 ),
             )
 
@@ -1118,18 +1150,129 @@ def box_watch_view(page: ft.Page):
         except Exception as exc:
             return error_alert(f"No se pudo cargar el resumen: {exc}")
 
+        last_results = list(state.get("last_scan_results") or [])
+        last_finished = state.get("last_scan_finished_at") or ""
+
+        last_total_routes = len(last_results)
+        last_errors = sum(
+            1 for r in last_results
+            if str(r.get("estado") or "").upper() == "ERROR"
+            or str(r.get("scan_mode") or "").upper() == "ERROR"
+        )
+        last_ok = max(0, last_total_routes - last_errors)
+        last_files = sum(int(r.get("total_archivos", 0) or 0) for r in last_results)
+        last_folders = sum(int(r.get("total_carpetas", 0) or 0) for r in last_results)
+        last_minutes = sum(float(r.get("duration_minutes") or 0) for r in last_results)
+        massive_count = sum(1 for r in last_results if str(r.get("scan_mode") or "").upper() == "BATCH_MASSIVE_ROOT")
+
+        slowest = None
+        if last_results:
+            slowest = max(last_results, key=lambda r: float(r.get("duration_seconds") or 0))
+
+        def _short_route_label(value, max_len=88):
+            raw = str(value or "").replace("\\", "/").strip()
+            if len(raw) <= max_len:
+                return raw
+            return "…" + raw[-max_len:]
+
+        slowest_label = "—"
+        if slowest:
+            route_name = slowest.get("config_route_relative") or slowest.get("config_route_resolved") or "Ruta"
+            slowest_label = f"{_short_route_label(route_name)} · {float(slowest.get('duration_minutes') or 0):.2f} min"
+
+        dashboard_row = ft.Row(
+            controls=[
+                metric_card("Rutas activas", len(state.get("routes", []))),
+                metric_card("Carpetas inventario", summary.get("total_carpetas", 0)),
+                metric_card("Archivos inventario", summary.get("total_archivos", 0)),
+                metric_card("Sin clasificar", summary.get("sin_clasificar", 0)),
+                metric_card("Último escaneo BD", summary.get("ultimo_escaneo", "Sin escaneos")),
+            ],
+            spacing=12,
+            wrap=True,
+        )
+
+        if not last_results:
+            return info_card(
+                "1. Resumen",
+                ft.Column(
+                    controls=[
+                        dashboard_row,
+                        ft.Text(
+                            "Todavía no hay resumen visual del último escaneo en esta sesión. Ejecuta Reescanear o Reescanear todas para verlo aquí.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=10,
+                ),
+            )
+
+        scan_row = ft.Row(
+            controls=[
+                metric_card("Último escaneo", _datetime_label(last_finished)),
+                metric_card("Rutas escaneadas", last_total_routes),
+                metric_card("OK", last_ok),
+                metric_card("Errores", last_errors),
+                metric_card("Masivas", massive_count),
+                metric_card("Tiempo", f"{last_minutes:.2f} min"),
+            ],
+            spacing=12,
+            wrap=True,
+        )
+
+        totals_row = ft.Row(
+            controls=[
+                metric_card("Archivos escaneados", last_files),
+                metric_card("Carpetas escaneadas", last_folders),
+            ],
+            spacing=12,
+            wrap=True,
+        )
+
+        slowest_text = ft.Text(
+            f"Ruta más lenta: {slowest_label}",
+            size=12,
+            color=Q_MUTED,
+            selectable=True,
+        )
+
+        error_lines = []
+        for r in last_results:
+            is_error = (
+                str(r.get("estado") or "").upper() == "ERROR"
+                or str(r.get("scan_mode") or "").upper() == "ERROR"
+            )
+            if not is_error:
+                continue
+            error_lines.append(
+                ft.Text(
+                    f"ERROR · {r.get('config_route_relative') or r.get('config_route_resolved') or 'Ruta'} · {r.get('error') or 'Sin detalle'}",
+                    size=12,
+                    color=Q_DANGER,
+                )
+            )
+
+        controls = [
+            dashboard_row,
+            ft.Divider(height=10),
+            scan_row,
+            totals_row,
+            slowest_text,
+        ]
+
+        if error_lines:
+            controls.extend([
+                ft.Divider(height=10),
+                ft.Text("Rutas con incidencia", size=13, weight=ft.FontWeight.BOLD, color=Q_DANGER),
+                *error_lines[:5],
+            ])
+
         return info_card(
             "1. Resumen",
-            ft.Row(
-                controls=[
-                    metric_card("Rutas", len(state.get("routes", []))),
-                    metric_card("Carpetas", summary.get("total_carpetas", 0)),
-                    metric_card("Archivos", summary.get("total_archivos", 0)),
-                    metric_card("Sin clasificar", summary.get("sin_clasificar", 0)),
-                    metric_card("Último escaneo", summary.get("ultimo_escaneo", "Sin escaneos")),
-                ],
-                spacing=12,
-                wrap=True,
+            ft.Column(
+                controls=controls,
+                spacing=10,
             ),
         )
 
@@ -1807,18 +1950,228 @@ def box_watch_view(page: ft.Page):
         inspection_dialog.open = True
         page.update()
 
+    def set_box_screen(screen_name):
+        state["box_screen"] = screen_name or "routes"
+        save_cache()
+        content_area.content = build_layout()
+        safe_update()
+
+    def build_box_screen_selector():
+        active = state.get("box_screen") or "routes"
+
+        routes_btn = (
+            primary_button("Panel de rutas", lambda e: set_box_screen("routes"))
+            if active == "routes"
+            else secondary_button("Panel de rutas", lambda e: set_box_screen("routes"))
+        )
+
+        table_btn = (
+            primary_button("Tabla técnica", lambda e: set_box_screen("table"))
+            if active == "table"
+            else secondary_button("Tabla técnica", lambda e: set_box_screen("table"))
+        )
+
+        return ft.Container(
+            padding=ft.padding.symmetric(horizontal=2, vertical=2),
+            content=ft.Row(
+                controls=[
+                    routes_btn,
+                    table_btn,
+                    ft.Text(
+                        "Panel operativo por rutas · tabla técnica separada",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=8,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def _route_status_map():
+        return {
+            "active": ("Activa", "#ECFDF3", "#027A48"),
+            "normal": ("Normal", "#EAF6FF", Q_PRIMARY),
+            "massive": ("Masiva", "#FFF7E6", Q_WARNING),
+            "inactive": ("Inactiva", "#F1F5F9", Q_MUTED),
+        }
+
+    def _short_box_path(value, max_len=110):
+        raw = str(value or "").replace("\\", "/").strip()
+        if len(raw) <= max_len:
+            return raw
+        return "…" + raw[-max_len:]
+
+    def open_route_table(route_id):
+        route_dd.value = str(route_id)
+        state["selected_route"] = str(route_id)
+        state["box_screen"] = "table"
+        save_cache()
+        load_root_folders(show_loading=True, refresh_routes_before=False)
+
+    def scan_route_from_card(route_id):
+        if state["scanning"]:
+            notify_error("Ya hay un escaneo en curso.")
+            safe_update()
+            return
+
+        route = next((r for r in state.get("routes", []) if str(r.get("id")) == str(route_id)), None)
+        route_label = f"{route.get('tipo_expediente_nombre')} · {route.get('ruta_box')}" if route else f"Ruta {route_id}"
+
+        state["scanning"] = True
+        state["message"] = None
+        state["progress_file"] = "Escaneando ruta desde panel..."
+        state["progress_route"] = route_label
+        save_progress_state()
+        save_cache()
+        content_area.content = build_layout()
+        safe_update()
+        start_background_worker(scan_worker, [int(route_id)])
+
+    def build_route_card(route):
+        route_id = route.get("id")
+        route_box = route.get("ruta_box") or route.get("ruta_relativa") or ""
+        route_resolved = route.get("ruta_resuelta") or route.get("resolved_path") or ""
+        tipo = route.get("tipo_expediente_nombre") or route.get("tipo") or "Ruta Box"
+
+        route_text = _short_box_path(route_box or route_resolved)
+        resolved_text = _short_box_path(route_resolved, max_len=120)
+
+        badges = [
+            status_chip("active", status_map=_route_status_map(), compact=True, bordered=True),
+        ]
+
+        route_id_str = str(route_id or "")
+        if route_id_str == str(state.get("selected_route") or ""):
+            badges.append(status_chip("normal", label="Seleccionada", status_map=_route_status_map(), compact=True, bordered=True))
+
+        body = [
+            ft.Text(route_text or "Ruta sin definir", size=12, color=Q_PRIMARY_DARK, selectable=True),
+        ]
+
+        if resolved_text and resolved_text != route_text:
+            body.append(ft.Text(resolved_text, size=10, color=Q_MUTED, selectable=True))
+
+        body.append(
+            ft.Row(
+                controls=[
+                    ft.Text(f"ID: {route_id}", size=11, color=Q_MUTED),
+                    ft.Text(f"Tipo: {tipo}", size=11, color=Q_MUTED),
+                ],
+                spacing=12,
+                wrap=True,
+            )
+        )
+
+        actions = [
+            primary_button("Ver carpetas", lambda e, rid=route_id: open_route_table(rid)),
+            secondary_button("Escanear ruta", lambda e, rid=route_id: scan_route_from_card(rid)),
+        ]
+
+        return card_item(
+            title=tipo,
+            subtitle=route_text,
+            leading=ft.Icon(ft.Icons.FOLDER_OPEN, color=Q_PRIMARY, size=22),
+            badges=badges,
+            actions=actions,
+            body=body,
+            selected=route_id_str == str(state.get("selected_route") or ""),
+            padding=12,
+        )
+
+    def build_routes_dashboard():
+        routes = list(state.get("routes") or [])
+
+        if not routes:
+            return info_card(
+                "2. Panel de rutas Box",
+                ft.Column(
+                    controls=[
+                        empty_state("No hay rutas Box activas configuradas."),
+                        ft.Text("Configura rutas Box desde Configuración para empezar a trabajar por cards.", size=12, color=Q_MUTED),
+                    ],
+                    spacing=8,
+                ),
+            )
+
+        controls = [
+            ft.Row(
+                controls=[
+                    ft.Text("Rutas configuradas", size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    secondary_button("Refrescar rutas", lambda e: refresh_routes()),
+                    secondary_button("Reescanear todas", scan_all),
+                ],
+                spacing=8,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        ]
+
+        if state.get("scanning"):
+            controls.append(
+                ft.Text(
+                    f"Escaneo en curso: {state.get('progress_route') or 'ruta seleccionada'}",
+                    size=12,
+                    color=Q_MUTED,
+                )
+            )
+
+        controls.append(
+            ft.Column(
+                controls=[build_route_card(route) for route in routes],
+                spacing=10,
+            )
+        )
+
+        return ft.Column(
+            controls=[
+                ft.Container(
+                    padding=10,
+                    border_radius=12,
+                    border=ft.border.all(1, "#D0D5DD"),
+                    bgcolor="#FFFFFF",
+                    content=ft.Column(
+                        controls=controls[:-1],
+                        spacing=8,
+                    ),
+                ),
+                controls[-1],
+            ],
+            spacing=10,
+        )
+
+    def build_table_screen():
+        return ft.Column(
+            controls=[
+                build_route_controls(),
+                info_card("3. Carpetas raíz detectadas", root_table_container),
+            ],
+            spacing=14,
+        )
+
     def build_layout():
+        active = state.get("box_screen") or "routes"
+        screen_content = build_routes_dashboard() if active == "routes" else build_table_screen()
+
+        layout_controls = [
+            header(),
+            build_box_screen_selector(),
+        ]
+
+        # En el panel de rutas evitamos el resumen grande para que las cards queden arriba.
+        # El resumen completo se mantiene en la tabla técnica.
+        if active == "table":
+            layout_controls.append(build_summary())
+
+        layout_controls.append(screen_content)
+
         return ft.Container(
             bgcolor=Q_BG,
             padding=18,
             expand=True,
             content=ft.Column(
-                controls=[
-                    header(),
-                    build_summary(),
-                    build_route_controls(),
-                    info_card("3. Carpetas raíz detectadas", root_table_container),
-                ],
+                controls=layout_controls,
                 spacing=14,
                 expand=True,
                 scroll=ft.ScrollMode.AUTO,
