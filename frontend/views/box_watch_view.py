@@ -68,6 +68,41 @@ def _filter_norm(value):
     return raw
 
 
+def _parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def _duration_label(started_at, finished_at=None):
+    started = _parse_iso_datetime(started_at)
+    if not started:
+        return "—"
+
+    finished = _parse_iso_datetime(finished_at) or datetime.now()
+    seconds = max(0, int((finished - started).total_seconds()))
+
+    if seconds < 60:
+        return f"{seconds}s"
+
+    minutes, rem_seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {rem_seconds}s"
+
+    hours, rem_minutes = divmod(minutes, 60)
+    return f"{hours}h {rem_minutes}m"
+
+
+def _short_datetime_label(value):
+    parsed = _parse_iso_datetime(value)
+    if not parsed:
+        return "—"
+    return parsed.strftime("%H:%M:%S")
+
+
 def _size_label(value):
     try:
         size = int(value or 0)
@@ -2275,23 +2310,39 @@ def box_watch_view(page: ft.Page):
         if not job:
             return ft.Container()
 
-        estado = job.get("estado") or "-"
-        total_routes = job.get("total_routes") or 0
-        completed_routes = job.get("completed_routes") or 0
-        total_archivos = job.get("total_archivos") or 0
-        total_carpetas = job.get("total_carpetas") or 0
-        total_errores = job.get("total_errores") or 0
+        estado = str(job.get("estado") or "-").upper()
+        total_routes = int(job.get("total_routes") or 0)
+        completed_routes = int(job.get("completed_routes") or 0)
+        total_archivos = int(job.get("total_archivos") or 0)
+        total_carpetas = int(job.get("total_carpetas") or 0)
+        total_errores = int(job.get("total_errores") or 0)
         progress = float(job.get("progress_percent") or 0)
         label = job.get("progress_label") or "-"
+        started_at = job.get("started_at")
+        finished_at = job.get("finished_at")
+        duration = _duration_label(started_at, finished_at)
 
         status_key = "normal"
+        operative_message = "Último escaneo registrado."
         if estado == "RUNNING":
             status_key = "active"
+            operative_message = (
+                "Escaneo externo activo. Puedes seguir trabajando en el CRM; "
+                "este panel se actualizará al refrescar o al finalizar el job."
+            )
+        elif estado == "DONE":
+            status_key = "active"
+            operative_message = "Último escaneo finalizado correctamente."
         elif estado in ("ERROR", "INTERRUPTED"):
             status_key = "inactive"
+            operative_message = job.get("error") or "El último escaneo terminó con incidencia."
+
+        progress_label = f"{progress:.1f}%"
+        if estado == "DONE" and total_routes and completed_routes >= total_routes:
+            progress_label = "100.0%"
 
         return ft.Container(
-            padding=10,
+            padding=12,
             border_radius=12,
             border=ft.border.all(1, "#D0D5DD"),
             bgcolor="#FFFFFF",
@@ -2318,16 +2369,27 @@ def box_watch_view(page: ft.Page):
                         wrap=True,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
+                    ft.Text(operative_message, size=12, color=Q_PRIMARY_DARK),
                     ft.Text(label, size=12, color=Q_MUTED),
                     ft.Row(
                         controls=[
-                            metric_card("Progreso", f"{progress:.1f}%"),
+                            metric_card("Progreso", progress_label),
                             metric_card("Rutas", f"{completed_routes}/{total_routes}"),
                             metric_card("Archivos", total_archivos),
                             metric_card("Carpetas", total_carpetas),
                             metric_card("Errores", total_errores),
+                            metric_card("Duración", duration),
                         ],
                         spacing=8,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Text(f"Inicio: {_short_datetime_label(started_at)}", size=12, color=Q_MUTED),
+                            ft.Text(f"Fin: {_short_datetime_label(finished_at)}", size=12, color=Q_MUTED),
+                            ft.Text(f"Scope: {job.get('scope') or '-'}", size=12, color=Q_MUTED),
+                        ],
+                        spacing=14,
                         wrap=True,
                     ),
                 ],
