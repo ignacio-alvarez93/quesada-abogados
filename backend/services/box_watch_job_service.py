@@ -197,6 +197,54 @@ def has_running_job():
         conn.close()
 
 
+def get_box_watch_runtime_diagnostic():
+    """
+    Diagnóstico operativo rápido para Box Watch.
+
+    No ejecuta escaneos ni toca Box. Solo consulta SQLite para saber si
+    el runtime está sano y si hay jobs/runs residuales.
+    """
+    configure_sqlite_runtime()
+
+    conn = get_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout = 60000")
+
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+        running_jobs = conn.execute(
+            "SELECT COUNT(*) FROM box_watch_scan_jobs WHERE estado = ?",
+            (JOB_RUNNING,),
+        ).fetchone()[0]
+
+        running_scan_runs = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM box_watch_scan_runs
+            WHERE estado IN ('EN CURSO', 'RUNNING')
+            """
+        ).fetchone()[0]
+
+        latest_job = get_latest_job()
+
+        return {
+            "journal_mode": journal_mode,
+            "busy_timeout": int(busy_timeout or 0),
+            "running_jobs": int(running_jobs or 0),
+            "running_scan_runs": int(running_scan_runs or 0),
+            "latest_job_id": latest_job.get("id") if latest_job else None,
+            "latest_job_estado": latest_job.get("estado") if latest_job else None,
+            "ok": (
+                str(journal_mode).lower() == "wal"
+                and int(busy_timeout or 0) >= 60000
+                and int(running_scan_runs or 0) == 0
+            ),
+        }
+    finally:
+        conn.close()
+
+
 def mark_job_running(job_id, total_routes=0, label=None):
     ensure_job_schema()
     now = _now()

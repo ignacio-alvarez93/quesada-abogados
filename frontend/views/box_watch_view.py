@@ -2397,6 +2397,75 @@ def box_watch_view(page: ft.Page):
             ),
         )
 
+    def build_runtime_diagnostic_panel():
+        try:
+            diag = box_watch_job_service.get_box_watch_runtime_diagnostic()
+        except Exception as exc:
+            return ft.Container(
+                padding=10,
+                border_radius=12,
+                border=ft.border.all(1, "#FDA29B"),
+                bgcolor="#FFFFFF",
+                content=ft.Text(
+                    f"No se pudo cargar diagnóstico Box Watch: {exc}",
+                    size=12,
+                    color=Q_DANGER,
+                ),
+            )
+
+        ok = bool(diag.get("ok"))
+        status_key = "active" if ok else "inactive"
+        message = (
+            "Runtime estable: SQLite WAL activo, timeout correcto y sin residuos críticos."
+            if ok
+            else "Revisar runtime: puede haber timeout bajo, WAL desactivado, jobs RUNNING o scan_runs residuales."
+        )
+
+        return ft.Container(
+            padding=10,
+            border_radius=12,
+            border=ft.border.all(1, "#D0D5DD"),
+            bgcolor="#FFFFFF",
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                "Diagnóstico runtime Box Watch",
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            status_chip(
+                                status_key,
+                                label="OK" if ok else "REVISAR",
+                                status_map=_route_status_map(),
+                                compact=True,
+                                bordered=True,
+                            ),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Text(message, size=12, color=Q_MUTED),
+                    ft.Row(
+                        controls=[
+                            metric_card("SQLite", str(diag.get("journal_mode") or "-").upper()),
+                            metric_card("Timeout", f"{diag.get('busy_timeout') or 0} ms"),
+                            metric_card("Jobs RUNNING", diag.get("running_jobs") or 0),
+                            metric_card("Runs EN CURSO", diag.get("running_scan_runs") or 0),
+                            metric_card("Último job", diag.get("latest_job_id") or "—"),
+                            metric_card("Estado", diag.get("latest_job_estado") or "—"),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                ],
+                spacing=8,
+            ),
+        )
+
     def build_routes_dashboard():
         routes = list(state.get("routes") or [])
 
@@ -2472,6 +2541,7 @@ def box_watch_view(page: ft.Page):
                     ),
                 ),
                 build_latest_job_panel(),
+                build_runtime_diagnostic_panel(),
                 pagination,
                 cards_scroll,
             ],
