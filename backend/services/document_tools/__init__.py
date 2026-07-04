@@ -28,6 +28,7 @@ __all__ = [
     "get_inbox_item_document_metadata",
     "merge_inbox_pdfs",
     "remove_pages_from_inbox_pdf",
+    "get_document_tool_capabilities_for_inbox_items",
 ]
 
 from backend.services.document_tools.document_inbox_tools_service import (
@@ -37,4 +38,8 @@ from backend.services.document_tools.document_inbox_tools_service import (
     get_inbox_item_document_metadata,
     merge_inbox_pdfs,
     remove_pages_from_inbox_pdf,
+)
+
+from backend.services.document_tools.document_tool_capabilities_service import (
+    get_document_tool_capabilities_for_inbox_items,
 )
