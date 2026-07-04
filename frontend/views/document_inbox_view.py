@@ -3588,7 +3588,22 @@ def document_inbox_view(page: ft.Page):
             pass
 
 
-    batch_detail_body = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+    batch_detail_section_body = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+    batch_detail_sidebar = ft.Container()
+
+    batch_detail_body = ft.Row(
+        controls=[
+            batch_detail_sidebar,
+            ft.Container(
+                expand=True,
+                content=batch_detail_section_body,
+            ),
+        ],
+        spacing=12,
+        vertical_alignment=ft.CrossAxisAlignment.START,
+        expand=True,
+    )
+
     batch_detail_message = ft.Container()
     batch_target_expedient_id_field = text_input("Expediente ID destino", width=220)
     batch_target_subfolder_field = text_input("Subcarpeta Box destino", width=360)
@@ -4056,13 +4071,14 @@ def document_inbox_view(page: ft.Page):
             state["batch_edit_expedient_id"] = int(batch.get("expedient_id")) if batch.get("expedient_id") else None
 
             batch_edit_client_autocomplete.set_options(_batch_edit_client_labels(), clear_value=True)
-            client_label = _batch_edit_find_client_label(state.get("batch_edit_client_id"))
-            batch_edit_client_autocomplete.input.value = client_label or ""
+            # La ficha conserva internamente batch_edit_client_id, pero el autocomplete
+            # debe abrir vacío para evitar apariencia de selección automática.
+            batch_edit_client_autocomplete.input.value = ""
 
             expedient_labels = _batch_edit_expedient_labels_for_client(state.get("batch_edit_client_id"))
             batch_edit_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
-            expedient_label = _batch_edit_find_expedient_label(state.get("batch_edit_expedient_id"))
-            batch_edit_expedient_autocomplete.input.value = expedient_label or ""
+            # Igual para expediente: no preseleccionar visualmente en el input.
+            batch_edit_expedient_autocomplete.input.value = ""
 
             rows = [
                 ft.Text(
@@ -4289,10 +4305,275 @@ def document_inbox_view(page: ft.Page):
                     )
                 )
 
-            batch_detail_body.controls = rows
+            def _batch_control_contains_text(control, needle):
+                needle = str(needle or "").lower()
+                if not needle:
+                    return False
+
+                stack = [control]
+                seen = set()
+
+                while stack:
+                    current = stack.pop()
+                    marker = id(current)
+                    if marker in seen:
+                        continue
+                    seen.add(marker)
+
+                    value = getattr(current, "value", None)
+                    if value is not None and needle in str(value).lower():
+                        return True
+
+                    text_value = getattr(current, "text", None)
+                    if text_value is not None and needle in str(text_value).lower():
+                        return True
+
+                    content = getattr(current, "content", None)
+                    if content is not None:
+                        stack.append(content)
+
+                    controls = getattr(current, "controls", None)
+                    if controls:
+                        stack.extend(list(controls))
+
+                return False
+
+            divider_index = None
+            for idx, control in enumerate(rows):
+                if isinstance(control, ft.Divider):
+                    divider_index = idx
+                    break
+
+            if divider_index is None:
+                pre_document_rows = list(rows)
+                document_rows = []
+            else:
+                pre_document_rows = list(rows[:divider_index])
+                document_rows = list(rows[divider_index + 1:])
+
+            principal_rows = []
+            link_box_rows = []
+
+            for control in pre_document_rows:
+                if (
+                    _batch_control_contains_text(control, "editar grupo")
+                    or _batch_control_contains_text(control, "trasladar grupo")
+                    or _batch_control_contains_text(control, "box expediente")
+                ):
+                    link_box_rows.append(control)
+                else:
+                    principal_rows.append(control)
+
+            selected_batch_item_ids = set(state.get("open_batch_selected_item_ids") or [])
+            metadata = _batch_metadata_dict(batch.get("metadata_json"))
+            last_copy = metadata.get("last_copy_to_box") if isinstance(metadata, dict) else None
+
+            trace_rows = [
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Trazabilidad del grupo documental", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(
+                                f"Grupo #{batch.get('id')} · Estado: {batch.get('status') or '-'} · "
+                                f"Documentos: {batch.get('item_count') or 0}",
+                                size=12,
+                                color=Q_MUTED,
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                f"Cliente ID: {batch.get('client_id') or '-'} · "
+                                f"Expediente ID: {batch.get('expedient_id') or '-'}",
+                                size=12,
+                                color=Q_MUTED,
+                                selectable=True,
+                            ),
+                            ft.Text(
+                                f"Destino Box/subcarpeta: {batch.get('target_box_folder') or '-'}",
+                                size=12,
+                                color=Q_MUTED,
+                                selectable=True,
+                            ),
+                        ],
+                        spacing=6,
+                    ),
+                )
+            ]
+
+            if isinstance(last_copy, dict):
+                trace_rows.append(
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Último traslado registrado", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(
+                                    f"Fecha: {last_copy.get('at') or '-'} · "
+                                    f"Expediente: {last_copy.get('expedient_id') or '-'} · "
+                                    f"Subcarpeta: {last_copy.get('subfolder') or '-'}",
+                                    size=12,
+                                    color=Q_MUTED,
+                                    selectable=True,
+                                ),
+                                ft.Text(
+                                    f"Copiados: {last_copy.get('copied_count', 0)} · "
+                                    f"Omitidos: {last_copy.get('skipped_count', 0)} · "
+                                    f"Errores: {last_copy.get('error_count', 0)}",
+                                    size=12,
+                                    color=Q_PRIMARY_DARK,
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                            ],
+                            spacing=6,
+                        ),
+                    )
+                )
+
+            if isinstance(metadata, dict) and metadata:
+                metadata_lines = []
+                for key, value in metadata.items():
+                    metadata_lines.append(f"{key}: {value}")
+
+                trace_rows.append(
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Metadata JSON", size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(
+                                    "\n".join(metadata_lines) or "-",
+                                    size=11,
+                                    color=Q_MUTED,
+                                    selectable=True,
+                                ),
+                            ],
+                            spacing=6,
+                        ),
+                    )
+                )
+
+            if not document_rows:
+                document_rows = [
+                    info_alert("Este grupo documental no contiene documentos.")
+                ]
+
+            batch_sections = {
+                "principal": principal_rows,
+                "documentos": document_rows,
+                "vincular_box": link_box_rows or [info_alert("No hay opciones de vinculación o Box disponibles.")],
+                "trazabilidad": trace_rows,
+            }
+
+            if state.get("batch_detail_section") not in batch_sections:
+                state["batch_detail_section"] = "principal"
+
+            def _set_batch_detail_section(section_name):
+                state["batch_detail_section"] = section_name or "principal"
+                batch_detail_section_body.controls = batch_sections.get(
+                    state["batch_detail_section"],
+                    batch_sections["principal"],
+                )
+                batch_detail_sidebar.content = _build_batch_detail_sidebar()
+
+                try:
+                    batch_detail_section_body.update()
+                except Exception:
+                    pass
+
+                try:
+                    batch_detail_sidebar.update()
+                except Exception:
+                    pass
+
+            def _batch_detail_nav_item(label, icon, section_name, subtitle=""):
+                is_active = state.get("batch_detail_section", "principal") == section_name
+
+                return ft.Container(
+                    bgcolor="#EAF3FF" if is_active else "#FFFFFF",
+                    border=ft.border.all(1, Q_PRIMARY if is_active else Q_BORDER),
+                    border_radius=12,
+                    padding=ft.padding.only(left=10, right=10, top=9, bottom=9),
+                    ink=True,
+                    on_click=lambda e, value=section_name: _set_batch_detail_section(value),
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=30,
+                                height=30,
+                                bgcolor=Q_PRIMARY if is_active else "#F1F5F9",
+                                border_radius=10,
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Text(icon, size=14, color="#FFFFFF" if is_active else Q_PRIMARY_DARK),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        label,
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.W_600,
+                                        color=Q_PRIMARY_DARK,
+                                        overflow=ft.TextOverflow.ELLIPSIS,
+                                    ),
+                                    ft.Text(
+                                        subtitle,
+                                        size=10,
+                                        color=Q_MUTED,
+                                        overflow=ft.TextOverflow.ELLIPSIS,
+                                    ),
+                                ],
+                                spacing=0,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=9,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                )
+
+            def _build_batch_detail_sidebar():
+                return ft.Container(
+                    width=250,
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=14,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Menú del grupo", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text("Ficha del grupo documental", size=11, color=Q_MUTED),
+                            ft.Divider(height=10),
+                            _batch_detail_nav_item("Principal", "🗂️", "principal", "Resumen y estado"),
+                            _batch_detail_nav_item(
+                                "Documentos",
+                                "📄",
+                                "documentos",
+                                f"{len(batch_items)} documento(s)",
+                            ),
+                            _batch_detail_nav_item("Vincular / Box", "🔗", "vincular_box", "Cliente, expediente y destino"),
+                            _batch_detail_nav_item("Trazabilidad", "🧾", "trazabilidad", "Metadata y auditoría"),
+                        ],
+                        spacing=8,
+                    ),
+                )
+
+            batch_detail_sidebar.content = _build_batch_detail_sidebar()
+            batch_detail_section_body.controls = batch_sections.get(
+                state.get("batch_detail_section") or "principal",
+                batch_sections["principal"],
+            )
 
         except Exception as exc:
-            batch_detail_body.controls = [
+            batch_detail_sidebar.content = None
+            batch_detail_section_body.controls = [
                 error_alert(f"No se pudo abrir el grupo documental: {exc}")
             ]
 
@@ -4306,8 +4587,8 @@ def document_inbox_view(page: ft.Page):
         modal=True,
         title=ft.Text("Grupo documental", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
         content=ft.Container(
-            width=840,
-            height=680,
+            width=1040,
+            height=720,
             content=ft.Column(
                 controls=[
                     batch_detail_message,
