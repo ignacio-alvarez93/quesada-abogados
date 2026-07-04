@@ -2370,7 +2370,7 @@ def document_inbox_view(page: ft.Page):
                 item_id,
                 dpi=120,
                 jpeg_quality=55,
-                grayscale=True,
+                grayscale=False,
                 register_result=True,
                 output_stem="pdf_comprimido_bandeja",
             )

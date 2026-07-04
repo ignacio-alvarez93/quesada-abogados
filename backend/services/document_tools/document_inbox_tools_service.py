@@ -468,7 +468,7 @@ def compress_inbox_pdf_strong(
     *,
     dpi: int = 120,
     jpeg_quality: int = 55,
-    grayscale: bool = True,
+    grayscale: bool = False,
     register_result: bool = True,
     output_stem: str | None = None,
 ) -> dict[str, Any]:

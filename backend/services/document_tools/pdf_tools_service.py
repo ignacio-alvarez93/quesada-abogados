@@ -466,7 +466,7 @@ def compress_pdf_rasterized(
     *,
     dpi: int = 120,
     jpeg_quality: int = 55,
-    grayscale: bool = True,
+    grayscale: bool = False,
     output_stem: str | None = None,
 ) -> DocumentToolResult:
     """
