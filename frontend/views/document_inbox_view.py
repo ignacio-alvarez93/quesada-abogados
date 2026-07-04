@@ -82,7 +82,7 @@ def _status_chip(status):
     )
 
 
-def document_inbox_view(page: ft.Page):
+def document_inbox_view(page: ft.Page, on_open_expediente=None):
     document_inbox_service.ensure_document_inbox_schema()
 
     client_options = document_inbox_service.client_autocomplete_options()
@@ -120,6 +120,39 @@ def document_inbox_view(page: ft.Page):
     pagination_label = ft.Text("Página 1", color=Q_MUTED, size=12)
     pagination_controls_box = ft.Container()
     watch_scan_notice = ft.Text("", color=Q_MUTED, size=12)
+    def open_expediente_from_document_flow(expediente_id, close_dialogs=True):
+        """
+        Navegación Bandeja Documental -> ficha de expediente.
+
+        Usa el mismo patrón que Colas de presentación:
+        app/main.py recibe open_expediente_id y expedients_view abre la ficha.
+        """
+        raw_id = str(expediente_id or "").strip()
+        if not raw_id:
+            raise ValueError("No hay expediente vinculado para abrir su ficha.")
+
+        try:
+            target_expediente_id = int(raw_id)
+        except Exception:
+            raise ValueError(f"Expediente inválido para navegación: {expediente_id}")
+
+        if close_dialogs:
+            for key in ["document_detail_dialog", "batch_detail_dialog"]:
+                dialog = state.get(key)
+                if dialog:
+                    try:
+                        dialog.open = False
+                    except Exception:
+                        pass
+
+        if callable(on_open_expediente):
+            on_open_expediente(target_expediente_id)
+            return
+
+        # Fallback técnico: deja preparado el expediente si la vista se abre después.
+        page.open_expediente_id = target_expediente_id
+        show_success(f"Expediente preparado para abrir: #{target_expediente_id}")
+
     selected_relation_label = ft.Text("Cliente/expediente no seleccionado", size=12, color=Q_MUTED)
 
     items_column = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -751,6 +784,10 @@ def document_inbox_view(page: ft.Page):
             manual_path.value = ""
             show_success(f"Documento importado a bandeja: #{item['id']}")
             refresh_items()
+
+            state["selected_item_id"] = int(item["id"])
+            state["selected_item_ids"] = set()
+            open_document_detail_dialog()
         except Exception as exc:
             show_error(exc)
 
@@ -840,7 +877,7 @@ def document_inbox_view(page: ft.Page):
         return str(box_subfolder.value or "").strip()
 
 
-    def copy_to_box(e=None):
+    def copy_to_box(e=None, open_expediente_after=True):
         try:
             item = selected_item()
             eid = state.get("selected_expedient_id") or item.get("expedient_id")
@@ -854,8 +891,17 @@ def document_inbox_view(page: ft.Page):
             )
             show_success(f"Documento copiado a Box: {updated.get('copied_to_box_path')}")
             refresh_items()
+
+            if open_expediente_after:
+                open_expediente_from_document_flow(
+                    updated.get("expedient_id") or eid,
+                    close_dialogs=True,
+                )
+
+            return updated
         except Exception as exc:
             show_error(exc)
+            return None
 
     def set_status(status):
         try:
@@ -1388,7 +1434,9 @@ def document_inbox_view(page: ft.Page):
                     base_box_folder,
                 )
 
-                copy_to_box(e)
+                copied = copy_to_box(e, open_expediente_after=False)
+                if not copied:
+                    return
 
                 refreshed = document_inbox_service.get_inbox_item(item_id)
                 detail_relation_text.value = (
@@ -1408,6 +1456,15 @@ def document_inbox_view(page: ft.Page):
                     detail_events_box.update()
                 except Exception:
                     pass
+
+                target_expedient_id = (
+                    refreshed.get("expedient_id")
+                    or (copied or {}).get("expedient_id")
+                    or state.get("detail_selected_expedient_id")
+                    or state.get("selected_expedient_id")
+                )
+                if target_expedient_id:
+                    open_expediente_from_document_flow(target_expedient_id, close_dialogs=True)
             except Exception as exc:
                 show_error(exc)
 
@@ -3881,6 +3938,14 @@ def document_inbox_view(page: ft.Page):
 
             open_batch_detail_dialog(batch_id)
             refresh_batches_panel()
+
+            target_expedient_id = (
+                expedient_id
+                or result.get("expedient_id")
+                or (result.get("batch") or {}).get("expedient_id")
+            )
+            if target_expedient_id:
+                open_expediente_from_document_flow(target_expedient_id, close_dialogs=True)
         except Exception as exc:
             batch_detail_message.content = error_alert(f"No se pudo copiar el grupo a Box: {exc}")
             try:
@@ -5231,9 +5296,13 @@ def document_inbox_view(page: ft.Page):
 
             batch_dialog_message.content = success_alert(msg)
 
+            create_batch_dialog.open = False
             refresh_items()
             refresh_batches_panel()
             render_batch_selected_docs()
+
+            if batch and batch.get("id"):
+                open_batch_detail_dialog(batch.get("id"))
 
             try:
                 selected_label.update()
