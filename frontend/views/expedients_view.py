@@ -40,6 +40,7 @@ from frontend.components.app_action_row import action_row
 from frontend.components.expedient_status_badge import expedient_status_badge, priority_badge
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.listing.card_item import card_item
+from frontend.components.listing.compact_pagination_bar import compact_pagination_bar
 
 Q_PRIMARY_DARK = "#003B7A"
 Q_PRIMARY = "#0057B8"
@@ -174,6 +175,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         "editing_id": None,
         "message": None,
         "selected_ids": set(),
+        "cards_page": 1,
+        "cards_page_size": 10,
         "dialog_section": "ficha",
         "dialog_expediente_id": None,
         "presentation_start": None,
@@ -6670,10 +6673,66 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         refresh_table()
 
 
+    def set_cards_page(page_number):
+        state["cards_page"] = max(1, int(page_number or 1))
+        table_container.content = build_table()
+        page.update()
+
+    def clear_selected_expedients(e=None):
+        state["selected_ids"].clear()
+        table_container.content = build_table()
+        content_area.content = build_view()
+        page.update()
+
+    def enqueue_selected_from_bulk(e=None):
+        if not state["selected_ids"]:
+            set_message(error_alert("Selecciona al menos un expediente."))
+            content_area.content = build_view()
+            page.update()
+            return
+        enqueue_selected_presentation()
+        state["selected_ids"].clear()
+        table_container.content = build_table()
+        content_area.content = build_view()
+        page.update()
+
+    def generate_forms_selected_from_bulk(e=None):
+        if not state["selected_ids"]:
+            set_message(error_alert("Selecciona al menos un expediente."))
+            content_area.content = build_view()
+            page.update()
+            return
+        set_message(
+            error_alert(
+                "Generación masiva de formularios pendiente de conectar. "
+                "Primero se ha dejado preparada la acción visual."
+            )
+        )
+        content_area.content = build_view()
+        page.update()
+
+    def archive_selected_from_bulk(e=None):
+        archive_selected(e)
+
+
     def build_table():
         expedientes = state["expedientes"]
         if not expedientes:
             return empty_state("No hay expedientes que coincidan con la búsqueda")
+
+        page_size = int(state.get("cards_page_size") or 10)
+        total_items = len(expedientes)
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        current_page = max(1, min(int(state.get("cards_page") or 1), total_pages))
+        state["cards_page"] = current_page
+
+        start_index = (current_page - 1) * page_size
+        end_index = start_index + page_size
+        visible_expedientes = expedientes[start_index:end_index]
+
+        # Blindaje visual: a partir de aquí build_table solo conoce
+        # los expedientes visibles de la página actual.
+        expedientes = visible_expedientes
 
         cards = []
 
@@ -6827,14 +6886,34 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                 )
             )
 
-        return ft.Container(
-            height=430,
-            content=ft.Column(
-                controls=cards,
-                spacing=10,
-                scroll=ft.ScrollMode.AUTO,
-                expand=True,
-            ),
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        compact_pagination_bar(
+                            page=state.get("cards_page") or 1,
+                            page_size=state.get("cards_page_size") or 10,
+                            total_items=total_items,
+                            on_page_change=set_cards_page,
+                            label_prefix="Expedientes",
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    wrap=True,
+                ),
+                ft.Container(
+                    expand=True,
+                    width=float("inf"),
+                    content=ft.Column(
+                        controls=cards,
+                        spacing=10,
+                        scroll=None,
+                    ),
+                ),
+            ],
+            spacing=10,
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
         )
 
     def archive_one(expediente_id):
@@ -6845,12 +6924,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
 
     def refresh_table(e=None):
         clear_message()
+        state["cards_page"] = 1
         load_data()
         table_container.content = build_table()
         content_area.content = build_view()
         page.update()
 
     def refresh(e=None):
+        state["cards_page"] = 1
         load_data()
         table_container.content = build_table()
         content_area.content = build_view()
@@ -6868,54 +6949,32 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     def build_selected_action_bar():
         selected_count = len(state["selected_ids"])
         if selected_count == 0:
-            return ft.Container(
-                bgcolor="#FFFFFF",
-                border=ft.border.all(1, Q_BORDER),
-                border_radius=12,
-                padding=12,
-                content=ft.Text(
-                    "Selecciona un expediente para ver acciones rápidas.",
-                    size=13,
-                    color=Q_MUTED,
-                ),
-            )
+            return ft.Container()
 
-        single_selected = selected_count == 1
-        return ft.Container(
-            bgcolor="#EAF3FF",
-            border=ft.border.all(1, "#B9D7FF"),
-            border_radius=12,
-            padding=12,
-            content=ft.Row(
-                controls=[
-                    ft.Text(
-                        f"{selected_count} expediente(s) seleccionado(s)",
-                        size=14,
-                        weight=ft.FontWeight.BOLD,
-                        color=Q_PRIMARY_DARK,
-                    ),
-                    ft.Text(
-                        f"Presentación iniciada: {state['presentation_start'].strftime('%H:%M:%S')}" if state.get("presentation_start") else "",
-                        size=12,
-                        color=Q_MUTED,
-                        visible=state.get("presentation_start") is not None,
-                    ),
-                    primary_button("Abrir ficha", open_selected_expediente),
-                    secondary_button("Enviar a cola", enqueue_selected_presentation),
-                    secondary_button("Presentación asistida", open_presentacion_asistida),
-                    danger_button("Archivar selección", archive_selected),
-                    ft.Text(
-                        "Para abrir ficha o presentación asistida selecciona solo uno.",
-                        size=12,
-                        color=Q_MUTED,
-                        visible=not single_selected,
-                    ),
-                ],
-                spacing=10,
-                wrap=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+        return bulk_action_bar(
+            title="Acciones masivas de expedientes",
+            selected_count=selected_count,
+            on_clear=clear_selected_expedients,
+            actions=[
+                {
+                    "icon": ft.Icons.OUTBOX,
+                    "tooltip": "Enviar seleccionados a cola",
+                    "on_click": enqueue_selected_from_bulk,
+                },
+                {
+                    "icon": ft.Icons.DESCRIPTION_OUTLINED,
+                    "tooltip": "Generar formularios seleccionados",
+                    "on_click": generate_forms_selected_from_bulk,
+                },
+                {
+                    "icon": ft.Icons.ARCHIVE_OUTLINED,
+                    "tooltip": "Archivar seleccionados",
+                    "on_click": archive_selected_from_bulk,
+                    "danger": True,
+                },
+            ],
         )
+
 
     def build_view():
         m = metrics()
@@ -6962,6 +7021,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         filtro_prioridad,
                     ],
                 ),
+                build_selected_action_bar(),
                 table_container,
             ]
         )
