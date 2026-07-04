@@ -379,19 +379,23 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
 
         subtipo_expediente.set_options(options, clear_value=False)
 
-        selected_value = "Sin subtipo"
+        selected_value = ""
         current_value = subtipo_expediente.get_value()
 
         if selected_subtipo_id:
-            selected_value = next((x for x in options if x.startswith(str(selected_subtipo_id) + " - ")), "Sin subtipo")
+            selected_value = next((x for x in options if x.startswith(str(selected_subtipo_id) + " - ")), "")
         elif not reset_value and current_value in options:
             selected_value = current_value
         elif reset_value and len(options) == 2:
             # Caso habitual actual: Nacionalidad solo tiene un subtipo creado.
             selected_value = options[1]
 
-        subtipo_expediente.set_value(selected_value, update=False)
-        if selected_value != "Sin subtipo":
+        if selected_value:
+            subtipo_expediente.set_value(selected_value, update=False)
+        else:
+            _clear_autocomplete(subtipo_expediente)
+
+        if selected_value and selected_value != "Sin subtipo":
             subtipo_expediente_manual.value = ""
 
     def on_tipo_expediente_change(selected_value=None):
@@ -455,7 +459,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         _clear_autocomplete(tipo_expediente)
         _clear_autocomplete(subtipo_expediente)
         cliente.set_value("", update=False)
-        refresh_subtipo_options_for_tipo(tipo_value=tipo_expediente.get_value(), reset_value=True)
+        refresh_subtipo_options_for_tipo(tipo_value="", reset_value=True)
+        _clear_autocomplete(subtipo_expediente)
         subtipo_expediente_manual.value = ""
         estado_documental.value = estado_doc_options[0] if estado_doc_options else None
         estado_administrativo.value = next(
@@ -509,7 +514,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         )
 
         refresh_subtipo_options_for_tipo(expediente.get("subtipo_expediente_id"), tipo_value=tipo_expediente.get_value())
-        if subtipo_expediente.get_value() == "Sin subtipo":
+        if not subtipo_expediente.get_value() or subtipo_expediente.get_value() == "Sin subtipo":
             subtipo_expediente_manual.value = expediente.get("subtipo_expediente") or ""
         else:
             subtipo_expediente_manual.value = ""
