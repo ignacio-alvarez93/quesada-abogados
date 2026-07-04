@@ -5946,6 +5946,128 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         document_viewer_dialog.open = True
         page.update()
 
+    def build_expedient_templates_content(expediente_id):
+        """
+        Sección segura del diálogo de expediente para plantillas y formularios.
+
+        Reutiliza el catálogo de plantillas EX ya disponible en la vista.
+        Evita el NameError al entrar en la pestaña "Plantillas y formularios".
+        """
+        templates = _list_ex_document_templates_for_menu()
+
+        template_controls = []
+
+        for template in templates[:20]:
+            label = (
+                template.get("nombre")
+                or template.get("codigo")
+                or template.get("mapper_destino")
+                or "Formulario"
+            )
+            subtitle = " · ".join(
+                part
+                for part in [
+                    template.get("codigo"),
+                    template.get("mapper_destino"),
+                    template.get("template_type"),
+                ]
+                if part
+            )
+
+            template_controls.append(
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, color=Q_PRIMARY),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(label, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(subtitle or "Plantilla documental", size=11, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            secondary_button(
+                                "Generar",
+                                lambda e, t=template: generate_specific_ex_template(
+                                    t,
+                                    e,
+                                    return_section="plantillas",
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                )
+            )
+
+        if not template_controls:
+            template_controls.append(
+                ft.Container(
+                    bgcolor="#FFFBEB",
+                    border=ft.border.all(1, "#FDE68A"),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "No hay plantillas EX activas",
+                                weight=ft.FontWeight.BOLD,
+                                color="#92400E",
+                            ),
+                            ft.Text(
+                                "Revisa el catálogo de plantillas documentales en Settings.",
+                                size=12,
+                                color="#92400E",
+                            ),
+                        ],
+                        spacing=4,
+                    ),
+                )
+            )
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Plantillas y formularios",
+                                    size=18,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    "Generación de formularios EX y modelos vinculados al expediente.",
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                ft.Divider(height=1, color=Q_BORDER),
+                ft.Column(
+                    controls=template_controls,
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
+                    expand=True,
+                ),
+            ],
+            spacing=12,
+            expand=True,
+        )
+
+
     def build_dialog_section_content(expediente_id):
         section = state.get("dialog_section") or "ficha"
 
