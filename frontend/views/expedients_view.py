@@ -33,7 +33,6 @@ from frontend.components.app_dropdown import select_input
 from frontend.components.app_dialog import form_dialog
 from frontend.components.app_alert import error_alert, success_alert
 from frontend.components.app_empty_state import empty_state
-from frontend.components.app_table import app_table
 from frontend.components.app_filter_bar import filter_bar
 from frontend.components.app_card import metric_card
 from frontend.components.app_action_row import action_row
