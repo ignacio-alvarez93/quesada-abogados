@@ -6643,6 +6643,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         if checkbox_ref and checkbox_ref.current:
             checkbox_ref.current.value = is_selected
 
+        table_container.content = build_table()
         content_area.content = build_view()
         page.update()
 
@@ -6890,6 +6891,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             controls=[
                 ft.Row(
                     controls=[
+                        build_selected_action_bar(),
                         compact_pagination_bar(
                             page=state.get("cards_page") or 1,
                             page_size=state.get("cards_page_size") or 10,
@@ -6899,7 +6901,9 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         ),
                     ],
                     alignment=ft.MainAxisAlignment.END,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     wrap=True,
+                    spacing=8,
                 ),
                 ft.Container(
                     expand=True,
@@ -7021,7 +7025,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         filtro_prioridad,
                     ],
                 ),
-                build_selected_action_bar(),
                 table_container,
             ]
         )
