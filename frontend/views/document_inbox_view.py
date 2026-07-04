@@ -2144,6 +2144,7 @@ def document_inbox_view(page: ft.Page):
             if section_name == "principal":
                 detail_body.content = ft.Column(
                     controls=[
+                        detail_header,
                         ft.Row(
                             controls=[
                                 ft.Container(content=detail_meta, expand=True),
@@ -2279,7 +2280,6 @@ def document_inbox_view(page: ft.Page):
                 height=760,
                 content=ft.Column(
                     controls=[
-                        detail_header,
                         detail_duplicate,
                         ft.Row(
                             controls=[
