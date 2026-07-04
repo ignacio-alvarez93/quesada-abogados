@@ -681,3 +681,181 @@ def move_pdf_page(
             errors=[str(exc)],
         )
 
+def compress_pdf_smart(
+    source_path: str | Path,
+    *,
+    dpi: int = 120,
+    jpeg_quality: int = 55,
+    grayscale: bool = False,
+    output_stem: str | None = None,
+) -> DocumentToolResult:
+    """
+    Compresión inteligente.
+
+    Regla:
+    - Prueba compresión básica.
+    - Prueba compresión fuerte/rasterizada.
+    - Conserva solo el PDF más pequeño si realmente reduce el original.
+    - Si ninguna opción reduce tamaño, no devuelve archivo registrable.
+
+    Nunca modifica el original.
+    """
+    operation = "pdf_compress_smart"
+
+    try:
+        source = assert_existing_file(source_path)
+        original_size = source.stat().st_size
+
+        candidates = []
+        warnings = []
+
+        basic = compress_pdf_basic(
+            source,
+            output_stem=f"{output_stem or source.stem}_basic",
+        )
+
+        if basic.ok and basic.output_path:
+            basic_path = Path(basic.output_path)
+            if basic_path.exists():
+                candidates.append(
+                    {
+                        "mode": "basic",
+                        "result": basic,
+                        "path": basic_path,
+                        "size": basic_path.stat().st_size,
+                    }
+                )
+        else:
+            warnings.extend([f"Compresión básica: {err}" for err in basic.errors])
+
+        strong = compress_pdf_rasterized(
+            source,
+            dpi=dpi,
+            jpeg_quality=jpeg_quality,
+            grayscale=grayscale,
+            output_stem=f"{output_stem or source.stem}_strong",
+        )
+
+        if strong.ok and strong.output_path:
+            strong_path = Path(strong.output_path)
+            if strong_path.exists():
+                candidates.append(
+                    {
+                        "mode": "rasterized",
+                        "result": strong,
+                        "path": strong_path,
+                        "size": strong_path.stat().st_size,
+                    }
+                )
+        else:
+            warnings.extend([f"Compresión fuerte: {err}" for err in strong.errors])
+
+        if not candidates:
+            return DocumentToolResult.failure(
+                operation=operation,
+                source_paths=[source],
+                errors=["No se pudo generar ningún candidato de compresión."],
+                warnings=warnings,
+                metadata={
+                    "original_size_bytes": original_size,
+                    "candidates": [],
+                },
+            )
+
+        best = min(candidates, key=lambda item: item["size"])
+
+        # Borrar candidatos no elegidos.
+        for candidate in candidates:
+            if candidate is best:
+                continue
+            try:
+                candidate["path"].unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        best_size = int(best["size"])
+        reduction_bytes = original_size - best_size
+        reduction_percent = round((reduction_bytes / original_size) * 100, 2) if original_size else 0
+
+        candidate_metadata = [
+            {
+                "mode": c["mode"],
+                "size_bytes": int(c["size"]),
+                "reduction_bytes": int(original_size - c["size"]),
+                "reduction_percent": round(((original_size - c["size"]) / original_size) * 100, 2) if original_size else 0,
+            }
+            for c in candidates
+        ]
+
+        if best_size >= original_size:
+            try:
+                best["path"].unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            return DocumentToolResult.failure(
+                operation=operation,
+                source_paths=[source],
+                errors=[
+                    "No se generó PDF comprimido porque el mejor resultado no reduce el tamaño original."
+                ],
+                warnings=warnings + [
+                    f"Original: {original_size} bytes. Mejor candidato: {best_size} bytes."
+                ],
+                metadata={
+                    "original_size_bytes": original_size,
+                    "best_candidate_size_bytes": best_size,
+                    "best_mode": best["mode"],
+                    "reduction_bytes": reduction_bytes,
+                    "reduction_percent": reduction_percent,
+                    "candidates": candidate_metadata,
+                    "skipped_registration": True,
+                },
+            )
+
+        chosen_path = best["path"]
+
+        # Normalizar nombre de salida final si hace falta.
+        final_output = build_output_path(
+            operation="compress_smart",
+            source_path=source,
+            extension=".pdf",
+            subdir="compressed",
+            stem=output_stem,
+        )
+
+        if chosen_path.resolve() != final_output.resolve():
+            if final_output.exists():
+                final_output.unlink()
+            chosen_path.rename(final_output)
+        else:
+            final_output = chosen_path
+
+        return DocumentToolResult.success(
+            operation=operation,
+            source_paths=[source],
+            output_path=final_output,
+            warnings=warnings,
+            metadata={
+                "original_size_bytes": original_size,
+                "output_size_bytes": final_output.stat().st_size,
+                "reduction_bytes": original_size - final_output.stat().st_size,
+                "reduction_percent": round(((original_size - final_output.stat().st_size) / original_size) * 100, 2) if original_size else 0,
+                "mime_type": "application/pdf",
+                "compression_mode": "smart_best_of_basic_and_rasterized",
+                "best_mode": best["mode"],
+                "dpi": int(dpi or 120),
+                "jpeg_quality": int(jpeg_quality or 55),
+                "grayscale": bool(grayscale),
+                "ocr_text_layer_preserved": best["mode"] == "basic",
+                "candidates": candidate_metadata,
+            },
+        )
+
+    except Exception as exc:
+        return DocumentToolResult.failure(
+            operation=operation,
+            source_paths=[source_path],
+            errors=[str(exc)],
+        )
+

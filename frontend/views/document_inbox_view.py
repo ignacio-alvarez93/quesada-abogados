@@ -7,7 +7,7 @@ from backend.services.list_expediente_box_directory import list_expediente_box_d
 from backend.services import document_inbox_watch_service
 from backend.services import document_viewer_service
 from backend.services.document_tools import (
-    compress_inbox_pdf_strong,
+    compress_inbox_pdf_smart,
     convert_inbox_image_to_pdf,
     convert_inbox_word_to_pdf,
     crop_inbox_image,
@@ -2443,7 +2443,7 @@ def document_inbox_view(page: ft.Page):
     def run_document_tool_compress_pdf(e=None, item_id=None):
         try:
             item_id = int(item_id) if item_id is not None else _selected_single_inbox_id()
-            response = compress_inbox_pdf_strong(
+            response = compress_inbox_pdf_smart(
                 item_id,
                 dpi=120,
                 jpeg_quality=55,
@@ -2453,11 +2453,29 @@ def document_inbox_view(page: ft.Page):
             )
 
             if not response.get("ok"):
-                raise ValueError(response)
+                result = response.get("result") or {}
+                metadata = result.get("metadata") or {}
+                warnings = result.get("warnings") or []
+                errors = result.get("errors") or []
+
+                detail = ""
+                if metadata.get("original_size_bytes") and metadata.get("best_candidate_size_bytes"):
+                    detail = (
+                        f" Original: {_format_size(metadata.get('original_size_bytes'))}. "
+                        f"Mejor candidato: {_format_size(metadata.get('best_candidate_size_bytes'))}."
+                    )
+
+                raise ValueError(
+                    "No se creó PDF comprimido porque no reducía el tamaño."
+                    + detail
+                    + (" " + " | ".join([str(x) for x in (errors + warnings)[:2]]) if (errors or warnings) else "")
+                )
 
             generated = response.get("generated_item") or {}
+            result_meta = ((response.get("result") or {}).get("metadata") or {})
             _refresh_after_document_tool(
-                f"PDF comprimido. Nuevo documento #{generated.get('id') or '-'}."
+                f"PDF comprimido. Nuevo documento #{generated.get('id') or '-'}"
+                f" · reducción {result_meta.get('reduction_percent', '-')}%."
             )
         except Exception as exc:
             _show_document_tool_error(exc)

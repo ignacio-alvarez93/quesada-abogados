@@ -542,3 +542,32 @@ def convert_inbox_word_to_pdf(
         operation="word_to_pdf",
     )
 
+def compress_inbox_pdf_smart(
+    inbox_item_id: int,
+    *,
+    dpi: int = 120,
+    jpeg_quality: int = 55,
+    grayscale: bool = False,
+    register_result: bool = True,
+    output_stem: str | None = None,
+) -> dict[str, Any]:
+    from backend.services.document_tools.pdf_tools_service import compress_pdf_smart
+
+    item = _get_item_or_fail(inbox_item_id)
+    source_path = _resolve_inbox_item_path(item)
+
+    result = compress_pdf_smart(
+        source_path,
+        dpi=dpi,
+        jpeg_quality=jpeg_quality,
+        grayscale=grayscale,
+        output_stem=output_stem,
+    )
+
+    return _build_operation_response(
+        source_items=[item],
+        result=result,
+        register_result=register_result,
+        operation="pdf_compress_smart",
+    )
+
