@@ -6,6 +6,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import BooleanObject, NameObject
 
 from backend.services import document_generation_service
+from backend.services import document_inbox_service
 from backend.services import document_template_service
 
 
@@ -284,6 +285,35 @@ def fill_pdf_from_template(document_template_id, expediente_id=None, auto_build_
     with output_pdf_path.open("wb") as fh:
         writer.write(fh)
 
+    inbox_item = None
+    try:
+        expediente = export_data.get("expediente") or {}
+        document_template = export_data.get("document_template") or {}
+        inbox_item = document_inbox_service.import_file_to_inbox(
+            str(output_pdf_path),
+            source_type="crm_generated_pdf",
+            source_label="Documento PDF generado por CRM",
+            notes="Documento generado automáticamente desde plantilla PDF del CRM.",
+            client_id=expediente.get("client_id") or expediente.get("cliente_id"),
+            expedient_id=expediente.get("id") or expediente.get("expediente_id"),
+            metadata={
+                "generated_by": "crm_document_generation",
+                "generation_type": "pdf_acroform",
+                "document_template_id": document_template.get("id"),
+                "document_template_code": document_template.get("codigo"),
+                "document_template_name": document_template.get("nombre"),
+                "output_path": str(output_pdf_path),
+                "output_relative_path": _relative_path(output_pdf_path),
+                "payload_json_path": (export_data.get("output") or {}).get("json_path"),
+                "flatten": bool(flatten),
+            },
+        )
+    except Exception as exc:
+        inbox_item = {
+            "registration_error": str(exc),
+            "source": "pdf_fill_service",
+        }
+
     result = {
         "generated_at": _now_iso(),
         "generation_type": "pdf_acroform",
@@ -315,6 +345,7 @@ def fill_pdf_from_template(document_template_id, expediente_id=None, auto_build_
             "pdf_path": _relative_path(output_pdf_path),
             "format": "pdf",
         },
+        "inbox_item": inbox_item,
     }
 
     return result
