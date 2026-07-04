@@ -7,6 +7,7 @@ from docx import Document
 
 from backend.services import document_generation_service
 from backend.services import document_template_service
+from backend.services import document_inbox_service
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -244,6 +245,34 @@ def generate_docx_from_template(document_template_id, expediente_id=None, auto_b
     output_docx_path.parent.mkdir(parents=True, exist_ok=True)
     document.save(str(output_docx_path))
 
+    inbox_item = None
+    try:
+        expediente = export_data.get("expediente") or {}
+        document_template = export_data.get("document_template") or {}
+        inbox_item = document_inbox_service.import_file_to_inbox(
+            str(output_docx_path),
+            source_type="crm_generated_docx",
+            source_label="Documento DOCX generado por CRM",
+            notes="Documento generado automáticamente desde plantilla DOCX del CRM.",
+            client_id=expediente.get("client_id") or expediente.get("cliente_id"),
+            expedient_id=expediente.get("id") or expediente.get("expediente_id"),
+            metadata={
+                "generated_by": "crm_document_generation",
+                "generation_type": "docx",
+                "document_template_id": document_template.get("id"),
+                "document_template_code": document_template.get("codigo"),
+                "document_template_name": document_template.get("nombre"),
+                "output_path": str(output_docx_path),
+                "output_relative_path": _relative_path(output_docx_path),
+                "payload_json_path": (export_data.get("output") or {}).get("json_path"),
+            },
+        )
+    except Exception as exc:
+        inbox_item = {
+            "registration_error": str(exc),
+            "source": "document_docx_service",
+        }
+
     export_data["generation_type"] = "docx"
     export_data["docx"] = {
         "template_path": _relative_path(template_path),
@@ -253,6 +282,7 @@ def generate_docx_from_template(document_template_id, expediente_id=None, auto_b
     }
     export_data["output"]["docx_path"] = _relative_path(output_docx_path)
     export_data["output"]["format"] = "docx"
+    export_data["inbox_item"] = inbox_item
 
     return export_data
 

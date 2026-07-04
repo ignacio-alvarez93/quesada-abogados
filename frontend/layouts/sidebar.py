@@ -134,6 +134,7 @@ KNOWN_ACTIVE_VIEWS = {
     "Colas de presentación",
     "Cobros",
     "Documentos / Box",
+    "Bandeja documental",
     "Reporting",
     "Configuración",
 }
