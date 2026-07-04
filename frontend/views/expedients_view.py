@@ -39,6 +39,8 @@ from frontend.components.app_card import metric_card
 from frontend.components.app_action_row import action_row
 from frontend.components.expedient_status_badge import expedient_status_badge, priority_badge
 from frontend.components.app_autocomplete import AppAutocomplete
+from frontend.components.listing.card_item import card_item
+from frontend.components.listing.compact_pagination_bar import compact_pagination_bar
 
 Q_PRIMARY_DARK = "#003B7A"
 Q_PRIMARY = "#0057B8"
@@ -173,6 +175,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         "editing_id": None,
         "message": None,
         "selected_ids": set(),
+        "cards_page": 1,
+        "cards_page_size": 10,
         "dialog_section": "ficha",
         "dialog_expediente_id": None,
         "presentation_start": None,
@@ -216,17 +220,33 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     prioridad_options = [f"{p['id']} - {p['nombre']}" for p in prioridades]
 
     search_input = text_input("Buscar expediente / cliente / registro", width=360)
-    filtro_cliente = AppAutocomplete(
+    filtro_tipo = AppAutocomplete(
         page=page,
-        label="Filtrar cliente",
-        options=cliente_options,
-        width=360,
+        label="Tipo",
+        options=["Todos"] + tipo_options,
+        value="",
+        width=260,
         max_results=10,
-        allow_free_text=True,
+        allow_free_text=False,
     )
-    filtro_tipo = select_input("Tipo", ["Todos"] + tipo_options, value="Todos", width=260)
-    filtro_estado = select_input("Estado admin.", ["Todos"] + estado_admin_options, value="Todos", width=260)
-    filtro_prioridad = select_input("Prioridad", ["Todos"] + prioridad_options, value="Todos", width=220)
+    filtro_estado = AppAutocomplete(
+        page=page,
+        label="Estado admin.",
+        options=["Todos"] + estado_admin_options,
+        value="",
+        width=260,
+        max_results=10,
+        allow_free_text=False,
+    )
+    filtro_prioridad = AppAutocomplete(
+        page=page,
+        label="Prioridad",
+        options=["Todos"] + prioridad_options,
+        value="",
+        width=220,
+        max_results=10,
+        allow_free_text=False,
+    )
 
     numero_expediente = text_input("Nº expediente", width=220)
     numero_expediente_mercurio = text_input("Nº expediente Mercurio", width=260)
@@ -410,15 +430,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             "active_only": True,
         }
 
-        filtro_cliente_value = filtro_cliente.get_value()
-        if filtro_cliente_value and filtro_cliente_value != "Todos":
-            filters["cliente_id"] = _option_id(filtro_cliente_value)
-        if filtro_tipo.value != "Todos":
-            filters["tipo_expediente_id"] = _option_id(filtro_tipo.value)
-        if filtro_estado.value != "Todos":
-            filters["estado_administrativo_id"] = _option_id(filtro_estado.value)
-        if filtro_prioridad.value != "Todos":
-            filters["prioridad_id"] = _option_id(filtro_prioridad.value)
+        # Los filtros visuales de la vista principal se aplican en memoria
+        # para evitar recargas pesadas y mantener UX fluida.
 
         state["expedientes"] = expedient_service.search_expedientes(filters)
 
@@ -6639,63 +6652,407 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         if checkbox_ref and checkbox_ref.current:
             checkbox_ref.current.value = is_selected
 
+        table_container.content = build_table()
         content_area.content = build_view()
         page.update()
 
+    def _focus_single_expediente(expediente_id):
+        state["selected_ids"].clear()
+        state["selected_ids"].add(expediente_id)
+
+    def open_expediente_card_action(expediente_id):
+        _focus_single_expediente(expediente_id)
+        open_selected_expediente()
+
+    def enqueue_expediente_card_action(expediente_id):
+        _focus_single_expediente(expediente_id)
+        enqueue_selected_presentation()
+        state["selected_ids"].clear()
+        table_container.content = build_table()
+        content_area.content = build_view()
+        page.update()
+
+    def assisted_presentation_card_action(expediente_id):
+        _focus_single_expediente(expediente_id)
+        open_presentacion_asistida()
+
+    def archive_expediente_card_action(expediente_id):
+        expedient_service.archive_expediente(expediente_id)
+        state["selected_ids"].discard(expediente_id)
+        set_message(success_alert("Expediente archivado"))
+        refresh_table()
+
+
+    def set_cards_page(page_number):
+        state["cards_page"] = max(1, int(page_number or 1))
+        table_container.content = build_table()
+        page.update()
+
+    def clear_selected_expedients(e=None):
+        state["selected_ids"].clear()
+        table_container.content = build_table()
+        content_area.content = build_view()
+        page.update()
+
+    def enqueue_selected_from_bulk(e=None):
+        selected_ids = list(state["selected_ids"])
+        if not selected_ids:
+            set_message(error_alert("Selecciona al menos un expediente."))
+            content_area.content = build_view()
+            page.update()
+            return
+
+        ok_count = 0
+        errors = []
+
+        for expediente_id in selected_ids:
+            try:
+                _focus_single_expediente(expediente_id)
+                enqueue_selected_presentation()
+                ok_count += 1
+            except Exception as exc:
+                errors.append(f"#{expediente_id}: {exc}")
+
+        state["selected_ids"].clear()
+
+        if errors:
+            set_message(
+                error_alert(
+                    f"Enviados a cola: {ok_count}. Errores: " + " | ".join(errors[:3])
+                )
+            )
+        else:
+            set_message(success_alert(f"{ok_count} expediente(s) enviados a cola."))
+
+        table_container.content = build_table()
+        content_area.content = build_view()
+        page.update()
+
+    def generate_forms_selected_from_bulk(e=None):
+        if not state["selected_ids"]:
+            set_message(error_alert("Selecciona al menos un expediente."))
+            content_area.content = build_view()
+            page.update()
+            return
+        set_message(
+            error_alert(
+                "Generación masiva de formularios pendiente de conectar. "
+                "Primero se ha dejado preparada la acción visual."
+            )
+        )
+        content_area.content = build_view()
+        page.update()
+
+    def archive_selected_from_bulk(e=None):
+        archive_selected(e)
+
+
+    def _filter_control_value(control):
+        if hasattr(control, "get_value"):
+            return control.get_value()
+        return getattr(control, "value", "")
+
+    def _set_filter_control_value(control, value):
+        if hasattr(control, "set_value"):
+            control.set_value(value)
+            return
+        if hasattr(control, "input"):
+            control.input.value = value
+            return
+        control.value = value
+
+    def _normalize_filter_text(value):
+        return (str(value or "")).strip().lower()
+
+    def _expedient_matches_search(expediente, query):
+        query = _normalize_filter_text(query)
+        if not query:
+            return True
+
+        haystack = " ".join(
+            [
+                str(expediente.get("numero_expediente") or ""),
+                str(expediente.get("numero_expediente_mercurio") or ""),
+                str(expediente.get("numero_registro") or ""),
+                str(expediente.get("cliente_nombre") or ""),
+                str(expediente.get("cliente_apellidos") or ""),
+                str(expediente.get("cliente_documento") or ""),
+                str(expediente.get("tipo_expediente_nombre") or ""),
+                str(expediente.get("subtipo_expediente_nombre") or ""),
+                str(expediente.get("subtipo_expediente") or ""),
+                str(expediente.get("estado_administrativo_nombre") or ""),
+                str(expediente.get("prioridad_nombre") or ""),
+                str(_cliente_nombre(expediente) or ""),
+            ]
+        ).lower()
+
+        return query in haystack
+
+    def _selected_option_id(option_value):
+        option_value = (option_value or "").strip()
+        if not option_value or option_value == "Todos":
+            return None
+        return _option_id(option_value)
+
+    def _selected_option_label(option_value):
+        option_value = (option_value or "").strip()
+        if not option_value or option_value == "Todos":
+            return ""
+        parts = [p.strip() for p in str(option_value).split(" - ") if p.strip()]
+        if len(parts) > 1:
+            return " - ".join(parts[1:])
+        return str(option_value or "").strip()
+
+    def _matches_catalog_filter(expediente, option_value, id_field, name_field):
+        option_value = (option_value or "").strip()
+        if not option_value or option_value == "Todos":
+            return True
+
+        expected_id = _selected_option_id(option_value)
+        if expected_id is not None:
+            try:
+                return int(expediente.get(id_field) or 0) == int(expected_id)
+            except Exception:
+                pass
+
+        expected_label = _normalize_filter_text(_selected_option_label(option_value))
+        actual_label = _normalize_filter_text(expediente.get(name_field))
+
+        if not expected_label:
+            return True
+
+        return expected_label in actual_label or actual_label in expected_label
+
+    def _expedient_matches_dropdown_filters(expediente):
+        return (
+            _matches_catalog_filter(
+                expediente,
+                _filter_control_value(filtro_tipo),
+                "tipo_expediente_id",
+                "tipo_expediente_nombre",
+            )
+            and _matches_catalog_filter(
+                expediente,
+                _filter_control_value(filtro_estado),
+                "estado_administrativo_id",
+                "estado_administrativo_nombre",
+            )
+            and _matches_catalog_filter(
+                expediente,
+                _filter_control_value(filtro_prioridad),
+                "prioridad_id",
+                "prioridad_nombre",
+            )
+        )
+
+
     def build_table():
-        expedientes = state["expedientes"]
+        expedientes = [
+            e for e in state["expedientes"]
+            if _expedient_matches_search(e, search_input.value)
+            and _expedient_matches_dropdown_filters(e)
+        ]
+
         if not expedientes:
             return empty_state("No hay expedientes que coincidan con la búsqueda")
 
-        rows = []
+        page_size = int(state.get("cards_page_size") or 10)
+        total_items = len(expedientes)
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        current_page = max(1, min(int(state.get("cards_page") or 1), total_pages))
+        state["cards_page"] = current_page
+
+        start_index = (current_page - 1) * page_size
+        end_index = start_index + page_size
+        visible_expedientes = expedientes[start_index:end_index]
+
+        # Blindaje visual: a partir de aquí build_table solo conoce
+        # los expedientes visibles de la página actual.
+        expedientes = visible_expedientes
+
+        cards = []
+
         for index, e in enumerate(expedientes):
-            row_ref = ft.Ref()
-            checkbox_ref = ft.Ref()
-            is_selected = e["id"] in state["selected_ids"]
+            expediente_id = e["id"]
+            is_selected = expediente_id in state["selected_ids"]
 
             checkbox = ft.Checkbox(
-                ref=checkbox_ref,
                 value=is_selected,
-                on_change=lambda ev, eid=e["id"], rr=row_ref, cr=checkbox_ref, idx=index: toggle_selection(eid, rr, cr, idx),
+                on_change=lambda ev, eid=expediente_id, idx=index: toggle_selection(eid, index=idx),
             )
 
-            rows.append(
-                [
-                    {
-                        "selected": is_selected,
-                        "row_ref": row_ref,
-                        "on_click": lambda ev, eid=e["id"], rr=row_ref, cr=checkbox_ref, idx=index: toggle_selection(eid, rr, cr, idx),
-                    },
-                    checkbox,
-                    ft.Text(e.get("numero_expediente") or "-", weight=ft.FontWeight.BOLD, size=13),
-                    _cliente_nombre(e),
-                    e.get("tipo_expediente_nombre") or "-",
-                    e.get("subtipo_expediente_nombre") or e.get("subtipo_expediente") or "-",
-                    ft.Text(_box_path_label(e), size=12, color=_box_path_color(e), weight=ft.FontWeight.W_600),
-                    expedient_status_badge(e.get("estado_documental_nombre"), e.get("estado_documental_color")),
-                    expedient_status_badge(e.get("estado_administrativo_nombre"), e.get("estado_administrativo_color")),
-                    priority_badge(e.get("prioridad_nombre"), e.get("prioridad_color")),
-                    _date_to_display(e.get("fecha_apertura")),
-                    e.get("responsable") or "-",
-                ]
+            tipo_label = e.get("tipo_expediente_nombre") or "-"
+            subtipo_label = e.get("subtipo_expediente_nombre") or e.get("subtipo_expediente") or "-"
+            external_number = (
+                e.get("numero_expediente_mercurio")
+                or e.get("numero_registro")
+                or e.get("numero_expediente_externo")
+                or e.get("numero_mercurio")
+                or e.get("expediente_mercurio")
+                or ""
+            )
+            box_label = _box_path_label(e)
+            box_color = _box_path_color(e)
+
+            cards.append(
+                card_item(
+                    title=(_cliente_nombre(e) or "-").upper(),
+                    subtitle=f"Expediente interno CRM: {e.get('numero_expediente') or '-'}",
+                    leading=checkbox,
+                    selected=is_selected,
+                    on_click=lambda ev, eid=expediente_id, idx=index: toggle_selection(eid, index=idx),
+                    badges=[
+                        expedient_status_badge("Extranjería", "#0057B8"),
+                        expedient_status_badge(e.get("estado_documental_nombre"), e.get("estado_documental_color")),
+                        expedient_status_badge(e.get("estado_administrativo_nombre"), e.get("estado_administrativo_color")),
+                        priority_badge(e.get("prioridad_nombre"), e.get("prioridad_color")),
+                    ],
+                    actions=[
+                        ft.PopupMenuButton(
+                            icon=ft.Icons.MORE_VERT,
+                            tooltip="Acciones del expediente",
+                            items=[
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.OPEN_IN_NEW, size=16, color=Q_PRIMARY),
+                                            ft.Text("Ver ficha"),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    on_click=lambda ev, eid=expediente_id: open_expediente_card_action(eid),
+                                ),
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.OUTBOX, size=16, color=Q_PRIMARY),
+                                            ft.Text("Enviar a cola"),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    on_click=lambda ev, eid=expediente_id: enqueue_expediente_card_action(eid),
+                                ),
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.ROCKET_LAUNCH, size=16, color=Q_PRIMARY),
+                                            ft.Text("Presentación asistida"),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    on_click=lambda ev, eid=expediente_id: assisted_presentation_card_action(eid),
+                                ),
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.ARCHIVE_OUTLINED, size=16, color="#B42318"),
+                                            ft.Text("Archivar", color="#B42318"),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    on_click=lambda ev, eid=expediente_id: archive_expediente_card_action(eid),
+                                ),
+                            ],
+                        )
+                    ],
+                    body=[
+                        ft.Row(
+                            controls=[
+                                ft.Text("Tipo:", size=11, color=Q_MUTED),
+                                ft.Text(tipo_label, size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text("Subtipo:", size=11, color=Q_MUTED),
+                                ft.Text(subtipo_label, size=12, color=Q_PRIMARY_DARK),
+                            ],
+                            spacing=6,
+                            wrap=True,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.CONFIRMATION_NUMBER_OUTLINED,
+                                    size=16,
+                                    color=Q_PRIMARY if external_number else "#B42318",
+                                ),
+                                ft.Text(
+                                    "Nº expediente:",
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    external_number or "SIN NÚMERO DE EXPEDIENTE",
+                                    size=14,
+                                    color=Q_PRIMARY_DARK if external_number else "#B42318",
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                            ],
+                            spacing=6,
+                            wrap=True,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Icon(ft.Icons.FOLDER_OPEN, size=15, color=box_color),
+                                ft.Text(box_label, size=12, color=box_color, weight=ft.FontWeight.W_600),
+                            ],
+                            spacing=6,
+                            wrap=True,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    ],
+                    footer=[
+                        ft.Row(
+                            controls=[
+                                ft.Text(
+                                    f"Apertura: {_date_to_display(e.get('fecha_apertura'))}",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    f"Responsable: {e.get('responsable') or '-'}",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=14,
+                            wrap=True,
+                        )
+                    ],
+                    padding=12,
+                )
             )
 
-        return app_table(
-            headers=[
-                {"key": "Sel", "label": "Sel", "width": 70},
-                {"key": "Nº", "label": "Nº expediente", "width": 150},
-                {"key": "Cliente", "label": "Cliente", "width": 260},
-                {"key": "Tipo", "label": "Tipo", "width": 200},
-                {"key": "Subtipo", "label": "Subtipo", "width": 240},
-                {"key": "Box", "label": "Vinculación Box", "width": 260},
-                {"key": "Documental", "label": "Documental", "width": 210},
-                {"key": "Administrativo", "label": "Administrativo", "width": 210},
-                {"key": "Prioridad", "label": "Prioridad", "width": 130},
-                {"key": "Apertura", "label": "Apertura", "width": 120},
-                {"key": "Responsable", "label": "Responsable", "width": 160},
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        build_selected_action_bar(),
+                        compact_pagination_bar(
+                            page=state.get("cards_page") or 1,
+                            page_size=state.get("cards_page_size") or 10,
+                            total_items=total_items,
+                            on_page_change=set_cards_page,
+                            label_prefix="Expedientes",
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.END,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    wrap=True,
+                    spacing=8,
+                ),
+                ft.Container(
+                    expand=True,
+                    width=float("inf"),
+                    content=ft.Column(
+                        controls=cards,
+                        spacing=10,
+                        scroll=None,
+                    ),
+                ),
             ],
-            rows=rows,
-            height=430,
+            spacing=10,
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
         )
 
     def archive_one(expediente_id):
@@ -6706,12 +7063,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
 
     def refresh_table(e=None):
         clear_message()
+        state["cards_page"] = 1
         load_data()
         table_container.content = build_table()
         content_area.content = build_view()
         page.update()
 
     def refresh(e=None):
+        state["cards_page"] = 1
         load_data()
         table_container.content = build_table()
         content_area.content = build_view()
@@ -6729,54 +7088,32 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     def build_selected_action_bar():
         selected_count = len(state["selected_ids"])
         if selected_count == 0:
-            return ft.Container(
-                bgcolor="#FFFFFF",
-                border=ft.border.all(1, Q_BORDER),
-                border_radius=12,
-                padding=12,
-                content=ft.Text(
-                    "Selecciona un expediente para ver acciones rápidas.",
-                    size=13,
-                    color=Q_MUTED,
-                ),
-            )
+            return ft.Container()
 
-        single_selected = selected_count == 1
-        return ft.Container(
-            bgcolor="#EAF3FF",
-            border=ft.border.all(1, "#B9D7FF"),
-            border_radius=12,
-            padding=12,
-            content=ft.Row(
-                controls=[
-                    ft.Text(
-                        f"{selected_count} expediente(s) seleccionado(s)",
-                        size=14,
-                        weight=ft.FontWeight.BOLD,
-                        color=Q_PRIMARY_DARK,
-                    ),
-                    ft.Text(
-                        f"Presentación iniciada: {state['presentation_start'].strftime('%H:%M:%S')}" if state.get("presentation_start") else "",
-                        size=12,
-                        color=Q_MUTED,
-                        visible=state.get("presentation_start") is not None,
-                    ),
-                    primary_button("Abrir ficha", open_selected_expediente),
-                    secondary_button("Enviar a cola", enqueue_selected_presentation),
-                    secondary_button("Presentación asistida", open_presentacion_asistida),
-                    danger_button("Archivar selección", archive_selected),
-                    ft.Text(
-                        "Para abrir ficha o presentación asistida selecciona solo uno.",
-                        size=12,
-                        color=Q_MUTED,
-                        visible=not single_selected,
-                    ),
-                ],
-                spacing=10,
-                wrap=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+        return bulk_action_bar(
+            title="Acciones masivas de expedientes",
+            selected_count=selected_count,
+            on_clear=clear_selected_expedients,
+            actions=[
+                {
+                    "icon": ft.Icons.OUTBOX,
+                    "tooltip": "Enviar seleccionados a cola",
+                    "on_click": enqueue_selected_from_bulk,
+                },
+                {
+                    "icon": ft.Icons.DESCRIPTION_OUTLINED,
+                    "tooltip": "Generar formularios seleccionados",
+                    "on_click": generate_forms_selected_from_bulk,
+                },
+                {
+                    "icon": ft.Icons.ARCHIVE_OUTLINED,
+                    "tooltip": "Archivar seleccionados",
+                    "on_click": archive_selected_from_bulk,
+                    "danger": True,
+                },
+            ],
         )
+
 
     def build_view():
         m = metrics()
@@ -6814,14 +7151,13 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     spacing=12,
                     wrap=True,
                 ),
-                build_selected_action_bar(),
                 filter_bar(
-                    dropdown=filtro_estado,
+                    dropdown=filtro_estado.control,
                     search_input=search_input,
                     actions=[
-                        filtro_cliente.control,
-                        filtro_tipo,
-                        filtro_prioridad,
+                        filtro_tipo.control,
+                        filtro_prioridad.control,
+                        secondary_button("Limpiar", clear_filters),
                     ],
                 ),
                 table_container,
@@ -6834,26 +7170,54 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             expand=True,
         )
 
-    original_filtro_select = filtro_cliente.select
+    def apply_filters(e=None):
+        state["cards_page"] = 1
+        table_container.content = build_table()
+        content_area.content = build_view()
+        page.update()
 
-    def filtro_select_and_refresh(selected):
-        original_filtro_select(selected)
+    def clear_filters(e=None):
+        search_input.value = ""
+        _set_filter_control_value(filtro_tipo, "")
+        _set_filter_control_value(filtro_estado, "")
+        _set_filter_control_value(filtro_prioridad, "")
         refresh()
 
-    filtro_cliente.select = filtro_select_and_refresh
+    def on_live_filter_change(e=None):
+        state["cards_page"] = 1
+        table_container.content = build_table()
+        page.update()
 
-    search_input.on_change = refresh
-    original_filtro_cliente_change = filtro_cliente.input.on_change
+    def on_dropdown_filter_change(e=None):
+        state["cards_page"] = 1
+        table_container.content = build_table()
+        page.update()
 
-    def on_filtro_cliente_change(e=None):
-        if original_filtro_cliente_change:
-            original_filtro_cliente_change(e)
-        refresh()
+    def bind_filter_autocomplete(autocomplete):
+        original_select = autocomplete.select
 
-    filtro_cliente.input.on_change = on_filtro_cliente_change
-    filtro_tipo.on_change = refresh
-    filtro_estado.on_change = refresh
-    filtro_prioridad.on_change = refresh
+        def select_and_filter(selected):
+            original_select(selected)
+            on_dropdown_filter_change()
+
+        autocomplete.select = select_and_filter
+
+        original_change = autocomplete.input.on_change
+
+        def input_change_and_filter(e=None):
+            if original_change:
+                original_change(e)
+            current_value = (autocomplete.get_value() or "").strip()
+            if not current_value or current_value == "Todos":
+                on_dropdown_filter_change()
+
+        autocomplete.input.on_change = input_change_and_filter
+
+    search_input.on_change = on_live_filter_change
+    search_input.on_submit = apply_filters
+    bind_filter_autocomplete(filtro_tipo)
+    bind_filter_autocomplete(filtro_estado)
+    bind_filter_autocomplete(filtro_prioridad)
 
     load_data()
     table_container.content = build_table()
