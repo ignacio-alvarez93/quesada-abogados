@@ -16,6 +16,7 @@ from backend.services.document_tools.pdf_tools_service import (
     move_pdf_page,
     remove_pdf_pages,
     reorder_pdf_pages,
+    rotate_pdf_pages,
     split_pdf_by_ranges,
 )
 
@@ -44,6 +45,7 @@ from backend.services.document_tools.document_inbox_tools_service import (
     move_page_in_inbox_pdf,
     remove_pages_from_inbox_pdf,
     reorder_pages_from_inbox_pdf,
+    rotate_pages_in_inbox_pdf,
     split_inbox_pdf_by_ranges,
 )
 
@@ -71,6 +73,7 @@ __all__ = [
     "move_pdf_page",
     "remove_pdf_pages",
     "reorder_pdf_pages",
+    "rotate_pdf_pages",
     "split_pdf_by_ranges",
 
     # Core image tools
@@ -91,6 +94,7 @@ __all__ = [
     "move_page_in_inbox_pdf",
     "remove_pages_from_inbox_pdf",
     "reorder_pages_from_inbox_pdf",
+    "rotate_pages_in_inbox_pdf",
     "split_inbox_pdf_by_ranges",
 
     # Capabilities

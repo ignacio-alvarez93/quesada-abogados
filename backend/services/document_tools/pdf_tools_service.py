@@ -859,3 +859,143 @@ def compress_pdf_smart(
             errors=[str(exc)],
         )
 
+def _parse_page_ranges_for_pdf_tools(page_ranges: str | list[int] | tuple[int, ...], page_count: int) -> list[int]:
+    """
+    Parser común de páginas 1-based.
+
+    Acepta:
+    - "3"
+    - "1,3,5"
+    - "2-6"
+    - "1,3,5-8"
+    - [1, 3, 5]
+    """
+    if isinstance(page_ranges, (list, tuple)):
+        pages = [int(x) for x in page_ranges]
+    else:
+        raw = str(page_ranges or "").strip()
+
+        if not raw:
+            raise ValueError("Indica al menos una página o rango de páginas.")
+
+        pages = []
+
+        for part in raw.split(","):
+            part = part.strip()
+
+            if not part:
+                continue
+
+            if "-" in part:
+                start_raw, end_raw = part.split("-", 1)
+                start = int(start_raw.strip())
+                end = int(end_raw.strip())
+
+                if start > end:
+                    raise ValueError(f"Rango inválido: {part}")
+
+                pages.extend(range(start, end + 1))
+            else:
+                pages.append(int(part))
+
+    cleaned = []
+
+    for page in pages:
+        if page < 1 or page > page_count:
+            raise ValueError(f"Página fuera de rango: {page}. El PDF tiene {page_count} páginas.")
+
+        if page not in cleaned:
+            cleaned.append(page)
+
+    if not cleaned:
+        raise ValueError("No se indicó ninguna página válida.")
+
+    return cleaned
+
+
+def rotate_pdf_pages(
+    source_path: str | Path,
+    *,
+    page_ranges: str | list[int] | tuple[int, ...],
+    degrees: int = 90,
+    output_stem: str | None = None,
+) -> DocumentToolResult:
+    """
+    Rota una o varias páginas del PDF, manteniendo el resto igual.
+
+    page_ranges usa numeración humana 1-based:
+    - "1"
+    - "1,3,5"
+    - "2-6"
+    - "1,3,5-8"
+
+    degrees permitidos:
+    - 90
+    - 180
+    - 270
+
+    Nunca modifica el original.
+    """
+    operation = "pdf_rotate_pages"
+
+    try:
+        _require_pypdf()
+        source = assert_existing_file(source_path)
+        reader = PdfReader(str(source))
+
+        if reader.is_encrypted:
+            raise ValueError(f"PDF cifrado/no soportado: {source.name}")
+
+        page_count = len(reader.pages)
+
+        if page_count < 1:
+            raise ValueError("El PDF no contiene páginas.")
+
+        degrees_i = int(degrees)
+
+        if degrees_i not in {90, 180, 270}:
+            raise ValueError("La rotación debe ser 90, 180 o 270 grados.")
+
+        pages_to_rotate = _parse_page_ranges_for_pdf_tools(page_ranges, page_count)
+        pages_set = set(pages_to_rotate)
+
+        writer = PdfWriter()
+
+        for idx, page in enumerate(reader.pages, start=1):
+            if idx in pages_set:
+                page.rotate(degrees_i)
+
+            writer.add_page(page)
+
+        output = build_output_path(
+            operation="rotate_pages",
+            source_path=source,
+            extension=".pdf",
+            subdir="split",
+            stem=output_stem,
+        )
+
+        with output.open("wb") as fh:
+            writer.write(fh)
+
+        return DocumentToolResult.success(
+            operation=operation,
+            source_paths=[source],
+            output_path=output,
+            metadata={
+                "source_page_count": page_count,
+                "output_page_count": page_count,
+                "rotated_pages": pages_to_rotate,
+                "degrees": degrees_i,
+                "mime_type": "application/pdf",
+                "size_bytes": output.stat().st_size,
+            },
+        )
+
+    except Exception as exc:
+        return DocumentToolResult.failure(
+            operation=operation,
+            source_paths=[source_path],
+            errors=[str(exc)],
+        )
+

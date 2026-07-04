@@ -15,6 +15,7 @@ from backend.services.document_tools import (
     merge_inbox_pdfs,
     move_page_in_inbox_pdf,
     reorder_pages_from_inbox_pdf,
+    rotate_pages_in_inbox_pdf,
     split_inbox_pdf_by_ranges,
 )
 from frontend.components.app_alert import error_alert, success_alert
@@ -986,6 +987,7 @@ def document_inbox_view(page: ft.Page):
                     [
                         {"label": "Comprimir PDF", "on_click": lambda e, item_id=item_id: run_document_tool_compress_pdf(e, item_id=item_id)},
                         {"label": "Mover página", "on_click": lambda e, item_id=item_id: open_document_tool_reorder_dialog(e, item_id=item_id)},
+                        {"label": "Rotar páginas", "on_click": lambda e, item_id=item_id: open_document_tool_rotate_dialog(e, item_id=item_id)},
                         {"label": "Dividir PDF", "on_click": lambda e, item_id=item_id: open_document_tool_split_dialog(e, item_id=item_id)},
                     ]
                 )
@@ -2615,6 +2617,94 @@ def document_inbox_view(page: ft.Page):
             actions=[
                 secondary_button("Cancelar", lambda ev: _close_dialog(dialog)),
                 primary_button("Mover página", submit),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
+    def open_document_tool_rotate_dialog(e=None, item_id=None):
+        try:
+            item_id = int(item_id) if item_id is not None else _selected_single_inbox_id()
+        except Exception as exc:
+            _show_document_tool_error(exc)
+            return
+
+        pages_field = ft.TextField(
+            label="Página(s) a rotar",
+            hint_text="Ejemplo: 1,3,5-8",
+            width=220,
+        )
+
+        degrees_field = ft.Dropdown(
+            label="Rotación",
+            width=160,
+            value="90",
+            options=[
+                ft.dropdown.Option("90", "90° derecha"),
+                ft.dropdown.Option("180", "180°"),
+                ft.dropdown.Option("270", "270° derecha"),
+            ],
+        )
+
+        def submit(ev=None):
+            try:
+                page_ranges = str(pages_field.value or "").strip()
+                degrees = int(str(degrees_field.value or "90").strip())
+
+                response = rotate_pages_in_inbox_pdf(
+                    item_id,
+                    page_ranges=page_ranges,
+                    degrees=degrees,
+                    register_result=True,
+                    output_stem="pdf_paginas_rotadas_bandeja",
+                )
+
+                if not response.get("ok"):
+                    raise ValueError(response)
+
+                _close_dialog(dialog)
+                generated = response.get("generated_item") or {}
+                metadata = ((response.get("result") or {}).get("metadata") or {})
+                rotated_pages = metadata.get("rotated_pages") or []
+
+                _refresh_after_document_tool(
+                    f"Páginas rotadas. Nuevo documento #{generated.get('id') or '-'}"
+                    f" · páginas {rotated_pages} · {metadata.get('degrees', degrees)}°."
+                )
+            except Exception as exc:
+                _show_document_tool_error(exc)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Rotar páginas PDF"),
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        f"Documento seleccionado: #{item_id}",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Row(
+                        controls=[pages_field, degrees_field],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                    ft.Text(
+                        "Puedes escribir una página, varias páginas o rangos. "
+                        "Ejemplos: 1 · 1,3,5 · 2-6 · 1,3,5-8.",
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                ],
+                tight=True,
+                spacing=8,
+            ),
+            actions=[
+                secondary_button("Cancelar", lambda ev: _close_dialog(dialog)),
+                primary_button("Rotar páginas", submit),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )

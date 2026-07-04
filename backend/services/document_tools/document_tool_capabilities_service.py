@@ -99,6 +99,14 @@ def get_document_tool_capabilities_for_inbox_items(inbox_item_ids: list[int]) ->
                         "priority": 10,
                     },
                     {
+                        "operation": "pdf_rotate_pages",
+                        "label": "Rotar páginas",
+                        "scope": "single",
+                        "enabled": True,
+                        "reason": "",
+                        "priority": 21,
+                    },
+                    {
                         "operation": "pdf_split_by_ranges",
                         "label": "Dividir PDF",
                         "scope": "single",

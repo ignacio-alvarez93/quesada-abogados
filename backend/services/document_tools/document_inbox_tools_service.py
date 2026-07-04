@@ -571,3 +571,30 @@ def compress_inbox_pdf_smart(
         operation="pdf_compress_smart",
     )
 
+def rotate_pages_in_inbox_pdf(
+    inbox_item_id: int,
+    *,
+    page_ranges: str | list[int] | tuple[int, ...],
+    degrees: int = 90,
+    register_result: bool = True,
+    output_stem: str | None = None,
+) -> dict[str, Any]:
+    from backend.services.document_tools.pdf_tools_service import rotate_pdf_pages
+
+    item = _get_item_or_fail(inbox_item_id)
+    source_path = _resolve_inbox_item_path(item)
+
+    result = rotate_pdf_pages(
+        source_path,
+        page_ranges=page_ranges,
+        degrees=degrees,
+        output_stem=output_stem,
+    )
+
+    return _build_operation_response(
+        source_items=[item],
+        result=result,
+        register_result=register_result,
+        operation="pdf_rotate_pages",
+    )
+
