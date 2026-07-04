@@ -6661,13 +6661,21 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
 
             tipo_label = e.get("tipo_expediente_nombre") or "-"
             subtipo_label = e.get("subtipo_expediente_nombre") or e.get("subtipo_expediente") or "-"
+            external_number = (
+                e.get("numero_expediente_mercurio")
+                or e.get("numero_registro")
+                or e.get("numero_expediente_externo")
+                or e.get("numero_mercurio")
+                or e.get("expediente_mercurio")
+                or ""
+            )
             box_label = _box_path_label(e)
             box_color = _box_path_color(e)
 
             cards.append(
                 card_item(
-                    title=e.get("numero_expediente") or "-",
-                    subtitle=_cliente_nombre(e),
+                    title=(_cliente_nombre(e) or "-").upper(),
+                    subtitle=f"Expediente interno CRM: {e.get('numero_expediente') or '-'}",
                     leading=checkbox,
                     selected=is_selected,
                     on_click=lambda ev, eid=expediente_id, idx=index: toggle_selection(eid, index=idx),
@@ -6684,6 +6692,29 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                                 ft.Text(tipo_label, size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                                 ft.Text("Subtipo:", size=11, color=Q_MUTED),
                                 ft.Text(subtipo_label, size=12, color=Q_PRIMARY_DARK),
+                            ],
+                            spacing=6,
+                            wrap=True,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.CONFIRMATION_NUMBER_OUTLINED,
+                                    size=16,
+                                    color=Q_PRIMARY if external_number else "#B42318",
+                                ),
+                                ft.Text(
+                                    "Nº expediente:",
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    external_number or "SIN NÚMERO DE EXPEDIENTE",
+                                    size=14,
+                                    color=Q_PRIMARY_DARK if external_number else "#B42318",
+                                    weight=ft.FontWeight.BOLD,
+                                ),
                             ],
                             spacing=6,
                             wrap=True,
