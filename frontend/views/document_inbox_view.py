@@ -8,6 +8,8 @@ from backend.services import document_inbox_watch_service
 from backend.services import document_viewer_service
 from backend.services.document_tools import (
     compress_inbox_pdf_strong,
+    convert_inbox_image_to_pdf,
+    convert_inbox_word_to_pdf,
     crop_inbox_image,
     get_document_tool_capabilities_for_inbox_items,
     merge_inbox_pdfs,
@@ -905,6 +907,19 @@ def document_inbox_view(page: ft.Page):
             or mime.startswith("image/")
         )
 
+    def _is_word_item(item):
+        filename = str(item.get("original_filename") or item.get("stored_filename") or "").lower()
+        mime = str(item.get("mime_type") or "").lower()
+        ext = str(item.get("file_ext") or "").lower().strip(".")
+        return (
+            filename.endswith((".docx", ".doc"))
+            or ext in {"docx", "doc"}
+            or mime in {
+                "application/msword",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+        )
+
     def render_items():
         selected_ids = set(state.get("selected_item_ids") or set())
         rows = []
@@ -976,8 +991,16 @@ def document_inbox_view(page: ft.Page):
                 )
 
             if _is_image_item(item):
+                tool_items.extend(
+                    [
+                        {"label": "Convertir imagen a PDF", "on_click": lambda e, item_id=item_id: run_document_tool_convert_image_to_pdf(e, item_id=item_id)},
+                        {"label": "Recortar imagen", "on_click": lambda e, item_id=item_id: open_document_tool_crop_dialog(e, item_id=item_id)},
+                    ]
+                )
+
+            if _is_word_item(item):
                 tool_items.append(
-                    {"label": "Recortar imagen", "on_click": lambda e, item_id=item_id: open_document_tool_crop_dialog(e, item_id=item_id)}
+                    {"label": "Convertir Word a PDF", "on_click": lambda e, item_id=item_id: run_document_tool_convert_word_to_pdf(e, item_id=item_id)}
                 )
 
             if tool_items:
@@ -2386,6 +2409,44 @@ def document_inbox_view(page: ft.Page):
         except Exception as exc:
             _show_document_tool_error(exc)
 
+    def run_document_tool_convert_image_to_pdf(e=None, item_id=None):
+        try:
+            item_id = int(item_id) if item_id is not None else _selected_single_inbox_id()
+            response = convert_inbox_image_to_pdf(
+                item_id,
+                register_result=True,
+                output_stem="imagen_convertida_pdf_bandeja",
+            )
+
+            if not response.get("ok"):
+                raise ValueError(response)
+
+            generated = response.get("generated_item") or {}
+            _refresh_after_document_tool(
+                f"Imagen convertida a PDF. Nuevo documento #{generated.get('id') or '-'}."
+            )
+        except Exception as exc:
+            _show_document_tool_error(exc)
+
+    def run_document_tool_convert_word_to_pdf(e=None, item_id=None):
+        try:
+            item_id = int(item_id) if item_id is not None else _selected_single_inbox_id()
+            response = convert_inbox_word_to_pdf(
+                item_id,
+                register_result=True,
+                output_stem="word_convertido_pdf_bandeja",
+            )
+
+            if not response.get("ok"):
+                raise ValueError(response)
+
+            generated = response.get("generated_item") or {}
+            _refresh_after_document_tool(
+                f"Word convertido a PDF. Nuevo documento #{generated.get('id') or '-'}."
+            )
+        except Exception as exc:
+            _show_document_tool_error(exc)
+
     def run_document_tool_merge_pdfs(e=None):
         try:
             selected_ids = _selected_inbox_ids_in_view_order()
@@ -2665,9 +2726,19 @@ def document_inbox_view(page: ft.Page):
                 on_click=run_document_tool_merge_pdfs if enabled("pdf_merge") else None,
             ),
             ft.PopupMenuItem(
+                content=ft.Text("Convertir imagen a PDF"),
+                disabled=not enabled("image_to_pdf"),
+                on_click=run_document_tool_convert_image_to_pdf if enabled("image_to_pdf") else None,
+            ),
+            ft.PopupMenuItem(
                 content=ft.Text("Recortar imagen"),
                 disabled=not enabled("image_crop"),
                 on_click=open_document_tool_crop_dialog if enabled("image_crop") else None,
+            ),
+            ft.PopupMenuItem(
+                content=ft.Text("Convertir Word a PDF"),
+                disabled=not enabled("word_to_pdf"),
+                on_click=run_document_tool_convert_word_to_pdf if enabled("word_to_pdf") else None,
             ),
         ]
 

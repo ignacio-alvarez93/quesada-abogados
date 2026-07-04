@@ -25,11 +25,16 @@ from backend.services.document_tools.image_tools_service import (
     images_to_pdf,
 )
 
+from backend.services.document_tools.word_tools_service import (
+    word_to_pdf,
+)
+
 from backend.services.document_tools.document_inbox_tools_service import (
     compress_inbox_pdf,
     compress_inbox_pdf_strong,
     convert_inbox_image_to_pdf,
     convert_inbox_images_to_pdf,
+    convert_inbox_word_to_pdf,
     crop_inbox_image,
     extract_pages_from_inbox_pdf,
     get_inbox_item_document_metadata,
@@ -68,11 +73,13 @@ __all__ = [
     "crop_image",
     "image_to_pdf",
     "images_to_pdf",
+    "word_to_pdf",
 
     # Inbox adapter tools
     "compress_inbox_pdf",
     "convert_inbox_image_to_pdf",
     "convert_inbox_images_to_pdf",
+    "convert_inbox_word_to_pdf",
     "crop_inbox_image",
     "extract_pages_from_inbox_pdf",
     "get_inbox_item_document_metadata",

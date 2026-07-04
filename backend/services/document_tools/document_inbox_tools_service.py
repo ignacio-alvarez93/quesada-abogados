@@ -519,3 +519,26 @@ def move_page_in_inbox_pdf(
         operation="pdf_move_page",
     )
 
+def convert_inbox_word_to_pdf(
+    inbox_item_id: int,
+    *,
+    register_result: bool = True,
+    output_stem: str | None = None,
+) -> dict[str, Any]:
+    from backend.services.document_tools.word_tools_service import word_to_pdf
+
+    item = _get_item_or_fail(inbox_item_id)
+    source_path = _resolve_inbox_item_path(item)
+
+    result = word_to_pdf(
+        source_path,
+        output_stem=output_stem,
+    )
+
+    return _build_operation_response(
+        source_items=[item],
+        result=result,
+        register_result=register_result,
+        operation="word_to_pdf",
+    )
+

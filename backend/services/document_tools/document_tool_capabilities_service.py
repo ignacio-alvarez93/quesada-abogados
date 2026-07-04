@@ -8,6 +8,7 @@ from backend.services.document_inbox_service import get_inbox_item
 
 PDF_EXTENSIONS = {".pdf"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+WORD_EXTENSIONS = {".docx", ".doc"}
 
 
 def get_document_tool_capabilities_for_inbox_items(inbox_item_ids: list[int]) -> dict[str, Any]:
@@ -72,6 +73,18 @@ def get_document_tool_capabilities_for_inbox_items(inbox_item_ids: list[int]) ->
                         "priority": 40,
                     },
                 ]
+            )
+
+        if item["category"] == "word":
+            capabilities.append(
+                {
+                    "operation": "word_to_pdf",
+                    "label": "Convertir Word a PDF",
+                    "scope": "single",
+                    "enabled": True,
+                    "reason": "",
+                    "priority": 35,
+                }
             )
 
         if item["category"] == "pdf":
