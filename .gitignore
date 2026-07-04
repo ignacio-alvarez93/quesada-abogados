@@ -27,3 +27,12 @@ data/
 # SQLite runtime files
 database/*.db-wal
 database/*.db-shm
+# Document tools generated outputs
+storage/document_tools/**/*.pdf
+storage/document_tools/**/*.png
+storage/document_tools/**/*.jpg
+storage/document_tools/**/*.jpeg
+storage/document_tools/**/*.webp
+storage/document_tools/**/*.tif
+storage/document_tools/**/*.tiff
+!storage/document_tools/**/.gitkeep
