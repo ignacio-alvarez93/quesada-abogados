@@ -39,6 +39,7 @@ from frontend.components.app_card import metric_card
 from frontend.components.app_action_row import action_row
 from frontend.components.expedient_status_badge import expedient_status_badge, priority_badge
 from frontend.components.app_autocomplete import AppAutocomplete
+from frontend.components.listing.card_item import card_item
 
 Q_PRIMARY_DARK = "#003B7A"
 Q_PRIMARY = "#0057B8"
@@ -6647,55 +6648,87 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         if not expedientes:
             return empty_state("No hay expedientes que coincidan con la búsqueda")
 
-        rows = []
+        cards = []
+
         for index, e in enumerate(expedientes):
-            row_ref = ft.Ref()
-            checkbox_ref = ft.Ref()
-            is_selected = e["id"] in state["selected_ids"]
+            expediente_id = e["id"]
+            is_selected = expediente_id in state["selected_ids"]
 
             checkbox = ft.Checkbox(
-                ref=checkbox_ref,
                 value=is_selected,
-                on_change=lambda ev, eid=e["id"], rr=row_ref, cr=checkbox_ref, idx=index: toggle_selection(eid, rr, cr, idx),
+                on_change=lambda ev, eid=expediente_id, idx=index: toggle_selection(eid, index=idx),
             )
 
-            rows.append(
-                [
-                    {
-                        "selected": is_selected,
-                        "row_ref": row_ref,
-                        "on_click": lambda ev, eid=e["id"], rr=row_ref, cr=checkbox_ref, idx=index: toggle_selection(eid, rr, cr, idx),
-                    },
-                    checkbox,
-                    ft.Text(e.get("numero_expediente") or "-", weight=ft.FontWeight.BOLD, size=13),
-                    _cliente_nombre(e),
-                    e.get("tipo_expediente_nombre") or "-",
-                    e.get("subtipo_expediente_nombre") or e.get("subtipo_expediente") or "-",
-                    ft.Text(_box_path_label(e), size=12, color=_box_path_color(e), weight=ft.FontWeight.W_600),
-                    expedient_status_badge(e.get("estado_documental_nombre"), e.get("estado_documental_color")),
-                    expedient_status_badge(e.get("estado_administrativo_nombre"), e.get("estado_administrativo_color")),
-                    priority_badge(e.get("prioridad_nombre"), e.get("prioridad_color")),
-                    _date_to_display(e.get("fecha_apertura")),
-                    e.get("responsable") or "-",
-                ]
+            tipo_label = e.get("tipo_expediente_nombre") or "-"
+            subtipo_label = e.get("subtipo_expediente_nombre") or e.get("subtipo_expediente") or "-"
+            box_label = _box_path_label(e)
+            box_color = _box_path_color(e)
+
+            cards.append(
+                card_item(
+                    title=e.get("numero_expediente") or "-",
+                    subtitle=_cliente_nombre(e),
+                    leading=checkbox,
+                    selected=is_selected,
+                    on_click=lambda ev, eid=expediente_id, idx=index: toggle_selection(eid, index=idx),
+                    badges=[
+                        expedient_status_badge("Extranjería", "#0057B8"),
+                        expedient_status_badge(e.get("estado_documental_nombre"), e.get("estado_documental_color")),
+                        expedient_status_badge(e.get("estado_administrativo_nombre"), e.get("estado_administrativo_color")),
+                        priority_badge(e.get("prioridad_nombre"), e.get("prioridad_color")),
+                    ],
+                    body=[
+                        ft.Row(
+                            controls=[
+                                ft.Text("Tipo:", size=11, color=Q_MUTED),
+                                ft.Text(tipo_label, size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text("Subtipo:", size=11, color=Q_MUTED),
+                                ft.Text(subtipo_label, size=12, color=Q_TEXT),
+                            ],
+                            spacing=6,
+                            wrap=True,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Icon(ft.Icons.FOLDER_OPEN, size=15, color=box_color),
+                                ft.Text(box_label, size=12, color=box_color, weight=ft.FontWeight.W_600),
+                            ],
+                            spacing=6,
+                            wrap=True,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    ],
+                    footer=[
+                        ft.Row(
+                            controls=[
+                                ft.Text(
+                                    f"Apertura: {_date_to_display(e.get('fecha_apertura'))}",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    f"Responsable: {e.get('responsable') or '-'}",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=14,
+                            wrap=True,
+                        )
+                    ],
+                    padding=12,
+                )
             )
 
-        return app_table(
-            headers=[
-                {"key": "Sel", "label": "Sel", "width": 70},
-                {"key": "Nº", "label": "Nº expediente", "width": 150},
-                {"key": "Cliente", "label": "Cliente", "width": 260},
-                {"key": "Tipo", "label": "Tipo", "width": 200},
-                {"key": "Subtipo", "label": "Subtipo", "width": 240},
-                {"key": "Box", "label": "Vinculación Box", "width": 260},
-                {"key": "Documental", "label": "Documental", "width": 210},
-                {"key": "Administrativo", "label": "Administrativo", "width": 210},
-                {"key": "Prioridad", "label": "Prioridad", "width": 130},
-                {"key": "Apertura", "label": "Apertura", "width": 120},
-                {"key": "Responsable", "label": "Responsable", "width": 160},
-            ],
-            rows=rows,
+        return ft.Container(
             height=430,
+            content=ft.Column(
+                controls=cards,
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            ),
         )
 
     def archive_one(expediente_id):
