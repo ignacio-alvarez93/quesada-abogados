@@ -1429,6 +1429,66 @@ def document_inbox_view(page: ft.Page):
             except Exception as exc:
                 show_error(exc)
 
+        def _detail_format_bytes(value):
+            try:
+                size = int(value or 0)
+            except Exception:
+                size = 0
+
+            if size <= 0:
+                return "-"
+
+            units = ["B", "KB", "MB", "GB"]
+            current = float(size)
+            unit = units[0]
+
+            for candidate in units:
+                unit = candidate
+                if current < 1024 or candidate == units[-1]:
+                    break
+                current = current / 1024
+
+            if unit == "B":
+                return f"{int(current)} {unit}"
+
+            return f"{current:.2f} {unit}"
+
+        def _detail_short_hash(value):
+            raw = str(value or "").strip()
+            if not raw:
+                return "-"
+            if len(raw) <= 18:
+                return raw
+            return f"{raw[:10]}…{raw[-8:]}"
+
+        def _detail_info_chip(label, value, selectable=False):
+            value = str(value or "-").strip() or "-"
+            return ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=10,
+                padding=ft.padding.only(left=10, right=10, top=7, bottom=7),
+                content=ft.Column(
+                    controls=[
+                        ft.Text(label, size=10, color=Q_MUTED, weight=ft.FontWeight.W_600),
+                        ft.Text(
+                            value,
+                            size=12,
+                            color=Q_PRIMARY_DARK,
+                            selectable=selectable,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                    ],
+                    spacing=1,
+                ),
+            )
+
+        sha256_value = str(item.get("sha256") or "").strip()
+        size_label = _detail_format_bytes(item.get("size_bytes"))
+        mime_label = str(item.get("mime_type") or item.get("file_ext") or "-").strip() or "-"
+        source_label = str(item.get("source_label") or item.get("source_type") or "-").strip() or "-"
+        created_label = str(item.get("created_at") or item.get("updated_at") or "-").strip() or "-"
+
         detail_header = ft.Container(
             bgcolor="#F8FAFC",
             border=ft.border.all(1, Q_BORDER),
@@ -1438,11 +1498,22 @@ def document_inbox_view(page: ft.Page):
                 controls=[
                     ft.Row(
                         controls=[
-                            ft.Text("📄", size=24),
+                            ft.Text("📄", size=26),
                             ft.Column(
                                 controls=[
-                                    ft.Text(f"Documento #{item_id}", size=12, color=Q_MUTED),
-                                    ft.Text(filename, size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(f"Ficha documental · Documento #{item_id}", size=12, color=Q_MUTED),
+                                    ft.Text(
+                                        filename,
+                                        size=19,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                        selectable=True,
+                                    ),
+                                    ft.Text(
+                                        f"{mime_label} · {size_label} · Origen: {source_label}",
+                                        size=12,
+                                        color=Q_MUTED,
+                                    ),
                                 ],
                                 spacing=2,
                                 expand=True,
@@ -1452,9 +1523,56 @@ def document_inbox_view(page: ft.Page):
                         spacing=10,
                         vertical_alignment=ft.CrossAxisAlignment.START,
                     ),
-                    ft.Text(stored_path, size=11, color=Q_MUTED, selectable=True),
+                    ft.Row(
+                        controls=[
+                            _detail_info_chip("Fecha de entrada", created_label),
+                            _detail_info_chip("Tamaño", size_label),
+                            _detail_info_chip("Tipo/MIME", mime_label),
+                            _detail_info_chip("Origen", source_label),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=10,
+                        padding=10,
+                        content=ft.Column(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        ft.Text("Hash SHA256", size=11, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                        ft.Text(_detail_short_hash(sha256_value), size=11, color=Q_MUTED, selectable=True),
+                                    ],
+                                    spacing=8,
+                                    wrap=True,
+                                ),
+                                ft.Text(
+                                    sha256_value or "No consta hash SHA256 en la ficha del documento.",
+                                    size=11,
+                                    color=Q_MUTED,
+                                    selectable=True,
+                                ),
+                            ],
+                            spacing=4,
+                        ),
+                    ),
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(1, Q_BORDER),
+                        border_radius=10,
+                        padding=10,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text("Ruta interna en Bandeja Documental", size=11, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(stored_path, size=11, color=Q_MUTED, selectable=True),
+                            ],
+                            spacing=4,
+                        ),
+                    ),
                 ],
-                spacing=8,
+                spacing=10,
             ),
         )
 
@@ -2072,22 +2190,84 @@ def document_inbox_view(page: ft.Page):
 
         set_detail_section("principal", do_update=False)
 
-        detail_menu = ft.Container(
-            bgcolor="#F8FAFC",
-            border=ft.border.all(1, Q_BORDER),
-            border_radius=14,
-            padding=10,
-            content=ft.Row(
-                controls=[
-                    primary_button("Principal", lambda e: set_detail_section("principal")),
-                    secondary_button("Vincular", lambda e: set_detail_section("vincular")),
-                    secondary_button("Herramientas PDF", lambda e: set_detail_section("pdf")),
-                    secondary_button("Trazabilidad", lambda e: set_detail_section("trazabilidad")),
-                ],
-                spacing=10,
-                wrap=True,
-            ),
-        )
+        detail_sidebar = ft.Container()
+
+        def _select_detail_section(section_name):
+            set_detail_section(section_name)
+
+            try:
+                detail_sidebar.content = build_detail_sidebar()
+                detail_sidebar.update()
+            except Exception:
+                pass
+
+        def _detail_nav_item(label, icon, section_name, subtitle=""):
+            is_active = state.get("detail_section", "principal") == section_name
+
+            return ft.Container(
+                bgcolor="#EAF3FF" if is_active else "#FFFFFF",
+                border=ft.border.all(1, Q_PRIMARY if is_active else Q_BORDER),
+                border_radius=12,
+                padding=ft.padding.only(left=10, right=10, top=9, bottom=9),
+                ink=True,
+                on_click=lambda e, value=section_name: _select_detail_section(value),
+                content=ft.Row(
+                    controls=[
+                        ft.Container(
+                            width=30,
+                            height=30,
+                            bgcolor=Q_PRIMARY if is_active else "#F1F5F9",
+                            border_radius=10,
+                            alignment=ft.Alignment(0, 0),
+                            content=ft.Text(icon, size=14, color="#FFFFFF" if is_active else Q_PRIMARY_DARK),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    label,
+                                    size=13,
+                                    weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.W_600,
+                                    color=Q_PRIMARY_DARK,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                ),
+                                ft.Text(
+                                    subtitle,
+                                    size=10,
+                                    color=Q_MUTED,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                ),
+                            ],
+                            spacing=0,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=9,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
+
+        def build_detail_sidebar():
+            return ft.Container(
+                width=250,
+                bgcolor="#F8FAFC",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=14,
+                padding=12,
+                content=ft.Column(
+                    controls=[
+                        ft.Text("Menú documental", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Text("Opciones de la ficha", size=11, color=Q_MUTED),
+                        ft.Divider(height=10),
+                        _detail_nav_item("Principal", "📄", "principal", "Resumen y acciones rápidas"),
+                        _detail_nav_item("Vincular", "🔗", "vincular", "Cliente, expediente y Box"),
+                        _detail_nav_item("Herramientas PDF", "🛠️", "pdf", "Operaciones documentales"),
+                        _detail_nav_item("Trazabilidad", "🧾", "trazabilidad", "Eventos, hash y auditoría"),
+                    ],
+                    spacing=8,
+                ),
+            )
+
+        detail_sidebar.content = build_detail_sidebar()
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -2099,10 +2279,16 @@ def document_inbox_view(page: ft.Page):
                     controls=[
                         detail_header,
                         detail_duplicate,
-                        detail_menu,
-                        ft.Container(
-                            expand=True,
-                            content=detail_body,
+                        ft.Row(
+                            controls=[
+                                detail_sidebar,
+                                ft.Container(
+                                    expand=True,
+                                    content=detail_body,
+                                ),
+                            ],
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.START,
                         ),
                     ],
                     spacing=12,
