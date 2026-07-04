@@ -220,7 +220,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     prioridad_options = [f"{p['id']} - {p['nombre']}" for p in prioridades]
 
     search_input = text_input("Buscar expediente / cliente / registro", width=360)
-    filtro_cliente = text_input("Filtrar cliente", width=360)
     filtro_tipo = select_input("Tipo", ["Todos"] + tipo_options, value="Todos", width=260)
     filtro_estado = select_input("Estado admin.", ["Todos"] + estado_admin_options, value="Todos", width=260)
     filtro_prioridad = select_input("Prioridad", ["Todos"] + prioridad_options, value="Todos", width=220)
@@ -407,9 +406,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             "active_only": True,
         }
 
-        filtro_cliente_value = (filtro_cliente.value or "").strip()
-        if filtro_cliente_value:
-            filters["cliente"] = filtro_cliente_value
         if filtro_tipo.value != "Todos":
             filters["tipo_expediente_id"] = _option_id(filtro_tipo.value)
         if filtro_estado.value != "Todos":
@@ -6709,8 +6705,38 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         archive_selected(e)
 
 
+    def _normalize_filter_text(value):
+        return (str(value or "")).strip().lower()
+
+    def _expedient_matches_search(expediente, query):
+        query = _normalize_filter_text(query)
+        if not query:
+            return True
+
+        haystack = " ".join(
+            [
+                str(expediente.get("numero_expediente") or ""),
+                str(expediente.get("numero_expediente_mercurio") or ""),
+                str(expediente.get("numero_registro") or ""),
+                str(expediente.get("cliente_nombre") or ""),
+                str(expediente.get("cliente_apellidos") or ""),
+                str(expediente.get("cliente_documento") or ""),
+                str(expediente.get("tipo_expediente_nombre") or ""),
+                str(expediente.get("subtipo_expediente_nombre") or ""),
+                str(expediente.get("subtipo_expediente") or ""),
+                str(_cliente_nombre(expediente) or ""),
+            ]
+        ).lower()
+
+        return query in haystack
+
+
     def build_table():
-        expedientes = state["expedientes"]
+        expedientes = [
+            e for e in state["expedientes"]
+            if _expedient_matches_search(e, search_input.value)
+        ]
+
         if not expedientes:
             return empty_state("No hay expedientes que coincidan con la búsqueda")
 
@@ -7013,9 +7039,10 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     dropdown=filtro_estado,
                     search_input=search_input,
                     actions=[
-                        filtro_cliente,
                         filtro_tipo,
                         filtro_prioridad,
+                        secondary_button("Aplicar filtros", apply_filters),
+                        secondary_button("Limpiar", clear_filters),
                     ],
                 ),
                 table_container,
@@ -7028,19 +7055,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             expand=True,
         )
 
-    def on_filtro_cliente_change(e=None):
+    def apply_filters(e=None):
         refresh()
 
-    filtro_cliente.on_change = on_filtro_cliente_change
-
-    search_input.on_change = refresh
-    def on_filtro_cliente_change(e=None):
+    def clear_filters(e=None):
+        search_input.value = ""
+        filtro_tipo.value = "Todos"
+        filtro_estado.value = "Todos"
+        filtro_prioridad.value = "Todos"
         refresh()
 
-    filtro_cliente.on_change = on_filtro_cliente_change
-    filtro_tipo.on_change = refresh
-    filtro_estado.on_change = refresh
-    filtro_prioridad.on_change = refresh
+    search_input.on_submit = apply_filters
+    filtro_tipo.on_change = None
+    filtro_estado.on_change = None
+    filtro_prioridad.on_change = None
 
     load_data()
     table_container.content = build_table()
