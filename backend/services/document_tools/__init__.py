@@ -22,4 +22,19 @@ __all__ = [
     "get_pdf_metadata",
     "merge_pdfs",
     "remove_pdf_pages",
+    "convert_inbox_image_to_pdf",
+    "convert_inbox_images_to_pdf",
+    "extract_pages_from_inbox_pdf",
+    "get_inbox_item_document_metadata",
+    "merge_inbox_pdfs",
+    "remove_pages_from_inbox_pdf",
 ]
+
+from backend.services.document_tools.document_inbox_tools_service import (
+    convert_inbox_image_to_pdf,
+    convert_inbox_images_to_pdf,
+    extract_pages_from_inbox_pdf,
+    get_inbox_item_document_metadata,
+    merge_inbox_pdfs,
+    remove_pages_from_inbox_pdf,
+)
