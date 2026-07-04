@@ -220,9 +220,33 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     prioridad_options = [f"{p['id']} - {p['nombre']}" for p in prioridades]
 
     search_input = text_input("Buscar expediente / cliente / registro", width=360)
-    filtro_tipo = select_input("Tipo", ["Todos"] + tipo_options, value="Todos", width=260)
-    filtro_estado = select_input("Estado admin.", ["Todos"] + estado_admin_options, value="Todos", width=260)
-    filtro_prioridad = select_input("Prioridad", ["Todos"] + prioridad_options, value="Todos", width=220)
+    filtro_tipo = AppAutocomplete(
+        page=page,
+        label="Tipo",
+        options=["Todos"] + tipo_options,
+        value="",
+        width=260,
+        max_results=10,
+        allow_free_text=False,
+    )
+    filtro_estado = AppAutocomplete(
+        page=page,
+        label="Estado admin.",
+        options=["Todos"] + estado_admin_options,
+        value="",
+        width=260,
+        max_results=10,
+        allow_free_text=False,
+    )
+    filtro_prioridad = AppAutocomplete(
+        page=page,
+        label="Prioridad",
+        options=["Todos"] + prioridad_options,
+        value="",
+        width=220,
+        max_results=10,
+        allow_free_text=False,
+    )
 
     numero_expediente = text_input("Nº expediente", width=220)
     numero_expediente_mercurio = text_input("Nº expediente Mercurio", width=260)
@@ -406,12 +430,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             "active_only": True,
         }
 
-        if filtro_tipo.value != "Todos":
-            filters["tipo_expediente_id"] = _option_id(filtro_tipo.value)
-        if filtro_estado.value != "Todos":
-            filters["estado_administrativo_id"] = _option_id(filtro_estado.value)
-        if filtro_prioridad.value != "Todos":
-            filters["prioridad_id"] = _option_id(filtro_prioridad.value)
+        # Los filtros visuales de la vista principal se aplican en memoria
+        # para evitar recargas pesadas y mantener UX fluida.
 
         state["expedientes"] = expedient_service.search_expedientes(filters)
 
@@ -6675,13 +6695,35 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         page.update()
 
     def enqueue_selected_from_bulk(e=None):
-        if not state["selected_ids"]:
+        selected_ids = list(state["selected_ids"])
+        if not selected_ids:
             set_message(error_alert("Selecciona al menos un expediente."))
             content_area.content = build_view()
             page.update()
             return
-        enqueue_selected_presentation()
+
+        ok_count = 0
+        errors = []
+
+        for expediente_id in selected_ids:
+            try:
+                _focus_single_expediente(expediente_id)
+                enqueue_selected_presentation()
+                ok_count += 1
+            except Exception as exc:
+                errors.append(f"#{expediente_id}: {exc}")
+
         state["selected_ids"].clear()
+
+        if errors:
+            set_message(
+                error_alert(
+                    f"Enviados a cola: {ok_count}. Errores: " + " | ".join(errors[:3])
+                )
+            )
+        else:
+            set_message(success_alert(f"{ok_count} expediente(s) enviados a cola."))
+
         table_container.content = build_table()
         content_area.content = build_view()
         page.update()
@@ -6705,6 +6747,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         archive_selected(e)
 
 
+    def _filter_control_value(control):
+        if hasattr(control, "get_value"):
+            return control.get_value()
+        return getattr(control, "value", "")
+
+    def _set_filter_control_value(control, value):
+        if hasattr(control, "set_value"):
+            control.set_value(value)
+            return
+        if hasattr(control, "input"):
+            control.input.value = value
+            return
+        control.value = value
+
     def _normalize_filter_text(value):
         return (str(value or "")).strip().lower()
 
@@ -6724,17 +6780,77 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                 str(expediente.get("tipo_expediente_nombre") or ""),
                 str(expediente.get("subtipo_expediente_nombre") or ""),
                 str(expediente.get("subtipo_expediente") or ""),
+                str(expediente.get("estado_administrativo_nombre") or ""),
+                str(expediente.get("prioridad_nombre") or ""),
                 str(_cliente_nombre(expediente) or ""),
             ]
         ).lower()
 
         return query in haystack
 
+    def _selected_option_id(option_value):
+        option_value = (option_value or "").strip()
+        if not option_value or option_value == "Todos":
+            return None
+        return _option_id(option_value)
+
+    def _selected_option_label(option_value):
+        option_value = (option_value or "").strip()
+        if not option_value or option_value == "Todos":
+            return ""
+        parts = [p.strip() for p in str(option_value).split(" - ") if p.strip()]
+        if len(parts) > 1:
+            return " - ".join(parts[1:])
+        return str(option_value or "").strip()
+
+    def _matches_catalog_filter(expediente, option_value, id_field, name_field):
+        option_value = (option_value or "").strip()
+        if not option_value or option_value == "Todos":
+            return True
+
+        expected_id = _selected_option_id(option_value)
+        if expected_id is not None:
+            try:
+                return int(expediente.get(id_field) or 0) == int(expected_id)
+            except Exception:
+                pass
+
+        expected_label = _normalize_filter_text(_selected_option_label(option_value))
+        actual_label = _normalize_filter_text(expediente.get(name_field))
+
+        if not expected_label:
+            return True
+
+        return expected_label in actual_label or actual_label in expected_label
+
+    def _expedient_matches_dropdown_filters(expediente):
+        return (
+            _matches_catalog_filter(
+                expediente,
+                _filter_control_value(filtro_tipo),
+                "tipo_expediente_id",
+                "tipo_expediente_nombre",
+            )
+            and _matches_catalog_filter(
+                expediente,
+                _filter_control_value(filtro_estado),
+                "estado_administrativo_id",
+                "estado_administrativo_nombre",
+            )
+            and _matches_catalog_filter(
+                expediente,
+                _filter_control_value(filtro_prioridad),
+                "prioridad_id",
+                "prioridad_nombre",
+            )
+        )
+
 
     def build_table():
         expedientes = [
             e for e in state["expedientes"]
             if _expedient_matches_search(e, search_input.value)
+            and _expedient_matches_dropdown_filters(e)
         ]
 
         if not expedientes:
@@ -7036,12 +7152,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     wrap=True,
                 ),
                 filter_bar(
-                    dropdown=filtro_estado,
+                    dropdown=filtro_estado.control,
                     search_input=search_input,
                     actions=[
-                        filtro_tipo,
-                        filtro_prioridad,
-                        secondary_button("Aplicar filtros", apply_filters),
+                        filtro_tipo.control,
+                        filtro_prioridad.control,
                         secondary_button("Limpiar", clear_filters),
                     ],
                 ),
@@ -7063,22 +7178,46 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
 
     def clear_filters(e=None):
         search_input.value = ""
-        filtro_tipo.value = "Todos"
-        filtro_estado.value = "Todos"
-        filtro_prioridad.value = "Todos"
+        _set_filter_control_value(filtro_tipo, "")
+        _set_filter_control_value(filtro_estado, "")
+        _set_filter_control_value(filtro_prioridad, "")
         refresh()
 
     def on_live_filter_change(e=None):
         state["cards_page"] = 1
         table_container.content = build_table()
-        content_area.content = build_view()
         page.update()
+
+    def on_dropdown_filter_change(e=None):
+        state["cards_page"] = 1
+        table_container.content = build_table()
+        page.update()
+
+    def bind_filter_autocomplete(autocomplete):
+        original_select = autocomplete.select
+
+        def select_and_filter(selected):
+            original_select(selected)
+            on_dropdown_filter_change()
+
+        autocomplete.select = select_and_filter
+
+        original_change = autocomplete.input.on_change
+
+        def input_change_and_filter(e=None):
+            if original_change:
+                original_change(e)
+            current_value = (autocomplete.get_value() or "").strip()
+            if not current_value or current_value == "Todos":
+                on_dropdown_filter_change()
+
+        autocomplete.input.on_change = input_change_and_filter
 
     search_input.on_change = on_live_filter_change
     search_input.on_submit = apply_filters
-    filtro_tipo.on_change = refresh
-    filtro_estado.on_change = refresh
-    filtro_prioridad.on_change = refresh
+    bind_filter_autocomplete(filtro_tipo)
+    bind_filter_autocomplete(filtro_estado)
+    bind_filter_autocomplete(filtro_prioridad)
 
     load_data()
     table_container.content = build_table()
