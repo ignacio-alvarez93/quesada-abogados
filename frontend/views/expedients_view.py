@@ -6683,7 +6683,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                                 ft.Text("Tipo:", size=11, color=Q_MUTED),
                                 ft.Text(tipo_label, size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                                 ft.Text("Subtipo:", size=11, color=Q_MUTED),
-                                ft.Text(subtipo_label, size=12, color=Q_TEXT),
+                                ft.Text(subtipo_label, size=12, color=Q_PRIMARY_DARK),
                             ],
                             spacing=6,
                             wrap=True,
