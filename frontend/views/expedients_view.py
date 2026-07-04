@@ -33,6 +33,7 @@ from frontend.components.app_dropdown import select_input
 from frontend.components.app_dialog import form_dialog
 from frontend.components.app_alert import error_alert, success_alert
 from frontend.components.app_empty_state import empty_state
+from frontend.components.app_table import app_table
 from frontend.components.app_filter_bar import filter_bar
 from frontend.components.app_card import metric_card
 from frontend.components.app_action_row import action_row
@@ -6642,6 +6643,29 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         content_area.content = build_view()
         page.update()
 
+    def _focus_single_expediente(expediente_id):
+        state["selected_ids"].clear()
+        state["selected_ids"].add(expediente_id)
+
+    def open_expediente_card_action(expediente_id):
+        _focus_single_expediente(expediente_id)
+        open_selected_expediente()
+
+    def enqueue_expediente_card_action(expediente_id):
+        _focus_single_expediente(expediente_id)
+        enqueue_selected_presentation()
+
+    def assisted_presentation_card_action(expediente_id):
+        _focus_single_expediente(expediente_id)
+        open_presentacion_asistida()
+
+    def archive_expediente_card_action(expediente_id):
+        expedient_service.archive_expediente(expediente_id)
+        state["selected_ids"].discard(expediente_id)
+        set_message(success_alert("Expediente archivado"))
+        refresh_table()
+
+
     def build_table():
         expedientes = state["expedientes"]
         if not expedientes:
@@ -6683,6 +6707,54 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         expedient_status_badge(e.get("estado_documental_nombre"), e.get("estado_documental_color")),
                         expedient_status_badge(e.get("estado_administrativo_nombre"), e.get("estado_administrativo_color")),
                         priority_badge(e.get("prioridad_nombre"), e.get("prioridad_color")),
+                    ],
+                    actions=[
+                        ft.PopupMenuButton(
+                            icon=ft.Icons.MORE_VERT,
+                            tooltip="Acciones del expediente",
+                            items=[
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.OPEN_IN_NEW, size=16, color=Q_PRIMARY),
+                                            ft.Text("Ver ficha"),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    on_click=lambda ev, eid=expediente_id: open_expediente_card_action(eid),
+                                ),
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.OUTBOX, size=16, color=Q_PRIMARY),
+                                            ft.Text("Enviar a cola"),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    on_click=lambda ev, eid=expediente_id: enqueue_expediente_card_action(eid),
+                                ),
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.ROCKET_LAUNCH, size=16, color=Q_PRIMARY),
+                                            ft.Text("Presentación asistida"),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    on_click=lambda ev, eid=expediente_id: assisted_presentation_card_action(eid),
+                                ),
+                                ft.PopupMenuItem(
+                                    content=ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.ARCHIVE_OUTLINED, size=16, color="#B42318"),
+                                            ft.Text("Archivar", color="#B42318"),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    on_click=lambda ev, eid=expediente_id: archive_expediente_card_action(eid),
+                                ),
+                            ],
+                        )
                     ],
                     body=[
                         ft.Row(
@@ -6877,7 +6949,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     spacing=12,
                     wrap=True,
                 ),
-                build_selected_action_bar(),
                 filter_bar(
                     dropdown=filtro_estado,
                     search_input=search_input,
