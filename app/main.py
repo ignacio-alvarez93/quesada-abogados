@@ -90,7 +90,13 @@ def main(page: ft.Page):
         elif view_name == "Documentos / Box":
             content = box_watch_view(page)
         elif view_name == "Bandeja documental":
-            content = document_inbox_view(page)
+            content = document_inbox_view(
+                page,
+                on_open_expediente=lambda expediente_id: navigate(
+                    "Expedientes",
+                    open_expediente_id=expediente_id,
+                ),
+            )
         elif view_name == "Reporting":
             content = reporting_view(page)
         elif view_name == "Configuración":
