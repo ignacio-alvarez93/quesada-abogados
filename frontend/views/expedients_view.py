@@ -25,6 +25,7 @@ from backend.services import mapper_preview_service
 from backend.services import pdf_fill_service
 from backend.services import form_mapper_admin_service
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
+from backend.services.master_data_service import get_provincias_nombres
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.document_file_card import document_file_card
 from frontend.components.bulk_action_bar import bulk_action_bar
@@ -219,6 +220,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     estado_admin_options = [f"{e['id']} - {e['nombre']}" for e in estados_admin]
     prioridad_options = [f"{p['id']} - {p['nombre']}" for p in prioridades]
 
+    try:
+        provincia_options = list(get_provincias_nombres() or [])
+    except Exception:
+        provincia_options = []
+
     search_input = text_input("Buscar expediente / cliente / registro", width=360)
     filtro_tipo = AppAutocomplete(
         page=page,
@@ -270,7 +276,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         page=page,
         label="Subtipo expediente",
         options=subtipo_options,
-        value="Sin subtipo",
         width=360,
         max_results=10,
         allow_free_text=False,
@@ -291,7 +296,15 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     fecha_resolucion = text_input("Fecha resolución DD/MM/AAAA", width=240)
     numero_registro = text_input("Número registro", width=280)
     organo_presentacion = text_input("Órgano presentación", width=360)
-    provincia = text_input("Provincia", width=240)
+    provincia = AppAutocomplete(
+        page=page,
+        label="Provincia",
+        options=provincia_options,
+        value="",
+        width=240,
+        max_results=10,
+        allow_free_text=False,
+    )
     observaciones = multiline_input("Observaciones", width=720)
     observaciones_internas = multiline_input("Observaciones internas", width=720)
     box_folder_path = text_input("Ruta Box futura / observada", width=720)
@@ -366,19 +379,23 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
 
         subtipo_expediente.set_options(options, clear_value=False)
 
-        selected_value = "Sin subtipo"
+        selected_value = ""
         current_value = subtipo_expediente.get_value()
 
         if selected_subtipo_id:
-            selected_value = next((x for x in options if x.startswith(str(selected_subtipo_id) + " - ")), "Sin subtipo")
+            selected_value = next((x for x in options if x.startswith(str(selected_subtipo_id) + " - ")), "")
         elif not reset_value and current_value in options:
             selected_value = current_value
         elif reset_value and len(options) == 2:
             # Caso habitual actual: Nacionalidad solo tiene un subtipo creado.
             selected_value = options[1]
 
-        subtipo_expediente.set_value(selected_value, update=False)
-        if selected_value != "Sin subtipo":
+        if selected_value:
+            subtipo_expediente.set_value(selected_value, update=False)
+        else:
+            _clear_autocomplete(subtipo_expediente)
+
+        if selected_value and selected_value != "Sin subtipo":
             subtipo_expediente_manual.value = ""
 
     def on_tipo_expediente_change(selected_value=None):
@@ -439,12 +456,17 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         state["editing_id"] = None
         numero_expediente.value = ""
         numero_expediente_mercurio.value = ""
+        _clear_autocomplete(tipo_expediente)
+        _clear_autocomplete(subtipo_expediente)
         cliente.set_value("", update=False)
-        tipo_expediente.set_value(tipo_options[0] if tipo_options else "", update=False)
-        refresh_subtipo_options_for_tipo(tipo_value=tipo_expediente.get_value(), reset_value=True)
+        refresh_subtipo_options_for_tipo(tipo_value="", reset_value=True)
+        _clear_autocomplete(subtipo_expediente)
         subtipo_expediente_manual.value = ""
         estado_documental.value = estado_doc_options[0] if estado_doc_options else None
-        estado_administrativo.value = estado_admin_options[0] if estado_admin_options else None
+        estado_administrativo.value = next(
+            (x for x in estado_admin_options if "NO PRESENTADO" in str(x or "").upper()),
+            estado_admin_options[0] if estado_admin_options else None,
+        )
         estado_presentacion.value = "NO PRESENTADO"
         prioridad.value = prioridad_options[0] if prioridad_options else None
         responsable.value = ""
@@ -453,7 +475,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         fecha_resolucion.value = ""
         numero_registro.value = ""
         organo_presentacion.value = ""
-        provincia.value = ""
+        provincia.set_value("", update=False)
         observaciones.value = ""
         observaciones_internas.value = ""
         box_folder_path.value = ""
@@ -492,7 +514,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         )
 
         refresh_subtipo_options_for_tipo(expediente.get("subtipo_expediente_id"), tipo_value=tipo_expediente.get_value())
-        if subtipo_expediente.get_value() == "Sin subtipo":
+        if not subtipo_expediente.get_value() or subtipo_expediente.get_value() == "Sin subtipo":
             subtipo_expediente_manual.value = expediente.get("subtipo_expediente") or ""
         else:
             subtipo_expediente_manual.value = ""
@@ -503,7 +525,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         fecha_resolucion.value = _date_to_display(expediente.get("fecha_resolucion"))
         numero_registro.value = expediente.get("numero_registro") or ""
         organo_presentacion.value = expediente.get("organo_presentacion") or ""
-        provincia.value = expediente.get("provincia") or ""
+        provincia.set_value(expediente.get("provincia") or "", update=False)
         observaciones.value = expediente.get("observaciones") or ""
         observaciones_internas.value = expediente.get("observaciones_internas") or ""
         box_folder_path.value = expediente.get("box_folder_path") or ""
@@ -529,7 +551,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             "fecha_resolucion": _date_to_sql(fecha_resolucion.value),
             "numero_registro": numero_registro.value,
             "organo_presentacion": organo_presentacion.value,
-            "provincia": provincia.value,
+            "provincia": provincia.get_value(),
             "observaciones": observaciones.value,
             "observaciones_internas": observaciones_internas.value,
             "box_folder_path": box_folder_path.value,
@@ -4564,7 +4586,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         ft.Row([numero_expediente, numero_expediente_mercurio, cliente.control], wrap=True, spacing=10),
                         ft.Row([tipo_expediente.control, subtipo_expediente.control, subtipo_expediente_manual, prioridad], wrap=True, spacing=10),
                         ft.Row([estado_documental, estado_administrativo, estado_presentacion], wrap=True, spacing=10),
-                        ft.Row([responsable, provincia], wrap=True, spacing=10),
+                        ft.Row([responsable, provincia.control], wrap=True, spacing=10),
                     ],
                     ft.Icons.ACCOUNT_TREE,
                 ),
@@ -6611,7 +6633,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         ft.Divider(),
                         ft.Text("1. Datos de presentación", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                         ft.Row([estado_presentacion, fecha_presentacion, numero_registro], wrap=True, spacing=10),
-                        ft.Row([organo_presentacion, provincia, responsable], wrap=True, spacing=10),
+                        ft.Row([organo_presentacion, provincia.control, responsable], wrap=True, spacing=10),
                         ft.Text("2. Diagnóstico documental", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                         build_diagnostic_content(expediente.get("id")),
                         ft.Text("3. Trazabilidad", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
@@ -6745,6 +6767,44 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
 
     def archive_selected_from_bulk(e=None):
         archive_selected(e)
+
+
+    def _clear_autocomplete(autocomplete):
+        # Deja el AppAutocomplete como si el usuario hubiera borrado el campo:
+        # sin texto, sin opción seleccionada y mostrando solo el label.
+        try:
+            autocomplete.set_value("", update=False)
+        except TypeError:
+            try:
+                autocomplete.set_value("")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        if hasattr(autocomplete, "input"):
+            autocomplete.input.value = ""
+            try:
+                autocomplete.input.error_text = None
+            except Exception:
+                pass
+
+        for attr in (
+            "value",
+            "selected_value",
+            "_value",
+            "_selected_value",
+            "selected",
+            "_selected",
+            "selected_option",
+            "_selected_option",
+        ):
+            if hasattr(autocomplete, attr):
+                try:
+                    setattr(autocomplete, attr, None if "selected" in attr else "")
+                except Exception:
+                    pass
+
 
 
     def _filter_control_value(control):
