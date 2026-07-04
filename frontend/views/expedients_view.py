@@ -220,14 +220,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     prioridad_options = [f"{p['id']} - {p['nombre']}" for p in prioridades]
 
     search_input = text_input("Buscar expediente / cliente / registro", width=360)
-    filtro_cliente = AppAutocomplete(
-        page=page,
-        label="Filtrar cliente",
-        options=cliente_options,
-        width=360,
-        max_results=10,
-        allow_free_text=True,
-    )
+    filtro_cliente = text_input("Filtrar cliente", width=360)
     filtro_tipo = select_input("Tipo", ["Todos"] + tipo_options, value="Todos", width=260)
     filtro_estado = select_input("Estado admin.", ["Todos"] + estado_admin_options, value="Todos", width=260)
     filtro_prioridad = select_input("Prioridad", ["Todos"] + prioridad_options, value="Todos", width=220)
@@ -414,9 +407,9 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             "active_only": True,
         }
 
-        filtro_cliente_value = filtro_cliente.get_value()
-        if filtro_cliente_value and filtro_cliente_value != "Todos":
-            filters["cliente_id"] = _option_id(filtro_cliente_value)
+        filtro_cliente_value = (filtro_cliente.value or "").strip()
+        if filtro_cliente_value:
+            filters["cliente"] = filtro_cliente_value
         if filtro_tipo.value != "Todos":
             filters["tipo_expediente_id"] = _option_id(filtro_tipo.value)
         if filtro_estado.value != "Todos":
@@ -7020,7 +7013,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                     dropdown=filtro_estado,
                     search_input=search_input,
                     actions=[
-                        filtro_cliente.control,
+                        filtro_cliente,
                         filtro_tipo,
                         filtro_prioridad,
                     ],
@@ -7035,23 +7028,16 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
             expand=True,
         )
 
-    original_filtro_select = filtro_cliente.select
-
-    def filtro_select_and_refresh(selected):
-        original_filtro_select(selected)
+    def on_filtro_cliente_change(e=None):
         refresh()
 
-    filtro_cliente.select = filtro_select_and_refresh
+    filtro_cliente.on_change = on_filtro_cliente_change
 
     search_input.on_change = refresh
-    original_filtro_cliente_change = filtro_cliente.input.on_change
-
     def on_filtro_cliente_change(e=None):
-        if original_filtro_cliente_change:
-            original_filtro_cliente_change(e)
         refresh()
 
-    filtro_cliente.input.on_change = on_filtro_cliente_change
+    filtro_cliente.on_change = on_filtro_cliente_change
     filtro_tipo.on_change = refresh
     filtro_estado.on_change = refresh
     filtro_prioridad.on_change = refresh
