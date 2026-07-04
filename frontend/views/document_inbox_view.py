@@ -2139,6 +2139,8 @@ def document_inbox_view(page: ft.Page):
         detail_body = ft.Container(expand=True)
 
         def set_detail_section(section_name, do_update=True):
+            state["detail_section"] = section_name or "principal"
+
             if section_name == "principal":
                 detail_body.content = ft.Column(
                     controls=[
