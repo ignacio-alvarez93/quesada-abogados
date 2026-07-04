@@ -11,6 +11,7 @@ from backend.services.document_tools import (
     crop_inbox_image,
     get_document_tool_capabilities_for_inbox_items,
     merge_inbox_pdfs,
+    move_page_in_inbox_pdf,
     reorder_pages_from_inbox_pdf,
     split_inbox_pdf_by_ranges,
 )
@@ -969,7 +970,7 @@ def document_inbox_view(page: ft.Page):
                 tool_items.extend(
                     [
                         {"label": "Comprimir PDF", "on_click": lambda e, item_id=item_id: run_document_tool_compress_pdf(e, item_id=item_id)},
-                        {"label": "Ordenar páginas", "on_click": lambda e, item_id=item_id: open_document_tool_reorder_dialog(e, item_id=item_id)},
+                        {"label": "Mover página", "on_click": lambda e, item_id=item_id: open_document_tool_reorder_dialog(e, item_id=item_id)},
                         {"label": "Dividir PDF", "on_click": lambda e, item_id=item_id: open_document_tool_split_dialog(e, item_id=item_id)},
                     ]
                 )
@@ -2415,20 +2416,28 @@ def document_inbox_view(page: ft.Page):
             _show_document_tool_error(exc)
             return
 
-        order_field = ft.TextField(
-            label="Nuevo orden de páginas",
-            hint_text="Ejemplo: 2,1,3",
-            width=320,
+        page_field = ft.TextField(
+            label="Página a mover",
+            hint_text="Ejemplo: 7",
+            width=160,
+        )
+        target_field = ft.TextField(
+            label="Nueva posición",
+            hint_text="Ejemplo: 2",
+            width=160,
         )
 
         def submit(ev=None):
             try:
-                ordered_pages = _parse_page_order(order_field.value)
-                response = reorder_pages_from_inbox_pdf(
+                page_number = int(str(page_field.value or "").strip())
+                target_position = int(str(target_field.value or "").strip())
+
+                response = move_page_in_inbox_pdf(
                     item_id,
-                    ordered_pages=ordered_pages,
+                    page_number=page_number,
+                    target_position=target_position,
                     register_result=True,
-                    output_stem="pdf_ordenado_bandeja",
+                    output_stem="pdf_pagina_movida_bandeja",
                 )
 
                 if not response.get("ok"):
@@ -2436,15 +2445,18 @@ def document_inbox_view(page: ft.Page):
 
                 _close_dialog(dialog)
                 generated = response.get("generated_item") or {}
+                ordered_pages = ((response.get("result") or {}).get("metadata") or {}).get("ordered_pages")
+
                 _refresh_after_document_tool(
-                    f"PDF ordenado. Nuevo documento #{generated.get('id') or '-'}."
+                    f"Página movida. Nuevo documento #{generated.get('id') or '-'}."
+                    + (f" Orden: {ordered_pages}" if ordered_pages else "")
                 )
             except Exception as exc:
                 _show_document_tool_error(exc)
 
         dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Ordenar páginas PDF"),
+            title=ft.Text("Mover página PDF"),
             content=ft.Column(
                 controls=[
                     ft.Text(
@@ -2452,9 +2464,15 @@ def document_inbox_view(page: ft.Page):
                         size=12,
                         color=Q_MUTED,
                     ),
-                    order_field,
+                    ft.Row(
+                        controls=[page_field, target_field],
+                        spacing=8,
+                        wrap=True,
+                    ),
                     ft.Text(
-                        "Usa numeración humana. Debes incluir todas las páginas una sola vez.",
+                        "Ejemplo: para llevar la página 7 al segundo lugar, escribe "
+                        "Página a mover = 7 y Nueva posición = 2. "
+                        "No hace falta escribir todas las páginas.",
                         size=11,
                         color=Q_MUTED,
                     ),
@@ -2464,7 +2482,7 @@ def document_inbox_view(page: ft.Page):
             ),
             actions=[
                 secondary_button("Cancelar", lambda ev: _close_dialog(dialog)),
-                primary_button("Generar PDF ordenado", submit),
+                primary_button("Mover página", submit),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -2632,7 +2650,7 @@ def document_inbox_view(page: ft.Page):
                 on_click=run_document_tool_compress_pdf if enabled("pdf_compress_basic") else None,
             ),
             ft.PopupMenuItem(
-                content=ft.Text("Ordenar páginas PDF"),
+                content=ft.Text("Mover página PDF"),
                 disabled=not enabled("pdf_reorder_pages"),
                 on_click=open_document_tool_reorder_dialog if enabled("pdf_reorder_pages") else None,
             ),

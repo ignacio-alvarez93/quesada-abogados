@@ -597,3 +597,87 @@ def compress_pdf_rasterized(
             errors=[str(exc)],
         )
 
+def move_pdf_page(
+    source_path: str | Path,
+    *,
+    page_number: int,
+    target_position: int,
+    output_stem: str | None = None,
+) -> DocumentToolResult:
+    """
+    Mueve una única página a otra posición, manteniendo el resto del PDF igual.
+
+    Ejemplo:
+    - PDF de 5 páginas.
+    - Mover página 5 a posición 2.
+    - Resultado: 1,5,2,3,4.
+
+    Usa numeración humana 1-based.
+    Nunca modifica el original.
+    """
+    operation = "pdf_move_page"
+
+    try:
+        _require_pypdf()
+        source = assert_existing_file(source_path)
+        reader = PdfReader(str(source))
+
+        if reader.is_encrypted:
+            raise ValueError(f"PDF cifrado/no soportado: {source.name}")
+
+        page_count = len(reader.pages)
+
+        page_i = int(page_number)
+        target_i = int(target_position)
+
+        if page_count <= 1:
+            raise ValueError("El PDF debe tener al menos 2 páginas para mover páginas.")
+
+        if page_i < 1 or page_i > page_count:
+            raise ValueError(f"Página origen fuera de rango: {page_i}. El PDF tiene {page_count} páginas.")
+
+        if target_i < 1 or target_i > page_count:
+            raise ValueError(f"Posición destino fuera de rango: {target_i}. El PDF tiene {page_count} páginas.")
+
+        current_order = list(range(1, page_count + 1))
+        current_order.remove(page_i)
+        current_order.insert(target_i - 1, page_i)
+
+        writer = PdfWriter()
+
+        for page in current_order:
+            writer.add_page(reader.pages[page - 1])
+
+        output = build_output_path(
+            operation="move_page",
+            source_path=source,
+            extension=".pdf",
+            subdir="split",
+            stem=output_stem,
+        )
+
+        with output.open("wb") as fh:
+            writer.write(fh)
+
+        return DocumentToolResult.success(
+            operation=operation,
+            source_paths=[source],
+            output_path=output,
+            metadata={
+                "source_page_count": page_count,
+                "output_page_count": page_count,
+                "page_number": page_i,
+                "target_position": target_i,
+                "ordered_pages": current_order,
+                "mime_type": "application/pdf",
+                "size_bytes": output.stat().st_size,
+            },
+        )
+
+    except Exception as exc:
+        return DocumentToolResult.failure(
+            operation=operation,
+            source_paths=[source_path],
+            errors=[str(exc)],
+        )
+

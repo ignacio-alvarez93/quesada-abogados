@@ -492,3 +492,30 @@ def compress_inbox_pdf_strong(
         operation="pdf_compress_rasterized",
     )
 
+def move_page_in_inbox_pdf(
+    inbox_item_id: int,
+    *,
+    page_number: int,
+    target_position: int,
+    register_result: bool = True,
+    output_stem: str | None = None,
+) -> dict[str, Any]:
+    from backend.services.document_tools.pdf_tools_service import move_pdf_page
+
+    item = _get_item_or_fail(inbox_item_id)
+    source_path = _resolve_inbox_item_path(item)
+
+    result = move_pdf_page(
+        source_path,
+        page_number=page_number,
+        target_position=target_position,
+        output_stem=output_stem,
+    )
+
+    return _build_operation_response(
+        source_items=[item],
+        result=result,
+        register_result=register_result,
+        operation="pdf_move_page",
+    )
+
