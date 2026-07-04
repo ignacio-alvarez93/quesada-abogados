@@ -53,25 +53,61 @@ def get_document_tool_capabilities_for_inbox_items(inbox_item_ids: list[int]) ->
         )
 
         if item["category"] == "image":
-            capabilities.append(
-                {
-                    "operation": "image_to_pdf",
-                    "label": "Convertir imagen a PDF",
-                    "scope": "single",
-                    "enabled": True,
-                    "reason": "",
-                }
+            capabilities.extend(
+                [
+                    {
+                        "operation": "image_crop",
+                        "label": "Recortar imagen",
+                        "scope": "single",
+                        "enabled": True,
+                        "reason": "",
+                        "priority": 10,
+                    },
+                    {
+                        "operation": "image_to_pdf",
+                        "label": "Convertir imagen a PDF",
+                        "scope": "single",
+                        "enabled": True,
+                        "reason": "",
+                        "priority": 40,
+                    },
+                ]
             )
 
         if item["category"] == "pdf":
             capabilities.extend(
                 [
                     {
+                        "operation": "pdf_reorder_pages",
+                        "label": "Ordenar páginas",
+                        "scope": "single",
+                        "enabled": True,
+                        "reason": "",
+                        "priority": 10,
+                    },
+                    {
+                        "operation": "pdf_split_by_ranges",
+                        "label": "Dividir PDF",
+                        "scope": "single",
+                        "enabled": True,
+                        "reason": "",
+                        "priority": 20,
+                    },
+                    {
+                        "operation": "pdf_compress_basic",
+                        "label": "Comprimir PDF",
+                        "scope": "single",
+                        "enabled": True,
+                        "reason": "",
+                        "priority": 30,
+                    },
+                    {
                         "operation": "pdf_extract_pages",
                         "label": "Extraer páginas",
                         "scope": "single",
                         "enabled": True,
                         "reason": "",
+                        "priority": 40,
                     },
                     {
                         "operation": "pdf_remove_pages",
@@ -79,6 +115,7 @@ def get_document_tool_capabilities_for_inbox_items(inbox_item_ids: list[int]) ->
                         "scope": "single",
                         "enabled": True,
                         "reason": "",
+                        "priority": 50,
                     },
                 ]
             )
@@ -114,6 +151,7 @@ def get_document_tool_capabilities_for_inbox_items(inbox_item_ids: list[int]) ->
                 "scope": "batch",
                 "enabled": all_pdfs,
                 "reason": "" if all_pdfs else "Solo disponible si todos los seleccionados son PDFs.",
+                "priority": 20,
             }
         )
 

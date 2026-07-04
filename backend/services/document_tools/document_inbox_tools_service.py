@@ -332,3 +332,134 @@ def _first_non_empty(values):
         if value not in (None, "", 0):
             return value
     return None
+
+def reorder_pages_from_inbox_pdf(
+    inbox_item_id: int,
+    ordered_pages: list[int],
+    *,
+    register_result: bool = True,
+    output_stem: str | None = None,
+) -> dict[str, Any]:
+    from backend.services.document_tools.pdf_tools_service import reorder_pdf_pages
+
+    item = _get_item_or_fail(inbox_item_id)
+    source_path = _resolve_inbox_item_path(item)
+
+    result = reorder_pdf_pages(
+        source_path,
+        ordered_pages=ordered_pages,
+        output_stem=output_stem,
+    )
+
+    return _build_operation_response(
+        source_items=[item],
+        result=result,
+        register_result=register_result,
+        operation="pdf_reorder_pages",
+    )
+
+
+def split_inbox_pdf_by_ranges(
+    inbox_item_id: int,
+    ranges: list[tuple[int, int]],
+    *,
+    register_result: bool = True,
+    output_stem: str | None = None,
+) -> dict[str, Any]:
+    from backend.services.document_tools.pdf_tools_service import split_pdf_by_ranges
+
+    item = _get_item_or_fail(inbox_item_id)
+    source_path = _resolve_inbox_item_path(item)
+
+    result = split_pdf_by_ranges(
+        source_path,
+        ranges=ranges,
+        output_stem=output_stem,
+    )
+
+    generated_items = []
+
+    if result.ok and register_result:
+        outputs = result.metadata.get("outputs") or []
+
+        for output in outputs:
+            single_result = DocumentToolResult.success(
+                operation="pdf_split_by_ranges",
+                source_paths=[source_path],
+                output_path=output["output_path"],
+                metadata={
+                    "range": output.get("range"),
+                    "page_count": output.get("page_count"),
+                    "parent_result": result.to_dict(),
+                },
+            )
+
+            generated_items.append(
+                _register_generated_result(
+                    source_items=[item],
+                    result=single_result,
+                    operation="pdf_split_by_ranges",
+                )
+            )
+
+    return {
+        "ok": result.ok,
+        "operation": "pdf_split_by_ranges",
+        "source_item_ids": [item.get("id")],
+        "result": result.to_dict(),
+        "generated_items": generated_items,
+    }
+
+
+def compress_inbox_pdf(
+    inbox_item_id: int,
+    *,
+    register_result: bool = True,
+    output_stem: str | None = None,
+) -> dict[str, Any]:
+    from backend.services.document_tools.pdf_tools_service import compress_pdf_basic
+
+    item = _get_item_or_fail(inbox_item_id)
+    source_path = _resolve_inbox_item_path(item)
+
+    result = compress_pdf_basic(source_path, output_stem=output_stem)
+
+    return _build_operation_response(
+        source_items=[item],
+        result=result,
+        register_result=register_result,
+        operation="pdf_compress_basic",
+    )
+
+
+def crop_inbox_image(
+    inbox_item_id: int,
+    *,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    register_result: bool = True,
+    output_stem: str | None = None,
+) -> dict[str, Any]:
+    from backend.services.document_tools.image_tools_service import crop_image
+
+    item = _get_item_or_fail(inbox_item_id)
+    source_path = _resolve_inbox_item_path(item)
+
+    result = crop_image(
+        source_path,
+        left=left,
+        top=top,
+        right=right,
+        bottom=bottom,
+        output_stem=output_stem,
+    )
+
+    return _build_operation_response(
+        source_items=[item],
+        result=result,
+        register_result=register_result,
+        operation="image_crop",
+    )
+

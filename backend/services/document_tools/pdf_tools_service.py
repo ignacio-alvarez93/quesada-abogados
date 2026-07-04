@@ -248,3 +248,216 @@ def remove_pdf_pages(
             source_paths=[source_path],
             errors=[str(exc)],
         )
+
+def reorder_pdf_pages(
+    source_path: str | Path,
+    ordered_pages: list[int],
+    output_stem: str | None = None,
+) -> DocumentToolResult:
+    operation = "pdf_reorder_pages"
+
+    try:
+        _require_pypdf()
+        source = assert_existing_file(source_path)
+        reader = PdfReader(str(source))
+
+        if reader.is_encrypted:
+            raise ValueError(f"PDF cifrado/no soportado: {source.name}")
+
+        page_count = len(reader.pages)
+
+        if not ordered_pages:
+            raise ValueError("Debe indicarse el nuevo orden de páginas.")
+
+        expected = set(range(1, page_count + 1))
+        received = set(int(x) for x in ordered_pages)
+
+        if received != expected or len(ordered_pages) != page_count:
+            raise ValueError(
+                "El nuevo orden debe contener todas las páginas exactamente una vez. "
+                f"PDF={page_count} páginas, recibido={ordered_pages}"
+            )
+
+        writer = PdfWriter()
+
+        for page_number in ordered_pages:
+            writer.add_page(reader.pages[int(page_number) - 1])
+
+        output = build_output_path(
+            operation="reorder",
+            source_path=source,
+            extension=".pdf",
+            subdir="split",
+            stem=output_stem,
+        )
+
+        with output.open("wb") as fh:
+            writer.write(fh)
+
+        return DocumentToolResult.success(
+            operation=operation,
+            source_paths=[source],
+            output_path=output,
+            metadata={
+                "source_page_count": page_count,
+                "output_page_count": page_count,
+                "ordered_pages": [int(x) for x in ordered_pages],
+                "mime_type": "application/pdf",
+                "size_bytes": output.stat().st_size,
+            },
+        )
+
+    except Exception as exc:
+        return DocumentToolResult.failure(
+            operation=operation,
+            source_paths=[source_path],
+            errors=[str(exc)],
+        )
+
+
+def split_pdf_by_ranges(
+    source_path: str | Path,
+    ranges: list[tuple[int, int]],
+    output_stem: str | None = None,
+) -> DocumentToolResult:
+    operation = "pdf_split_by_ranges"
+
+    try:
+        _require_pypdf()
+        source = assert_existing_file(source_path)
+        reader = PdfReader(str(source))
+
+        if reader.is_encrypted:
+            raise ValueError(f"PDF cifrado/no soportado: {source.name}")
+
+        if not ranges:
+            raise ValueError("Debe indicarse al menos un rango.")
+
+        page_count = len(reader.pages)
+        outputs = []
+
+        for index, raw_range in enumerate(ranges, start=1):
+            start, end = int(raw_range[0]), int(raw_range[1])
+
+            if start < 1 or end < 1 or start > end or end > page_count:
+                raise ValueError(
+                    f"Rango fuera de límites: {(start, end)}. "
+                    f"El PDF tiene {page_count} páginas."
+                )
+
+            writer = PdfWriter()
+
+            for page_number in range(start, end + 1):
+                writer.add_page(reader.pages[page_number - 1])
+
+            output = build_output_path(
+                operation=f"split_{index:02d}_{start}_{end}",
+                source_path=source,
+                extension=".pdf",
+                subdir="split",
+                stem=output_stem,
+            )
+
+            with output.open("wb") as fh:
+                writer.write(fh)
+
+            outputs.append(
+                {
+                    "range": [start, end],
+                    "output_path": str(output),
+                    "output_filename": output.name,
+                    "page_count": end - start + 1,
+                    "size_bytes": output.stat().st_size,
+                }
+            )
+
+        return DocumentToolResult.success(
+            operation=operation,
+            source_paths=[source],
+            output_path=outputs[0]["output_path"],
+            metadata={
+                "source_page_count": page_count,
+                "output_count": len(outputs),
+                "outputs": outputs,
+                "ranges": [[int(a), int(b)] for a, b in ranges],
+                "mime_type": "application/pdf",
+            },
+        )
+
+    except Exception as exc:
+        return DocumentToolResult.failure(
+            operation=operation,
+            source_paths=[source_path],
+            errors=[str(exc)],
+        )
+
+
+def compress_pdf_basic(
+    source_path: str | Path,
+    output_stem: str | None = None,
+) -> DocumentToolResult:
+    operation = "pdf_compress_basic"
+
+    try:
+        _require_pypdf()
+        source = assert_existing_file(source_path)
+        reader = PdfReader(str(source))
+
+        if reader.is_encrypted:
+            raise ValueError(f"PDF cifrado/no soportado: {source.name}")
+
+        writer = PdfWriter()
+
+        for page in reader.pages:
+            try:
+                page.compress_content_streams()
+            except Exception:
+                pass
+            writer.add_page(page)
+
+        output = build_output_path(
+            operation="compress",
+            source_path=source,
+            extension=".pdf",
+            subdir="compressed",
+            stem=output_stem,
+        )
+
+        with output.open("wb") as fh:
+            writer.write(fh)
+
+        original_size = source.stat().st_size
+        output_size = output.stat().st_size
+        reduction_bytes = original_size - output_size
+        reduction_percent = round((reduction_bytes / original_size) * 100, 2) if original_size else 0
+
+        warnings = []
+        if output_size >= original_size:
+            warnings.append(
+                "La compresión básica no redujo el tamaño. "
+                "Probablemente el PDF ya contiene imágenes comprimidas."
+            )
+
+        return DocumentToolResult.success(
+            operation=operation,
+            source_paths=[source],
+            output_path=output,
+            warnings=warnings,
+            metadata={
+                "page_count": len(reader.pages),
+                "original_size_bytes": original_size,
+                "output_size_bytes": output_size,
+                "reduction_bytes": reduction_bytes,
+                "reduction_percent": reduction_percent,
+                "mime_type": "application/pdf",
+                "compression_mode": "pypdf_content_streams",
+            },
+        )
+
+    except Exception as exc:
+        return DocumentToolResult.failure(
+            operation=operation,
+            source_paths=[source_path],
+            errors=[str(exc)],
+        )
+

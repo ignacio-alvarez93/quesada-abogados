@@ -43,3 +43,28 @@ from backend.services.document_tools.document_inbox_tools_service import (
 from backend.services.document_tools.document_tool_capabilities_service import (
     get_document_tool_capabilities_for_inbox_items,
 )
+
+# Priority document operations exports
+try:
+    from backend.services.document_tools.pdf_tools_service import (
+        compress_pdf_basic,
+        reorder_pdf_pages,
+        split_pdf_by_ranges,
+    )
+except Exception:
+    pass
+
+try:
+    from backend.services.document_tools.image_tools_service import crop_image
+except Exception:
+    pass
+
+try:
+    from backend.services.document_tools.document_inbox_tools_service import (
+        compress_inbox_pdf,
+        crop_inbox_image,
+        reorder_pages_from_inbox_pdf,
+        split_inbox_pdf_by_ranges,
+    )
+except Exception:
+    pass

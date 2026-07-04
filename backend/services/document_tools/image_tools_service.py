@@ -163,3 +163,83 @@ def images_to_pdf(source_paths: list[str | Path], output_stem: str | None = None
             source_paths=source_paths,
             errors=[str(exc)],
         )
+
+def crop_image(
+    source_path: str | Path,
+    *,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    output_stem: str | None = None,
+) -> DocumentToolResult:
+    operation = "image_crop"
+
+    try:
+        _require_pillow()
+        source = assert_existing_file(source_path)
+
+        if source.suffix.lower() not in SUPPORTED_IMAGE_SUFFIXES:
+            raise ValueError(f"Formato de imagen no soportado: {source.suffix}")
+
+        with Image.open(source) as img:
+            width, height = img.size
+
+            left_i = int(left)
+            top_i = int(top)
+            right_i = int(right)
+            bottom_i = int(bottom)
+
+            if left_i < 0 or top_i < 0 or right_i > width or bottom_i > height:
+                raise ValueError(
+                    f"Recorte fuera de límites. Imagen={width}x{height}, "
+                    f"crop={(left_i, top_i, right_i, bottom_i)}"
+                )
+
+            if left_i >= right_i or top_i >= bottom_i:
+                raise ValueError(
+                    f"Coordenadas inválidas de recorte: "
+                    f"{(left_i, top_i, right_i, bottom_i)}"
+                )
+
+            cropped = img.crop((left_i, top_i, right_i, bottom_i))
+
+            extension = source.suffix.lower() or ".png"
+            output = build_output_path(
+                operation="crop",
+                source_path=source,
+                extension=extension,
+                subdir="images",
+                stem=output_stem,
+            )
+
+            if extension in {".jpg", ".jpeg"} and cropped.mode not in ("RGB", "L"):
+                cropped = cropped.convert("RGB")
+
+            cropped.save(output)
+
+            metadata = {
+                "source_width": width,
+                "source_height": height,
+                "output_width": cropped.width,
+                "output_height": cropped.height,
+                "crop_box": [left_i, top_i, right_i, bottom_i],
+                "source_format": img.format,
+                "mime_type": Image.MIME.get(img.format, None),
+                "size_bytes": output.stat().st_size,
+            }
+
+        return DocumentToolResult.success(
+            operation=operation,
+            source_paths=[source],
+            output_path=output,
+            metadata=metadata,
+        )
+
+    except Exception as exc:
+        return DocumentToolResult.failure(
+            operation=operation,
+            source_paths=[source_path],
+            errors=[str(exc)],
+        )
+
