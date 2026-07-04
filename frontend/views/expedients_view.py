@@ -6654,6 +6654,10 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
     def enqueue_expediente_card_action(expediente_id):
         _focus_single_expediente(expediente_id)
         enqueue_selected_presentation()
+        state["selected_ids"].clear()
+        table_container.content = build_table()
+        content_area.content = build_view()
+        page.update()
 
     def assisted_presentation_card_action(expediente_id):
         _focus_single_expediente(expediente_id)
