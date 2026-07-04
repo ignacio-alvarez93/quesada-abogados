@@ -973,8 +973,8 @@ def document_inbox_view(page: ft.Page):
                     "label": "Documento",
                     "items": [
                         {"label": "Ficha", "on_click": lambda e, item_id=item_id: open_item_detail(item_id)},
-                        {"label": "Previsualizar", "on_click": lambda e, item_id=item_id: (_activate_item_for_tool(item_id), show_preview(e))},
-                        {"label": "Abrir externo", "on_click": lambda e, item_id=item_id: (_activate_item_for_tool(item_id), open_system(e))},
+                        {"label": "Previsualizar", "on_click": lambda e, item_id=item_id: show_preview_for_item(item_id, e)},
+                        {"label": "Abrir externo", "on_click": lambda e, item_id=item_id: open_system_for_item(item_id, e)},
                     ],
                 },
             ]
@@ -2288,15 +2288,68 @@ def document_inbox_view(page: ft.Page):
 
         return int(selected_ids[0])
 
+    def _get_item_from_state_or_db(item_id):
+        item_id = int(item_id)
+
+        for candidate in state.get("items", []) or []:
+            try:
+                if int(candidate.get("id")) == item_id:
+                    return candidate
+            except Exception:
+                continue
+
+        return document_inbox_service.get_inbox_item(item_id)
+
     def _activate_item_for_tool(item_id):
-        try:
-            select_item(int(item_id))
-        except Exception:
-            state["selected_item_id"] = int(item_id)
+        """
+        Selección técnica no-toggle para acciones de tarjeta.
+
+        No usa select_item(), porque select_item pertenece a la interacción
+        normal de selección y puede dejar selected_item_id vacío si el mismo
+        documento ya estaba activo o si se refrescó la bandeja tras una herramienta.
+        """
+        item = _get_item_from_state_or_db(item_id)
+
+        if not item:
+            raise ValueError(f"No se encontró el documento #{item_id}.")
+
+        state["selected_item_id"] = int(item_id)
+
+        if item.get("client_id"):
+            try:
+                state["selected_client_id"] = int(item.get("client_id"))
+            except Exception:
+                pass
+
+        if item.get("expedient_id"):
+            try:
+                state["selected_expedient_id"] = int(item.get("expedient_id"))
+            except Exception:
+                pass
+
+        selected_label.value = f"Seleccionado: #{item['id']} · {item.get('original_filename') or '-'}"
+        refresh_relation_label()
+
+        return item
 
     def _run_card_action(item_id, callback):
         _activate_item_for_tool(item_id)
         return callback(None)
+
+    def show_preview_for_item(item_id, e=None):
+        try:
+            _activate_item_for_tool(item_id)
+            return show_preview(e)
+        except Exception as exc:
+            show_error(exc)
+
+    def open_system_for_item(item_id, e=None):
+        try:
+            _activate_item_for_tool(item_id)
+            return open_system(e)
+        except Exception as exc:
+            show_error(exc)
+
 
     def _refresh_after_document_tool(message):
         state["selected_item_ids"] = set()
