@@ -8,6 +8,7 @@ from backend.services.document_tools.document_metadata_service import (
 
 from backend.services.document_tools.pdf_tools_service import (
     compress_pdf_basic,
+    compress_pdf_rasterized,
     extract_pdf_pages,
     get_pdf_metadata,
     merge_pdfs,
@@ -25,6 +26,7 @@ from backend.services.document_tools.image_tools_service import (
 
 from backend.services.document_tools.document_inbox_tools_service import (
     compress_inbox_pdf,
+    compress_inbox_pdf_strong,
     convert_inbox_image_to_pdf,
     convert_inbox_images_to_pdf,
     crop_inbox_image,
@@ -51,6 +53,8 @@ __all__ = [
 
     # Core PDF tools
     "compress_pdf_basic",
+    "compress_inbox_pdf_strong",
+    "compress_pdf_rasterized",
     "extract_pdf_pages",
     "merge_pdfs",
     "remove_pdf_pages",

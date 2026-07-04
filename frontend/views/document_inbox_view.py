@@ -6,6 +6,14 @@ from backend.services import document_inbox_service
 from backend.services.list_expediente_box_directory import list_expediente_box_directory
 from backend.services import document_inbox_watch_service
 from backend.services import document_viewer_service
+from backend.services.document_tools import (
+    compress_inbox_pdf_strong,
+    crop_inbox_image,
+    get_document_tool_capabilities_for_inbox_items,
+    merge_inbox_pdfs,
+    reorder_pages_from_inbox_pdf,
+    split_inbox_pdf_by_ranges,
+)
 from frontend.components.app_alert import error_alert, success_alert
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.app_empty_state import empty_state
@@ -880,6 +888,22 @@ def document_inbox_view(page: ft.Page):
         except Exception as exc:
             show_error(exc)
 
+    def _is_pdf_item(item):
+        filename = str(item.get("original_filename") or item.get("stored_filename") or "").lower()
+        mime = str(item.get("mime_type") or "").lower()
+        ext = str(item.get("file_ext") or "").lower().strip(".")
+        return filename.endswith(".pdf") or ext == "pdf" or mime == "application/pdf"
+
+    def _is_image_item(item):
+        filename = str(item.get("original_filename") or item.get("stored_filename") or "").lower()
+        mime = str(item.get("mime_type") or "").lower()
+        ext = str(item.get("file_ext") or "").lower().strip(".")
+        return (
+            filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"))
+            or ext in {"png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"}
+            or mime.startswith("image/")
+        )
+
     def render_items():
         selected_ids = set(state.get("selected_item_ids") or set())
         rows = []
@@ -928,6 +952,52 @@ def document_inbox_view(page: ft.Page):
                     )
                 )
 
+            action_groups = [
+                {
+                    "label": "Documento",
+                    "items": [
+                        {"label": "Ficha", "on_click": lambda e, item_id=item_id: open_item_detail(item_id)},
+                        {"label": "Previsualizar", "on_click": lambda e, item_id=item_id: (_activate_item_for_tool(item_id), show_preview(e))},
+                        {"label": "Abrir externo", "on_click": lambda e, item_id=item_id: (_activate_item_for_tool(item_id), open_system(e))},
+                    ],
+                },
+            ]
+
+            tool_items = []
+
+            if _is_pdf_item(item):
+                tool_items.extend(
+                    [
+                        {"label": "Comprimir PDF", "on_click": lambda e, item_id=item_id: run_document_tool_compress_pdf(e, item_id=item_id)},
+                        {"label": "Ordenar páginas", "on_click": lambda e, item_id=item_id: open_document_tool_reorder_dialog(e, item_id=item_id)},
+                        {"label": "Dividir PDF", "on_click": lambda e, item_id=item_id: open_document_tool_split_dialog(e, item_id=item_id)},
+                    ]
+                )
+
+            if _is_image_item(item):
+                tool_items.append(
+                    {"label": "Recortar imagen", "on_click": lambda e, item_id=item_id: open_document_tool_crop_dialog(e, item_id=item_id)}
+                )
+
+            if tool_items:
+                action_groups.append(
+                    {
+                        "label": "Herramientas",
+                        "items": tool_items,
+                    }
+                )
+
+            action_groups.append(
+                {
+                    "label": "Estado",
+                    "items": [
+                        {"label": "Marcar revisado", "on_click": lambda e, item_id=item_id: (_activate_item_for_tool(item_id), set_status("reviewed"))},
+                        {"label": "Marcar duplicado", "on_click": lambda e, item_id=item_id: (_activate_item_for_tool(item_id), set_status("duplicate"))},
+                        {"label": "Descartar", "danger": True, "on_click": lambda e, item_id=item_id: (_activate_item_for_tool(item_id), set_status("discarded"))},
+                    ],
+                }
+            )
+
             rows.append(
                 document_file_card(
                     name=f"#{item_id} · {item.get('original_filename') or '-'}",
@@ -940,24 +1010,7 @@ def document_inbox_view(page: ft.Page):
                     checkbox_value=selected,
                     on_select=lambda e, item_id=item_id: toggle_item_selection(item_id),
                     extra_lines=extra_lines,
-                    action_groups=[
-                        {
-                            "label": "Documento",
-                            "items": [
-                                {"label": "Ficha", "on_click": lambda e, item_id=item_id: open_item_detail(item_id)},
-                                {"label": "Previsualizar", "on_click": lambda e, item_id=item_id: select_item(item_id) or show_preview(e)},
-                                {"label": "Abrir externo", "on_click": lambda e, item_id=item_id: select_item(item_id) or open_system(e)},
-                            ],
-                        },
-                        {
-                            "label": "Estado",
-                            "items": [
-                                {"label": "Marcar revisado", "on_click": lambda e, item_id=item_id: select_item(item_id) or set_status("reviewed")},
-                                {"label": "Marcar duplicado", "on_click": lambda e, item_id=item_id: select_item(item_id) or set_status("duplicate")},
-                                {"label": "Descartar", "danger": True, "on_click": lambda e, item_id=item_id: select_item(item_id) or set_status("discarded")},
-                            ],
-                        },
-                    ],
+                    action_groups=action_groups,
                     compact=True,
                 )
             )
@@ -2175,6 +2228,439 @@ def document_inbox_view(page: ft.Page):
     def discard_selected_documents(e=None):
         update_selected_documents_status("discarded", "Descartados")
 
+    def _selected_inbox_ids_in_view_order():
+        selected_ids = {int(x) for x in (state.get("selected_item_ids") or set())}
+
+        # Si no hay selección por checkbox, usar el documento activo de la tarjeta/ficha.
+        if not selected_ids and state.get("selected_item_id"):
+            try:
+                selected_ids = {int(state.get("selected_item_id"))}
+            except Exception:
+                selected_ids = set()
+
+        ordered = []
+
+        for item in state.get("items", []):
+            try:
+                item_id = int(item.get("id"))
+            except Exception:
+                continue
+
+            if item_id in selected_ids:
+                ordered.append(item_id)
+
+        # Fallback por si hay selección de otra página o el estado no está sincronizado.
+        for item_id in sorted(selected_ids):
+            if item_id not in ordered:
+                ordered.append(item_id)
+
+        return ordered
+
+    def _selected_single_inbox_id():
+        selected_ids = _selected_inbox_ids_in_view_order()
+
+        if len(selected_ids) != 1:
+            raise ValueError("Selecciona exactamente un documento.")
+
+        return int(selected_ids[0])
+
+    def _activate_item_for_tool(item_id):
+        try:
+            select_item(int(item_id))
+        except Exception:
+            state["selected_item_id"] = int(item_id)
+
+    def _run_card_action(item_id, callback):
+        _activate_item_for_tool(item_id)
+        return callback(None)
+
+    def _refresh_after_document_tool(message):
+        state["selected_item_ids"] = set()
+        selected_label.value = "Ningún documento seleccionado."
+        bulk_actions_message.content = success_alert(message)
+        refresh_items()
+        bulk_actions_box.content = build_bulk_actions_content()
+
+        for control in (selected_label, bulk_actions_message, bulk_actions_box):
+            try:
+                control.update()
+            except Exception:
+                pass
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def _show_document_tool_error(exc):
+        bulk_actions_message.content = error_alert(str(exc))
+
+        try:
+            bulk_actions_message.update()
+        except Exception:
+            pass
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def _parse_page_order(raw_value):
+        raw = str(raw_value or "").strip()
+
+        if not raw:
+            raise ValueError("Indica el nuevo orden de páginas. Ejemplo: 2,1,3")
+
+        pages = []
+
+        for chunk in raw.replace(";", ",").split(","):
+            value = chunk.strip()
+
+            if not value:
+                continue
+
+            pages.append(int(value))
+
+        if not pages:
+            raise ValueError("No se pudo interpretar el orden de páginas.")
+
+        return pages
+
+    def _parse_pdf_ranges(raw_value):
+        raw = str(raw_value or "").strip()
+
+        if not raw:
+            raise ValueError("Indica rangos. Ejemplo: 1-2,3-5")
+
+        ranges = []
+
+        for chunk in raw.replace(";", ",").split(","):
+            value = chunk.strip()
+
+            if not value:
+                continue
+
+            if "-" in value:
+                start_raw, end_raw = value.split("-", 1)
+                start = int(start_raw.strip())
+                end = int(end_raw.strip())
+            else:
+                start = int(value)
+                end = start
+
+            ranges.append((start, end))
+
+        if not ranges:
+            raise ValueError("No se pudo interpretar ningún rango.")
+
+        return ranges
+
+    def _close_dialog(dialog):
+        dialog.open = False
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def run_document_tool_compress_pdf(e=None, item_id=None):
+        try:
+            item_id = int(item_id) if item_id is not None else _selected_single_inbox_id()
+            response = compress_inbox_pdf_strong(
+                item_id,
+                dpi=120,
+                jpeg_quality=55,
+                grayscale=True,
+                register_result=True,
+                output_stem="pdf_comprimido_bandeja",
+            )
+
+            if not response.get("ok"):
+                raise ValueError(response)
+
+            generated = response.get("generated_item") or {}
+            _refresh_after_document_tool(
+                f"PDF comprimido. Nuevo documento #{generated.get('id') or '-'}."
+            )
+        except Exception as exc:
+            _show_document_tool_error(exc)
+
+    def run_document_tool_merge_pdfs(e=None):
+        try:
+            selected_ids = _selected_inbox_ids_in_view_order()
+
+            if len(selected_ids) < 2:
+                raise ValueError("Selecciona al menos dos PDFs para unir.")
+
+            response = merge_inbox_pdfs(
+                selected_ids,
+                register_result=True,
+                output_stem="pdf_unido_bandeja",
+            )
+
+            if not response.get("ok"):
+                raise ValueError(response)
+
+            generated = response.get("generated_item") or {}
+            _refresh_after_document_tool(
+                f"PDFs unidos. Nuevo documento #{generated.get('id') or '-'}."
+            )
+        except Exception as exc:
+            _show_document_tool_error(exc)
+
+    def open_document_tool_reorder_dialog(e=None, item_id=None):
+        try:
+            item_id = int(item_id) if item_id is not None else _selected_single_inbox_id()
+        except Exception as exc:
+            _show_document_tool_error(exc)
+            return
+
+        order_field = ft.TextField(
+            label="Nuevo orden de páginas",
+            hint_text="Ejemplo: 2,1,3",
+            width=320,
+        )
+
+        def submit(ev=None):
+            try:
+                ordered_pages = _parse_page_order(order_field.value)
+                response = reorder_pages_from_inbox_pdf(
+                    item_id,
+                    ordered_pages=ordered_pages,
+                    register_result=True,
+                    output_stem="pdf_ordenado_bandeja",
+                )
+
+                if not response.get("ok"):
+                    raise ValueError(response)
+
+                _close_dialog(dialog)
+                generated = response.get("generated_item") or {}
+                _refresh_after_document_tool(
+                    f"PDF ordenado. Nuevo documento #{generated.get('id') or '-'}."
+                )
+            except Exception as exc:
+                _show_document_tool_error(exc)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Ordenar páginas PDF"),
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        f"Documento seleccionado: #{item_id}",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    order_field,
+                    ft.Text(
+                        "Usa numeración humana. Debes incluir todas las páginas una sola vez.",
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                ],
+                tight=True,
+                spacing=8,
+            ),
+            actions=[
+                secondary_button("Cancelar", lambda ev: _close_dialog(dialog)),
+                primary_button("Generar PDF ordenado", submit),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
+    def open_document_tool_split_dialog(e=None, item_id=None):
+        try:
+            item_id = int(item_id) if item_id is not None else _selected_single_inbox_id()
+        except Exception as exc:
+            _show_document_tool_error(exc)
+            return
+
+        ranges_field = ft.TextField(
+            label="Rangos a dividir",
+            hint_text="Ejemplo: 1-2,3-5,6",
+            width=320,
+        )
+
+        def submit(ev=None):
+            try:
+                ranges = _parse_pdf_ranges(ranges_field.value)
+                response = split_inbox_pdf_by_ranges(
+                    item_id,
+                    ranges=ranges,
+                    register_result=True,
+                    output_stem="pdf_dividido_bandeja",
+                )
+
+                if not response.get("ok"):
+                    raise ValueError(response)
+
+                _close_dialog(dialog)
+                generated_items = response.get("generated_items") or []
+                _refresh_after_document_tool(
+                    f"PDF dividido. Nuevos documentos: {len(generated_items)}."
+                )
+            except Exception as exc:
+                _show_document_tool_error(exc)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Dividir PDF"),
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        f"Documento seleccionado: #{item_id}",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ranges_field,
+                    ft.Text(
+                        "Rangos inclusivos. Ejemplo: 1-2,3-5. Una página sola: 6.",
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                ],
+                tight=True,
+                spacing=8,
+            ),
+            actions=[
+                secondary_button("Cancelar", lambda ev: _close_dialog(dialog)),
+                primary_button("Dividir PDF", submit),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
+    def open_document_tool_crop_dialog(e=None, item_id=None):
+        try:
+            item_id = int(item_id) if item_id is not None else _selected_single_inbox_id()
+        except Exception as exc:
+            _show_document_tool_error(exc)
+            return
+
+        left_field = ft.TextField(label="Left", value="0", width=90)
+        top_field = ft.TextField(label="Top", value="0", width=90)
+        right_field = ft.TextField(label="Right", hint_text="Ej. 500", width=90)
+        bottom_field = ft.TextField(label="Bottom", hint_text="Ej. 700", width=90)
+
+        def submit(ev=None):
+            try:
+                response = crop_inbox_image(
+                    item_id,
+                    left=int(left_field.value or 0),
+                    top=int(top_field.value or 0),
+                    right=int(right_field.value or 0),
+                    bottom=int(bottom_field.value or 0),
+                    register_result=True,
+                    output_stem="imagen_recortada_bandeja",
+                )
+
+                if not response.get("ok"):
+                    raise ValueError(response)
+
+                _close_dialog(dialog)
+                generated = response.get("generated_item") or {}
+                _refresh_after_document_tool(
+                    f"Imagen recortada. Nuevo documento #{generated.get('id') or '-'}."
+                )
+            except Exception as exc:
+                _show_document_tool_error(exc)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Recortar imagen"),
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        f"Documento seleccionado: #{item_id}",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Row(
+                        controls=[left_field, top_field, right_field, bottom_field],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                    ft.Text(
+                        "Coordenadas en píxeles: left, top, right, bottom. "
+                        "El recorte visual vendrá en una fase posterior.",
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                ],
+                tight=True,
+                spacing=8,
+            ),
+            actions=[
+                secondary_button("Cancelar", lambda ev: _close_dialog(dialog)),
+                primary_button("Recortar", submit),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
+    def build_document_tools_bulk_control():
+        selected_ids = _selected_inbox_ids_in_view_order()
+
+        try:
+            capabilities = get_document_tool_capabilities_for_inbox_items(selected_ids)
+            capability_map = {
+                item.get("operation"): item
+                for item in capabilities.get("capabilities", [])
+                if item.get("enabled")
+            }
+        except Exception:
+            capability_map = {}
+
+        def enabled(operation):
+            return operation in capability_map
+
+        menu_items = [
+            ft.PopupMenuItem(
+                content=ft.Text("Comprimir PDF"),
+                disabled=not enabled("pdf_compress_basic"),
+                on_click=run_document_tool_compress_pdf if enabled("pdf_compress_basic") else None,
+            ),
+            ft.PopupMenuItem(
+                content=ft.Text("Ordenar páginas PDF"),
+                disabled=not enabled("pdf_reorder_pages"),
+                on_click=open_document_tool_reorder_dialog if enabled("pdf_reorder_pages") else None,
+            ),
+            ft.PopupMenuItem(
+                content=ft.Text("Dividir PDF"),
+                disabled=not enabled("pdf_split_by_ranges"),
+                on_click=open_document_tool_split_dialog if enabled("pdf_split_by_ranges") else None,
+            ),
+            ft.PopupMenuItem(
+                content=ft.Text("Unir PDFs seleccionados"),
+                disabled=not enabled("pdf_merge"),
+                on_click=run_document_tool_merge_pdfs if enabled("pdf_merge") else None,
+            ),
+            ft.PopupMenuItem(
+                content=ft.Text("Recortar imagen"),
+                disabled=not enabled("image_crop"),
+                on_click=open_document_tool_crop_dialog if enabled("image_crop") else None,
+            ),
+        ]
+
+        return ft.PopupMenuButton(
+            icon=ft.Icons.BUILD_OUTLINED,
+            tooltip="Herramientas documentales",
+            disabled=not selected_ids,
+            items=menu_items,
+        )
+
+
     def build_bulk_actions_content():
         selected_count = len(state.get("selected_item_ids") or [])
 
@@ -2185,6 +2671,7 @@ def document_inbox_view(page: ft.Page):
             clear_tooltip="Limpiar selección",
             message_control=bulk_actions_message,
             actions=[
+                build_document_tools_bulk_control(),
                 {
                     "icon": ft.Icons.CHECK_CIRCLE_OUTLINE,
                     "tooltip": "Marcar revisados",

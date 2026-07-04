@@ -461,3 +461,139 @@ def compress_pdf_basic(
             errors=[str(exc)],
         )
 
+def compress_pdf_rasterized(
+    source_path: str | Path,
+    *,
+    dpi: int = 120,
+    jpeg_quality: int = 55,
+    grayscale: bool = True,
+    output_stem: str | None = None,
+) -> DocumentToolResult:
+    """
+    Compresión fuerte para PDFs escaneados.
+
+    Estrategia:
+    - Renderiza cada página a imagen.
+    - Reconvierte a PDF con JPEG optimizado.
+    - Reduce mucho en escaneos, pasaportes, padrones, contratos escaneados, etc.
+
+    Aviso:
+    - Puede perder texto seleccionable si el PDF tenía capa OCR.
+    - Pensado para generar copia comprimida, nunca sustituye el original.
+    """
+    operation = "pdf_compress_rasterized"
+
+    try:
+        try:
+            import fitz  # PyMuPDF
+        except Exception as exc:
+            raise RuntimeError("Falta dependencia PyMuPDF. Ejecuta pip install -r requirements.txt") from exc
+
+        from PIL import Image
+        from io import BytesIO
+
+        source = assert_existing_file(source_path)
+
+        dpi_i = int(dpi or 120)
+        quality_i = int(jpeg_quality or 55)
+
+        if dpi_i < 72 or dpi_i > 220:
+            raise ValueError("dpi debe estar entre 72 y 220.")
+
+        if quality_i < 25 or quality_i > 95:
+            raise ValueError("jpeg_quality debe estar entre 25 y 95.")
+
+        doc = fitz.open(str(source))
+
+        if doc.is_encrypted:
+            raise ValueError(f"PDF cifrado/no soportado: {source.name}")
+
+        output = build_output_path(
+            operation="compress_strong",
+            source_path=source,
+            extension=".pdf",
+            subdir="compressed",
+            stem=output_stem,
+        )
+
+        images = []
+        zoom = dpi_i / 72
+        matrix = fitz.Matrix(zoom, zoom)
+
+        for page in doc:
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+
+            mode = "RGB"
+            img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+
+            if grayscale:
+                img = img.convert("L").convert("RGB")
+
+            buffer = BytesIO()
+            img.save(
+                buffer,
+                format="JPEG",
+                quality=quality_i,
+                optimize=True,
+                progressive=True,
+            )
+            buffer.seek(0)
+
+            page_image = Image.open(buffer).convert("RGB")
+            images.append(page_image.copy())
+
+            buffer.close()
+
+        doc.close()
+
+        if not images:
+            raise ValueError("El PDF no contiene páginas.")
+
+        first, rest = images[0], images[1:]
+        first.save(
+            output,
+            save_all=True,
+            append_images=rest,
+            format="PDF",
+            resolution=dpi_i,
+        )
+
+        original_size = source.stat().st_size
+        output_size = output.stat().st_size
+        reduction_bytes = original_size - output_size
+        reduction_percent = round((reduction_bytes / original_size) * 100, 2) if original_size else 0
+
+        warnings = []
+        if output_size >= original_size:
+            warnings.append(
+                "La compresión fuerte no redujo el tamaño. "
+                "Prueba menor DPI/calidad o revisa si el PDF ya está optimizado."
+            )
+
+        return DocumentToolResult.success(
+            operation=operation,
+            source_paths=[source],
+            output_path=output,
+            warnings=warnings,
+            metadata={
+                "page_count": len(images),
+                "original_size_bytes": original_size,
+                "output_size_bytes": output_size,
+                "reduction_bytes": reduction_bytes,
+                "reduction_percent": reduction_percent,
+                "mime_type": "application/pdf",
+                "compression_mode": "rasterized_jpeg",
+                "dpi": dpi_i,
+                "jpeg_quality": quality_i,
+                "grayscale": bool(grayscale),
+                "ocr_text_layer_preserved": False,
+            },
+        )
+
+    except Exception as exc:
+        return DocumentToolResult.failure(
+            operation=operation,
+            source_paths=[source_path],
+            errors=[str(exc)],
+        )
+
