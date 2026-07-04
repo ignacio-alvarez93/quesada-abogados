@@ -7056,7 +7056,10 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         )
 
     def apply_filters(e=None):
-        refresh()
+        state["cards_page"] = 1
+        table_container.content = build_table()
+        content_area.content = build_view()
+        page.update()
 
     def clear_filters(e=None):
         search_input.value = ""
@@ -7065,10 +7068,17 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
         filtro_prioridad.value = "Todos"
         refresh()
 
+    def on_live_filter_change(e=None):
+        state["cards_page"] = 1
+        table_container.content = build_table()
+        content_area.content = build_view()
+        page.update()
+
+    search_input.on_change = on_live_filter_change
     search_input.on_submit = apply_filters
-    filtro_tipo.on_change = None
-    filtro_estado.on_change = None
-    filtro_prioridad.on_change = None
+    filtro_tipo.on_change = refresh
+    filtro_estado.on_change = refresh
+    filtro_prioridad.on_change = refresh
 
     load_data()
     table_container.content = build_table()
