@@ -73,6 +73,11 @@ def main(page: ft.Page):
             content = expedients_view(
                 page,
                 on_return_to_queue=lambda: navigate("Colas de presentación"),
+                on_open_document_inbox=lambda item_id=None, batch_id=None: navigate(
+                    "Bandeja documental",
+                    open_item_id=item_id,
+                    open_batch_id=batch_id,
+                ),
             )
         elif view_name == "Colas de presentación":
             content = presentation_queue_view(
@@ -96,6 +101,8 @@ def main(page: ft.Page):
                     "Expedientes",
                     open_expediente_id=expediente_id,
                 ),
+                open_item_id=kwargs.get("open_item_id"),
+                open_batch_id=kwargs.get("open_batch_id"),
             )
         elif view_name == "Reporting":
             content = reporting_view(page)
