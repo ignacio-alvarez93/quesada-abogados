@@ -82,7 +82,7 @@ def _status_chip(status):
     )
 
 
-def document_inbox_view(page: ft.Page, on_open_expediente=None):
+def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=None, open_batch_id=None):
     document_inbox_service.ensure_document_inbox_schema()
 
     client_options = document_inbox_service.client_autocomplete_options()
@@ -3664,6 +3664,10 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None):
     batch_detail_message = ft.Container()
     batch_target_expedient_id_field = text_input("Expediente ID destino", width=220)
     batch_target_subfolder_field = text_input("Subcarpeta Box destino", width=360)
+    batch_copy_as_directory_checkbox = ft.Checkbox(
+        label="Copiar como directorio del grupo",
+        value=False,
+    )
 
     batch_edit_name_field = text_input("Nombre del grupo", width=680)
     batch_edit_notes_field = multiline_input("Notas del grupo", width=680)
@@ -3921,6 +3925,20 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None):
             raw_expedient_id = str(batch_target_expedient_id_field.value or "").strip()
             expedient_id = int(raw_expedient_id) if raw_expedient_id else None
             subfolder = str(batch_target_subfolder_field.value or "").strip()
+
+            if bool(batch_copy_as_directory_checkbox.value):
+                import re
+
+                batch_for_folder = document_inbox_service.get_document_inbox_batch(batch_id)
+                raw_folder_name = str(batch_for_folder.get("name") or f"Grupo documental {batch_id}").strip()
+                safe_folder_name = re.sub(r'[<>:"/\\|?*]+', "_", raw_folder_name).strip(" ._")
+                safe_folder_name = safe_folder_name or f"Grupo documental {batch_id}"
+
+                if subfolder:
+                    clean_subfolder = subfolder.rstrip("/\\")
+                    subfolder = f"{clean_subfolder}/{safe_folder_name}"
+                else:
+                    subfolder = safe_folder_name
 
             result = document_inbox_service.copy_document_inbox_batch_to_expedient_box(
                 batch_id,
@@ -4304,6 +4322,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None):
                                 controls=[
                                     batch_target_expedient_id_field,
                                     batch_target_subfolder_field,
+                                    batch_copy_as_directory_checkbox,
                                     primary_button("Copiar grupo a Box expediente", copy_open_batch_to_box),
                                 ],
                                 spacing=10,
@@ -5377,6 +5396,27 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None):
         ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
+
+    pending_open_item_id = open_item_id or getattr(page, "open_document_inbox_item_id", None)
+    pending_open_batch_id = open_batch_id or getattr(page, "open_document_inbox_batch_id", None)
+
+    try:
+        page.open_document_inbox_item_id = None
+        page.open_document_inbox_batch_id = None
+    except Exception:
+        pass
+
+    if pending_open_batch_id:
+        try:
+            open_batch_detail_dialog(int(pending_open_batch_id))
+        except Exception as exc:
+            show_error(f"No se pudo abrir la ficha del grupo documental: {exc}")
+    elif pending_open_item_id:
+        try:
+            open_item_detail(int(pending_open_item_id))
+        except Exception as exc:
+            show_error(f"No se pudo abrir la ficha documental: {exc}")
+
 
     return ft.Container(
         expand=True,

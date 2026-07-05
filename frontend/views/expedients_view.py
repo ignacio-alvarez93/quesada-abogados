@@ -165,7 +165,7 @@ def _mercurio_file_order_label(item):
     return "-"
 
 
-def expedients_view(page: ft.Page, on_return_to_queue=None):
+def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inbox=None):
     expedient_service.initialize_expedients_schema()
     trace_service.initialize_traceability_schema()
     dynamic_form_service.initialize_dynamic_forms_schema()
@@ -5457,6 +5457,93 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                 0,
             )
 
+        def open_document_inbox_from_expedient_flow(item_id=None, batch_id=None):
+            if callable(on_open_document_inbox):
+                on_open_document_inbox(item_id=item_id, batch_id=batch_id)
+                return
+
+            try:
+                page.open_document_inbox_item_id = int(item_id) if item_id else None
+                page.open_document_inbox_batch_id = int(batch_id) if batch_id else None
+            except Exception:
+                pass
+
+            show_form_error("No hay navegación configurada hacia Bandeja Documental.")
+
+        def send_box_documents_to_inbox(file_entries, e=None):
+            entries = []
+            for entry in file_entries or []:
+                path_value = str((entry or {}).get("path") or "").strip()
+                if not path_value:
+                    continue
+                entries.append({
+                    "path": path_value,
+                    "name": (entry or {}).get("name") or Path(path_value).name,
+                })
+
+            if not entries:
+                show_form_error("Selecciona uno o varios documentos para enviar a Bandeja Documental.")
+                return
+
+            imported_item_ids = []
+            errors = []
+
+            for entry in entries:
+                try:
+                    item = document_inbox_service.import_box_file_to_inbox(
+                        entry["path"],
+                        expedient_id=int(expediente_id),
+                        source_label="Box expediente",
+                    )
+                    item_id = item.get("id") or item.get("inbox_item_id")
+                    if item_id:
+                        imported_item_ids.append(int(item_id))
+                except Exception as exc:
+                    errors.append(f"{entry.get('name') or entry.get('path')}: {exc}")
+
+            # Evitar duplicados preservando orden.
+            imported_item_ids = list(dict.fromkeys(imported_item_ids))
+
+            if errors and not imported_item_ids:
+                show_form_error("No se pudo enviar a Bandeja: " + " | ".join(errors[:3]))
+                return
+
+            if not imported_item_ids:
+                show_form_error("No se obtuvo ningún documento importado en Bandeja.")
+                return
+
+            if len(imported_item_ids) == 1:
+                selected_docs.clear()
+                open_document_inbox_from_expedient_flow(item_id=imported_item_ids[0])
+                return
+
+            client_id = (
+                (expediente or {}).get("client_id")
+                or (expediente or {}).get("cliente_id")
+                or (expediente or {}).get("cliente_principal_id")
+            )
+
+            numero = (
+                (expediente or {}).get("numero_expediente")
+                or (expediente or {}).get("numero")
+                or f"Expediente #{expediente_id}"
+            )
+
+            batch = document_inbox_service.create_document_inbox_batch(
+                name=f"{numero} - Documentos enviados desde expediente ({len(imported_item_ids)})",
+                inbox_item_ids=imported_item_ids,
+                client_id=int(client_id) if client_id else None,
+                expedient_id=int(expediente_id),
+                target_box_folder="PARA PRESENTAR",
+                notes="Grupo documental creado desde la ficha de expediente.",
+            )
+
+            selected_docs.clear()
+            open_document_inbox_from_expedient_flow(batch_id=batch.get("id"))
+
+        def send_selected_documents_to_inbox(e=None):
+            send_box_documents_to_inbox(list(selected_docs.values()), e=e)
+
         file_controls = []
         for file in sorted(data.get("files", []), key=_mercurio_file_sort_key):
             file_path = file.get("path") or ""
@@ -5478,6 +5565,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                             "items": [
                                 {"label": "Previsualizar", "on_click": lambda e, p=file_path, n=file_name: show_document_preview(p, n, expediente_id)},
                                 {"label": "Abrir externo", "on_click": lambda e, p=file_path: open_document_with_system(p, expediente_id)},
+                                {"label": "Enviar a Bandeja documental", "on_click": lambda e, p=file_path, n=file_name: send_box_documents_to_inbox([{"path": p, "name": n}], e=e)},
                             ],
                         },
                     ],
@@ -5492,7 +5580,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         controls=[
                             ft.Text("Documentación Box", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                             ft.Container(expand=True),
-                            primary_button("Copiar Box a bandeja", open_box_to_inbox_dialog),
                         ],
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -5541,6 +5628,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None):
                         "icon": ft.Icons.VISIBILITY,
                         "tooltip": "Ver seleccionados",
                         "on_click": open_selected_documents,
+                    },
+                    {
+                        "icon": ft.Icons.INBOX,
+                        "tooltip": "Enviar seleccionados a Bandeja documental",
+                        "on_click": send_selected_documents_to_inbox,
                     },
                 ],
                 compact=True,
