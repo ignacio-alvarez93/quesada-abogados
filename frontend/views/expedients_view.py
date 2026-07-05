@@ -577,6 +577,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         return errors
 
     def close_dialog(e=None):
+        try:
+            state.get("document_viewer_selected_docs", {}).clear()
+        except Exception:
+            pass
+
         expediente_dialog.open = False
 
         should_return_to_queue = bool(getattr(page, "return_to_queue_after_expediente", False))
@@ -5425,9 +5430,15 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             selected_docs.clear()
 
             try:
-                open_document_folder(data.get("current_path") or current_path)
+                documents_bulk_bar_box.content = build_documents_bulk_bar()
+                documents_bulk_bar_box.update()
             except Exception:
+                pass
+
+            try:
                 page.update()
+            except Exception:
+                pass
 
         def toggle_document_selection(e, file_path, file_name):
             if e.control.value:
@@ -5435,10 +5446,18 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             else:
                 selected_docs.pop(file_path, None)
 
+            # Actualiza solo la barra de acciones masivas. No reconstruye la pestaña,
+            # evitando que el scroll vuelva arriba al marcar/desmarcar documentos.
             try:
-                open_document_folder(data.get("current_path") or current_path)
+                documents_bulk_bar_box.content = build_documents_bulk_bar()
+                documents_bulk_bar_box.update()
             except Exception:
+                pass
+
+            try:
                 page.update()
+            except Exception:
+                pass
 
         def open_selected_documents(e=None):
             selected = list(selected_docs.values())
@@ -5544,6 +5563,52 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         def send_selected_documents_to_inbox(e=None):
             send_box_documents_to_inbox(list(selected_docs.values()), e=e)
 
+        documents_bulk_bar_box = ft.Container()
+
+        def build_documents_bulk_bar():
+            return ft.Row(
+                controls=[
+                    ft.Container(
+                        expand=True,
+                        content=bulk_action_bar(
+                            title="Documentos",
+                            selected_count=len(selected_docs),
+                            on_clear=clear_selected_documents,
+                            clear_tooltip="Limpiar selección",
+                            actions=[
+                                {
+                                    "icon": ft.Icons.VISIBILITY,
+                                    "tooltip": "Ver seleccionados",
+                                    "on_click": open_selected_documents,
+                                },
+                                {
+                                    "icon": ft.Icons.INBOX,
+                                    "tooltip": "Enviar seleccionados a Bandeja documental",
+                                    "on_click": send_selected_documents_to_inbox,
+                                },
+                            ],
+                            compact=True,
+                        ),
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.HOME_OUTLINED,
+                        tooltip="Volver a raíz",
+                        icon_color=Q_PRIMARY_DARK,
+                        on_click=lambda e: open_document_folder(root_path),
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.FOLDER_OPEN,
+                        tooltip="Abrir carpeta actual en Windows",
+                        icon_color=Q_PRIMARY_DARK,
+                        on_click=lambda e: open_current_document_folder(data.get("current_path") or current_path),
+                    ),
+                ],
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+
+        documents_bulk_bar_box.content = build_documents_bulk_bar()
+
         file_controls = []
         for file in sorted(data.get("files", []), key=_mercurio_file_sort_key):
             file_path = file.get("path") or ""
@@ -5607,43 +5672,12 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     spacing=4,
                 ),
             ),
-            ft.Row(
-                controls=[
-                    secondary_button("Volver a raíz", lambda e: open_document_folder(root_path)),
-                    secondary_button("Subir nivel", lambda e: open_document_parent_folder(data.get("current_path"), root_path)),
-                    primary_button("Abrir carpeta Windows", lambda e: open_current_document_folder(data.get("current_path") or current_path)),
-                    secondary_button("Ir a PARA PRESENTAR", open_para_presentar_in_browser),
-                    secondary_button("Volcar datos en formulario", volcar_datos_formulario),
-                ],
-                spacing=10,
-                wrap=True,
-            ),
-            bulk_action_bar(
-                title="Documentos",
-                selected_count=len(selected_docs),
-                on_clear=clear_selected_documents,
-                clear_tooltip="Limpiar selección",
-                actions=[
-                    {
-                        "icon": ft.Icons.VISIBILITY,
-                        "tooltip": "Ver seleccionados",
-                        "on_click": open_selected_documents,
-                    },
-                    {
-                        "icon": ft.Icons.INBOX,
-                        "tooltip": "Enviar seleccionados a Bandeja documental",
-                        "on_click": send_selected_documents_to_inbox,
-                    },
-                ],
-                compact=True,
-            ),
+            documents_bulk_bar_box,
             ft.Divider(),
             ft.Text(f"Carpetas ({len(folder_controls)})", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
             *(folder_controls or [ft.Text("No hay subcarpetas directas", color=Q_MUTED, size=13)]),
             ft.Text(f"Archivos ({len(file_controls)}) · orden Mercurio: 01, 02, 10 primero; después alfabético", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
             *(file_controls or [ft.Text("No hay archivos directos en esta carpeta", color=Q_MUTED, size=13)]),
-            ft.Divider(),
-            build_mercurio_box_status_content(expediente_id),
         ]
 
         return ft.Column(
@@ -6552,6 +6586,12 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     def open_edit(expediente):
         load_form(expediente)
         expediente_id = expediente.get("id")
+
+        try:
+            state.get("document_viewer_selected_docs", {}).clear()
+        except Exception:
+            pass
+
         state["dialog_section"] = "ficha"
         state["dialog_expediente_id"] = expediente_id
         state["specific_field_controls"] = {}
