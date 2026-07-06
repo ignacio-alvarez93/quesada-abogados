@@ -123,15 +123,35 @@ def _insert_or_get_batch(
     return int(cursor.lastrowid), True
 
 
-def _import_row_hash(row: CashmaticDiagnosticRow) -> str:
-    """Hash único de fila física dentro del archivo.
+def _canonical_movement_hash(row: CashmaticDiagnosticRow) -> str:
+    """Hash canónico del movimiento económico Cashmatic.
 
-    El row.row_hash conserva la huella del contenido normalizado.
-    Para staging económico necesitamos no perder filas idénticas del export,
-    por lo que añadimos row_number a la huella usada en la restricción UNIQUE.
+    Cashmatic puede exportar rangos solapados. Si el mismo movimiento aparece
+    en dos exportaciones distintas, debe figurar una sola vez en staging.
+
+    No usamos row_number ni batch_id porque pertenecen al archivo exportado,
+    no al movimiento económico real.
     """
-    payload = f"{row.row_number}|{row.row_hash}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    payload = {
+        "cashmatic_id": row.cashmatic_id,
+        "operation": row.operation,
+        "result": row.result,
+        "end_type": row.end_type,
+        "requested_centimos": row.requested_centimos,
+        "inserted_centimos": row.inserted_centimos,
+        "dispensed_centimos": row.dispensed_centimos,
+        "not_dispensed_centimos": row.not_dispensed_centimos,
+        "net_amount_centimos": row.net_amount_centimos,
+        "currency": row.currency,
+        "start_time": row.start_time,
+        "end_time": row.end_time,
+        "source_raw": row.source_raw,
+        "reason_raw": row.reason_raw,
+        "reference_raw": row.reference_raw,
+        "user_username": row.user_username,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _insert_movement(
@@ -140,7 +160,16 @@ def _insert_movement(
     row: CashmaticDiagnosticRow,
 ) -> bool:
     before = conn.total_changes
-    import_row_hash = _import_row_hash(row)
+    canonical_row_hash = _canonical_movement_hash(row)
+
+    # Dedupe global: si el movimiento ya existe por una exportación anterior,
+    # no se vuelve a insertar.
+    existing = conn.execute(
+        "SELECT id FROM cashmatic_movements WHERE row_hash = ? LIMIT 1",
+        (canonical_row_hash,),
+    ).fetchone()
+    if existing:
+        return False
 
     conn.execute(
         """
@@ -182,7 +211,7 @@ def _insert_movement(
         (
             batch_id,
             row.row_number,
-            import_row_hash,
+            canonical_row_hash,
             row.cashmatic_id,
             row.operation,
             row.result,

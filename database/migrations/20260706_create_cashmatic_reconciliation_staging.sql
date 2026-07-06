@@ -73,8 +73,11 @@ CREATE TABLE IF NOT EXISTS cashmatic_movements (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY(batch_id) REFERENCES economic_import_batches(id),
-    UNIQUE(batch_id, row_hash)
+    UNIQUE(row_hash)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_cashmatic_movements_row_hash
+ON cashmatic_movements(row_hash);
 
 CREATE INDEX IF NOT EXISTS idx_cashmatic_movements_batch_id
 ON cashmatic_movements(batch_id);
