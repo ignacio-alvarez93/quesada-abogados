@@ -36,3 +36,5 @@ storage/document_tools/**/*.webp
 storage/document_tools/**/*.tif
 storage/document_tools/**/*.tiff
 !storage/document_tools/**/.gitkeep
+
+tmp/
