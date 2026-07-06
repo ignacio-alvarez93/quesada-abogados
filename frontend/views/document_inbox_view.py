@@ -2619,7 +2619,68 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             show_error(exc)
 
 
+    def _document_tool_batch_context_id():
+        try:
+            batch_id = int(state.get("document_tool_batch_id") or 0)
+        except Exception:
+            batch_id = 0
+        return batch_id if batch_id else None
+
+    def _document_tool_register_response_in_batch_if_needed(response):
+        batch_id = _document_tool_batch_context_id()
+        if not batch_id:
+            return []
+
+        generated_ids = []
+
+        generated = response.get("generated_item") or {}
+        if isinstance(generated, dict) and generated.get("id"):
+            generated_ids.append(int(generated.get("id")))
+
+        for generated_item in response.get("generated_items") or []:
+            if isinstance(generated_item, dict) and generated_item.get("id"):
+                generated_ids.append(int(generated_item.get("id")))
+
+        generated_ids = list(dict.fromkeys([x for x in generated_ids if x]))
+
+        if generated_ids:
+            document_inbox_service.add_items_to_document_inbox_batch(batch_id, generated_ids)
+
+        return generated_ids
+
+
     def _refresh_after_document_tool(message):
+        batch_id = _document_tool_batch_context_id()
+
+        if batch_id:
+            state["selected_item_ids"] = set()
+            selected_label.value = "Ningún documento seleccionado."
+            batch_detail_message.content = success_alert(message)
+            state["batch_detail_section"] = "documentos"
+
+            try:
+                open_batch_detail_dialog(batch_id)
+            except Exception:
+                pass
+
+            try:
+                refresh_items()
+            except Exception:
+                pass
+
+            try:
+                refresh_batches_panel()
+            except Exception:
+                pass
+
+            state["document_tool_batch_id"] = None
+
+            try:
+                page.update()
+            except Exception:
+                pass
+            return
+
         state["selected_item_ids"] = set()
         selected_label.value = "Ningún documento seleccionado."
         bulk_actions_message.content = success_alert(message)
@@ -2638,6 +2699,20 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             pass
 
     def _show_document_tool_error(exc):
+        batch_id = _document_tool_batch_context_id()
+
+        if batch_id:
+            batch_detail_message.content = error_alert(str(exc))
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+            return
+
         bulk_actions_message.content = error_alert(str(exc))
 
         try:
@@ -2739,6 +2814,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     + (" " + " | ".join([str(x) for x in (errors + warnings)[:2]]) if (errors or warnings) else "")
                 )
 
+            _document_tool_register_response_in_batch_if_needed(response)
             generated = response.get("generated_item") or {}
             result_meta = ((response.get("result") or {}).get("metadata") or {})
             _refresh_after_document_tool(
@@ -2760,6 +2836,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             if not response.get("ok"):
                 raise ValueError(response)
 
+            _document_tool_register_response_in_batch_if_needed(response)
             generated = response.get("generated_item") or {}
             _refresh_after_document_tool(
                 f"Imagen convertida a PDF. Nuevo documento #{generated.get('id') or '-'}."
@@ -2779,6 +2856,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             if not response.get("ok"):
                 raise ValueError(response)
 
+            _document_tool_register_response_in_batch_if_needed(response)
             generated = response.get("generated_item") or {}
             _refresh_after_document_tool(
                 f"Word convertido a PDF. Nuevo documento #{generated.get('id') or '-'}."
@@ -2802,6 +2880,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             if not response.get("ok"):
                 raise ValueError(response)
 
+            _document_tool_register_response_in_batch_if_needed(response)
             generated = response.get("generated_item") or {}
             _refresh_after_document_tool(
                 f"PDFs unidos. Nuevo documento #{generated.get('id') or '-'}."
@@ -2844,6 +2923,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     raise ValueError(response)
 
                 _close_dialog(dialog)
+                _document_tool_register_response_in_batch_if_needed(response)
                 generated = response.get("generated_item") or {}
                 ordered_pages = ((response.get("result") or {}).get("metadata") or {}).get("ordered_pages")
 
@@ -2932,6 +3012,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     raise ValueError(response)
 
                 _close_dialog(dialog)
+                _document_tool_register_response_in_batch_if_needed(response)
                 generated = response.get("generated_item") or {}
                 metadata = ((response.get("result") or {}).get("metadata") or {})
                 rotated_pages = metadata.get("rotated_pages") or []
@@ -3006,6 +3087,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     raise ValueError(response)
 
                 _close_dialog(dialog)
+                _document_tool_register_response_in_batch_if_needed(response)
                 generated_items = response.get("generated_items") or []
                 _refresh_after_document_tool(
                     f"PDF dividido. Nuevos documentos: {len(generated_items)}."
@@ -3072,6 +3154,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     raise ValueError(response)
 
                 _close_dialog(dialog)
+                _document_tool_register_response_in_batch_if_needed(response)
                 generated = response.get("generated_item") or {}
                 _refresh_after_document_tool(
                     f"Imagen recortada. Nuevo documento #{generated.get('id') or '-'}."
@@ -4422,6 +4505,44 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             success_label="Word convertido a PDF",
         )
 
+    def _open_batch_item_document_tool(item_id, tool_opener):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            item_id = int(item_id or 0)
+            if not item_id:
+                raise ValueError("No hay documento seleccionado dentro del grupo.")
+
+            state["document_tool_batch_id"] = batch_id
+            state["batch_detail_section"] = "documentos"
+
+            return tool_opener(None, item_id=item_id)
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo abrir herramienta del grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def open_batch_item_move_page_dialog(item_id):
+        return _open_batch_item_document_tool(item_id, open_document_tool_reorder_dialog)
+
+    def open_batch_item_rotate_pages_dialog(item_id):
+        return _open_batch_item_document_tool(item_id, open_document_tool_rotate_dialog)
+
+    def open_batch_item_split_pdf_dialog(item_id):
+        return _open_batch_item_document_tool(item_id, open_document_tool_split_dialog)
+
+    def open_batch_item_crop_image_dialog(item_id):
+        return _open_batch_item_document_tool(item_id, open_document_tool_crop_dialog)
+
+
     def _batch_item_individual_tool_items(item):
         suffix = _batch_item_suffix(item)
         item_id = int(item.get("id") or item.get("inbox_item_id") or 0)
@@ -4436,11 +4557,27 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 "label": "Comprimir PDF",
                 "on_click": lambda e, item_id=item_id: run_open_batch_item_compress_pdf(item_id),
             })
+            actions.append({
+                "label": "Mover página",
+                "on_click": lambda e, item_id=item_id: open_batch_item_move_page_dialog(item_id),
+            })
+            actions.append({
+                "label": "Rotar páginas",
+                "on_click": lambda e, item_id=item_id: open_batch_item_rotate_pages_dialog(item_id),
+            })
+            actions.append({
+                "label": "Dividir PDF",
+                "on_click": lambda e, item_id=item_id: open_batch_item_split_pdf_dialog(item_id),
+            })
 
         if suffix in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
             actions.append({
                 "label": "Convertir imagen a PDF",
                 "on_click": lambda e, item_id=item_id: run_open_batch_item_image_to_pdf(item_id),
+            })
+            actions.append({
+                "label": "Recortar imagen",
+                "on_click": lambda e, item_id=item_id: open_batch_item_crop_image_dialog(item_id),
             })
 
         if suffix in {".doc", ".docx"}:
