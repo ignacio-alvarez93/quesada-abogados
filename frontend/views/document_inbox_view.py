@@ -9,6 +9,7 @@ from backend.services import document_viewer_service
 from backend.services.document_tools import (
     compress_inbox_pdf_smart,
     convert_inbox_image_to_pdf,
+    convert_inbox_images_to_pdf,
     convert_inbox_word_to_pdf,
     crop_inbox_image,
     get_document_tool_capabilities_for_inbox_items,
@@ -876,6 +877,12 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             return str(override or "").strip()
         return str(box_subfolder.value or "").strip()
 
+    def _resolve_box_target_filename_for_copy() -> str:
+        override = state.pop("copy_to_box_target_filename_override", None)
+        if override is not None:
+            return str(override or "").strip()
+        return ""
+
 
     def copy_to_box(e=None, open_expediente_after=True):
         try:
@@ -888,6 +895,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 item["id"],
                 expedient_id=int(eid),
                 subfolder=_resolve_box_subfolder_for_copy(),
+                target_filename=_resolve_box_target_filename_for_copy(),
             )
             show_success(f"Documento copiado a Box: {updated.get('copied_to_box_path')}")
             refresh_items()
@@ -1433,6 +1441,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     selected_directory,
                     base_box_folder,
                 )
+                state["copy_to_box_target_filename_override"] = detail_target_filename_field.value or ""
 
                 copied = copy_to_box(e, open_expediente_after=False)
                 if not copied:
@@ -1860,7 +1869,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
         def on_detail_directory_selected(value):
             try:
-                label = _normalize_autocomplete_value(value)
+                label = _batch_box_normalize_autocomplete_value(value)
                 if not label:
                     return
 
@@ -1875,11 +1884,15 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 show_error(exc)
 
         detail_directory_autocomplete = AppAutocomplete(
-            page,
+            page=page,
             label="Directorio / carpeta destino",
             options=[],
+            width=520,
             on_select=on_detail_directory_selected,
         )
+
+        detail_target_filename_field = text_input("Nombre archivo destino", width=340)
+        detail_target_filename_field.value = ""
 
         detail_client_options_raw = document_inbox_service.client_autocomplete_options()
         detail_client_labels = []
@@ -1939,7 +1952,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
         def on_detail_client_selected(value):
             try:
-                label = _normalize_autocomplete_value(value)
+                label = _batch_box_normalize_autocomplete_value(value)
                 client_id = _extract_id_from_label(label, detail_client_label_to_id)
 
                 if not client_id:
@@ -2011,7 +2024,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
         def on_detail_expedient_selected(value):
             try:
-                label = _normalize_autocomplete_value(value)
+                label = _batch_box_normalize_autocomplete_value(value)
                 expedient_id = _extract_id_from_label(label, detail_expedient_label_to_id)
 
                 if not expedient_id:
@@ -2141,7 +2154,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     ft.Text("Vincular documento", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                     detail_relation_text,
                     ft.Text(
-                        "Selecciona cliente, expediente y, opcionalmente, un directorio destino para este documento.",
+                        "Selecciona cliente, expediente, directorio destino y, si procede, el nombre final del archivo en Box.",
                         size=12,
                         color=Q_MUTED,
                     ),
@@ -2167,7 +2180,15 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                             spacing=4,
                         ),
                     ),
-                    detail_directory_autocomplete.control,
+                    ft.Row(
+                        controls=[
+                            detail_directory_autocomplete.control,
+                            detail_target_filename_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                    ),
                     detail_directory_label,
                     ft.Row(
                         controls=[
@@ -2598,7 +2619,68 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             show_error(exc)
 
 
+    def _document_tool_batch_context_id():
+        try:
+            batch_id = int(state.get("document_tool_batch_id") or 0)
+        except Exception:
+            batch_id = 0
+        return batch_id if batch_id else None
+
+    def _document_tool_register_response_in_batch_if_needed(response):
+        batch_id = _document_tool_batch_context_id()
+        if not batch_id:
+            return []
+
+        generated_ids = []
+
+        generated = response.get("generated_item") or {}
+        if isinstance(generated, dict) and generated.get("id"):
+            generated_ids.append(int(generated.get("id")))
+
+        for generated_item in response.get("generated_items") or []:
+            if isinstance(generated_item, dict) and generated_item.get("id"):
+                generated_ids.append(int(generated_item.get("id")))
+
+        generated_ids = list(dict.fromkeys([x for x in generated_ids if x]))
+
+        if generated_ids:
+            document_inbox_service.add_items_to_document_inbox_batch(batch_id, generated_ids)
+
+        return generated_ids
+
+
     def _refresh_after_document_tool(message):
+        batch_id = _document_tool_batch_context_id()
+
+        if batch_id:
+            state["selected_item_ids"] = set()
+            selected_label.value = "Ningún documento seleccionado."
+            batch_detail_message.content = success_alert(message)
+            state["batch_detail_section"] = "documentos"
+
+            try:
+                open_batch_detail_dialog(batch_id)
+            except Exception:
+                pass
+
+            try:
+                refresh_items()
+            except Exception:
+                pass
+
+            try:
+                refresh_batches_panel()
+            except Exception:
+                pass
+
+            state["document_tool_batch_id"] = None
+
+            try:
+                page.update()
+            except Exception:
+                pass
+            return
+
         state["selected_item_ids"] = set()
         selected_label.value = "Ningún documento seleccionado."
         bulk_actions_message.content = success_alert(message)
@@ -2617,6 +2699,20 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             pass
 
     def _show_document_tool_error(exc):
+        batch_id = _document_tool_batch_context_id()
+
+        if batch_id:
+            batch_detail_message.content = error_alert(str(exc))
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+            return
+
         bulk_actions_message.content = error_alert(str(exc))
 
         try:
@@ -2718,6 +2814,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     + (" " + " | ".join([str(x) for x in (errors + warnings)[:2]]) if (errors or warnings) else "")
                 )
 
+            _document_tool_register_response_in_batch_if_needed(response)
             generated = response.get("generated_item") or {}
             result_meta = ((response.get("result") or {}).get("metadata") or {})
             _refresh_after_document_tool(
@@ -2739,6 +2836,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             if not response.get("ok"):
                 raise ValueError(response)
 
+            _document_tool_register_response_in_batch_if_needed(response)
             generated = response.get("generated_item") or {}
             _refresh_after_document_tool(
                 f"Imagen convertida a PDF. Nuevo documento #{generated.get('id') or '-'}."
@@ -2758,6 +2856,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             if not response.get("ok"):
                 raise ValueError(response)
 
+            _document_tool_register_response_in_batch_if_needed(response)
             generated = response.get("generated_item") or {}
             _refresh_after_document_tool(
                 f"Word convertido a PDF. Nuevo documento #{generated.get('id') or '-'}."
@@ -2781,6 +2880,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             if not response.get("ok"):
                 raise ValueError(response)
 
+            _document_tool_register_response_in_batch_if_needed(response)
             generated = response.get("generated_item") or {}
             _refresh_after_document_tool(
                 f"PDFs unidos. Nuevo documento #{generated.get('id') or '-'}."
@@ -2823,6 +2923,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     raise ValueError(response)
 
                 _close_dialog(dialog)
+                _document_tool_register_response_in_batch_if_needed(response)
                 generated = response.get("generated_item") or {}
                 ordered_pages = ((response.get("result") or {}).get("metadata") or {}).get("ordered_pages")
 
@@ -2911,6 +3012,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     raise ValueError(response)
 
                 _close_dialog(dialog)
+                _document_tool_register_response_in_batch_if_needed(response)
                 generated = response.get("generated_item") or {}
                 metadata = ((response.get("result") or {}).get("metadata") or {})
                 rotated_pages = metadata.get("rotated_pages") or []
@@ -2985,6 +3087,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     raise ValueError(response)
 
                 _close_dialog(dialog)
+                _document_tool_register_response_in_batch_if_needed(response)
                 generated_items = response.get("generated_items") or []
                 _refresh_after_document_tool(
                     f"PDF dividido. Nuevos documentos: {len(generated_items)}."
@@ -3051,6 +3154,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     raise ValueError(response)
 
                 _close_dialog(dialog)
+                _document_tool_register_response_in_batch_if_needed(response)
                 generated = response.get("generated_item") or {}
                 _refresh_after_document_tool(
                     f"Imagen recortada. Nuevo documento #{generated.get('id') or '-'}."
@@ -3664,6 +3768,12 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
     batch_detail_message = ft.Container()
     batch_target_expedient_id_field = text_input("Expediente ID destino", width=220)
     batch_target_subfolder_field = text_input("Subcarpeta Box destino", width=360)
+    batch_target_directory_name_field = text_input("Nombre del directorio/grupo al copiar", width=360)
+    batch_target_rename_map_field = multiline_input(
+        "Renombrar archivos del grupo opcional: una línea por documento, ejemplo: 12 = 01_Pasaporte.pdf",
+        width=760,
+        height=110,
+    )
     batch_copy_as_directory_checkbox = ft.Checkbox(
         label="Copiar como directorio del grupo",
         value=False,
@@ -3674,6 +3784,10 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
     batch_edit_subfolder_field = text_input("Subcarpeta Box destino", width=360)
     batch_edit_client_label_to_id = {}
     batch_edit_expedient_label_to_id = {}
+
+    batch_box_client_label_to_id = {}
+    batch_box_expedient_label_to_id = {}
+    batch_box_directory_label_to_path = {}
 
     BATCH_STATUS_OPTIONS = [
         ("draft", "Borrador"),
@@ -3824,6 +3938,263 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
     )
 
 
+    def _batch_box_client_labels():
+        batch_box_client_label_to_id.clear()
+        options = document_inbox_service.client_autocomplete_options()
+        for item in options:
+            label = item.get("label")
+            if label:
+                batch_box_client_label_to_id[label] = int(item.get("id"))
+        return list(batch_box_client_label_to_id.keys())
+
+    def _batch_box_expedient_labels_for_client(client_id):
+        batch_box_expedient_label_to_id.clear()
+        if not client_id:
+            return []
+
+        options = document_inbox_service.expedient_autocomplete_options_for_client(int(client_id))
+        for item in options:
+            label = item.get("label")
+            if label:
+                batch_box_expedient_label_to_id[label] = int(item.get("id"))
+        return list(batch_box_expedient_label_to_id.keys())
+
+    def _batch_box_directory_options_for_expedient(expedient_id):
+        batch_box_directory_label_to_path.clear()
+
+        if not expedient_id:
+            return []
+
+        try:
+            expedient_raw = document_inbox_service.get_expedient(int(expedient_id)) or {}
+            if isinstance(expedient_raw, dict):
+                expedient = expedient_raw
+            else:
+                try:
+                    expedient = dict(expedient_raw)
+                except Exception:
+                    expedient = {}
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo cargar expediente #{expedient_id}: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            return []
+
+        if not expedient:
+            batch_detail_message.content = error_alert(
+                f"No se pudo interpretar la ficha del expediente #{expedient_id}. "
+                "El servicio no devolvió un diccionario compatible."
+            )
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            return []
+
+        base_path = ""
+        for key in [
+            "box_folder_path",
+            "box_path",
+            "folder_path",
+            "ruta_box",
+            "ruta_carpeta_box",
+            "expedient_box_folder_path",
+        ]:
+            value = str(expedient.get(key) or "").strip()
+            if value:
+                base_path = value
+                break
+
+        state["batch_box_expedient_box_folder_path"] = base_path
+
+        if not base_path:
+            batch_detail_message.content = error_alert(
+                f"El expediente #{expedient_id} no tiene ruta Box configurada. No se pueden cargar directorios."
+            )
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            return []
+
+        try:
+            data = list_expediente_box_directory(base_path, relative_base=base_path)
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudieron listar directorios del expediente: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            return []
+
+        labels = []
+        seen = set()
+
+        def add_folder(label, path_value):
+            label = str(label or "").strip()
+            path_value = str(path_value or label or "").strip()
+            if not label or label in seen:
+                return
+            seen.add(label)
+            labels.append(label)
+            batch_box_directory_label_to_path[label] = path_value
+
+        if isinstance(data, dict):
+            folder_candidates = []
+            for key in ["folders", "directories", "dirs", "children"]:
+                value = data.get(key)
+                if isinstance(value, list):
+                    folder_candidates.extend(value)
+
+            for folder in folder_candidates:
+                if not isinstance(folder, dict):
+                    continue
+                label = str(
+                    folder.get("relative_path")
+                    or folder.get("relative")
+                    or folder.get("name")
+                    or folder.get("label")
+                    or ""
+                ).strip()
+                folder_path = str(
+                    folder.get("path")
+                    or folder.get("absolute_path")
+                    or folder.get("full_path")
+                    or label
+                ).strip()
+                add_folder(label, folder_path)
+
+        elif isinstance(data, list):
+            for folder in data:
+                if isinstance(folder, dict):
+                    label = str(
+                        folder.get("relative_path")
+                        or folder.get("relative")
+                        or folder.get("name")
+                        or folder.get("label")
+                        or ""
+                    ).strip()
+                    folder_path = str(
+                        folder.get("path")
+                        or folder.get("absolute_path")
+                        or folder.get("full_path")
+                        or label
+                    ).strip()
+                    add_folder(label, folder_path)
+                else:
+                    add_folder(str(folder), str(folder))
+
+        if not labels:
+            batch_detail_message.content = error_alert(
+                f"No se encontraron subdirectorios para el expediente #{expedient_id}. Ruta base: {base_path}"
+            )
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+
+        return labels
+
+    def _batch_box_normalize_autocomplete_value(value):
+        if isinstance(value, dict):
+            return str(
+                value.get("label")
+                or value.get("value")
+                or value.get("name")
+                or ""
+            ).strip()
+        return str(value or "").strip()
+
+    def on_batch_box_client_selected(value):
+        label = _batch_box_normalize_autocomplete_value(value)
+        client_id = batch_box_client_label_to_id.get(label)
+        state["batch_box_client_id"] = int(client_id) if client_id else None
+        state["batch_box_expedient_id"] = None
+        state["batch_box_selected_directory"] = ""
+
+        expedient_labels = _batch_box_expedient_labels_for_client(state.get("batch_box_client_id"))
+        batch_box_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+        batch_box_expedient_autocomplete.input.label = (
+            f"Expediente del cliente ({len(expedient_labels)})"
+            if expedient_labels
+            else "Expediente del cliente (sin expedientes)"
+        )
+        batch_box_directory_autocomplete.set_options([], clear_value=True)
+        batch_box_directory_label.value = "Directorio seleccionado: -"
+        page.update()
+
+    def on_batch_box_expedient_selected(value):
+        label = _batch_box_normalize_autocomplete_value(value)
+        expedient_id = batch_box_expedient_label_to_id.get(label)
+        state["batch_box_expedient_id"] = int(expedient_id) if expedient_id else None
+        state["batch_box_selected_directory"] = ""
+
+        directory_labels = _batch_box_directory_options_for_expedient(state.get("batch_box_expedient_id"))
+        batch_box_directory_autocomplete.set_options(directory_labels, clear_value=True)
+        batch_box_directory_autocomplete.input.label = (
+            f"Directorio / carpeta destino ({len(directory_labels)})"
+            if directory_labels
+            else "Directorio / carpeta destino (sin carpetas)"
+        )
+        batch_box_directory_label.value = (
+            f"Directorios cargados: {len(directory_labels)}"
+            if directory_labels
+            else "Directorio seleccionado: -"
+        )
+        page.update()
+
+    def on_batch_box_directory_selected(value):
+        label = _batch_box_normalize_autocomplete_value(value)
+        if not label:
+            return
+
+        state["batch_box_selected_directory"] = batch_box_directory_label_to_path.get(label) or label
+        batch_box_directory_label.value = f"Directorio seleccionado: {state.get('batch_box_selected_directory') or '-'}"
+        try:
+            batch_box_directory_label.update()
+        except Exception:
+            pass
+        page.update()
+
+    batch_box_client_autocomplete = AppAutocomplete(
+        page=page,
+        label="Cliente",
+        options=_batch_box_client_labels(),
+        width=420,
+        max_results=12,
+        on_select=on_batch_box_client_selected,
+        allow_free_text=False,
+    )
+
+    batch_box_expedient_autocomplete = AppAutocomplete(
+        page=page,
+        label="Expediente del cliente",
+        options=[],
+        width=420,
+        max_results=12,
+        on_select=on_batch_box_expedient_selected,
+        allow_free_text=False,
+    )
+
+    batch_box_directory_autocomplete = AppAutocomplete(
+        page=page,
+        label="Directorio / carpeta destino",
+        options=[],
+        width=520,
+        max_results=12,
+        on_select=on_batch_box_directory_selected,
+        allow_free_text=False,
+    )
+
+    batch_box_directory_label = ft.Text(
+        "Directorio seleccionado: -",
+        size=11,
+        color=Q_MUTED,
+    )
+
+
     def show_batch_item_preview(item):
         file_path = item.get("stored_path") or item.get("linked_document_path") or ""
         if not file_path:
@@ -3885,8 +4256,10 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             if not name:
                 raise ValueError("El nombre del grupo es obligatorio.")
 
-            client_id = state.get("batch_edit_client_id")
-            expedient_id = state.get("batch_edit_expedient_id")
+            current_batch = document_inbox_service.get_document_inbox_batch(batch_id)
+            client_id = current_batch.get("client_id")
+            expedient_id = current_batch.get("expedient_id")
+            target_box_folder = current_batch.get("target_box_folder") or ""
 
             updated = document_inbox_service.update_document_inbox_batch(
                 batch_id,
@@ -3894,7 +4267,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 notes=batch_edit_notes_field.value or "",
                 client_id=int(client_id) if client_id else None,
                 expedient_id=int(expedient_id) if expedient_id else None,
-                target_box_folder=batch_edit_subfolder_field.value or "",
+                target_box_folder=target_box_folder,
                 status=state.get("batch_edit_status") or "draft",
             )
 
@@ -3916,21 +4289,486 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 pass
 
 
+    def _batch_item_suffix(item):
+        filename = (
+            item.get("original_filename")
+            or item.get("stored_filename")
+            or item.get("stored_path")
+            or item.get("linked_document_path")
+            or ""
+        )
+        filename = str(filename).lower().strip()
+        if "." not in filename:
+            return ""
+        return "." + filename.rsplit(".", 1)[-1]
+
+    def _batch_item_ids_by_extensions(batch, extensions):
+        clean_extensions = {str(ext).lower() for ext in (extensions or [])}
+        ids = []
+
+        for item in batch.get("items") or []:
+            item_id = int(item.get("id") or item.get("inbox_item_id") or 0)
+            if not item_id:
+                continue
+
+            status = str(item.get("status") or "").strip().lower()
+            if status in {"duplicate", "discarded"}:
+                continue
+
+            if _batch_item_suffix(item) in clean_extensions:
+                ids.append(item_id)
+
+        return list(dict.fromkeys(ids))
+
+    def _generated_item_id_from_tool_response(response):
+        generated = (response or {}).get("generated_item") or {}
+        if isinstance(generated, dict):
+            item_id = generated.get("id") or generated.get("inbox_item_id")
+            return int(item_id) if item_id else None
+        return None
+
+    def _tool_error_message(response):
+        result = (response or {}).get("result") or {}
+        if isinstance(result, dict):
+            return result.get("error") or result.get("message") or result.get("details") or str(result)
+        return str(response or "")
+
+    def run_open_batch_pdf_merge(e=None):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            batch = document_inbox_service.get_document_inbox_batch(batch_id)
+            pdf_item_ids = _batch_item_ids_by_extensions(batch, {".pdf"})
+
+            if len(pdf_item_ids) < 2:
+                raise ValueError("Para unir PDFs el grupo debe contener al menos 2 PDFs válidos.")
+
+            response = merge_inbox_pdfs(
+                pdf_item_ids,
+                register_result=True,
+                output_stem=f"grupo_{batch_id}_pdf_unido",
+            )
+
+            if not response.get("ok"):
+                raise ValueError(_tool_error_message(response))
+
+            generated_item_id = _generated_item_id_from_tool_response(response)
+            if not generated_item_id:
+                raise ValueError("La herramienta generó archivo, pero no devolvió item registrado en Bandeja.")
+
+            document_inbox_service.add_items_to_document_inbox_batch(batch_id, [generated_item_id])
+
+            batch_detail_message.content = success_alert(
+                f"PDF unido generado y añadido al grupo: documento #{generated_item_id}."
+            )
+            state["batch_detail_section"] = "documentos"
+
+            open_batch_detail_dialog(batch_id)
+            refresh_items()
+            refresh_batches_panel()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo unir PDFs del grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def run_open_batch_images_to_pdf(e=None):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            batch = document_inbox_service.get_document_inbox_batch(batch_id)
+            image_item_ids = _batch_item_ids_by_extensions(
+                batch,
+                {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"},
+            )
+
+            if not image_item_ids:
+                raise ValueError("El grupo no contiene imágenes válidas para convertir a PDF.")
+
+            response = convert_inbox_images_to_pdf(
+                image_item_ids,
+                register_result=True,
+                output_stem=f"grupo_{batch_id}_imagenes_pdf",
+            )
+
+            if not response.get("ok"):
+                raise ValueError(_tool_error_message(response))
+
+            generated_item_id = _generated_item_id_from_tool_response(response)
+            if not generated_item_id:
+                raise ValueError("La herramienta generó archivo, pero no devolvió item registrado en Bandeja.")
+
+            document_inbox_service.add_items_to_document_inbox_batch(batch_id, [generated_item_id])
+
+            batch_detail_message.content = success_alert(
+                f"PDF de imágenes generado y añadido al grupo: documento #{generated_item_id}."
+            )
+            state["batch_detail_section"] = "documentos"
+
+            open_batch_detail_dialog(batch_id)
+            refresh_items()
+            refresh_batches_panel()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo convertir imágenes del grupo a PDF: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+
+    def _run_open_batch_single_tool(item_id, tool_func, *, output_stem, success_label):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            item_id = int(item_id or 0)
+            if not item_id:
+                raise ValueError("No hay documento seleccionado dentro del grupo.")
+
+            try:
+                response = tool_func(
+                    item_id,
+                    register_result=True,
+                    output_stem=output_stem,
+                )
+            except TypeError as exc:
+                if "output_stem" not in str(exc):
+                    raise
+                response = tool_func(
+                    item_id,
+                    register_result=True,
+                )
+
+            if not response.get("ok"):
+                raise ValueError(_tool_error_message(response))
+
+            generated_item_id = _generated_item_id_from_tool_response(response)
+            if not generated_item_id:
+                raise ValueError("La herramienta generó archivo, pero no devolvió item registrado en Bandeja.")
+
+            document_inbox_service.add_items_to_document_inbox_batch(batch_id, [generated_item_id])
+
+            batch_detail_message.content = success_alert(
+                f"{success_label}: documento #{generated_item_id} añadido al grupo."
+            )
+            state["batch_detail_section"] = "documentos"
+
+            open_batch_detail_dialog(batch_id)
+            refresh_items()
+            refresh_batches_panel()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo ejecutar herramienta sobre documento del grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def run_open_batch_item_compress_pdf(item_id):
+        _run_open_batch_single_tool(
+            item_id,
+            compress_inbox_pdf_smart,
+            output_stem=f"grupo_{state.get('open_batch_id')}_item_{item_id}_comprimido",
+            success_label="PDF comprimido",
+        )
+
+    def run_open_batch_item_image_to_pdf(item_id):
+        _run_open_batch_single_tool(
+            item_id,
+            convert_inbox_image_to_pdf,
+            output_stem=f"grupo_{state.get('open_batch_id')}_item_{item_id}_imagen_pdf",
+            success_label="Imagen convertida a PDF",
+        )
+
+    def run_open_batch_item_word_to_pdf(item_id):
+        _run_open_batch_single_tool(
+            item_id,
+            convert_inbox_word_to_pdf,
+            output_stem=f"grupo_{state.get('open_batch_id')}_item_{item_id}_word_pdf",
+            success_label="Word convertido a PDF",
+        )
+
+    def _open_batch_item_document_tool(item_id, tool_opener):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            item_id = int(item_id or 0)
+            if not item_id:
+                raise ValueError("No hay documento seleccionado dentro del grupo.")
+
+            state["document_tool_batch_id"] = batch_id
+            state["batch_detail_section"] = "documentos"
+
+            return tool_opener(None, item_id=item_id)
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo abrir herramienta del grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def open_batch_item_move_page_dialog(item_id):
+        return _open_batch_item_document_tool(item_id, open_document_tool_reorder_dialog)
+
+    def open_batch_item_rotate_pages_dialog(item_id):
+        return _open_batch_item_document_tool(item_id, open_document_tool_rotate_dialog)
+
+    def open_batch_item_split_pdf_dialog(item_id):
+        return _open_batch_item_document_tool(item_id, open_document_tool_split_dialog)
+
+    def open_batch_item_crop_image_dialog(item_id):
+        return _open_batch_item_document_tool(item_id, open_document_tool_crop_dialog)
+
+
+    def _batch_item_individual_tool_items(item):
+        suffix = _batch_item_suffix(item)
+        item_id = int(item.get("id") or item.get("inbox_item_id") or 0)
+
+        if not item_id:
+            return []
+
+        actions = []
+
+        if suffix == ".pdf":
+            actions.append({
+                "label": "Comprimir PDF",
+                "on_click": lambda e, item_id=item_id: run_open_batch_item_compress_pdf(item_id),
+            })
+            actions.append({
+                "label": "Mover página",
+                "on_click": lambda e, item_id=item_id: open_batch_item_move_page_dialog(item_id),
+            })
+            actions.append({
+                "label": "Rotar páginas",
+                "on_click": lambda e, item_id=item_id: open_batch_item_rotate_pages_dialog(item_id),
+            })
+            actions.append({
+                "label": "Dividir PDF",
+                "on_click": lambda e, item_id=item_id: open_batch_item_split_pdf_dialog(item_id),
+            })
+
+        if suffix in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
+            actions.append({
+                "label": "Convertir imagen a PDF",
+                "on_click": lambda e, item_id=item_id: run_open_batch_item_image_to_pdf(item_id),
+            })
+            actions.append({
+                "label": "Recortar imagen",
+                "on_click": lambda e, item_id=item_id: open_batch_item_crop_image_dialog(item_id),
+            })
+
+        if suffix in {".doc", ".docx"}:
+            actions.append({
+                "label": "Convertir Word a PDF",
+                "on_click": lambda e, item_id=item_id: run_open_batch_item_word_to_pdf(item_id),
+            })
+
+        return actions
+
+    def open_batch_item_rename_dialog(item):
+        try:
+            item_id = int(item.get("id") or item.get("inbox_item_id") or 0)
+            if not item_id:
+                raise ValueError("No hay documento válido para renombrar.")
+
+            current_name = str(
+                item.get("original_filename")
+                or item.get("stored_filename")
+                or ""
+            ).strip()
+
+            rename_field = text_input("Nuevo nombre del documento", width=520)
+            rename_field.value = current_name
+
+            rename_message = ft.Container()
+
+            def close_dialog(e=None):
+                try:
+                    dialog.open = False
+                    page.update()
+                except Exception:
+                    pass
+
+            def save_rename(e=None):
+                try:
+                    new_name = str(rename_field.value or "").strip()
+                    if not new_name:
+                        raise ValueError("El nombre no puede estar vacío.")
+
+                    updated = document_inbox_service.update_inbox_item_filename(item_id, new_name)
+
+                    batch_detail_message.content = success_alert(
+                        f"Documento renombrado: #{updated.get('id')} · {updated.get('original_filename')}"
+                    )
+
+                    close_dialog()
+                    state["batch_detail_section"] = "documentos"
+                    open_batch_detail_dialog(int(state.get("open_batch_id") or 0))
+                    refresh_items()
+                    refresh_batches_panel()
+                except Exception as exc:
+                    rename_message.content = error_alert(f"No se pudo renombrar el documento: {exc}")
+                    try:
+                        rename_message.update()
+                    except Exception:
+                        pass
+                    try:
+                        page.update()
+                    except Exception:
+                        pass
+
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Renombrar documento del grupo"),
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            f"Documento #{item_id}",
+                            size=12,
+                            color=Q_MUTED,
+                            selectable=True,
+                        ),
+                        ft.Text(
+                            "Este cambio actualiza el nombre visible/canónico en Bandeja. No cambia el archivo físico.",
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                        rename_field,
+                        rename_message,
+                    ],
+                    spacing=10,
+                    tight=True,
+                ),
+                actions=[
+                    secondary_button("Cancelar", close_dialog),
+                    primary_button("Guardar nombre", save_rename),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo abrir renombrado: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+
+    def _batch_item_action_groups(item):
+        tool_items = _batch_item_individual_tool_items(item)
+
+        groups = [
+            {
+                "label": "Ver",
+                "items": [
+                    {"label": "Previsualizar", "on_click": lambda e, item=item: show_batch_item_preview(item)},
+                    {"label": "Abrir externo", "on_click": lambda e, item=item: open_batch_item_external(item)},
+                ],
+            },
+        ]
+
+        if tool_items:
+            groups.append({
+                "label": "Herramientas",
+                "items": tool_items,
+            })
+
+        groups.append({
+            "label": "Documento",
+            "items": [
+                {"label": "Renombrar", "on_click": lambda e, item=item: open_batch_item_rename_dialog(item)},
+            ],
+        })
+
+        groups.append({
+            "label": "Grupo",
+            "items": [
+                {"label": "Quitar del grupo", "danger": True, "on_click": lambda e, item=item: remove_item_from_open_batch(item.get("id"))},
+            ],
+        })
+
+        return groups
+
+    def _parse_batch_target_rename_map():
+        result = {}
+        raw = str(batch_target_rename_map_field.value or "").strip()
+        if not raw:
+            return result
+
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if "=" in line:
+                left, right = line.split("=", 1)
+            elif ":" in line:
+                left, right = line.split(":", 1)
+            else:
+                continue
+
+            try:
+                item_id = int(str(left).strip().lstrip("#"))
+            except Exception:
+                continue
+
+            filename = str(right or "").strip()
+            if filename:
+                result[item_id] = filename
+
+        return result
+
     def copy_open_batch_to_box(e=None):
         try:
             batch_id = int(state.get("open_batch_id") or 0)
             if not batch_id:
                 raise ValueError("No hay grupo documental abierto.")
 
-            raw_expedient_id = str(batch_target_expedient_id_field.value or "").strip()
-            expedient_id = int(raw_expedient_id) if raw_expedient_id else None
-            subfolder = str(batch_target_subfolder_field.value or "").strip()
+            expedient_id = state.get("batch_box_expedient_id") or state.get("batch_edit_expedient_id")
+            expedient_id = int(expedient_id) if expedient_id else None
+
+            selected_directory = str(state.get("batch_box_selected_directory") or "").strip()
+            base_box_folder = str(state.get("batch_box_expedient_box_folder_path") or "").strip()
+            subfolder = _normalize_box_subfolder_for_copy(selected_directory, base_box_folder)
 
             if bool(batch_copy_as_directory_checkbox.value):
                 import re
 
                 batch_for_folder = document_inbox_service.get_document_inbox_batch(batch_id)
-                raw_folder_name = str(batch_for_folder.get("name") or f"Grupo documental {batch_id}").strip()
+                raw_folder_name = (
+                    str(batch_target_directory_name_field.value or "").strip()
+                    or str(batch_for_folder.get("name") or f"Grupo documental {batch_id}").strip()
+                )
                 safe_folder_name = re.sub(r'[<>:"/\\|?*]+', "_", raw_folder_name).strip(" ._")
                 safe_folder_name = safe_folder_name or f"Grupo documental {batch_id}"
 
@@ -3944,6 +4782,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 batch_id,
                 expedient_id=expedient_id,
                 subfolder=subfolder,
+                target_filenames_by_item_id=_parse_batch_target_rename_map(),
             )
 
             copy_result = result.get("copy_result") or {}
@@ -4144,6 +4983,26 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
             batch_target_expedient_id_field.value = str(batch.get("expedient_id") or "")
             batch_target_subfolder_field.value = str(batch.get("target_box_folder") or "")
+            batch_target_directory_name_field.value = ""
+            batch_target_rename_map_field.value = ""
+
+            state["batch_box_client_id"] = int(batch.get("client_id")) if batch.get("client_id") else None
+            state["batch_box_expedient_id"] = int(batch.get("expedient_id")) if batch.get("expedient_id") else None
+            state["batch_box_selected_directory"] = ""
+            state["batch_box_expedient_box_folder_path"] = ""
+
+            batch_box_client_autocomplete.set_options(_batch_box_client_labels(), clear_value=True)
+            batch_box_client_autocomplete.input.value = ""
+
+            batch_box_expedient_autocomplete.set_options(
+                _batch_box_expedient_labels_for_client(state.get("batch_box_client_id")),
+                clear_value=True,
+            )
+            batch_box_expedient_autocomplete.input.value = ""
+
+            batch_box_directory_autocomplete.set_options([], clear_value=True)
+            batch_box_directory_autocomplete.input.value = ""
+            batch_box_directory_label.value = "Directorio seleccionado: -"
 
             batch_edit_name_field.value = str(batch.get("name") or "")
             batch_edit_notes_field.value = str(batch.get("notes") or "")
@@ -4248,15 +5107,6 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                             batch_edit_notes_field,
                             ft.Row(
                                 controls=[
-                                    batch_edit_client_autocomplete.control,
-                                    batch_edit_expedient_autocomplete.control,
-                                ],
-                                spacing=10,
-                                wrap=True,
-                            ),
-                            ft.Row(
-                                controls=[
-                                    batch_edit_subfolder_field,
                                     _batch_status_chip(state.get("batch_edit_status") or "draft"),
                                     primary_button("Guardar cambios", save_open_batch_changes),
                                 ],
@@ -4320,13 +5170,34 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                             ),
                             ft.Row(
                                 controls=[
-                                    batch_target_expedient_id_field,
-                                    batch_target_subfolder_field,
+                                    batch_box_client_autocomplete.control,
+                                    batch_box_expedient_autocomplete.control,
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    batch_box_directory_autocomplete.control,
+                                    batch_target_directory_name_field,
+                                ],
+                                spacing=10,
+                                wrap=True,
+                                vertical_alignment=ft.CrossAxisAlignment.START,
+                            ),
+                            batch_box_directory_label,
+                            ft.Row(
+                                controls=[
                                     batch_copy_as_directory_checkbox,
                                     primary_button("Copiar grupo a Box expediente", copy_open_batch_to_box),
                                 ],
                                 spacing=10,
                                 wrap=True,
+                            ),
+                            ft.Text(
+                                "Si marcas copiar como directorio del grupo, se creará una carpeta dentro del directorio seleccionado con el nombre indicado.",
+                                size=11,
+                                color=Q_MUTED,
                             ),
                         ],
                         spacing=8,
@@ -4370,21 +5241,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                         selectable=True,
                         checkbox_value=item_id in selected_batch_item_ids,
                         on_select=lambda e, item_id=item_id: toggle_open_batch_item_selection(e, item_id),
-                        action_groups=[
-                            {
-                                "label": "Ver",
-                                "items": [
-                                    {"label": "Previsualizar", "on_click": lambda e, item=item: show_batch_item_preview(item)},
-                                    {"label": "Abrir externo", "on_click": lambda e, item=item: open_batch_item_external(item)},
-                                ],
-                            },
-                            {
-                                "label": "Grupo",
-                                "items": [
-                                    {"label": "Quitar del grupo", "danger": True, "on_click": lambda e, item=item: remove_item_from_open_batch(item.get("id"))},
-                                ],
-                            },
-                        ],
+                        action_groups=_batch_item_action_groups(item),
                         compact=True,
                     )
                 )
@@ -4439,9 +5296,10 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             link_box_rows = []
 
             for control in pre_document_rows:
-                if (
-                    _batch_control_contains_text(control, "editar grupo")
-                    or _batch_control_contains_text(control, "trasladar grupo")
+                if _batch_control_contains_text(control, "editar grupo"):
+                    principal_rows.append(control)
+                elif (
+                    _batch_control_contains_text(control, "trasladar grupo")
                     or _batch_control_contains_text(control, "box expediente")
                 ):
                     link_box_rows.append(control)
