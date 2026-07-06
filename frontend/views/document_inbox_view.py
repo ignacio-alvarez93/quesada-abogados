@@ -4017,7 +4017,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             batch_detail_message.content = success_alert(
                 f"PDF unido generado y añadido al grupo: documento #{generated_item_id}."
             )
-            state["batch_detail_section"] = "pdf_tools"
+            state["batch_detail_section"] = "documentos"
 
             open_batch_detail_dialog(batch_id)
             refresh_items()
@@ -4066,7 +4066,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             batch_detail_message.content = success_alert(
                 f"PDF de imágenes generado y añadido al grupo: documento #{generated_item_id}."
             )
-            state["batch_detail_section"] = "pdf_tools"
+            state["batch_detail_section"] = "documentos"
 
             open_batch_detail_dialog(batch_id)
             refresh_items()
@@ -4081,6 +4081,243 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 page.update()
             except Exception:
                 pass
+
+
+    def _run_open_batch_single_tool(item_id, tool_func, *, output_stem, success_label):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            item_id = int(item_id or 0)
+            if not item_id:
+                raise ValueError("No hay documento seleccionado dentro del grupo.")
+
+            try:
+                response = tool_func(
+                    item_id,
+                    register_result=True,
+                    output_stem=output_stem,
+                )
+            except TypeError as exc:
+                if "output_stem" not in str(exc):
+                    raise
+                response = tool_func(
+                    item_id,
+                    register_result=True,
+                )
+
+            if not response.get("ok"):
+                raise ValueError(_tool_error_message(response))
+
+            generated_item_id = _generated_item_id_from_tool_response(response)
+            if not generated_item_id:
+                raise ValueError("La herramienta generó archivo, pero no devolvió item registrado en Bandeja.")
+
+            document_inbox_service.add_items_to_document_inbox_batch(batch_id, [generated_item_id])
+
+            batch_detail_message.content = success_alert(
+                f"{success_label}: documento #{generated_item_id} añadido al grupo."
+            )
+            state["batch_detail_section"] = "documentos"
+
+            open_batch_detail_dialog(batch_id)
+            refresh_items()
+            refresh_batches_panel()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo ejecutar herramienta sobre documento del grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def run_open_batch_item_compress_pdf(item_id):
+        _run_open_batch_single_tool(
+            item_id,
+            compress_inbox_pdf_smart,
+            output_stem=f"grupo_{state.get('open_batch_id')}_item_{item_id}_comprimido",
+            success_label="PDF comprimido",
+        )
+
+    def run_open_batch_item_image_to_pdf(item_id):
+        _run_open_batch_single_tool(
+            item_id,
+            convert_inbox_image_to_pdf,
+            output_stem=f"grupo_{state.get('open_batch_id')}_item_{item_id}_imagen_pdf",
+            success_label="Imagen convertida a PDF",
+        )
+
+    def run_open_batch_item_word_to_pdf(item_id):
+        _run_open_batch_single_tool(
+            item_id,
+            convert_inbox_word_to_pdf,
+            output_stem=f"grupo_{state.get('open_batch_id')}_item_{item_id}_word_pdf",
+            success_label="Word convertido a PDF",
+        )
+
+    def _batch_item_individual_tool_items(item):
+        suffix = _batch_item_suffix(item)
+        item_id = int(item.get("id") or item.get("inbox_item_id") or 0)
+
+        if not item_id:
+            return []
+
+        actions = []
+
+        if suffix == ".pdf":
+            actions.append({
+                "label": "Comprimir PDF",
+                "on_click": lambda e, item_id=item_id: run_open_batch_item_compress_pdf(item_id),
+            })
+
+        if suffix in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
+            actions.append({
+                "label": "Convertir imagen a PDF",
+                "on_click": lambda e, item_id=item_id: run_open_batch_item_image_to_pdf(item_id),
+            })
+
+        if suffix in {".doc", ".docx"}:
+            actions.append({
+                "label": "Convertir Word a PDF",
+                "on_click": lambda e, item_id=item_id: run_open_batch_item_word_to_pdf(item_id),
+            })
+
+        return actions
+
+    def open_batch_item_rename_dialog(item):
+        try:
+            item_id = int(item.get("id") or item.get("inbox_item_id") or 0)
+            if not item_id:
+                raise ValueError("No hay documento válido para renombrar.")
+
+            current_name = str(
+                item.get("original_filename")
+                or item.get("stored_filename")
+                or ""
+            ).strip()
+
+            rename_field = text_input("Nuevo nombre del documento", width=520)
+            rename_field.value = current_name
+
+            rename_message = ft.Container()
+
+            def close_dialog(e=None):
+                try:
+                    dialog.open = False
+                    page.update()
+                except Exception:
+                    pass
+
+            def save_rename(e=None):
+                try:
+                    new_name = str(rename_field.value or "").strip()
+                    if not new_name:
+                        raise ValueError("El nombre no puede estar vacío.")
+
+                    updated = document_inbox_service.update_inbox_item_filename(item_id, new_name)
+
+                    batch_detail_message.content = success_alert(
+                        f"Documento renombrado: #{updated.get('id')} · {updated.get('original_filename')}"
+                    )
+
+                    close_dialog()
+                    state["batch_detail_section"] = "documentos"
+                    open_batch_detail_dialog(int(state.get("open_batch_id") or 0))
+                    refresh_items()
+                    refresh_batches_panel()
+                except Exception as exc:
+                    rename_message.content = error_alert(f"No se pudo renombrar el documento: {exc}")
+                    try:
+                        rename_message.update()
+                    except Exception:
+                        pass
+                    try:
+                        page.update()
+                    except Exception:
+                        pass
+
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Renombrar documento del grupo"),
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            f"Documento #{item_id}",
+                            size=12,
+                            color=Q_MUTED,
+                            selectable=True,
+                        ),
+                        ft.Text(
+                            "Este cambio actualiza el nombre visible/canónico en Bandeja. No cambia el archivo físico.",
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                        rename_field,
+                        rename_message,
+                    ],
+                    spacing=10,
+                    tight=True,
+                ),
+                actions=[
+                    secondary_button("Cancelar", close_dialog),
+                    primary_button("Guardar nombre", save_rename),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo abrir renombrado: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+
+    def _batch_item_action_groups(item):
+        tool_items = _batch_item_individual_tool_items(item)
+
+        groups = [
+            {
+                "label": "Ver",
+                "items": [
+                    {"label": "Previsualizar", "on_click": lambda e, item=item: show_batch_item_preview(item)},
+                    {"label": "Abrir externo", "on_click": lambda e, item=item: open_batch_item_external(item)},
+                ],
+            },
+        ]
+
+        if tool_items:
+            groups.append({
+                "label": "Herramientas",
+                "items": tool_items,
+            })
+
+        groups.append({
+            "label": "Documento",
+            "items": [
+                {"label": "Renombrar", "on_click": lambda e, item=item: open_batch_item_rename_dialog(item)},
+            ],
+        })
+
+        groups.append({
+            "label": "Grupo",
+            "items": [
+                {"label": "Quitar del grupo", "danger": True, "on_click": lambda e, item=item: remove_item_from_open_batch(item.get("id"))},
+            ],
+        })
+
+        return groups
 
     def _parse_batch_target_rename_map():
         result = {}
@@ -4578,21 +4815,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                         selectable=True,
                         checkbox_value=item_id in selected_batch_item_ids,
                         on_select=lambda e, item_id=item_id: toggle_open_batch_item_selection(e, item_id),
-                        action_groups=[
-                            {
-                                "label": "Ver",
-                                "items": [
-                                    {"label": "Previsualizar", "on_click": lambda e, item=item: show_batch_item_preview(item)},
-                                    {"label": "Abrir externo", "on_click": lambda e, item=item: open_batch_item_external(item)},
-                                ],
-                            },
-                            {
-                                "label": "Grupo",
-                                "items": [
-                                    {"label": "Quitar del grupo", "danger": True, "on_click": lambda e, item=item: remove_item_from_open_batch(item.get("id"))},
-                                ],
-                            },
-                        ],
+                        action_groups=_batch_item_action_groups(item),
                         compact=True,
                     )
                 )
@@ -4753,59 +4976,6 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     )
                 )
 
-            pdf_item_ids = _batch_item_ids_by_extensions(batch, {".pdf"})
-            image_item_ids = _batch_item_ids_by_extensions(
-                batch,
-                {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"},
-            )
-
-            pdf_tools_rows = [
-                ft.Container(
-                    bgcolor="#FFFFFF",
-                    border=ft.border.all(1, Q_BORDER),
-                    border_radius=12,
-                    padding=12,
-                    content=ft.Column(
-                        controls=[
-                            ft.Text("Herramientas PDF del grupo", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ft.Text(
-                                "Las operaciones generan un nuevo documento en Bandeja y lo añaden automáticamente a este grupo. "
-                                "No modifican los documentos originales.",
-                                size=12,
-                                color=Q_MUTED,
-                            ),
-                            ft.Row(
-                                controls=[
-                                    _status_chip("pending"),
-                                    ft.Text(f"PDFs válidos: {len(pdf_item_ids)}", size=12, color=Q_MUTED),
-                                    ft.Text(f"Imágenes válidas: {len(image_item_ids)}", size=12, color=Q_MUTED),
-                                ],
-                                spacing=8,
-                                wrap=True,
-                            ),
-                            ft.Row(
-                                controls=[
-                                    primary_button("Unir PDFs del grupo", run_open_batch_pdf_merge)
-                                    if len(pdf_item_ids) >= 2
-                                    else secondary_button("Unir PDFs del grupo", lambda e: None),
-                                    primary_button("Imágenes → PDF único", run_open_batch_images_to_pdf)
-                                    if len(image_item_ids) >= 1
-                                    else secondary_button("Imágenes → PDF único", lambda e: None),
-                                ],
-                                spacing=8,
-                                wrap=True,
-                            ),
-                            ft.Text(
-                                "Para unir PDFs hacen falta al menos 2 PDFs. Para imágenes → PDF hace falta al menos 1 imagen.",
-                                size=11,
-                                color=Q_MUTED,
-                            ),
-                        ],
-                        spacing=8,
-                    ),
-                )
-            ]
-
             if not document_rows:
                 document_rows = [
                     info_alert("Este grupo documental no contiene documentos.")
@@ -4814,7 +4984,6 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             batch_sections = {
                 "principal": principal_rows,
                 "documentos": document_rows,
-                "pdf_tools": pdf_tools_rows,
                 "vincular_box": link_box_rows or [info_alert("No hay opciones de vinculación o Box disponibles.")],
                 "trazabilidad": trace_rows,
             }
@@ -4904,7 +5073,6 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                                 "documentos",
                                 f"{len(batch_items)} documento(s)",
                             ),
-                            _batch_detail_nav_item("Herramientas PDF", "🛠️", "pdf_tools", "Unir y convertir"),
                             _batch_detail_nav_item("Vincular / Box", "🔗", "vincular_box", "Cliente, expediente y destino"),
                             _batch_detail_nav_item("Trazabilidad", "🧾", "trazabilidad", "Metadata y auditoría"),
                         ],

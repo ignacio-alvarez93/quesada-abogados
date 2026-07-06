@@ -1616,6 +1616,41 @@ def get_inbox_events(item_id: int) -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def update_inbox_item_filename(item_id: int, original_filename: str) -> Dict[str, Any]:
+    """
+    Renombra el nombre visible/canónico del documento en Bandeja.
+    No renombra el archivo físico ni stored_path para no romper trazabilidad/previews.
+    """
+    item_id = int(item_id or 0)
+    if not item_id:
+        raise ValueError("Item ID obligatorio.")
+
+    clean_name = _safe_filename(str(original_filename or "").strip())
+    if not clean_name:
+        raise ValueError("El nombre del documento es obligatorio.")
+
+    with get_connection() as conn:
+        current = conn.execute(
+            "SELECT id FROM document_inbox_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+
+        if not current:
+            raise ValueError(f"No existe documento de bandeja con ID {item_id}.")
+
+        conn.execute(
+            """
+            UPDATE document_inbox_items
+            SET original_filename = ?
+            WHERE id = ?
+            """,
+            (clean_name, item_id),
+        )
+        conn.commit()
+
+    return get_inbox_item(item_id)
+
+
 def update_inbox_item_status(item_id: int, status: str, notes: str = "") -> Dict[str, Any]:
     ensure_document_inbox_schema()
 
