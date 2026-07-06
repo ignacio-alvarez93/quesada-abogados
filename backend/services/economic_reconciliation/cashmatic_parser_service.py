@@ -33,12 +33,18 @@ EXPECTED_COLUMNS = [
 ]
 
 ALLOWED_OPERATIONS = {
+    # Operaciones de cobro
     "payment",
+
+    # Operaciones internas Cashmatic
     "cashbox",
+    "cashbox_notes",
     "register_closure",
     "refill",
+    "withdrawal",
     "withdrawal_denominations",
     "empty",
+    "empty_notes",
 }
 
 
@@ -184,6 +190,26 @@ def clean_text(value: Any) -> str:
     return str(value).strip()
 
 
+def validate_cashmatic_headers(headers: list[str], path: Path) -> None:
+    """Valida el contrato estable de exportación Cashmatic.
+
+    Cashmatic exporta siempre 20 columnas conocidas. Si el proveedor cambia
+    el formato, preferimos fallar de forma explícita antes que importar datos
+    desplazados o corruptos.
+    """
+    normalized_headers = [clean_text(x) for x in headers if clean_text(x)]
+
+    if normalized_headers != EXPECTED_COLUMNS:
+        missing = [col for col in EXPECTED_COLUMNS if col not in normalized_headers]
+        unexpected = [col for col in normalized_headers if col not in EXPECTED_COLUMNS]
+        raise ValueError(
+            "Formato Cashmatic no reconocido en "
+            f"{path}. Columnas esperadas={EXPECTED_COLUMNS}. "
+            f"Columnas recibidas={normalized_headers}. "
+            f"Faltan={missing}. Sobran={unexpected}."
+        )
+
+
 def read_csv_rows(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
@@ -196,6 +222,8 @@ def read_csv_rows(path: Path) -> list[dict[str, Any]]:
             delimiter = ","
 
         reader = csv.DictReader(fh, delimiter=delimiter)
+        validate_cashmatic_headers(list(reader.fieldnames or []), path)
+
         for raw in reader:
             normalized: dict[str, Any] = {}
             for col in EXPECTED_COLUMNS:
@@ -224,6 +252,8 @@ def read_xlsx_rows(path: Path) -> list[dict[str, Any]]:
         return []
 
     headers = [clean_text(x) for x in headers_raw]
+    validate_cashmatic_headers(headers, path)
+
     rows: list[dict[str, Any]] = []
 
     for values in iterator:
