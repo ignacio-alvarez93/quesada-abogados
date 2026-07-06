@@ -9,6 +9,7 @@ from backend.services import document_viewer_service
 from backend.services.document_tools import (
     compress_inbox_pdf_smart,
     convert_inbox_image_to_pdf,
+    convert_inbox_images_to_pdf,
     convert_inbox_word_to_pdf,
     crop_inbox_image,
     get_document_tool_capabilities_for_inbox_items,
@@ -3916,6 +3917,145 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 pass
 
 
+    def _batch_item_suffix(item):
+        filename = (
+            item.get("original_filename")
+            or item.get("stored_filename")
+            or item.get("stored_path")
+            or item.get("linked_document_path")
+            or ""
+        )
+        filename = str(filename).lower().strip()
+        if "." not in filename:
+            return ""
+        return "." + filename.rsplit(".", 1)[-1]
+
+    def _batch_item_ids_by_extensions(batch, extensions):
+        clean_extensions = {str(ext).lower() for ext in (extensions or [])}
+        ids = []
+
+        for item in batch.get("items") or []:
+            item_id = int(item.get("id") or item.get("inbox_item_id") or 0)
+            if not item_id:
+                continue
+
+            status = str(item.get("status") or "").strip().lower()
+            if status in {"duplicate", "discarded"}:
+                continue
+
+            if _batch_item_suffix(item) in clean_extensions:
+                ids.append(item_id)
+
+        return list(dict.fromkeys(ids))
+
+    def _generated_item_id_from_tool_response(response):
+        generated = (response or {}).get("generated_item") or {}
+        if isinstance(generated, dict):
+            item_id = generated.get("id") or generated.get("inbox_item_id")
+            return int(item_id) if item_id else None
+        return None
+
+    def _tool_error_message(response):
+        result = (response or {}).get("result") or {}
+        if isinstance(result, dict):
+            return result.get("error") or result.get("message") or result.get("details") or str(result)
+        return str(response or "")
+
+    def run_open_batch_pdf_merge(e=None):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            batch = document_inbox_service.get_document_inbox_batch(batch_id)
+            pdf_item_ids = _batch_item_ids_by_extensions(batch, {".pdf"})
+
+            if len(pdf_item_ids) < 2:
+                raise ValueError("Para unir PDFs el grupo debe contener al menos 2 PDFs válidos.")
+
+            response = merge_inbox_pdfs(
+                pdf_item_ids,
+                register_result=True,
+                output_stem=f"grupo_{batch_id}_pdf_unido",
+            )
+
+            if not response.get("ok"):
+                raise ValueError(_tool_error_message(response))
+
+            generated_item_id = _generated_item_id_from_tool_response(response)
+            if not generated_item_id:
+                raise ValueError("La herramienta generó archivo, pero no devolvió item registrado en Bandeja.")
+
+            document_inbox_service.add_items_to_document_inbox_batch(batch_id, [generated_item_id])
+
+            batch_detail_message.content = success_alert(
+                f"PDF unido generado y añadido al grupo: documento #{generated_item_id}."
+            )
+            state["batch_detail_section"] = "pdf_tools"
+
+            open_batch_detail_dialog(batch_id)
+            refresh_items()
+            refresh_batches_panel()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo unir PDFs del grupo: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def run_open_batch_images_to_pdf(e=None):
+        try:
+            batch_id = int(state.get("open_batch_id") or 0)
+            if not batch_id:
+                raise ValueError("No hay grupo documental abierto.")
+
+            batch = document_inbox_service.get_document_inbox_batch(batch_id)
+            image_item_ids = _batch_item_ids_by_extensions(
+                batch,
+                {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"},
+            )
+
+            if not image_item_ids:
+                raise ValueError("El grupo no contiene imágenes válidas para convertir a PDF.")
+
+            response = convert_inbox_images_to_pdf(
+                image_item_ids,
+                register_result=True,
+                output_stem=f"grupo_{batch_id}_imagenes_pdf",
+            )
+
+            if not response.get("ok"):
+                raise ValueError(_tool_error_message(response))
+
+            generated_item_id = _generated_item_id_from_tool_response(response)
+            if not generated_item_id:
+                raise ValueError("La herramienta generó archivo, pero no devolvió item registrado en Bandeja.")
+
+            document_inbox_service.add_items_to_document_inbox_batch(batch_id, [generated_item_id])
+
+            batch_detail_message.content = success_alert(
+                f"PDF de imágenes generado y añadido al grupo: documento #{generated_item_id}."
+            )
+            state["batch_detail_section"] = "pdf_tools"
+
+            open_batch_detail_dialog(batch_id)
+            refresh_items()
+            refresh_batches_panel()
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo convertir imágenes del grupo a PDF: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
     def copy_open_batch_to_box(e=None):
         try:
             batch_id = int(state.get("open_batch_id") or 0)
@@ -4545,6 +4685,59 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     )
                 )
 
+            pdf_item_ids = _batch_item_ids_by_extensions(batch, {".pdf"})
+            image_item_ids = _batch_item_ids_by_extensions(
+                batch,
+                {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"},
+            )
+
+            pdf_tools_rows = [
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text("Herramientas PDF del grupo", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text(
+                                "Las operaciones generan un nuevo documento en Bandeja y lo añaden automáticamente a este grupo. "
+                                "No modifican los documentos originales.",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    _status_chip("pending"),
+                                    ft.Text(f"PDFs válidos: {len(pdf_item_ids)}", size=12, color=Q_MUTED),
+                                    ft.Text(f"Imágenes válidas: {len(image_item_ids)}", size=12, color=Q_MUTED),
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    primary_button("Unir PDFs del grupo", run_open_batch_pdf_merge)
+                                    if len(pdf_item_ids) >= 2
+                                    else secondary_button("Unir PDFs del grupo", lambda e: None),
+                                    primary_button("Imágenes → PDF único", run_open_batch_images_to_pdf)
+                                    if len(image_item_ids) >= 1
+                                    else secondary_button("Imágenes → PDF único", lambda e: None),
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
+                            ft.Text(
+                                "Para unir PDFs hacen falta al menos 2 PDFs. Para imágenes → PDF hace falta al menos 1 imagen.",
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                )
+            ]
+
             if not document_rows:
                 document_rows = [
                     info_alert("Este grupo documental no contiene documentos.")
@@ -4553,6 +4746,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             batch_sections = {
                 "principal": principal_rows,
                 "documentos": document_rows,
+                "pdf_tools": pdf_tools_rows,
                 "vincular_box": link_box_rows or [info_alert("No hay opciones de vinculación o Box disponibles.")],
                 "trazabilidad": trace_rows,
             }
@@ -4642,6 +4836,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                                 "documentos",
                                 f"{len(batch_items)} documento(s)",
                             ),
+                            _batch_detail_nav_item("Herramientas PDF", "🛠️", "pdf_tools", "Unir y convertir"),
                             _batch_detail_nav_item("Vincular / Box", "🔗", "vincular_box", "Cliente, expediente y destino"),
                             _batch_detail_nav_item("Trazabilidad", "🧾", "trazabilidad", "Metadata y auditoría"),
                         ],
