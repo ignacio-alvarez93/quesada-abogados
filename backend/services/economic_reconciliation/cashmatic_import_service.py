@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -122,12 +123,24 @@ def _insert_or_get_batch(
     return int(cursor.lastrowid), True
 
 
+def _import_row_hash(row: CashmaticDiagnosticRow) -> str:
+    """Hash único de fila física dentro del archivo.
+
+    El row.row_hash conserva la huella del contenido normalizado.
+    Para staging económico necesitamos no perder filas idénticas del export,
+    por lo que añadimos row_number a la huella usada en la restricción UNIQUE.
+    """
+    payload = f"{row.row_number}|{row.row_hash}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _insert_movement(
     conn: sqlite3.Connection,
     batch_id: int,
     row: CashmaticDiagnosticRow,
 ) -> bool:
     before = conn.total_changes
+    import_row_hash = _import_row_hash(row)
 
     conn.execute(
         """
@@ -169,7 +182,7 @@ def _insert_movement(
         (
             batch_id,
             row.row_number,
-            row.row_hash,
+            import_row_hash,
             row.cashmatic_id,
             row.operation,
             row.result,
