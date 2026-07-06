@@ -348,3 +348,128 @@ def restore_cashmatic_movement(
         )
         conn.commit()
         return cursor.rowcount > 0
+
+
+def mark_cashmatic_movement_reviewed(
+    movement_id: int,
+    notes: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> bool:
+    """Marca un movimiento como revisado sin vincularlo.
+
+    Esta acción NO crea cliente, expediente, cobro ni conciliación.
+    Sirve para dejar constancia de revisión humana previa.
+    """
+    notes = (notes or "").strip()
+
+    with connect(db_path) as conn:
+        ensure_schema(conn)
+
+        cursor = conn.execute(
+            """
+            UPDATE cashmatic_movements
+            SET
+                review_status = 'REVIEWED',
+                link_notes = CASE
+                    WHEN ? = '' THEN link_notes
+                    WHEN link_notes IS NULL OR link_notes = '' THEN ?
+                    ELSE link_notes || char(10) || ?
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND review_status != 'IGNORED'
+              AND linked_client_id IS NULL
+              AND linked_expedient_id IS NULL
+              AND linked_payment_id IS NULL
+            """,
+            (notes, notes, notes, int(movement_id)),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def update_cashmatic_movement_notes(
+    movement_id: int,
+    notes: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> bool:
+    """Actualiza la nota interna del movimiento.
+
+    No vincula el movimiento. Solo guarda observación humana.
+    """
+    notes = (notes or "").strip()
+
+    with connect(db_path) as conn:
+        ensure_schema(conn)
+
+        cursor = conn.execute(
+            """
+            UPDATE cashmatic_movements
+            SET
+                link_notes = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (notes, int(movement_id)),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def append_cashmatic_movement_note(
+    movement_id: int,
+    note: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> bool:
+    """Añade una nota al movimiento sin sustituir notas anteriores."""
+    note = (note or "").strip()
+    if not note:
+        raise ValueError("Debes indicar una nota.")
+
+    with connect(db_path) as conn:
+        ensure_schema(conn)
+
+        cursor = conn.execute(
+            """
+            UPDATE cashmatic_movements
+            SET
+                link_notes = CASE
+                    WHEN link_notes IS NULL OR link_notes = '' THEN ?
+                    ELSE link_notes || char(10) || ?
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (note, note, int(movement_id)),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def reset_cashmatic_movement_review(
+    movement_id: int,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> bool:
+    """Devuelve un movimiento revisado a pendiente de revisión.
+
+    No modifica campos de vinculación manual.
+    """
+    with connect(db_path) as conn:
+        ensure_schema(conn)
+
+        cursor = conn.execute(
+            """
+            UPDATE cashmatic_movements
+            SET
+                review_status = 'PENDING_MANUAL_REVIEW',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND review_status = 'REVIEWED'
+              AND linked_client_id IS NULL
+              AND linked_expedient_id IS NULL
+              AND linked_payment_id IS NULL
+            """,
+            (int(movement_id),),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
