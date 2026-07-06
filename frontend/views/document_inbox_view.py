@@ -1869,7 +1869,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
         def on_detail_directory_selected(value):
             try:
-                label = _normalize_autocomplete_value(value)
+                label = _batch_box_normalize_autocomplete_value(value)
                 if not label:
                     return
 
@@ -1952,7 +1952,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
         def on_detail_client_selected(value):
             try:
-                label = _normalize_autocomplete_value(value)
+                label = _batch_box_normalize_autocomplete_value(value)
                 client_id = _extract_id_from_label(label, detail_client_label_to_id)
 
                 if not client_id:
@@ -2024,7 +2024,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
         def on_detail_expedient_selected(value):
             try:
-                label = _normalize_autocomplete_value(value)
+                label = _batch_box_normalize_autocomplete_value(value)
                 expedient_id = _extract_id_from_label(label, detail_expedient_label_to_id)
 
                 if not expedient_id:
@@ -3685,7 +3685,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
     batch_detail_message = ft.Container()
     batch_target_expedient_id_field = text_input("Expediente ID destino", width=220)
     batch_target_subfolder_field = text_input("Subcarpeta Box destino", width=360)
-    batch_target_directory_name_field = text_input("Nombre directorio destino opcional", width=360)
+    batch_target_directory_name_field = text_input("Nombre del directorio/grupo al copiar", width=360)
     batch_target_rename_map_field = multiline_input(
         "Renombrar archivos del grupo opcional: una línea por documento, ejemplo: 12 = 01_Pasaporte.pdf",
         width=760,
@@ -3701,6 +3701,10 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
     batch_edit_subfolder_field = text_input("Subcarpeta Box destino", width=360)
     batch_edit_client_label_to_id = {}
     batch_edit_expedient_label_to_id = {}
+
+    batch_box_client_label_to_id = {}
+    batch_box_expedient_label_to_id = {}
+    batch_box_directory_label_to_path = {}
 
     BATCH_STATUS_OPTIONS = [
         ("draft", "Borrador"),
@@ -3851,6 +3855,263 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
     )
 
 
+    def _batch_box_client_labels():
+        batch_box_client_label_to_id.clear()
+        options = document_inbox_service.client_autocomplete_options()
+        for item in options:
+            label = item.get("label")
+            if label:
+                batch_box_client_label_to_id[label] = int(item.get("id"))
+        return list(batch_box_client_label_to_id.keys())
+
+    def _batch_box_expedient_labels_for_client(client_id):
+        batch_box_expedient_label_to_id.clear()
+        if not client_id:
+            return []
+
+        options = document_inbox_service.expedient_autocomplete_options_for_client(int(client_id))
+        for item in options:
+            label = item.get("label")
+            if label:
+                batch_box_expedient_label_to_id[label] = int(item.get("id"))
+        return list(batch_box_expedient_label_to_id.keys())
+
+    def _batch_box_directory_options_for_expedient(expedient_id):
+        batch_box_directory_label_to_path.clear()
+
+        if not expedient_id:
+            return []
+
+        try:
+            expedient_raw = document_inbox_service.get_expedient(int(expedient_id)) or {}
+            if isinstance(expedient_raw, dict):
+                expedient = expedient_raw
+            else:
+                try:
+                    expedient = dict(expedient_raw)
+                except Exception:
+                    expedient = {}
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudo cargar expediente #{expedient_id}: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            return []
+
+        if not expedient:
+            batch_detail_message.content = error_alert(
+                f"No se pudo interpretar la ficha del expediente #{expedient_id}. "
+                "El servicio no devolvió un diccionario compatible."
+            )
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            return []
+
+        base_path = ""
+        for key in [
+            "box_folder_path",
+            "box_path",
+            "folder_path",
+            "ruta_box",
+            "ruta_carpeta_box",
+            "expedient_box_folder_path",
+        ]:
+            value = str(expedient.get(key) or "").strip()
+            if value:
+                base_path = value
+                break
+
+        state["batch_box_expedient_box_folder_path"] = base_path
+
+        if not base_path:
+            batch_detail_message.content = error_alert(
+                f"El expediente #{expedient_id} no tiene ruta Box configurada. No se pueden cargar directorios."
+            )
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            return []
+
+        try:
+            data = list_expediente_box_directory(base_path, relative_base=base_path)
+        except Exception as exc:
+            batch_detail_message.content = error_alert(f"No se pudieron listar directorios del expediente: {exc}")
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+            return []
+
+        labels = []
+        seen = set()
+
+        def add_folder(label, path_value):
+            label = str(label or "").strip()
+            path_value = str(path_value or label or "").strip()
+            if not label or label in seen:
+                return
+            seen.add(label)
+            labels.append(label)
+            batch_box_directory_label_to_path[label] = path_value
+
+        if isinstance(data, dict):
+            folder_candidates = []
+            for key in ["folders", "directories", "dirs", "children"]:
+                value = data.get(key)
+                if isinstance(value, list):
+                    folder_candidates.extend(value)
+
+            for folder in folder_candidates:
+                if not isinstance(folder, dict):
+                    continue
+                label = str(
+                    folder.get("relative_path")
+                    or folder.get("relative")
+                    or folder.get("name")
+                    or folder.get("label")
+                    or ""
+                ).strip()
+                folder_path = str(
+                    folder.get("path")
+                    or folder.get("absolute_path")
+                    or folder.get("full_path")
+                    or label
+                ).strip()
+                add_folder(label, folder_path)
+
+        elif isinstance(data, list):
+            for folder in data:
+                if isinstance(folder, dict):
+                    label = str(
+                        folder.get("relative_path")
+                        or folder.get("relative")
+                        or folder.get("name")
+                        or folder.get("label")
+                        or ""
+                    ).strip()
+                    folder_path = str(
+                        folder.get("path")
+                        or folder.get("absolute_path")
+                        or folder.get("full_path")
+                        or label
+                    ).strip()
+                    add_folder(label, folder_path)
+                else:
+                    add_folder(str(folder), str(folder))
+
+        if not labels:
+            batch_detail_message.content = error_alert(
+                f"No se encontraron subdirectorios para el expediente #{expedient_id}. Ruta base: {base_path}"
+            )
+            try:
+                batch_detail_message.update()
+            except Exception:
+                pass
+
+        return labels
+
+    def _batch_box_normalize_autocomplete_value(value):
+        if isinstance(value, dict):
+            return str(
+                value.get("label")
+                or value.get("value")
+                or value.get("name")
+                or ""
+            ).strip()
+        return str(value or "").strip()
+
+    def on_batch_box_client_selected(value):
+        label = _batch_box_normalize_autocomplete_value(value)
+        client_id = batch_box_client_label_to_id.get(label)
+        state["batch_box_client_id"] = int(client_id) if client_id else None
+        state["batch_box_expedient_id"] = None
+        state["batch_box_selected_directory"] = ""
+
+        expedient_labels = _batch_box_expedient_labels_for_client(state.get("batch_box_client_id"))
+        batch_box_expedient_autocomplete.set_options(expedient_labels, clear_value=True)
+        batch_box_expedient_autocomplete.input.label = (
+            f"Expediente del cliente ({len(expedient_labels)})"
+            if expedient_labels
+            else "Expediente del cliente (sin expedientes)"
+        )
+        batch_box_directory_autocomplete.set_options([], clear_value=True)
+        batch_box_directory_label.value = "Directorio seleccionado: -"
+        page.update()
+
+    def on_batch_box_expedient_selected(value):
+        label = _batch_box_normalize_autocomplete_value(value)
+        expedient_id = batch_box_expedient_label_to_id.get(label)
+        state["batch_box_expedient_id"] = int(expedient_id) if expedient_id else None
+        state["batch_box_selected_directory"] = ""
+
+        directory_labels = _batch_box_directory_options_for_expedient(state.get("batch_box_expedient_id"))
+        batch_box_directory_autocomplete.set_options(directory_labels, clear_value=True)
+        batch_box_directory_autocomplete.input.label = (
+            f"Directorio / carpeta destino ({len(directory_labels)})"
+            if directory_labels
+            else "Directorio / carpeta destino (sin carpetas)"
+        )
+        batch_box_directory_label.value = (
+            f"Directorios cargados: {len(directory_labels)}"
+            if directory_labels
+            else "Directorio seleccionado: -"
+        )
+        page.update()
+
+    def on_batch_box_directory_selected(value):
+        label = _batch_box_normalize_autocomplete_value(value)
+        if not label:
+            return
+
+        state["batch_box_selected_directory"] = batch_box_directory_label_to_path.get(label) or label
+        batch_box_directory_label.value = f"Directorio seleccionado: {state.get('batch_box_selected_directory') or '-'}"
+        try:
+            batch_box_directory_label.update()
+        except Exception:
+            pass
+        page.update()
+
+    batch_box_client_autocomplete = AppAutocomplete(
+        page=page,
+        label="Cliente",
+        options=_batch_box_client_labels(),
+        width=420,
+        max_results=12,
+        on_select=on_batch_box_client_selected,
+        allow_free_text=False,
+    )
+
+    batch_box_expedient_autocomplete = AppAutocomplete(
+        page=page,
+        label="Expediente del cliente",
+        options=[],
+        width=420,
+        max_results=12,
+        on_select=on_batch_box_expedient_selected,
+        allow_free_text=False,
+    )
+
+    batch_box_directory_autocomplete = AppAutocomplete(
+        page=page,
+        label="Directorio / carpeta destino",
+        options=[],
+        width=520,
+        max_results=12,
+        on_select=on_batch_box_directory_selected,
+        allow_free_text=False,
+    )
+
+    batch_box_directory_label = ft.Text(
+        "Directorio seleccionado: -",
+        size=11,
+        color=Q_MUTED,
+    )
+
+
     def show_batch_item_preview(item):
         file_path = item.get("stored_path") or item.get("linked_document_path") or ""
         if not file_path:
@@ -3912,8 +4173,10 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             if not name:
                 raise ValueError("El nombre del grupo es obligatorio.")
 
-            client_id = state.get("batch_edit_client_id")
-            expedient_id = state.get("batch_edit_expedient_id")
+            current_batch = document_inbox_service.get_document_inbox_batch(batch_id)
+            client_id = current_batch.get("client_id")
+            expedient_id = current_batch.get("expedient_id")
+            target_box_folder = current_batch.get("target_box_folder") or ""
 
             updated = document_inbox_service.update_document_inbox_batch(
                 batch_id,
@@ -3921,7 +4184,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 notes=batch_edit_notes_field.value or "",
                 client_id=int(client_id) if client_id else None,
                 expedient_id=int(expedient_id) if expedient_id else None,
-                target_box_folder=batch_edit_subfolder_field.value or "",
+                target_box_folder=target_box_folder,
                 status=state.get("batch_edit_status") or "draft",
             )
 
@@ -4354,9 +4617,12 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             if not batch_id:
                 raise ValueError("No hay grupo documental abierto.")
 
-            raw_expedient_id = str(batch_target_expedient_id_field.value or "").strip()
-            expedient_id = int(raw_expedient_id) if raw_expedient_id else None
-            subfolder = str(batch_target_subfolder_field.value or "").strip()
+            expedient_id = state.get("batch_box_expedient_id") or state.get("batch_edit_expedient_id")
+            expedient_id = int(expedient_id) if expedient_id else None
+
+            selected_directory = str(state.get("batch_box_selected_directory") or "").strip()
+            base_box_folder = str(state.get("batch_box_expedient_box_folder_path") or "").strip()
+            subfolder = _normalize_box_subfolder_for_copy(selected_directory, base_box_folder)
 
             if bool(batch_copy_as_directory_checkbox.value):
                 import re
@@ -4583,6 +4849,24 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             batch_target_directory_name_field.value = ""
             batch_target_rename_map_field.value = ""
 
+            state["batch_box_client_id"] = int(batch.get("client_id")) if batch.get("client_id") else None
+            state["batch_box_expedient_id"] = int(batch.get("expedient_id")) if batch.get("expedient_id") else None
+            state["batch_box_selected_directory"] = ""
+            state["batch_box_expedient_box_folder_path"] = ""
+
+            batch_box_client_autocomplete.set_options(_batch_box_client_labels(), clear_value=True)
+            batch_box_client_autocomplete.input.value = ""
+
+            batch_box_expedient_autocomplete.set_options(
+                _batch_box_expedient_labels_for_client(state.get("batch_box_client_id")),
+                clear_value=True,
+            )
+            batch_box_expedient_autocomplete.input.value = ""
+
+            batch_box_directory_autocomplete.set_options([], clear_value=True)
+            batch_box_directory_autocomplete.input.value = ""
+            batch_box_directory_label.value = "Directorio seleccionado: -"
+
             batch_edit_name_field.value = str(batch.get("name") or "")
             batch_edit_notes_field.value = str(batch.get("notes") or "")
             batch_edit_subfolder_field.value = str(batch.get("target_box_folder") or "")
@@ -4686,15 +4970,6 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                             batch_edit_notes_field,
                             ft.Row(
                                 controls=[
-                                    batch_edit_client_autocomplete.control,
-                                    batch_edit_expedient_autocomplete.control,
-                                ],
-                                spacing=10,
-                                wrap=True,
-                            ),
-                            ft.Row(
-                                controls=[
-                                    batch_edit_subfolder_field,
                                     _batch_status_chip(state.get("batch_edit_status") or "draft"),
                                     primary_button("Guardar cambios", save_open_batch_changes),
                                 ],
@@ -4758,18 +5033,32 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                             ),
                             ft.Row(
                                 controls=[
-                                    batch_target_expedient_id_field,
-                                    batch_target_subfolder_field,
+                                    batch_box_client_autocomplete.control,
+                                    batch_box_expedient_autocomplete.control,
+                                ],
+                                spacing=10,
+                                wrap=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    batch_box_directory_autocomplete.control,
                                     batch_target_directory_name_field,
+                                ],
+                                spacing=10,
+                                wrap=True,
+                                vertical_alignment=ft.CrossAxisAlignment.START,
+                            ),
+                            batch_box_directory_label,
+                            ft.Row(
+                                controls=[
                                     batch_copy_as_directory_checkbox,
                                     primary_button("Copiar grupo a Box expediente", copy_open_batch_to_box),
                                 ],
                                 spacing=10,
                                 wrap=True,
                             ),
-                            batch_target_rename_map_field,
                             ft.Text(
-                                "Renombrado por documento: usa el ID del documento de Bandeja. Ejemplo: 12 = 01_Pasaporte.pdf",
+                                "Si marcas copiar como directorio del grupo, se creará una carpeta dentro del directorio seleccionado con el nombre indicado.",
                                 size=11,
                                 color=Q_MUTED,
                             ),
@@ -4870,9 +5159,10 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             link_box_rows = []
 
             for control in pre_document_rows:
-                if (
-                    _batch_control_contains_text(control, "editar grupo")
-                    or _batch_control_contains_text(control, "trasladar grupo")
+                if _batch_control_contains_text(control, "editar grupo"):
+                    principal_rows.append(control)
+                elif (
+                    _batch_control_contains_text(control, "trasladar grupo")
                     or _batch_control_contains_text(control, "box expediente")
                 ):
                     link_box_rows.append(control)

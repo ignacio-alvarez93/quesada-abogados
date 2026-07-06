@@ -1775,6 +1775,43 @@ def _get_expedient_for_box(conn, expedient_id: int) -> Dict[str, Any]:
     return expedient
 
 
+def get_expedient(expedient_id: int) -> Dict[str, Any]:
+    """
+    Wrapper interno para Bandeja Documental.
+
+    La vista document_inbox_view usa el término inglés `expedient`,
+    pero el servicio principal del CRM expone `get_expediente`.
+    Devolvemos siempre dict para que la UI pueda usar .get().
+    """
+    expedient_id = int(expedient_id or 0)
+    if not expedient_id:
+        return {}
+
+    try:
+        from backend.services import expedient_service
+
+        expediente = expedient_service.get_expediente(expedient_id) or {}
+        if isinstance(expediente, dict):
+            return expediente
+
+        try:
+            return dict(expediente)
+        except Exception:
+            return {}
+    except Exception:
+        pass
+
+    # Fallback directo a SQLite por si el import del servicio falla.
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM expedientes WHERE id = ?",
+            (expedient_id,),
+        ).fetchone()
+
+    return dict(row) if row else {}
+
+
 def copy_inbox_item_to_expedient_box(
     item_id: int,
     expedient_id: Optional[int] = None,
