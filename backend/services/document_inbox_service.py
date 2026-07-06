@@ -44,11 +44,21 @@ def _dict(row: sqlite3.Row | None) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
-def _safe_filename(name: str) -> str:
-    name = (name or "documento").strip()
-    name = name.replace("\\", "_").replace("/", "_").replace(":", "_")
-    name = "".join(ch for ch in name if ch not in '<>"|?*')
-    return name or "documento"
+def _safe_filename(filename: str, fallback: str = "documento") -> str:
+    """
+    Nombre seguro para Windows/Box. No crea rutas, solo nombre de archivo.
+    Acepta fallback para mantener compatibilidad con copias renombradas.
+    """
+    value = str(filename or "").strip()
+    if not value:
+        value = str(fallback or "documento").strip() or "documento"
+
+    for ch in '<>:"/\\|?*':
+        value = value.replace(ch, "_")
+
+    value = value.strip(" ._")
+    fallback_value = str(fallback or "documento").strip(" ._") or "documento"
+    return value or fallback_value
 
 
 def _unique_destination(folder: Path, filename: str) -> Path:
@@ -1734,6 +1744,7 @@ def copy_inbox_item_to_expedient_box(
     item_id: int,
     expedient_id: Optional[int] = None,
     subfolder: str = "",
+    target_filename: str = "",
 ) -> Dict[str, Any]:
     """
     Copia segura desde la bandeja interna del ERP hacia la carpeta Box vinculada al expediente.
@@ -1773,7 +1784,15 @@ def copy_inbox_item_to_expedient_box(
         else:
             dest_folder = base_box_folder
 
-        dest = _unique_destination(dest_folder, item.get("original_filename") or src.name)
+        requested_filename = str(target_filename or "").strip()
+        if requested_filename:
+            requested_name = _safe_filename(requested_filename, fallback=item.get("original_filename") or src.name)
+            if not Path(requested_name).suffix and src.suffix:
+                requested_name = f"{requested_name}{src.suffix}"
+        else:
+            requested_name = item.get("original_filename") or src.name
+
+        dest = _unique_destination(dest_folder, requested_name)
         shutil.copy2(src, dest)
 
         conn.execute(
@@ -1808,6 +1827,8 @@ def copy_inbox_item_to_expedient_box(
                 "source_path": str(src),
                 "destination_path": str(dest),
                 "subfolder": safe_subfolder,
+                "target_filename": str(target_filename or "").strip(),
+                "final_filename": dest.name,
             },
         )
         conn.commit()
@@ -1838,6 +1859,7 @@ def copy_document_inbox_batch_to_expedient_box(
     batch_id: int,
     expedient_id: Optional[int] = None,
     subfolder: str = "",
+    target_filenames_by_item_id: Optional[Dict[int, str]] = None,
 ) -> Dict[str, Any]:
     """
     Copia segura de un grupo documental a la carpeta Box de un expediente.
@@ -1862,6 +1884,7 @@ def copy_document_inbox_batch_to_expedient_box(
     skipped = []
     errors = []
     seen_keys = set()
+    target_filenames_by_item_id = target_filenames_by_item_id or {}
 
     for item in batch.get("items") or []:
         item_id = int(item.get("id") or item.get("inbox_item_id") or 0)
@@ -1901,15 +1924,23 @@ def copy_document_inbox_batch_to_expedient_box(
             continue
 
         try:
+            target_filename = (
+                target_filenames_by_item_id.get(item_id)
+                or target_filenames_by_item_id.get(str(item_id))
+                or ""
+            )
+
             updated = copy_inbox_item_to_expedient_box(
                 item_id,
                 expedient_id=batch_expedient_id,
                 subfolder=safe_subfolder,
+                target_filename=target_filename,
             )
             copied.append({
                 "id": item_id,
                 "filename": updated.get("original_filename"),
                 "destination_path": updated.get("copied_to_box_path"),
+                "target_filename": str(target_filename or "").strip(),
             })
         except Exception as exc:
             errors.append({
@@ -1935,6 +1966,9 @@ def copy_document_inbox_batch_to_expedient_box(
         "copied_count": len(copied),
         "skipped_count": len(skipped),
         "error_count": len(errors),
+        "target_filenames_by_item_id": {
+            str(k): v for k, v in (target_filenames_by_item_id or {}).items() if str(v or "").strip()
+        },
     }
 
     with get_connection() as conn:

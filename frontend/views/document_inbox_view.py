@@ -877,6 +877,12 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             return str(override or "").strip()
         return str(box_subfolder.value or "").strip()
 
+    def _resolve_box_target_filename_for_copy() -> str:
+        override = state.pop("copy_to_box_target_filename_override", None)
+        if override is not None:
+            return str(override or "").strip()
+        return ""
+
 
     def copy_to_box(e=None, open_expediente_after=True):
         try:
@@ -889,6 +895,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 item["id"],
                 expedient_id=int(eid),
                 subfolder=_resolve_box_subfolder_for_copy(),
+                target_filename=_resolve_box_target_filename_for_copy(),
             )
             show_success(f"Documento copiado a Box: {updated.get('copied_to_box_path')}")
             refresh_items()
@@ -1434,6 +1441,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     selected_directory,
                     base_box_folder,
                 )
+                state["copy_to_box_target_filename_override"] = detail_target_filename_field.value or ""
 
                 copied = copy_to_box(e, open_expediente_after=False)
                 if not copied:
@@ -1876,11 +1884,15 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 show_error(exc)
 
         detail_directory_autocomplete = AppAutocomplete(
-            page,
+            page=page,
             label="Directorio / carpeta destino",
             options=[],
+            width=520,
             on_select=on_detail_directory_selected,
         )
+
+        detail_target_filename_field = text_input("Nombre archivo destino", width=340)
+        detail_target_filename_field.value = ""
 
         detail_client_options_raw = document_inbox_service.client_autocomplete_options()
         detail_client_labels = []
@@ -2142,7 +2154,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     ft.Text("Vincular documento", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                     detail_relation_text,
                     ft.Text(
-                        "Selecciona cliente, expediente y, opcionalmente, un directorio destino para este documento.",
+                        "Selecciona cliente, expediente, directorio destino y, si procede, el nombre final del archivo en Box.",
                         size=12,
                         color=Q_MUTED,
                     ),
@@ -2168,7 +2180,15 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                             spacing=4,
                         ),
                     ),
-                    detail_directory_autocomplete.control,
+                    ft.Row(
+                        controls=[
+                            detail_directory_autocomplete.control,
+                            detail_target_filename_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                    ),
                     detail_directory_label,
                     ft.Row(
                         controls=[
@@ -3665,6 +3685,12 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
     batch_detail_message = ft.Container()
     batch_target_expedient_id_field = text_input("Expediente ID destino", width=220)
     batch_target_subfolder_field = text_input("Subcarpeta Box destino", width=360)
+    batch_target_directory_name_field = text_input("Nombre directorio destino opcional", width=360)
+    batch_target_rename_map_field = multiline_input(
+        "Renombrar archivos del grupo opcional: una línea por documento, ejemplo: 12 = 01_Pasaporte.pdf",
+        width=760,
+        height=110,
+    )
     batch_copy_as_directory_checkbox = ft.Checkbox(
         label="Copiar como directorio del grupo",
         value=False,
@@ -4056,6 +4082,35 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             except Exception:
                 pass
 
+    def _parse_batch_target_rename_map():
+        result = {}
+        raw = str(batch_target_rename_map_field.value or "").strip()
+        if not raw:
+            return result
+
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if "=" in line:
+                left, right = line.split("=", 1)
+            elif ":" in line:
+                left, right = line.split(":", 1)
+            else:
+                continue
+
+            try:
+                item_id = int(str(left).strip().lstrip("#"))
+            except Exception:
+                continue
+
+            filename = str(right or "").strip()
+            if filename:
+                result[item_id] = filename
+
+        return result
+
     def copy_open_batch_to_box(e=None):
         try:
             batch_id = int(state.get("open_batch_id") or 0)
@@ -4070,7 +4125,10 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 import re
 
                 batch_for_folder = document_inbox_service.get_document_inbox_batch(batch_id)
-                raw_folder_name = str(batch_for_folder.get("name") or f"Grupo documental {batch_id}").strip()
+                raw_folder_name = (
+                    str(batch_target_directory_name_field.value or "").strip()
+                    or str(batch_for_folder.get("name") or f"Grupo documental {batch_id}").strip()
+                )
                 safe_folder_name = re.sub(r'[<>:"/\\|?*]+', "_", raw_folder_name).strip(" ._")
                 safe_folder_name = safe_folder_name or f"Grupo documental {batch_id}"
 
@@ -4084,6 +4142,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 batch_id,
                 expedient_id=expedient_id,
                 subfolder=subfolder,
+                target_filenames_by_item_id=_parse_batch_target_rename_map(),
             )
 
             copy_result = result.get("copy_result") or {}
@@ -4284,6 +4343,8 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
             batch_target_expedient_id_field.value = str(batch.get("expedient_id") or "")
             batch_target_subfolder_field.value = str(batch.get("target_box_folder") or "")
+            batch_target_directory_name_field.value = ""
+            batch_target_rename_map_field.value = ""
 
             batch_edit_name_field.value = str(batch.get("name") or "")
             batch_edit_notes_field.value = str(batch.get("notes") or "")
@@ -4462,11 +4523,18 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                                 controls=[
                                     batch_target_expedient_id_field,
                                     batch_target_subfolder_field,
+                                    batch_target_directory_name_field,
                                     batch_copy_as_directory_checkbox,
                                     primary_button("Copiar grupo a Box expediente", copy_open_batch_to_box),
                                 ],
                                 spacing=10,
                                 wrap=True,
+                            ),
+                            batch_target_rename_map_field,
+                            ft.Text(
+                                "Renombrado por documento: usa el ID del documento de Bandeja. Ejemplo: 12 = 01_Pasaporte.pdf",
+                                size=11,
+                                color=Q_MUTED,
                             ),
                         ],
                         spacing=8,
