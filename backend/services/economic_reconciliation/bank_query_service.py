@@ -85,7 +85,7 @@ def get_bank_dashboard_summary(
                 COALESCE(SUM(candidate_payment_rows), 0) AS total_export_income_rows,
                 COALESCE(SUM(quarantine_rows), 0) AS total_export_quarantine_rows
             FROM economic_import_batches
-            WHERE source_type IN ('BANK_SANTANDER', 'BANK_CAJA_RURAL')
+            WHERE source_type IN ('BANK_SANTANDER', 'BANK_CAJA_RURAL', 'BANK_ING')
             """
         ).fetchone()
 
@@ -179,7 +179,7 @@ def list_bank_batches(
                     WHERE m.batch_id = b.id
                 ) AS inserted_unique_movements
             FROM economic_import_batches b
-            WHERE b.source_type IN ('BANK_SANTANDER', 'BANK_CAJA_RURAL')
+            WHERE b.source_type IN ('BANK_SANTANDER', 'BANK_CAJA_RURAL', 'BANK_ING')
             ORDER BY b.created_at DESC, b.id DESC
             """
         ).fetchall()

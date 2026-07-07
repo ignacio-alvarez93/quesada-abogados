@@ -15,6 +15,11 @@ from backend.services.economic_reconciliation.bank_caja_rural_parser_service imp
     CajaRuralBankDiagnosticRow,
     diagnose_caja_rural_bank_file,
 )
+from backend.services.economic_reconciliation.bank_ing_parser_service import (
+    IngBankDiagnosticReport,
+    IngBankDiagnosticRow,
+    diagnose_ing_bank_file,
+)
 from backend.services.economic_reconciliation.cashmatic_import_service import (
     DEFAULT_DB_PATH,
     connect,
@@ -55,7 +60,7 @@ def _insert_or_get_bank_batch(
     conn: sqlite3.Connection,
     *,
     source_file_path: Path,
-    report: SantanderBankDiagnosticReport | CajaRuralBankDiagnosticReport,
+    report: SantanderBankDiagnosticReport | CajaRuralBankDiagnosticReport | IngBankDiagnosticReport,
     source_type: str,
     bank_label: str,
 ) -> tuple[int, bool]:
@@ -126,7 +131,7 @@ def _insert_bank_movement(
     conn: sqlite3.Connection,
     *,
     batch_id: int,
-    row: SantanderBankDiagnosticRow | CajaRuralBankDiagnosticRow,
+    row: SantanderBankDiagnosticRow | CajaRuralBankDiagnosticRow | IngBankDiagnosticRow,
     bank_name: str,
 ) -> bool:
     before = conn.total_changes
@@ -290,6 +295,54 @@ def import_caja_rural_bank_file(
     )
 
 
+def import_ing_bank_file(
+    file_path: str | Path,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> BankImportResult:
+    source_file_path = Path(file_path)
+    report = diagnose_ing_bank_file(source_file_path)
+
+    inserted = 0
+    duplicates = 0
+
+    with connect(db_path) as conn:
+        ensure_bank_schema(conn)
+
+        batch_id, batch_created = _insert_or_get_bank_batch(
+            conn,
+            source_file_path=source_file_path,
+            report=report,
+            source_type="BANK_ING",
+            bank_label="ING",
+        )
+
+        for row in report.rows:
+            if _insert_bank_movement(conn, batch_id=batch_id, row=row, bank_name="ING"):
+                inserted += 1
+            else:
+                duplicates += 1
+
+        conn.commit()
+
+    return BankImportResult(
+        batch_id=batch_id,
+        batch_created=batch_created,
+        source_file=report.source_file,
+        file_sha256=report.file_sha256,
+        total_rows=report.total_rows,
+        inserted_rows=inserted,
+        duplicate_rows=duplicates,
+        income_rows=report.income_rows,
+        expense_rows=report.expense_rows,
+        quarantine_rows=report.quarantine_rows,
+        manual_linking_policy=(
+            "ING se importa como movimiento bruto. "
+            "No crea cobros, facturas ni vínculos automáticos."
+        ),
+    )
+
+
 def get_bank_import_summary(
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
@@ -304,7 +357,7 @@ def get_bank_import_summary(
                 COALESCE(SUM(candidate_payment_rows), 0) AS income_rows,
                 COALESCE(SUM(quarantine_rows), 0) AS quarantine_rows
             FROM economic_import_batches
-            WHERE source_type IN ('BANK_SANTANDER', 'BANK_CAJA_RURAL')
+            WHERE source_type IN ('BANK_SANTANDER', 'BANK_CAJA_RURAL', 'BANK_ING')
             """
         ).fetchone()
 
