@@ -13,6 +13,10 @@ from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
 from frontend.components.app_autocomplete import AppAutocomplete
 from backend.services.economic_reconciliation import (
+    list_bank_movements,
+    list_cashmatic_movements,
+)
+from backend.services.economic_reconciliation import (
     cents_to_eur,
     create_reconciliation_group,
     add_cobro_to_group,
@@ -89,6 +93,19 @@ def _option_by_id(options, value_id, empty_label):
     return empty_label
 
 
+def _get_value(row, key, default=None):
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+def _money_centimos(value):
+    try:
+        return f"{(int(value or 0) / 100):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return "0,00 €"
+
+
 def _money(value):
     try:
         return f"{float(value or 0):.2f} €"
@@ -103,6 +120,7 @@ def economic_view(page: ft.Page):
         "section": "cobros",
         "message": None,
         "reconciliation_selected_group_id": None,
+        "movements_source": "cashmatic",
     }
 
     content_area = ft.Container(expand=True)
@@ -583,6 +601,149 @@ def economic_view(page: ft.Page):
         )
 
 
+    def set_movements_source(source):
+        state["movements_source"] = source
+        refresh()
+
+
+    def movements_source_button(key, label):
+        selected = state.get("movements_source") == key
+        return ft.Container(
+            content=ft.Text(
+                label,
+                size=13,
+                weight=ft.FontWeight.BOLD if selected else ft.FontWeight.NORMAL,
+                color="#FFFFFF" if selected else Q_PRIMARY_DARK,
+            ),
+            bgcolor=Q_PRIMARY_DARK if selected else "#FFFFFF",
+            border=ft.border.all(1, Q_PRIMARY_DARK if selected else Q_BORDER),
+            border_radius=999,
+            padding=ft.padding.symmetric(horizontal=14, vertical=8),
+            ink=True,
+            on_click=lambda e, k=key: set_movements_source(k),
+        )
+
+
+    def build_cashmatic_movements_table():
+        try:
+            page_data = list_cashmatic_movements(
+                page=1,
+                page_size=100,
+                include_ignored=False,
+            )
+            items = getattr(page_data, "items", None) or []
+        except Exception as exc:
+            return error_alert(f"No se pudieron cargar movimientos Cashmatic: {exc}")
+
+        rows = []
+        for m in items:
+            rows.append([
+                _get_value(m, "id") or "-",
+                _get_value(m, "start_time") or "-",
+                _money_centimos(_get_value(m, "net_amount_centimos")),
+                _get_value(m, "operation") or "-",
+                economic_badge(_get_value(m, "movement_status")),
+                _get_value(m, "reason_raw") or "-",
+                _get_value(m, "reference_raw") or "-",
+                _get_value(m, "source_file_name") or "-",
+            ])
+
+        return app_table(
+            ["ID", "Fecha", "Importe neto", "Operación", "Estado", "Motivo", "Referencia", "Archivo"],
+            rows,
+            height=430,
+        ) if rows else empty_state("No hay movimientos Cashmatic importados")
+
+
+    def build_bank_movements_table(bank_name):
+        try:
+            page_data = list_bank_movements(
+                page=1,
+                page_size=100,
+                bank_name=bank_name,
+                include_ignored=False,
+            )
+            items = getattr(page_data, "items", None) or []
+        except Exception as exc:
+            return error_alert(f"No se pudieron cargar movimientos {bank_name}: {exc}")
+
+        rows = []
+        for m in items:
+            rows.append([
+                _get_value(m, "id") or "-",
+                _get_value(m, "bank_name") or bank_name,
+                _get_value(m, "operation_date") or "-",
+                _get_value(m, "value_date") or "-",
+                _money_centimos(_get_value(m, "amount_centimos")),
+                _get_value(m, "movement_type") or "-",
+                economic_badge(_get_value(m, "movement_status")),
+                _get_value(m, "concept") or "-",
+                _get_value(m, "source_file_name") or "-",
+            ])
+
+        return app_table(
+            ["ID", "Banco", "F. operación", "F. valor", "Importe", "Tipo", "Estado", "Concepto", "Archivo"],
+            rows,
+            height=430,
+        ) if rows else empty_state(f"No hay movimientos importados de {bank_name}")
+
+
+    def build_imported_movements_section():
+        source = state.get("movements_source") or "cashmatic"
+
+        source_map = {
+            "cashmatic": ("Cashmatic", build_cashmatic_movements_table),
+            "caja_rural": ("Caja Rural", lambda: build_bank_movements_table("CAJA_RURAL")),
+            "ing": ("ING", lambda: build_bank_movements_table("ING")),
+            "santander": ("Santander", lambda: build_bank_movements_table("SANTANDER")),
+        }
+
+        title, builder = source_map.get(source, source_map["cashmatic"])
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Text("Movimientos importados", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Container(expand=True),
+                        secondary_button("Refrescar", refresh),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                ft.Text(
+                    "Visor de movimientos reales importados desde Cashmatic y bancos. La vinculación se realizará desde el alta o edición del cobro.",
+                    size=13,
+                    color=Q_MUTED,
+                ),
+                ft.Row(
+                    controls=[
+                        movements_source_button("cashmatic", "Cashmatic"),
+                        movements_source_button("caja_rural", "Caja Rural"),
+                        movements_source_button("ing", "ING"),
+                        movements_source_button("santander", "Santander"),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                ),
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=14,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            builder(),
+                        ],
+                        spacing=10,
+                    ),
+                ),
+            ],
+            spacing=14,
+            expand=True,
+        )
+
+
     def build_table():
         if state["section"] == "conciliacion_manual":
             return build_manual_reconciliation_section()
@@ -670,22 +831,10 @@ def economic_view(page: ft.Page):
                 height=430,
             ) if rows else empty_state("No hay gastos")
 
-        rows = []
-        for m in economic_service.list_movimientos():
-            rows.append([
-                m.get("origen") or "-",
-                _date_to_display(m.get("fecha_operacion")),
-                m.get("concepto") or "-",
-                _money(m.get("importe")),
-                m.get("referencia") or "-",
-                m.get("cuenta") or "-",
-                economic_badge(m.get("estado_conciliacion")),
-            ])
-        return app_table(
-            ["Origen", "Fecha", "Concepto", "Importe", "Referencia", "Cuenta", "Conciliación"],
-            rows,
-            height=430,
-        ) if rows else empty_state("No hay movimientos importados")
+        if state["section"] == "movimientos":
+            return build_imported_movements_section()
+
+        return empty_state("Selecciona una sección")
 
     # Controles independientes por formulario
     hoja_cliente_ac = AppAutocomplete(page, "Cliente", cliente_options, width=520, max_results=12)
