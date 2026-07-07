@@ -14,6 +14,7 @@ from frontend.components.economic_badge import economic_badge
 from frontend.components.app_autocomplete import AppAutocomplete
 from backend.services.economic_reconciliation import (
     cents_to_eur,
+    create_reconciliation_group,
     get_reconciliation_group_detail,
     list_reconciliation_groups,
 )
@@ -234,6 +235,65 @@ def economic_view(page: ft.Page):
             return "0.00 €"
 
 
+    reconciliation_group_type = select_input(
+        "Tipo de grupo",
+        ["CASH_RECEIPT", "BANK_TRANSFER", "CARD_SETTLEMENT", "STRIPE_SETTLEMENT", "MIXED_REVIEW"],
+        value="BANK_TRANSFER",
+        width=260,
+    )
+    reconciliation_group_date = text_input("Fecha YYYY-MM-DD", width=180)
+    reconciliation_group_title = required_text_input("Título", width=520)
+    reconciliation_group_description = multiline_input("Descripción / notas", width=620)
+
+
+    def open_reconciliation_group_dialog(e=None):
+        reconciliation_group_type.value = "BANK_TRANSFER"
+        reconciliation_group_date.value = datetime.today().strftime("%Y-%m-%d")
+        reconciliation_group_title.value = ""
+        reconciliation_group_description.value = ""
+        reconciliation_group_dialog.open = True
+        page.update()
+
+
+    def save_reconciliation_group(e=None):
+        try:
+            group_id = create_reconciliation_group(
+                group_type=reconciliation_group_type.value,
+                title=reconciliation_group_title.value,
+                description=reconciliation_group_description.value,
+                group_date=reconciliation_group_date.value,
+                notes="",
+            )
+            state["reconciliation_selected_group_id"] = group_id
+            reconciliation_group_dialog.open = False
+            show_message(success_alert("Grupo de conciliación creado"))
+            refresh()
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+            refresh()
+
+
+    reconciliation_group_dialog = form_dialog(
+        "Nuevo grupo de conciliación",
+        ft.Column(
+            controls=[
+                ft.Text(
+                    "Crea un contenedor manual para cuadrar cobros/recibos contra movimientos reales.",
+                    size=13,
+                    color=Q_MUTED,
+                ),
+                ft.Row([reconciliation_group_type, reconciliation_group_date], wrap=True, spacing=10),
+                reconciliation_group_title,
+                reconciliation_group_description,
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        [secondary_button("Cancelar", lambda e: close(reconciliation_group_dialog)), primary_button("Crear grupo", save_reconciliation_group)],
+    )
+    page.overlay.append(reconciliation_group_dialog)
+
+
     def build_manual_reconciliation_section():
         try:
             groups = list_reconciliation_groups(limit=50)
@@ -241,7 +301,27 @@ def economic_view(page: ft.Page):
             return error_alert(f"No se pudieron cargar grupos de conciliación: {exc}")
 
         if not groups:
-            return empty_state("No hay grupos de conciliación manual todavía")
+            return ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text("Conciliación manual", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Container(expand=True),
+                            primary_button("Nuevo grupo", open_reconciliation_group_dialog),
+                            secondary_button("Refrescar", refresh),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                    ft.Text(
+                        "Agrupa cobros/recibos esperados contra movimientos reales de banco o Cashmatic. La vinculación sigue siendo manual.",
+                        size=13,
+                        color=Q_MUTED,
+                    ),
+                    empty_state("No hay grupos de conciliación manual todavía"),
+                ],
+                spacing=14,
+                expand=True,
+            )
 
         selected_id = state.get("reconciliation_selected_group_id")
         if not selected_id and groups:
@@ -356,6 +436,7 @@ def economic_view(page: ft.Page):
                     controls=[
                         ft.Text("Conciliación manual", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                         ft.Container(expand=True),
+                        primary_button("Nuevo grupo", open_reconciliation_group_dialog),
                         secondary_button("Refrescar", refresh),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
