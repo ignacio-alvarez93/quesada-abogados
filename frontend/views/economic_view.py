@@ -664,6 +664,75 @@ def economic_view(page: ft.Page):
             cache.clear()
 
 
+    def _cashmatic_dedupe_score(item):
+        """
+        Cuando el mismo movimiento viene en exports distintos, Cashmatic puede
+        traer un export con segundos reales y otro redondeado al minuto.
+        Para mostrar un histórico limpio, conservamos la versión más precisa.
+        """
+        start_time = str(_get_value(item, "start_time") or "")
+        seconds = ""
+        try:
+            seconds = start_time.split(" ")[1].split(":")[2]
+        except Exception:
+            seconds = ""
+
+        score = 0
+
+        if seconds and seconds != "00":
+            score += 10
+
+        if _get_value(item, "reason_raw"):
+            score += 3
+
+        if _get_value(item, "reference_raw"):
+            score += 2
+
+        try:
+            score += int(_get_value(item, "id") or 0) / 100000000
+        except Exception:
+            pass
+
+        return score
+
+
+    def unique_cashmatic_movements(items):
+        """
+        El histórico visible debe representar movimientos lógicos, no filas
+        repetidas de distintos exports Cashmatic.
+
+        Clave principal: cashmatic_id.
+        Si no hubiera cashmatic_id, se conserva la fila como única.
+        """
+        unique = {}
+        passthrough = []
+
+        for item in items:
+            cashmatic_id = str(_get_value(item, "cashmatic_id") or "").strip()
+
+            if not cashmatic_id:
+                passthrough.append(item)
+                continue
+
+            previous = unique.get(cashmatic_id)
+            if previous is None:
+                unique[cashmatic_id] = item
+                continue
+
+            if _cashmatic_dedupe_score(item) > _cashmatic_dedupe_score(previous):
+                unique[cashmatic_id] = item
+
+        ordered = list(unique.values()) + passthrough
+
+        def sort_key(item):
+            return (
+                str(_get_value(item, "start_time") or ""),
+                int(_get_value(item, "id") or 0),
+            )
+
+        return sorted(ordered, key=sort_key, reverse=True)
+
+
     def load_movements_for_source(source):
         source = movements_cache_key(source)
         cache = state.setdefault("movements_cache", {})
@@ -673,10 +742,10 @@ def economic_view(page: ft.Page):
         if source == "cashmatic":
             page_data = list_cashmatic_movements(
                 page=1,
-                page_size=5000,
+                page_size=1000000,
                 include_ignored=False,
             )
-            items = list(getattr(page_data, "items", None) or [])
+            items = unique_cashmatic_movements(list(getattr(page_data, "items", None) or []))
         else:
             bank_map = {
                 "caja_rural": "CAJA_RURAL",
@@ -695,6 +764,63 @@ def economic_view(page: ft.Page):
         return items
 
 
+    def _date_search_tokens(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return []
+
+        tokens = [raw.lower()]
+
+        # Esperado: YYYY-MM-DD HH:MM:SS
+        date_part = raw.split(" ")[0]
+        pieces = date_part.split("-")
+
+        if len(pieces) == 3:
+            yyyy, mm, dd = pieces
+            tokens.extend([
+                f"{dd}/{mm}/{yyyy}",
+                f"{dd}-{mm}-{yyyy}",
+                f"{mm}/{yyyy}",
+                f"{yyyy}-{mm}",
+                f"{dd}/{mm}",
+                f"{dd}-{mm}",
+            ])
+
+            month_names = {
+                "01": "enero",
+                "02": "febrero",
+                "03": "marzo",
+                "04": "abril",
+                "05": "mayo",
+                "06": "junio",
+                "07": "julio",
+                "08": "agosto",
+                "09": "septiembre",
+                "10": "octubre",
+                "11": "noviembre",
+                "12": "diciembre",
+            }
+
+            month_name = month_names.get(mm)
+            if month_name:
+                tokens.extend([
+                    month_name,
+                    f"{month_name} {yyyy}",
+                    f"{dd} {month_name}",
+                    f"{dd} {month_name} {yyyy}",
+                ])
+
+        return tokens
+
+
+    def _movement_search_blob(values):
+        blob = []
+        for value in values:
+            blob.append(str(value or ""))
+            blob.extend(_date_search_tokens(value))
+        return " ".join(blob).lower()
+
+
     def movement_matches_filter(item, source):
         texto = (state.get("movements_search") or "").lower().strip()
         if not texto:
@@ -702,24 +828,32 @@ def economic_view(page: ft.Page):
 
         if source == "cashmatic":
             values = [
+                _get_value(item, "id"),
+                _get_value(item, "batch_id"),
+                _get_value(item, "cashmatic_id"),
                 _get_value(item, "reason_raw"),
                 _get_value(item, "reference_raw"),
                 _get_value(item, "operation"),
                 _get_value(item, "movement_status"),
                 _get_value(item, "start_time"),
-                _get_value(item, "cashmatic_id"),
+                _get_value(item, "end_time"),
+                _money_centimos(_get_value(item, "inserted_centimos")),
+                _money_centimos(_get_value(item, "net_amount_centimos")),
             ]
         else:
             values = [
+                _get_value(item, "id"),
+                _get_value(item, "batch_id"),
                 _get_value(item, "concept"),
                 _get_value(item, "movement_type"),
                 _get_value(item, "movement_status"),
                 _get_value(item, "operation_date"),
                 _get_value(item, "value_date"),
                 _get_value(item, "bank_name"),
+                _money_centimos(_get_value(item, "amount_centimos")),
             ]
 
-        return texto in " ".join(str(v or "") for v in values).lower()
+        return texto in _movement_search_blob(values)
 
 
     def filtered_movements_for_source(source):
@@ -1038,7 +1172,7 @@ def economic_view(page: ft.Page):
                 ft.Row(
                     controls=[
                         movements_filter,
-                        ft.Text("Filtro fluido sobre movimientos cargados", size=12, color=Q_MUTED),
+                        ft.Text("Ej.: marzo, 03/2026, 16/03/2026, 2026-03, ID Cashmatic o nombre", size=12, color=Q_MUTED),
                     ],
                     spacing=8,
                     wrap=True,
@@ -1149,7 +1283,7 @@ def economic_view(page: ft.Page):
 
         return empty_state("Selecciona una sección")
 
-    movements_filter = text_input("Filtrar por concepto / motivo", width=520)
+    movements_filter = text_input("Filtrar por concepto / motivo / fecha / ID", width=560)
     movements_filter.value = ""
     movements_results_box = ft.Container()
 

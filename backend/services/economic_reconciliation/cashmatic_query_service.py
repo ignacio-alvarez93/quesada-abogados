@@ -35,7 +35,16 @@ def _normalize_page_size(page_size: int) -> int:
         value = int(page_size)
     except Exception:
         value = 50
-    return min(max(1, value), 200)
+
+    # No se impone límite artificial al histórico.
+    # La paginación decide cuántos registros se piden en cada caso.
+    return max(1, value)
+
+
+    # El visor de Económico > Movimientos carga en memoria para filtrar/paginar
+    # localmente. Cashmatic puede tener varios miles de movimientos.
+    # Límite seguro temporal hasta migrar a paginación backend real.
+    return min(max(1, value), 5000)
 
 
 def cents_to_eur(value: int | None) -> float:
