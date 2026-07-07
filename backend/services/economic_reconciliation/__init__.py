@@ -71,6 +71,22 @@ from backend.services.economic_reconciliation.cashmatic_query_service import (
     update_cashmatic_movement_notes,
 )
 
+
+from backend.services.economic_reconciliation.manual_reconciliation_group_service import (
+    ReconciliationGroup,
+    ReconciliationGroupDetail,
+    ReconciliationGroupItem,
+    add_reconciliation_group_item,
+    create_reconciliation_group,
+    get_reconciliation_group,
+    get_reconciliation_group_detail,
+    group_detail_to_dict,
+    list_reconciliation_groups,
+    mark_reconciliation_group_reviewed,
+    recalculate_reconciliation_group,
+    remove_reconciliation_group_item,
+)
+
 __all__ = [
     "CashmaticDiagnosticReport",
     "CashmaticDiagnosticRow",
@@ -118,4 +134,16 @@ __all__ = [
     "IngBankDiagnosticRow",
     "diagnose_ing_bank_file",
     "import_ing_bank_file",
+    "ReconciliationGroup",
+    "ReconciliationGroupDetail",
+    "ReconciliationGroupItem",
+    "add_reconciliation_group_item",
+    "create_reconciliation_group",
+    "get_reconciliation_group",
+    "get_reconciliation_group_detail",
+    "group_detail_to_dict",
+    "list_reconciliation_groups",
+    "mark_reconciliation_group_reviewed",
+    "recalculate_reconciliation_group",
+    "remove_reconciliation_group_item",
 ]
