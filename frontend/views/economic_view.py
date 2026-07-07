@@ -12,6 +12,18 @@ from frontend.components.app_card import metric_card
 from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
 from frontend.components.app_autocomplete import AppAutocomplete
+from frontend.components.listing import compact_pagination_bar
+from backend.services.economic_reconciliation import (
+    list_bank_movements,
+    list_cashmatic_movements,
+)
+from backend.services.economic_reconciliation import (
+    cents_to_eur,
+    create_reconciliation_group,
+    add_cobro_to_group,
+    get_reconciliation_group_detail,
+    list_reconciliation_groups,
+)
 
 Q_PRIMARY_DARK = "#003B7A"
 Q_MUTED = "#64748B"
@@ -52,6 +64,26 @@ def _id(value):
     return int(value.split(" - ", 1)[0])
 
 
+def _leading_id(value):
+    value = str(value or "").strip()
+    if not value:
+        return None
+
+    # Soporta:
+    # "13 - texto"
+    # "13 | texto"
+    # "13"
+    for sep in (" - ", " | "):
+        if sep in value:
+            value = value.split(sep, 1)[0].strip()
+            break
+
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
 def _option_by_id(options, value_id, empty_label):
     if not value_id:
         return empty_label
@@ -60,6 +92,43 @@ def _option_by_id(options, value_id, empty_label):
         if str(option).startswith(prefix):
             return option
     return empty_label
+
+
+def _get_value(row, key, default=None):
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+def _date_time_to_display(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
+        try:
+            dt = datetime.strptime(value, fmt)
+            if "H" in fmt:
+                return dt.strftime("%d/%m/%Y %H:%M")
+            return dt.strftime("%d/%m/%Y")
+        except ValueError:
+            pass
+
+    # Si viene con fecha ISO y cola rara, intentamos al menos YYYY-MM-DD.
+    if len(value) >= 10 and value[4:5] == "-" and value[7:8] == "-":
+        try:
+            return datetime.strptime(value[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except ValueError:
+            pass
+
+    return value
+
+
+def _money_centimos(value):
+    try:
+        return f"{(int(value or 0) / 100):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return "0,00 €"
 
 
 def _money(value):
@@ -72,7 +141,12 @@ def _money(value):
 def economic_view(page: ft.Page):
     economic_service.initialize_economic_schema()
 
-    state = {"section": "cobros", "message": None}
+    state = {
+        "section": "cobros",
+        "message": None,
+        "reconciliation_selected_group_id": None,
+        "movements_source": "cashmatic",
+    }
 
     content_area = ft.Container(expand=True)
     table_container = ft.Container(expand=True)
@@ -81,6 +155,27 @@ def economic_view(page: ft.Page):
     cliente_options = [c["display"] for c in clientes]
     expediente_options = [e["display"] for e in economic_service.get_expedientes_for_select()]
     hoja_options = [h["display"] for h in economic_service.get_hojas_for_select()]
+    def _get_cobro_options_for_reconciliation():
+        options = []
+        try:
+            for c in economic_service.list_cobros():
+                label = " | ".join(
+                    x for x in [
+                        f'{c.get("id")}',
+                        c.get("numero_cobro") or "",
+                        _date_to_display(c.get("fecha_cobro")),
+                        f'{c.get("importe") or 0} €',
+                        c.get("forma_pago") or "",
+                        c.get("numero_expediente") or "",
+                    ]
+                    if str(x or "").strip()
+                )
+                options.append(label)
+        except Exception:
+            pass
+        return options
+
+
 
     def show_message(control):
         state["message"] = control
@@ -113,7 +208,8 @@ def economic_view(page: ft.Page):
                 section_button("cobros", "Cobros"),
                 section_button("facturas", "Facturas"),
                 section_button("gastos", "Gastos"),
-                section_button("movimientos", "Movimientos / conciliación"),
+                section_button("movimientos", "Movimientos"),
+                section_button("conciliacion_manual", "Conciliación manual"),
             ],
             spacing=8,
             wrap=True,
@@ -159,7 +255,7 @@ def economic_view(page: ft.Page):
             "cobros": ("Nuevo cobro", open_cobro_dialog),
             "facturas": ("Nueva factura", open_factura_dialog),
             "gastos": ("Nuevo gasto", open_gasto_dialog),
-            "movimientos": ("Nuevo movimiento", open_movimiento_dialog),
+            "movimientos": ("Importar CSV/XLS", open_movimiento_dialog),
         }
         if state["section"] == "facturas":
             return ft.Container(
@@ -174,7 +270,17 @@ def economic_view(page: ft.Page):
                 ),
             )
 
-        label, handler = mapping[state["section"]]
+        action = mapping.get(state["section"])
+        if not action:
+            return ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.END),
+            )
+
+        label, handler = action
         return ft.Container(
             bgcolor="#FFFFFF",
             border=ft.border.all(1, Q_BORDER),
@@ -183,7 +289,911 @@ def economic_view(page: ft.Page):
             content=ft.Row(controls=[primary_button(label, handler)], alignment=ft.MainAxisAlignment.END),
         )
 
+    def _reconciliation_status_badge(status):
+        status = (status or "DRAFT").upper()
+        color_map = {
+            "BALANCED": "#047857",
+            "UNBALANCED": "#B42318",
+            "REVIEWED": "#0057B8",
+            "IGNORED": "#667085",
+            "DRAFT": "#B54708",
+        }
+        bg_map = {
+            "BALANCED": "#ECFDF3",
+            "UNBALANCED": "#FEF3F2",
+            "REVIEWED": "#EAF3FF",
+            "IGNORED": "#F2F4F7",
+            "DRAFT": "#FFFAEB",
+        }
+        return ft.Container(
+            content=ft.Text(status, size=11, weight=ft.FontWeight.BOLD, color=color_map.get(status, "#344054")),
+            bgcolor=bg_map.get(status, "#F2F4F7"),
+            border_radius=999,
+            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        )
+
+
+    def _money_centimos(value):
+        try:
+            return f"{cents_to_eur(int(value or 0)):.2f} €"
+        except Exception:
+            return "0.00 €"
+
+
+    reconciliation_group_type = select_input(
+        "Tipo de grupo",
+        ["CASH_RECEIPT", "CARD_SETTLEMENT", "BANK_TRANSFER", "STRIPE_SETTLEMENT", "MIXED_REVIEW"],
+        value="BANK_TRANSFER",
+        width=260,
+    )
+    reconciliation_group_date = text_input("Fecha YYYY-MM-DD", width=180)
+    reconciliation_group_title = required_text_input("Título", width=520)
+    reconciliation_group_description = multiline_input("Descripción / notas", width=620)
+
+
+    def open_reconciliation_group_dialog(e=None):
+        reconciliation_group_type.value = "BANK_TRANSFER"
+        reconciliation_group_date.value = datetime.today().strftime("%Y-%m-%d")
+        reconciliation_group_title.value = ""
+        reconciliation_group_description.value = ""
+        reconciliation_group_dialog.open = True
+        page.update()
+
+
+    def save_reconciliation_group(e=None):
+        try:
+            title = (reconciliation_group_title.value or "").strip()
+            if not title:
+                raise ValueError("Indica un título para la conciliación")
+
+            group_id = create_reconciliation_group(
+                group_type=reconciliation_group_type.value,
+                title=title,
+                description=reconciliation_group_description.value,
+                group_date=reconciliation_group_date.value,
+                notes="",
+            )
+            state["reconciliation_selected_group_id"] = group_id
+            reconciliation_group_dialog.open = False
+            show_message(success_alert("Conciliación creada"))
+            refresh()
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+            refresh()
+
+
+    reconciliation_group_dialog = form_dialog(
+        "Nueva conciliación de conciliación",
+        ft.Column(
+            controls=[
+                ft.Text(
+                    "Crea un contenedor manual para cuadrar cobros/recibos contra movimientos reales.",
+                    size=13,
+                    color=Q_MUTED,
+                ),
+                ft.Row([reconciliation_group_type, reconciliation_group_date], wrap=True, spacing=10),
+                reconciliation_group_title,
+                reconciliation_group_description,
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        [secondary_button("Cancelar", lambda e: close(reconciliation_group_dialog)), primary_button("Crear conciliación", save_reconciliation_group)],
+    )
+    page.overlay.append(reconciliation_group_dialog)
+
+
+    reconciliation_cobro_dd = select_input(
+        "Cobro",
+        ["Selecciona cobro"] + _get_cobro_options_for_reconciliation(),
+        value="Selecciona cobro",
+        width=620,
+    )
+
+
+    def open_add_cobro_to_group_dialog(e=None):
+        if not state.get("reconciliation_selected_group_id"):
+            show_message(error_alert("Selecciona una conciliación de conciliación"))
+            refresh()
+            return
+
+        _set_dropdown_options(
+            reconciliation_cobro_dd,
+            _get_cobro_options_for_reconciliation(),
+            "Selecciona cobro",
+        )
+        reconciliation_cobro_dd.value = "Selecciona cobro"
+        add_cobro_to_group_dialog.open = True
+        page.update()
+
+
+    def save_add_cobro_to_group(e=None):
+        try:
+            group_id = state.get("reconciliation_selected_group_id")
+            if not group_id:
+                raise ValueError("Selecciona una conciliación de conciliación")
+
+            cobro_id = _leading_id(reconciliation_cobro_dd.value)
+            if not cobro_id:
+                raise ValueError("Selecciona un cobro")
+
+            add_cobro_to_group(
+                group_id=int(group_id),
+                cobro_id=int(cobro_id),
+                role="EXPECTED",
+            )
+            add_cobro_to_group_dialog.open = False
+            show_message(success_alert("Recibo/cobro añadido a la conciliación"))
+            refresh()
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+            refresh()
+
+
+    add_cobro_to_group_dialog = form_dialog(
+        "Añadir recibo/cobro al grupo",
+        ft.Column(
+            controls=[
+                ft.Text(
+                    "El recibo/cobro se añadirá como elemento esperado. No se crea factura ni se vincula automáticamente ningún movimiento.",
+                    size=13,
+                    color=Q_MUTED,
+                ),
+                reconciliation_cobro_dd,
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        [secondary_button("Cancelar", lambda e: close(add_cobro_to_group_dialog)), primary_button("Añadir recibo/cobro", save_add_cobro_to_group)],
+    )
+    page.overlay.append(add_cobro_to_group_dialog)
+
+
+    def build_manual_reconciliation_section():
+        try:
+            groups = list_reconciliation_groups(limit=50)
+        except Exception as exc:
+            return error_alert(f"No se pudieron cargar grupos de conciliación: {exc}")
+
+        if not groups:
+            return ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text("Conciliación manual", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Container(expand=True),
+                            primary_button("Nueva conciliación", open_reconciliation_group_dialog),
+                            secondary_button("Refrescar", refresh),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                    ft.Text(
+                        "Vincula recibos/cobros físicos o del CRM contra movimientos reales ya importados desde Cashmatic, banco o Stripe. La conciliación siempre es manual.",
+                        size=13,
+                        color=Q_MUTED,
+                    ),
+                    empty_state("No hay conciliaciones manuales todavía"),
+                ],
+                spacing=14,
+                expand=True,
+            )
+
+        selected_id = state.get("reconciliation_selected_group_id")
+        if not selected_id and groups:
+            selected_id = groups[0].id
+            state["reconciliation_selected_group_id"] = selected_id
+
+        try:
+            detail = get_reconciliation_group_detail(int(selected_id)) if selected_id else None
+        except Exception:
+            detail = None
+
+        def select_group(group_id):
+            state["reconciliation_selected_group_id"] = group_id
+            refresh()
+
+        group_cards = []
+        for group in groups:
+            selected = int(group.id) == int(selected_id or 0)
+            group_cards.append(
+                ft.Container(
+                    bgcolor="#FFFFFF" if not selected else "#EAF3FF",
+                    border=ft.border.all(1, "#0057B8" if selected else Q_BORDER),
+                    border_radius=14,
+                    padding=12,
+                    ink=True,
+                    on_click=lambda e, gid=group.id: select_group(gid),
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(group.title or f"Grupo #{group.id}", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK, expand=True),
+                                    _reconciliation_status_badge(group.status),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            ),
+                            ft.Text(f"{group.group_type} · {group.group_date or '-'}", size=12, color=Q_MUTED),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(f"Esperado: {_money_centimos(group.expected_amount_centimos)}", size=12),
+                                    ft.Text(f"Real: {_money_centimos(group.actual_amount_centimos)}", size=12),
+                                    ft.Text(f"Dif: {_money_centimos(group.difference_centimos)}", size=12, weight=ft.FontWeight.BOLD),
+                                ],
+                                wrap=True,
+                                spacing=10,
+                            ),
+                        ],
+                        spacing=6,
+                    ),
+                )
+            )
+
+        expected_items = []
+        actual_items = []
+
+        if detail:
+            for item in detail.items:
+                row = ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=10,
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(item.source_type, size=11, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(_money_centimos(item.amount_centimos), size=12, weight=ft.FontWeight.BOLD),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            ),
+                            ft.Text(item.label or "-", size=12, color="#344054"),
+                        ],
+                        spacing=4,
+                    ),
+                )
+                if item.role == "EXPECTED":
+                    expected_items.append(row)
+                else:
+                    actual_items.append(row)
+
+        detail_panel = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=16,
+            expand=True,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text("Detalle de conciliación", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            _reconciliation_status_badge(detail.group.status if detail else "DRAFT"),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                    ft.Text(detail.group.title if detail else "Selecciona una conciliación", size=13, color=Q_MUTED),
+                    ft.Divider(),
+                    ft.Text("Recibos / cobros esperados", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Column(expected_items or [ft.Text("Sin recibos/cobros esperados", size=12, color=Q_MUTED)], spacing=8),
+                    ft.Divider(),
+                    ft.Text("Movimientos reales importados", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Column(actual_items or [ft.Text("Sin movimientos reales vinculados", size=12, color=Q_MUTED)], spacing=8),
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        )
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Text("Conciliación manual", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Container(expand=True),
+                        primary_button("Nueva conciliación", open_reconciliation_group_dialog),
+                        secondary_button("Añadir recibo/cobro", open_add_cobro_to_group_dialog),
+                        secondary_button("Refrescar", refresh),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                ft.Text(
+                    "Vincula recibos/cobros físicos o del CRM contra movimientos reales ya importados desde Cashmatic, banco o Stripe. La conciliación siempre es manual.",
+                    size=13,
+                    color=Q_MUTED,
+                ),
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            width=430,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text("Conciliaciones", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Column(group_cards, spacing=10, scroll=ft.ScrollMode.AUTO),
+                                ],
+                                spacing=10,
+                            ),
+                        ),
+                        detail_panel,
+                    ],
+                    spacing=16,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    expand=True,
+                ),
+            ],
+            spacing=14,
+            expand=True,
+        )
+
+
+    def set_movements_source(source):
+        state["movements_source"] = source
+        state["movements_page"] = 1
+        state["movements_search"] = ""
+        movements_filter.value = ""
+        refresh()
+
+
+    def movements_source_button(key, label):
+        selected = state.get("movements_source") == key
+        return ft.Container(
+            content=ft.Text(
+                label,
+                size=13,
+                weight=ft.FontWeight.BOLD if selected else ft.FontWeight.NORMAL,
+                color="#FFFFFF" if selected else Q_PRIMARY_DARK,
+            ),
+            bgcolor=Q_PRIMARY_DARK if selected else "#FFFFFF",
+            border=ft.border.all(1, Q_PRIMARY_DARK if selected else Q_BORDER),
+            border_radius=999,
+            padding=ft.padding.symmetric(horizontal=14, vertical=8),
+            ink=True,
+            on_click=lambda e, k=key: set_movements_source(k),
+        )
+
+
+    def movements_cache_key(source=None):
+        return source or state.get("movements_source") or "cashmatic"
+
+
+    def clear_movements_cache(source=None):
+        cache = state.setdefault("movements_cache", {})
+        if source:
+            cache.pop(source, None)
+        else:
+            cache.clear()
+
+
+    def _cashmatic_dedupe_score(item):
+        """
+        Cuando el mismo movimiento viene en exports distintos, Cashmatic puede
+        traer un export con segundos reales y otro redondeado al minuto.
+        Para mostrar un histórico limpio, conservamos la versión más precisa.
+        """
+        start_time = str(_get_value(item, "start_time") or "")
+        seconds = ""
+        try:
+            seconds = start_time.split(" ")[1].split(":")[2]
+        except Exception:
+            seconds = ""
+
+        score = 0
+
+        if seconds and seconds != "00":
+            score += 10
+
+        if _get_value(item, "reason_raw"):
+            score += 3
+
+        if _get_value(item, "reference_raw"):
+            score += 2
+
+        try:
+            score += int(_get_value(item, "id") or 0) / 100000000
+        except Exception:
+            pass
+
+        return score
+
+
+    def unique_cashmatic_movements(items):
+        """
+        El histórico visible debe representar movimientos lógicos, no filas
+        repetidas de distintos exports Cashmatic.
+
+        Clave principal: cashmatic_id.
+        Si no hubiera cashmatic_id, se conserva la fila como única.
+        """
+        unique = {}
+        passthrough = []
+
+        for item in items:
+            cashmatic_id = str(_get_value(item, "cashmatic_id") or "").strip()
+
+            if not cashmatic_id:
+                passthrough.append(item)
+                continue
+
+            previous = unique.get(cashmatic_id)
+            if previous is None:
+                unique[cashmatic_id] = item
+                continue
+
+            if _cashmatic_dedupe_score(item) > _cashmatic_dedupe_score(previous):
+                unique[cashmatic_id] = item
+
+        ordered = list(unique.values()) + passthrough
+
+        def sort_key(item):
+            return (
+                str(_get_value(item, "start_time") or ""),
+                int(_get_value(item, "id") or 0),
+            )
+
+        return sorted(ordered, key=sort_key, reverse=True)
+
+
+    def load_movements_for_source(source):
+        source = movements_cache_key(source)
+        cache = state.setdefault("movements_cache", {})
+        if source in cache:
+            return cache[source]
+
+        if source == "cashmatic":
+            page_data = list_cashmatic_movements(
+                page=1,
+                page_size=1000000,
+                include_ignored=False,
+            )
+            items = unique_cashmatic_movements(list(getattr(page_data, "items", None) or []))
+        else:
+            bank_map = {
+                "caja_rural": "CAJA_RURAL",
+                "ing": "ING",
+                "santander": "SANTANDER",
+            }
+            page_data = list_bank_movements(
+                page=1,
+                page_size=5000,
+                bank_name=bank_map.get(source, "ING"),
+                include_ignored=False,
+            )
+            items = list(getattr(page_data, "items", None) or [])
+
+        cache[source] = items
+        return items
+
+
+    def _date_search_tokens(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return []
+
+        tokens = [raw.lower()]
+
+        # Esperado: YYYY-MM-DD HH:MM:SS
+        date_part = raw.split(" ")[0]
+        pieces = date_part.split("-")
+
+        if len(pieces) == 3:
+            yyyy, mm, dd = pieces
+            tokens.extend([
+                f"{dd}/{mm}/{yyyy}",
+                f"{dd}-{mm}-{yyyy}",
+                f"{mm}/{yyyy}",
+                f"{yyyy}-{mm}",
+                f"{dd}/{mm}",
+                f"{dd}-{mm}",
+            ])
+
+            month_names = {
+                "01": "enero",
+                "02": "febrero",
+                "03": "marzo",
+                "04": "abril",
+                "05": "mayo",
+                "06": "junio",
+                "07": "julio",
+                "08": "agosto",
+                "09": "septiembre",
+                "10": "octubre",
+                "11": "noviembre",
+                "12": "diciembre",
+            }
+
+            month_name = month_names.get(mm)
+            if month_name:
+                tokens.extend([
+                    month_name,
+                    f"{month_name} {yyyy}",
+                    f"{dd} {month_name}",
+                    f"{dd} {month_name} {yyyy}",
+                ])
+
+        return tokens
+
+
+    def _movement_search_blob(values):
+        blob = []
+        for value in values:
+            blob.append(str(value or ""))
+            blob.extend(_date_search_tokens(value))
+        return " ".join(blob).lower()
+
+
+    def movement_matches_filter(item, source):
+        texto = (state.get("movements_search") or "").lower().strip()
+        if not texto:
+            return True
+
+        if source == "cashmatic":
+            values = [
+                _get_value(item, "id"),
+                _get_value(item, "batch_id"),
+                _get_value(item, "cashmatic_id"),
+                _get_value(item, "reason_raw"),
+                _get_value(item, "reference_raw"),
+                _get_value(item, "operation"),
+                _get_value(item, "movement_status"),
+                _get_value(item, "start_time"),
+                _get_value(item, "end_time"),
+                _money_centimos(_get_value(item, "inserted_centimos")),
+                _money_centimos(_get_value(item, "net_amount_centimos")),
+            ]
+        else:
+            values = [
+                _get_value(item, "id"),
+                _get_value(item, "batch_id"),
+                _get_value(item, "concept"),
+                _get_value(item, "movement_type"),
+                _get_value(item, "movement_status"),
+                _get_value(item, "operation_date"),
+                _get_value(item, "value_date"),
+                _get_value(item, "bank_name"),
+                _money_centimos(_get_value(item, "amount_centimos")),
+            ]
+
+        return texto in _movement_search_blob(values)
+
+
+    def filtered_movements_for_source(source):
+        source = movements_cache_key(source)
+        return [
+            item for item in load_movements_for_source(source)
+            if movement_matches_filter(item, source)
+        ]
+
+
+    def paginate_movements(items):
+        page_size = max(1, int(state.get("movements_page_size") or 50))
+        total_items = len(items)
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        page_number = max(1, min(int(state.get("movements_page") or 1), total_pages))
+        state["movements_page"] = page_number
+
+        start_index = (page_number - 1) * page_size
+        end_index = start_index + page_size
+        return items[start_index:end_index], total_items, page_number, page_size
+
+
+    def movements_pagination(total_items, page_number, page_size):
+        return compact_pagination_bar(
+            page=page_number,
+            page_size=page_size,
+            total_items=total_items,
+            on_page_change=go_movements_page,
+            label_prefix="Movimientos",
+        )
+
+
+    def go_movements_page(page_number):
+        try:
+            page_number = int(page_number)
+        except Exception:
+            page_number = 1
+
+        source = state.get("movements_source") or "cashmatic"
+        total_items = len(filtered_movements_for_source(source))
+        page_size = max(1, int(state.get("movements_page_size") or 50))
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+
+        state["movements_page"] = max(1, min(page_number, total_pages))
+        refresh_movements_results()
+
+
+    def build_cashmatic_movements_table():
+        source = "cashmatic"
+        filtered = filtered_movements_for_source(source)
+        items, total_items, page_number, page_size = paginate_movements(filtered)
+
+        rows = []
+        for m in items:
+            reason = _get_value(m, "reason_raw") or "-"
+            rows.append([
+                _get_value(m, "cashmatic_id") or _get_value(m, "id") or "-",
+                _date_time_to_display(_get_value(m, "start_time")),
+                _money_centimos(_get_value(m, "requested_centimos")),
+                _money_centimos(_get_value(m, "inserted_centimos")),
+                _get_value(m, "operation") or "-",
+                economic_badge(_get_value(m, "movement_status")),
+                ft.Text(
+                    reason,
+                    size=12,
+                    tooltip=reason,
+                    selectable=True,
+                    no_wrap=False,
+                ),
+            ])
+
+        headers = [
+            {"label": "ID", "key": "ID", "width": 80},
+            {"label": "Fecha", "key": "Fecha", "width": 150},
+            {"label": "Solicitado", "key": "Solicitado", "width": 130},
+            {"label": "Introducido", "key": "Introducido", "width": 130},
+            {"label": "Operación", "key": "Operación", "width": 120},
+            {"label": "Estado", "key": "Estado", "width": 280},
+            {"label": "Motivo", "key": "Motivo", "width": 760},
+        ]
+
+        table = app_table(headers, rows, height=430) if rows else empty_state("No hay movimientos Cashmatic importados")
+        return ft.Column(
+            controls=[
+                movements_pagination(total_items, page_number, page_size),
+                table,
+            ],
+            spacing=10,
+        )
+
+    def build_bank_movements_table(bank_name):
+        source_map = {
+            "CAJA_RURAL": "caja_rural",
+            "ING": "ing",
+            "SANTANDER": "santander",
+        }
+        source = source_map.get(bank_name, "ing")
+
+        filtered = filtered_movements_for_source(source)
+        items, total_items, page_number, page_size = paginate_movements(filtered)
+
+        rows = []
+        for m in items:
+            concept = _get_value(m, "concept") or "-"
+            rows.append([
+                _get_value(m, "id") or "-",
+                _date_time_to_display(_get_value(m, "operation_date")),
+                _date_time_to_display(_get_value(m, "value_date")),
+                _money_centimos(_get_value(m, "amount_centimos")),
+                _get_value(m, "movement_type") or "-",
+                economic_badge(_get_value(m, "movement_status")),
+                ft.Text(
+                    concept,
+                    size=12,
+                    tooltip=concept,
+                    selectable=True,
+                    no_wrap=False,
+                ),
+                _get_value(m, "bank_name") or bank_name,
+            ])
+
+        headers = [
+            {"label": "ID", "key": "ID", "width": 80},
+            {"label": "F. operación", "key": "F. operación", "width": 125},
+            {"label": "F. valor", "key": "F. valor", "width": 125},
+            {"label": "Importe", "key": "Importe", "width": 120},
+            {"label": "Tipo", "key": "Tipo", "width": 230},
+            {"label": "Estado", "key": "Estado", "width": 280},
+            {"label": "Concepto", "key": "Concepto", "width": 820},
+            {"label": "Banco", "key": "Banco", "width": 130},
+        ]
+
+        table = app_table(headers, rows, height=430) if rows else empty_state(f"No hay movimientos importados de {bank_name}")
+        return ft.Column(
+            controls=[
+                movements_pagination(total_items, page_number, page_size),
+                table,
+            ],
+            spacing=10,
+        )
+
+
+    def current_imported_movements_content():
+        source = state.get("movements_source") or "cashmatic"
+
+        source_map = {
+            "cashmatic": ("Cashmatic", build_cashmatic_movements_table),
+            "caja_rural": ("Caja Rural", lambda: build_bank_movements_table("CAJA_RURAL")),
+            "ing": ("ING", lambda: build_bank_movements_table("ING")),
+            "santander": ("Santander", lambda: build_bank_movements_table("SANTANDER")),
+        }
+
+        title, builder = source_map.get(source, source_map["cashmatic"])
+
+        return ft.Column(
+            controls=[
+                ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                builder(),
+            ],
+            spacing=10,
+        )
+
+
+    def refresh_movements_results():
+        movements_results_box.content = current_imported_movements_content()
+        try:
+            movements_results_box.update()
+        except Exception:
+            pass
+
+
+    def on_movements_filter_change(e=None):
+        state["movements_search"] = (movements_filter.value or "").strip()
+        state["movements_page"] = 1
+        refresh_movements_results()
+
+
+    def import_movements_backend(source, file_path):
+        source = (source or "").strip().lower()
+        file_path = str(file_path or "").strip()
+
+        if not file_path:
+            raise ValueError("No se ha seleccionado ningún archivo.")
+
+        if source == "cashmatic":
+            from backend.services.economic_reconciliation.cashmatic_import_service import import_cashmatic_file
+            return import_cashmatic_file(file_path)
+
+        if source == "santander":
+            from backend.services.economic_reconciliation.bank_import_service import import_santander_bank_file
+            return import_santander_bank_file(file_path)
+
+        if source == "caja_rural":
+            from backend.services.economic_reconciliation.bank_import_service import import_caja_rural_bank_file
+            return import_caja_rural_bank_file(file_path)
+
+        if source == "ing":
+            from backend.services.economic_reconciliation.bank_import_service import import_ing_bank_file
+            return import_ing_bank_file(file_path)
+
+        raise ValueError(f"Origen no soportado: {source}")
+
+
+    def summarize_movements_import_result(result):
+        if result is None:
+            return "Importación completada."
+
+        parts = []
+        for key in [
+            "batch_id",
+            "inserted_rows",
+            "rows_inserted",
+            "inserted",
+            "duplicates",
+            "duplicate_rows",
+            "quarantine_rows",
+            "quarantine",
+            "valid_rows",
+            "total_rows",
+        ]:
+            if isinstance(result, dict) and key in result:
+                parts.append(f"{key}={result.get(key)}")
+            elif hasattr(result, key):
+                parts.append(f"{key}={getattr(result, key)}")
+
+        return "Importación completada" + (": " + " · ".join(parts) if parts else f": {result}")
+
+
+    async def seleccionar_movimientos_csv_xls(e=None):
+        source = state.get("movements_source") or "cashmatic"
+
+        extension_map = {
+            "cashmatic": ["csv"],
+            "santander": ["xls", "xlsx"],
+            "caja_rural": ["xls", "xlsx"],
+            "ing": ["xls", "xlsx"],
+        }
+
+        files = await ft.FilePicker().pick_files(
+            allow_multiple=False,
+            allowed_extensions=extension_map.get(source, ["csv", "xls", "xlsx"]),
+        )
+
+        if not files:
+            return
+
+        file_path = files[0].path
+
+        try:
+            result = import_movements_backend(source, file_path)
+
+            # Forzar recarga real desde backend tras importar.
+            try:
+                state.setdefault("movements_cache", {}).pop(source, None)
+            except Exception:
+                pass
+
+            state["movements_source"] = source
+            state["movements_page"] = 1
+            state["movements_search"] = ""
+
+            try:
+                movements_filter.value = ""
+            except Exception:
+                pass
+
+            # Reconstruye la vista y vuelve a leer los datos ya importados.
+            refresh()
+
+            try:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(summarize_movements_import_result(result)),
+                    open=True,
+                )
+                page.update()
+            except Exception:
+                pass
+
+        except Exception as exc:
+            try:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"Error importando movimientos: {exc}"),
+                    open=True,
+                )
+                page.update()
+            except Exception:
+                raise
+
+
+    def build_imported_movements_section():
+        movements_filter.value = state.get("movements_search") or ""
+        movements_filter.on_change = on_movements_filter_change
+        movements_results_box.content = current_imported_movements_content()
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Text("Movimientos importados", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Container(expand=True),
+                        primary_button("Importar CSV/XLS", seleccionar_movimientos_csv_xls),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                ft.Row(
+                    controls=[
+                        movements_source_button("cashmatic", "Cashmatic"),
+                        movements_source_button("caja_rural", "Caja Rural"),
+                        movements_source_button("ing", "ING"),
+                        movements_source_button("santander", "Santander"),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        movements_filter,
+                        ft.Text("Ej.: marzo, 03/2026, 16/03/2026, 2026-03, ID Cashmatic o nombre", size=12, color=Q_MUTED),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=14,
+                    padding=8,
+                    content=movements_results_box,
+                ),
+            ],
+            spacing=8,
+            expand=True,
+        )
+
+
     def build_table():
+        if state["section"] == "conciliacion_manual":
+            return build_manual_reconciliation_section()
+
         if state["section"] == "hojas":
             rows = []
             for h in economic_service.list_hojas_encargo():
@@ -199,7 +1209,6 @@ def economic_view(page: ft.Page):
                     economic_badge(h.get("estado")),
                 ])
             return app_table(
-                ["Nº hoja", "Firma", "Cliente", "Expediente", "Procedimiento", "Bruto", "Neto", "Estado"],
                 rows,
                 height=430,
             ) if rows else empty_state("No hay hojas de encargo")
@@ -267,22 +1276,15 @@ def economic_view(page: ft.Page):
                 height=430,
             ) if rows else empty_state("No hay gastos")
 
-        rows = []
-        for m in economic_service.list_movimientos():
-            rows.append([
-                m.get("origen") or "-",
-                _date_to_display(m.get("fecha_operacion")),
-                m.get("concepto") or "-",
-                _money(m.get("importe")),
-                m.get("referencia") or "-",
-                m.get("cuenta") or "-",
-                economic_badge(m.get("estado_conciliacion")),
-            ])
-        return app_table(
-            ["Origen", "Fecha", "Concepto", "Importe", "Referencia", "Cuenta", "Conciliación"],
-            rows,
-            height=430,
-        ) if rows else empty_state("No hay movimientos importados")
+        if state["section"] == "movimientos":
+            return build_imported_movements_section()
+
+        return empty_state("Selecciona una sección")
+
+    movements_filter = text_input("Filtrar por concepto / motivo / fecha / ID", width=560)
+    movements_filter.value = ""
+    movements_results_box = ft.Container()
+
 
     # Controles independientes por formulario
     hoja_cliente_ac = AppAutocomplete(page, "Cliente", cliente_options, width=520, max_results=12)

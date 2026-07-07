@@ -1,0 +1,286 @@
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from backend.services.economic_reconciliation.bank_import_service import (
+    ensure_bank_schema,
+)
+from backend.services.economic_reconciliation.bank_query_service import (
+    get_bank_movement_detail,
+)
+from backend.services.economic_reconciliation.cashmatic_import_service import (
+    DEFAULT_DB_PATH,
+    connect,
+)
+
+
+@dataclass(frozen=True)
+class BankManualLinkRequest:
+    movement_id: int
+    client_id: int | None = None
+    expedient_id: int | None = None
+    payment_id: int | None = None
+    linked_by_user_id: int | None = None
+    notes: str = ""
+
+
+def _as_optional_int(value: int | str | None) -> int | None:
+    if value is None:
+        return None
+    if value == "":
+        return None
+    try:
+        parsed = int(value)
+    except Exception as exc:
+        raise ValueError(f"ID inválido: {value!r}") from exc
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = ?
+        LIMIT 1
+        """,
+        (table_name,),
+    ).fetchone()
+    return bool(row)
+
+
+def _record_exists(conn: sqlite3.Connection, table_name: str, record_id: int) -> bool:
+    if not _table_exists(conn, table_name):
+        return False
+
+    row = conn.execute(
+        f"SELECT 1 FROM {table_name} WHERE id = ? LIMIT 1",
+        (int(record_id),),
+    ).fetchone()
+    return bool(row)
+
+
+def _validate_optional_fk(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    record_id: int | None,
+    label: str,
+) -> None:
+    if record_id is None:
+        return
+
+    if not _table_exists(conn, table_name):
+        raise ValueError(
+            f"No se puede validar {label} #{record_id}: "
+            f"la tabla {table_name!r} no existe en esta base de datos."
+        )
+
+    if not _record_exists(conn, table_name, record_id):
+        raise ValueError(f"No existe {label} con id={record_id}.")
+
+
+def _get_bank_movement_for_update(
+    conn: sqlite3.Connection,
+    movement_id: int,
+) -> sqlite3.Row:
+    row = conn.execute(
+        """
+        SELECT *
+        FROM bank_movements
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(movement_id),),
+    ).fetchone()
+
+    if not row:
+        raise ValueError(f"No existe movimiento bancario id={movement_id}.")
+
+    return row
+
+
+def _assert_can_link(row: sqlite3.Row) -> None:
+    if row["review_status"] == "IGNORED":
+        raise ValueError("No se puede vincular un movimiento bancario ignorado. Restáuralo primero.")
+
+    if row["movement_status"] == "QUARANTINE":
+        raise ValueError("No se puede vincular un movimiento bancario en cuarentena.")
+
+    if (
+        row["linked_client_id"] is not None
+        or row["linked_expedient_id"] is not None
+        or row["linked_payment_id"] is not None
+    ):
+        raise ValueError("El movimiento bancario ya está vinculado. Desvincúlalo antes de volver a vincular.")
+
+
+def link_bank_movement_manually(
+    request: BankManualLinkRequest,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """Vincula manualmente un movimiento bancario.
+
+    Esta función NO busca clientes, expedientes ni cobros.
+    La futura UI deberá obtener los IDs desde app_autocompletes y pasarlos aquí.
+    """
+    movement_id = int(request.movement_id)
+    client_id = _as_optional_int(request.client_id)
+    expedient_id = _as_optional_int(request.expedient_id)
+    payment_id = _as_optional_int(request.payment_id)
+    linked_by_user_id = _as_optional_int(request.linked_by_user_id)
+    notes = (request.notes or "").strip()
+
+    if client_id is None and expedient_id is None and payment_id is None:
+        raise ValueError("Debes indicar al menos cliente, expediente o cobro.")
+
+    with connect(db_path) as conn:
+        ensure_bank_schema(conn)
+
+        row = _get_bank_movement_for_update(conn, movement_id)
+        _assert_can_link(row)
+
+        _validate_optional_fk(conn, table_name="clientes", record_id=client_id, label="cliente")
+        _validate_optional_fk(conn, table_name="expedientes", record_id=expedient_id, label="expediente")
+        _validate_optional_fk(conn, table_name="cobros", record_id=payment_id, label="cobro")
+
+        conn.execute(
+            """
+            UPDATE bank_movements
+            SET
+                linked_client_id = ?,
+                linked_expedient_id = ?,
+                linked_payment_id = ?,
+                linked_by_user_id = ?,
+                linked_at = CURRENT_TIMESTAMP,
+                link_notes = CASE
+                    WHEN ? = '' THEN link_notes
+                    WHEN link_notes IS NULL OR link_notes = '' THEN ?
+                    ELSE link_notes || char(10) || ?
+                END,
+                review_status = 'MANUALLY_LINKED',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                client_id,
+                expedient_id,
+                payment_id,
+                linked_by_user_id,
+                notes,
+                notes,
+                notes,
+                movement_id,
+            ),
+        )
+        conn.commit()
+
+    detail = get_bank_movement_detail(movement_id, db_path=db_path)
+    if not detail:
+        raise ValueError(f"No se pudo recuperar movimiento bancario vinculado id={movement_id}.")
+    return detail
+
+
+def unlink_bank_movement(
+    movement_id: int,
+    reason: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """Desvincula un movimiento bancario conservando trazabilidad."""
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("Debes indicar un motivo para desvincular.")
+
+    movement_id = int(movement_id)
+
+    with connect(db_path) as conn:
+        ensure_bank_schema(conn)
+
+        row = _get_bank_movement_for_update(conn, movement_id)
+
+        if (
+            row["linked_client_id"] is None
+            and row["linked_expedient_id"] is None
+            and row["linked_payment_id"] is None
+        ):
+            raise ValueError("El movimiento bancario no está vinculado.")
+
+        note = f"Desvinculado: {reason}"
+
+        conn.execute(
+            """
+            UPDATE bank_movements
+            SET
+                linked_client_id = NULL,
+                linked_expedient_id = NULL,
+                linked_payment_id = NULL,
+                linked_by_user_id = NULL,
+                linked_at = NULL,
+                link_notes = CASE
+                    WHEN link_notes IS NULL OR link_notes = '' THEN ?
+                    ELSE link_notes || char(10) || ?
+                END,
+                review_status = 'PENDING_MANUAL_REVIEW',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (note, note, movement_id),
+        )
+        conn.commit()
+
+    detail = get_bank_movement_detail(movement_id, db_path=db_path)
+    if not detail:
+        raise ValueError(f"No se pudo recuperar movimiento bancario desvinculado id={movement_id}.")
+    return detail
+
+
+def get_bank_link_context(
+    movement_id: int,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """Devuelve contexto para la futura UI de vinculación bancaria.
+
+    La UI deberá montar app_autocompletes para cliente, expediente y cobro.
+    """
+    detail = get_bank_movement_detail(int(movement_id), db_path=db_path)
+    if not detail:
+        raise ValueError(f"No existe movimiento bancario id={movement_id}.")
+
+    return {
+        "movement": detail,
+        "autocomplete_targets": {
+            "client": {
+                "component": "app_autocomplete",
+                "target_table": "clientes",
+                "id_field": "id",
+                "destination_field": "linked_client_id",
+            },
+            "expedient": {
+                "component": "app_autocomplete",
+                "target_table": "expedientes",
+                "id_field": "id",
+                "destination_field": "linked_expedient_id",
+            },
+            "payment": {
+                "component": "app_autocomplete",
+                "target_table": "cobros",
+                "id_field": "id",
+                "destination_field": "linked_payment_id",
+            },
+        },
+        "rules": [
+            "La búsqueda/selección se hace en UI mediante app_autocompletes.",
+            "El backend solo acepta IDs explícitos.",
+            "No se vinculan movimientos ignorados.",
+            "No se vinculan movimientos en cuarentena.",
+            "No se permite doble vinculación sin desvincular antes.",
+            "Debe indicarse al menos cliente, expediente o cobro.",
+            "No se crean cobros ni facturas automáticamente.",
+        ],
+    }
