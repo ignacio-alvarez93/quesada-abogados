@@ -6,10 +6,17 @@ from backend.services.economic_reconciliation.bank_caja_rural_parser_service imp
     CajaRuralBankDiagnosticRow,
     diagnose_caja_rural_bank_file,
 )
+
+from backend.services.economic_reconciliation.bank_ing_parser_service import (
+    IngBankDiagnosticReport,
+    IngBankDiagnosticRow,
+    diagnose_ing_bank_file,
+)
 from backend.services.economic_reconciliation.bank_import_service import (
     BankImportResult,
     get_bank_import_summary,
     import_caja_rural_bank_file,
+    import_ing_bank_file,
     import_santander_bank_file,
 )
 from backend.services.economic_reconciliation.bank_link_service import (
@@ -107,4 +114,8 @@ __all__ = [
     "CajaRuralBankDiagnosticRow",
     "diagnose_caja_rural_bank_file",
     "import_caja_rural_bank_file",
+    "IngBankDiagnosticReport",
+    "IngBankDiagnosticRow",
+    "diagnose_ing_bank_file",
+    "import_ing_bank_file",
 ]
