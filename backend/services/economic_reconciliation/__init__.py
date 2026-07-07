@@ -1,5 +1,32 @@
 from __future__ import annotations
 
+from backend.services.economic_reconciliation.bank_import_service import (
+    BankImportResult,
+    get_bank_import_summary,
+    import_santander_bank_file,
+)
+from backend.services.economic_reconciliation.bank_link_service import (
+    BankManualLinkRequest,
+    get_bank_link_context,
+    link_bank_movement_manually,
+    unlink_bank_movement,
+)
+from backend.services.economic_reconciliation.bank_query_service import (
+    BankPage,
+    get_bank_dashboard_summary,
+    get_bank_movement_detail,
+    list_bank_batches,
+    list_bank_movements,
+    mark_bank_movement_ignored,
+    restore_bank_movement,
+)
+from backend.services.economic_reconciliation.bank_santander_parser_service import (
+    SantanderBankDiagnosticReport,
+    SantanderBankDiagnosticRow,
+    diagnose_santander_bank_file,
+)
+
+
 from backend.services.economic_reconciliation.cashmatic_import_service import (
     CashmaticImportResult,
     get_cashmatic_import_summary,
@@ -52,4 +79,21 @@ __all__ = [
     "restore_cashmatic_movement",
     "unlink_cashmatic_movement",
     "update_cashmatic_movement_notes",
+    "BankImportResult",
+    "BankManualLinkRequest",
+    "BankPage",
+    "SantanderBankDiagnosticReport",
+    "SantanderBankDiagnosticRow",
+    "diagnose_santander_bank_file",
+    "get_bank_dashboard_summary",
+    "get_bank_import_summary",
+    "get_bank_link_context",
+    "get_bank_movement_detail",
+    "import_santander_bank_file",
+    "link_bank_movement_manually",
+    "list_bank_batches",
+    "list_bank_movements",
+    "mark_bank_movement_ignored",
+    "restore_bank_movement",
+    "unlink_bank_movement",
 ]
