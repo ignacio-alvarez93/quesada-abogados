@@ -972,15 +972,22 @@ def economic_view(page: ft.Page):
         try:
             result = import_movements_backend(source, file_path)
 
+            # Forzar recarga real desde backend tras importar.
             try:
                 state.setdefault("movements_cache", {}).pop(source, None)
             except Exception:
                 pass
 
+            state["movements_source"] = source
             state["movements_page"] = 1
             state["movements_search"] = ""
-            movements_filter.value = ""
 
+            try:
+                movements_filter.value = ""
+            except Exception:
+                pass
+
+            # Reconstruye la vista y vuelve a leer los datos ya importados.
             refresh()
 
             try:
