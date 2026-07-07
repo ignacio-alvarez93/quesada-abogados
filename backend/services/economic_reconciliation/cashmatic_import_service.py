@@ -162,12 +162,32 @@ def _insert_movement(
     before = conn.total_changes
     canonical_row_hash = _canonical_movement_hash(row)
 
-    # Dedupe global: si el movimiento ya existe por una exportación anterior,
-    # no se vuelve a insertar.
+    # Dedupe global Cashmatic:
+    # Los exports diarios/mensuales pueden solaparse. El mismo movimiento puede
+    # venir con segundos reales en un CSV y redondeado al minuto en otro.
+    # Por eso, si Cashmatic trae ID propio, ese ID es la clave lógica principal.
+    cashmatic_id = str(row.cashmatic_id or "").strip()
+
+    if cashmatic_id:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM cashmatic_movements
+            WHERE TRIM(COALESCE(cashmatic_id, '')) = ?
+            LIMIT 1
+            """,
+            (cashmatic_id,),
+        ).fetchone()
+
+        if existing:
+            return False
+
+    # Fallback para filas sin cashmatic_id.
     existing = conn.execute(
         "SELECT id FROM cashmatic_movements WHERE row_hash = ? LIMIT 1",
         (canonical_row_hash,),
     ).fetchone()
+
     if existing:
         return False
 
