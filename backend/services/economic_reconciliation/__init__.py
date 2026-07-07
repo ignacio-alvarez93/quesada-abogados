@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+
+from backend.services.economic_reconciliation.bank_caja_rural_parser_service import (
+    CajaRuralBankDiagnosticReport,
+    CajaRuralBankDiagnosticRow,
+    diagnose_caja_rural_bank_file,
+)
 from backend.services.economic_reconciliation.bank_import_service import (
     BankImportResult,
     get_bank_import_summary,
+    import_caja_rural_bank_file,
     import_santander_bank_file,
 )
 from backend.services.economic_reconciliation.bank_link_service import (
@@ -96,4 +103,8 @@ __all__ = [
     "mark_bank_movement_ignored",
     "restore_bank_movement",
     "unlink_bank_movement",
+    "CajaRuralBankDiagnosticReport",
+    "CajaRuralBankDiagnosticRow",
+    "diagnose_caja_rural_bank_file",
+    "import_caja_rural_bank_file",
 ]
