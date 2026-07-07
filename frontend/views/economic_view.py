@@ -12,6 +12,7 @@ from frontend.components.app_card import metric_card
 from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
 from frontend.components.app_autocomplete import AppAutocomplete
+from frontend.components.listing import compact_pagination_bar
 from backend.services.economic_reconciliation import (
     list_bank_movements,
     list_cashmatic_movements,
@@ -254,7 +255,7 @@ def economic_view(page: ft.Page):
             "cobros": ("Nuevo cobro", open_cobro_dialog),
             "facturas": ("Nueva factura", open_factura_dialog),
             "gastos": ("Nuevo gasto", open_gasto_dialog),
-            "movimientos": ("Nuevo movimiento", open_movimiento_dialog),
+            "movimientos": ("Importar CSV/XLS", open_movimiento_dialog),
         }
         if state["section"] == "facturas":
             return ft.Container(
@@ -627,6 +628,9 @@ def economic_view(page: ft.Page):
 
     def set_movements_source(source):
         state["movements_source"] = source
+        state["movements_page"] = 1
+        state["movements_search"] = ""
+        movements_filter.value = ""
         refresh()
 
 
@@ -648,16 +652,125 @@ def economic_view(page: ft.Page):
         )
 
 
-    def build_cashmatic_movements_table():
-        try:
+    def movements_cache_key(source=None):
+        return source or state.get("movements_source") or "cashmatic"
+
+
+    def clear_movements_cache(source=None):
+        cache = state.setdefault("movements_cache", {})
+        if source:
+            cache.pop(source, None)
+        else:
+            cache.clear()
+
+
+    def load_movements_for_source(source):
+        source = movements_cache_key(source)
+        cache = state.setdefault("movements_cache", {})
+        if source in cache:
+            return cache[source]
+
+        if source == "cashmatic":
             page_data = list_cashmatic_movements(
                 page=1,
-                page_size=100,
+                page_size=5000,
                 include_ignored=False,
             )
-            items = getattr(page_data, "items", None) or []
-        except Exception as exc:
-            return error_alert(f"No se pudieron cargar movimientos Cashmatic: {exc}")
+            items = list(getattr(page_data, "items", None) or [])
+        else:
+            bank_map = {
+                "caja_rural": "CAJA_RURAL",
+                "ing": "ING",
+                "santander": "SANTANDER",
+            }
+            page_data = list_bank_movements(
+                page=1,
+                page_size=5000,
+                bank_name=bank_map.get(source, "ING"),
+                include_ignored=False,
+            )
+            items = list(getattr(page_data, "items", None) or [])
+
+        cache[source] = items
+        return items
+
+
+    def movement_matches_filter(item, source):
+        texto = (state.get("movements_search") or "").lower().strip()
+        if not texto:
+            return True
+
+        if source == "cashmatic":
+            values = [
+                _get_value(item, "reason_raw"),
+                _get_value(item, "reference_raw"),
+                _get_value(item, "operation"),
+                _get_value(item, "movement_status"),
+                _get_value(item, "start_time"),
+                _get_value(item, "cashmatic_id"),
+            ]
+        else:
+            values = [
+                _get_value(item, "concept"),
+                _get_value(item, "movement_type"),
+                _get_value(item, "movement_status"),
+                _get_value(item, "operation_date"),
+                _get_value(item, "value_date"),
+                _get_value(item, "bank_name"),
+            ]
+
+        return texto in " ".join(str(v or "") for v in values).lower()
+
+
+    def filtered_movements_for_source(source):
+        source = movements_cache_key(source)
+        return [
+            item for item in load_movements_for_source(source)
+            if movement_matches_filter(item, source)
+        ]
+
+
+    def paginate_movements(items):
+        page_size = max(1, int(state.get("movements_page_size") or 50))
+        total_items = len(items)
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        page_number = max(1, min(int(state.get("movements_page") or 1), total_pages))
+        state["movements_page"] = page_number
+
+        start_index = (page_number - 1) * page_size
+        end_index = start_index + page_size
+        return items[start_index:end_index], total_items, page_number, page_size
+
+
+    def movements_pagination(total_items, page_number, page_size):
+        return compact_pagination_bar(
+            page=page_number,
+            page_size=page_size,
+            total_items=total_items,
+            on_page_change=go_movements_page,
+            label_prefix="Movimientos",
+        )
+
+
+    def go_movements_page(page_number):
+        try:
+            page_number = int(page_number)
+        except Exception:
+            page_number = 1
+
+        source = state.get("movements_source") or "cashmatic"
+        total_items = len(filtered_movements_for_source(source))
+        page_size = max(1, int(state.get("movements_page_size") or 50))
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+
+        state["movements_page"] = max(1, min(page_number, total_pages))
+        refresh_movements_results()
+
+
+    def build_cashmatic_movements_table():
+        source = "cashmatic"
+        filtered = filtered_movements_for_source(source)
+        items, total_items, page_number, page_size = paginate_movements(filtered)
 
         rows = []
         for m in items:
@@ -678,24 +791,36 @@ def economic_view(page: ft.Page):
                 ),
             ])
 
-        return app_table(
-            ["ID", "Fecha", "Importe introducido", "Importe neto", "Operación", "Estado", "Motivo"],
-            rows,
-            height=430,
-        ) if rows else empty_state("No hay movimientos Cashmatic importados")
+        headers = [
+            {"label": "ID", "key": "ID", "width": 80},
+            {"label": "Fecha", "key": "Fecha", "width": 150},
+            {"label": "Introducido", "key": "Introducido", "width": 130},
+            {"label": "Neto", "key": "Neto", "width": 110},
+            {"label": "Operación", "key": "Operación", "width": 120},
+            {"label": "Estado", "key": "Estado", "width": 280},
+            {"label": "Motivo", "key": "Motivo", "width": 760},
+        ]
+
+        table = app_table(headers, rows, height=430) if rows else empty_state("No hay movimientos Cashmatic importados")
+        return ft.Column(
+            controls=[
+                movements_pagination(total_items, page_number, page_size),
+                table,
+            ],
+            spacing=10,
+        )
 
 
     def build_bank_movements_table(bank_name):
-        try:
-            page_data = list_bank_movements(
-                page=1,
-                page_size=100,
-                bank_name=bank_name,
-                include_ignored=False,
-            )
-            items = getattr(page_data, "items", None) or []
-        except Exception as exc:
-            return error_alert(f"No se pudieron cargar movimientos {bank_name}: {exc}")
+        source_map = {
+            "CAJA_RURAL": "caja_rural",
+            "ING": "ing",
+            "SANTANDER": "santander",
+        }
+        source = source_map.get(bank_name, "ing")
+
+        filtered = filtered_movements_for_source(source)
+        items, total_items, page_number, page_size = paginate_movements(filtered)
 
         rows = []
         for m in items:
@@ -717,14 +842,28 @@ def economic_view(page: ft.Page):
                 _get_value(m, "bank_name") or bank_name,
             ])
 
-        return app_table(
-            ["ID", "F. operación", "F. valor", "Importe", "Tipo", "Estado", "Concepto", "Banco"],
-            rows,
-            height=430,
-        ) if rows else empty_state(f"No hay movimientos importados de {bank_name}")
+        headers = [
+            {"label": "ID", "key": "ID", "width": 80},
+            {"label": "F. operación", "key": "F. operación", "width": 125},
+            {"label": "F. valor", "key": "F. valor", "width": 125},
+            {"label": "Importe", "key": "Importe", "width": 120},
+            {"label": "Tipo", "key": "Tipo", "width": 230},
+            {"label": "Estado", "key": "Estado", "width": 280},
+            {"label": "Concepto", "key": "Concepto", "width": 820},
+            {"label": "Banco", "key": "Banco", "width": 130},
+        ]
+
+        table = app_table(headers, rows, height=430) if rows else empty_state(f"No hay movimientos importados de {bank_name}")
+        return ft.Column(
+            controls=[
+                movements_pagination(total_items, page_number, page_size),
+                table,
+            ],
+            spacing=10,
+        )
 
 
-    def build_imported_movements_section():
+    def current_imported_movements_content():
         source = state.get("movements_source") or "cashmatic"
 
         source_map = {
@@ -738,18 +877,146 @@ def economic_view(page: ft.Page):
 
         return ft.Column(
             controls=[
+                ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                builder(),
+            ],
+            spacing=10,
+        )
+
+
+    def refresh_movements_results():
+        movements_results_box.content = current_imported_movements_content()
+        try:
+            movements_results_box.update()
+        except Exception:
+            pass
+
+
+    def on_movements_filter_change(e=None):
+        state["movements_search"] = (movements_filter.value or "").strip()
+        state["movements_page"] = 1
+        refresh_movements_results()
+
+
+    def import_movements_backend(source, file_path):
+        source = (source or "").strip().lower()
+        file_path = str(file_path or "").strip()
+
+        if not file_path:
+            raise ValueError("No se ha seleccionado ningún archivo.")
+
+        if source == "cashmatic":
+            from backend.services.economic_reconciliation.cashmatic_import_service import import_cashmatic_file
+            return import_cashmatic_file(file_path)
+
+        if source == "santander":
+            from backend.services.economic_reconciliation.bank_import_service import import_santander_bank_file
+            return import_santander_bank_file(file_path)
+
+        if source == "caja_rural":
+            from backend.services.economic_reconciliation.bank_import_service import import_caja_rural_bank_file
+            return import_caja_rural_bank_file(file_path)
+
+        if source == "ing":
+            from backend.services.economic_reconciliation.bank_import_service import import_ing_bank_file
+            return import_ing_bank_file(file_path)
+
+        raise ValueError(f"Origen no soportado: {source}")
+
+
+    def summarize_movements_import_result(result):
+        if result is None:
+            return "Importación completada."
+
+        parts = []
+        for key in [
+            "batch_id",
+            "inserted_rows",
+            "rows_inserted",
+            "inserted",
+            "duplicates",
+            "duplicate_rows",
+            "quarantine_rows",
+            "quarantine",
+            "valid_rows",
+            "total_rows",
+        ]:
+            if isinstance(result, dict) and key in result:
+                parts.append(f"{key}={result.get(key)}")
+            elif hasattr(result, key):
+                parts.append(f"{key}={getattr(result, key)}")
+
+        return "Importación completada" + (": " + " · ".join(parts) if parts else f": {result}")
+
+
+    async def seleccionar_movimientos_csv_xls(e=None):
+        source = state.get("movements_source") or "cashmatic"
+
+        extension_map = {
+            "cashmatic": ["csv"],
+            "santander": ["xls", "xlsx"],
+            "caja_rural": ["xls", "xlsx"],
+            "ing": ["xls", "xlsx"],
+        }
+
+        files = await ft.FilePicker().pick_files(
+            allow_multiple=False,
+            allowed_extensions=extension_map.get(source, ["csv", "xls", "xlsx"]),
+        )
+
+        if not files:
+            return
+
+        file_path = files[0].path
+
+        try:
+            result = import_movements_backend(source, file_path)
+
+            try:
+                state.setdefault("movements_cache", {}).pop(source, None)
+            except Exception:
+                pass
+
+            state["movements_page"] = 1
+            state["movements_search"] = ""
+            movements_filter.value = ""
+
+            refresh()
+
+            try:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(summarize_movements_import_result(result)),
+                    open=True,
+                )
+                page.update()
+            except Exception:
+                pass
+
+        except Exception as exc:
+            try:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"Error importando movimientos: {exc}"),
+                    open=True,
+                )
+                page.update()
+            except Exception:
+                raise
+
+
+    def build_imported_movements_section():
+        movements_filter.value = state.get("movements_search") or ""
+        movements_filter.on_change = on_movements_filter_change
+        movements_results_box.content = current_imported_movements_content()
+
+        return ft.Column(
+            controls=[
                 ft.Row(
                     controls=[
                         ft.Text("Movimientos importados", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                         ft.Container(expand=True),
-                        secondary_button("Refrescar", refresh),
+                        primary_button("Importar CSV/XLS", seleccionar_movimientos_csv_xls),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                ),
-                ft.Text(
-                    "Visor de movimientos reales importados desde Cashmatic y bancos. La vinculación se realizará desde el alta o edición del cobro.",
-                    size=13,
-                    color=Q_MUTED,
                 ),
                 ft.Row(
                     controls=[
@@ -761,21 +1028,24 @@ def economic_view(page: ft.Page):
                     spacing=8,
                     wrap=True,
                 ),
+                ft.Row(
+                    controls=[
+                        movements_filter,
+                        ft.Text("Filtro fluido sobre movimientos cargados", size=12, color=Q_MUTED),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
                 ft.Container(
                     bgcolor="#FFFFFF",
                     border=ft.border.all(1, Q_BORDER),
                     border_radius=14,
-                    padding=12,
-                    content=ft.Column(
-                        controls=[
-                            ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            builder(),
-                        ],
-                        spacing=10,
-                    ),
+                    padding=8,
+                    content=movements_results_box,
                 ),
             ],
-            spacing=14,
+            spacing=8,
             expand=True,
         )
 
@@ -871,6 +1141,11 @@ def economic_view(page: ft.Page):
             return build_imported_movements_section()
 
         return empty_state("Selecciona una sección")
+
+    movements_filter = text_input("Filtrar por concepto / motivo", width=520)
+    movements_filter.value = ""
+    movements_results_box = ft.Container()
+
 
     # Controles independientes por formulario
     hoja_cliente_ac = AppAutocomplete(page, "Cliente", cliente_options, width=520, max_results=12)
