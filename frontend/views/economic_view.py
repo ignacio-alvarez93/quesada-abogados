@@ -699,20 +699,26 @@ def economic_view(page: ft.Page):
 
         rows = []
         for m in items:
+            concept = _get_value(m, "concept") or "-"
             rows.append([
                 _get_value(m, "id") or "-",
-                _get_value(m, "bank_name") or bank_name,
                 _date_time_to_display(_get_value(m, "operation_date")),
                 _date_time_to_display(_get_value(m, "value_date")),
                 _money_centimos(_get_value(m, "amount_centimos")),
                 _get_value(m, "movement_type") or "-",
                 economic_badge(_get_value(m, "movement_status")),
-                _get_value(m, "concept") or "-",
-                _get_value(m, "source_file_name") or "-",
+                ft.Text(
+                    concept,
+                    size=12,
+                    tooltip=concept,
+                    selectable=True,
+                    no_wrap=False,
+                ),
+                _get_value(m, "bank_name") or bank_name,
             ])
 
         return app_table(
-            ["ID", "Banco", "F. operación", "F. valor", "Importe", "Tipo", "Estado", "Concepto", "Archivo"],
+            ["ID", "F. operación", "F. valor", "Importe", "Tipo", "Estado", "Concepto", "Banco"],
             rows,
             height=430,
         ) if rows else empty_state(f"No hay movimientos importados de {bank_name}")
