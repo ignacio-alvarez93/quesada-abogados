@@ -472,6 +472,204 @@ def mark_reconciliation_group_reviewed(
         return True
 
 
+def add_bank_movement_to_group(
+    *,
+    group_id: int,
+    bank_movement_id: int,
+    role: str = "ACTUAL",
+    notes: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> int:
+    """
+    Añade un movimiento bancario real al grupo.
+
+    No crea cobros.
+    No crea facturas.
+    No vincula automáticamente cliente/expediente.
+    Solo copia importe/concepto al grupo de conciliación manual.
+    """
+    role = _validate_role(role)
+
+    with connect(db_path) as conn:
+        movement = conn.execute(
+            """
+            SELECT
+                id,
+                bank_name,
+                operation_date,
+                concept,
+                amount_centimos,
+                movement_type,
+                movement_status
+            FROM bank_movements
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(bank_movement_id),),
+        ).fetchone()
+
+    if not movement:
+        raise ValueError(f"No existe bank_movement #{bank_movement_id}")
+
+    amount = int(movement["amount_centimos"] or 0)
+    label = (
+        f'{movement["bank_name"] or "BANK"} '
+        f'{movement["operation_date"] or ""} '
+        f'{movement["movement_type"] or ""} '
+        f'{amount / 100:.2f} EUR | '
+        f'{str(movement["concept"] or "")[:120]}'
+    ).strip()
+
+    return add_reconciliation_group_item(
+        group_id=group_id,
+        source_type="BANK_MOVEMENT",
+        source_id=int(bank_movement_id),
+        role=role,
+        amount_centimos=amount,
+        label=label,
+        notes=notes,
+        db_path=db_path,
+    )
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _sql_optional_column(columns: set[str], column_name: str, alias: str) -> str:
+    if column_name in columns:
+        return f"{column_name} AS {alias}"
+    return f"'' AS {alias}"
+
+
+def _cashmatic_amount_expr_for_select(conn: sqlite3.Connection) -> str:
+    columns = _table_columns(conn, "cashmatic_movements")
+
+    if "net_centimos" in columns:
+        return "COALESCE(net_centimos, 0)"
+
+    if "candidate_net_centimos" in columns:
+        return "COALESCE(candidate_net_centimos, 0)"
+
+    if {"inserted_centimos", "dispensed_centimos"}.issubset(columns):
+        return "(COALESCE(inserted_centimos, 0) - COALESCE(dispensed_centimos, 0))"
+
+    if {"inserted_amount_centimos", "dispensed_amount_centimos"}.issubset(columns):
+        return "(COALESCE(inserted_amount_centimos, 0) - COALESCE(dispensed_amount_centimos, 0))"
+
+    if "inserted_centimos" in columns:
+        return "COALESCE(inserted_centimos, 0)"
+
+    if "requested_centimos" in columns:
+        return "COALESCE(requested_centimos, 0)"
+
+    if "amount_centimos" in columns:
+        return "COALESCE(amount_centimos, 0)"
+
+    raise RuntimeError(
+        "No se encontró columna de importe compatible en cashmatic_movements. "
+        f"Columnas disponibles: {sorted(columns)}"
+    )
+
+
+def add_cashmatic_movement_to_group(
+    *,
+    group_id: int,
+    cashmatic_movement_id: int,
+    role: str = "ACTUAL",
+    notes: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> int:
+    """
+    Añade un movimiento Cashmatic real al grupo.
+
+    Uso normal:
+    - recibo físico/cobro interno = EXPECTED
+    - movimiento Cashmatic = ACTUAL
+
+    El SELECT es tolerante al schema real de staging.
+    """
+    role = _validate_role(role)
+
+    with connect(db_path) as conn:
+        columns = _table_columns(conn, "cashmatic_movements")
+        amount_expr = _cashmatic_amount_expr_for_select(conn)
+
+        start_time_expr = _sql_optional_column(columns, "start_time", "start_time")
+        operation_expr = _sql_optional_column(columns, "operation", "operation")
+
+        # En los CSV oficiales Cashmatic pueden existir como REASON/REFERENCE normalizados
+        # con otros nombres según la evolución del staging.
+        reason_expr = (
+            _sql_optional_column(columns, "reason", "reason")
+            if "reason" in columns
+            else _sql_optional_column(columns, "raw_reason", "reason")
+            if "raw_reason" in columns
+            else _sql_optional_column(columns, "source_reason", "reason")
+            if "source_reason" in columns
+            else "'' AS reason"
+        )
+        reference_expr = (
+            _sql_optional_column(columns, "reference", "reference")
+            if "reference" in columns
+            else _sql_optional_column(columns, "raw_reference", "reference")
+            if "raw_reference" in columns
+            else _sql_optional_column(columns, "source_reference", "reference")
+            if "source_reference" in columns
+            else "'' AS reference"
+        )
+
+        movement = conn.execute(
+            f"""
+            SELECT
+                id,
+                {start_time_expr},
+                {operation_expr},
+                movement_status,
+                {reason_expr},
+                {reference_expr},
+                {amount_expr} AS amount_centimos
+            FROM cashmatic_movements
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(cashmatic_movement_id),),
+        ).fetchone()
+
+    if not movement:
+        raise ValueError(f"No existe cashmatic_movement #{cashmatic_movement_id}")
+
+    amount = int(movement["amount_centimos"] or 0)
+    label_parts = [
+        "CASHMATIC",
+        str(movement["start_time"] or ""),
+        str(movement["operation"] or ""),
+        str(movement["movement_status"] or ""),
+        f"{amount / 100:.2f} EUR",
+    ]
+
+    reason = str(movement["reason"] or "").strip()
+    reference = str(movement["reference"] or "").strip()
+    if reason:
+        label_parts.append(reason[:80])
+    if reference:
+        label_parts.append(reference[:80])
+
+    label = " | ".join(x for x in label_parts if x).strip()
+
+    return add_reconciliation_group_item(
+        group_id=group_id,
+        source_type="CASHMATIC_MOVEMENT",
+        source_id=int(cashmatic_movement_id),
+        role=role,
+        amount_centimos=amount,
+        label=label,
+        notes=notes,
+        db_path=db_path,
+    )
+
+
 def group_detail_to_dict(detail: ReconciliationGroupDetail) -> dict[str, Any]:
     return {
         "group": asdict(detail.group),
