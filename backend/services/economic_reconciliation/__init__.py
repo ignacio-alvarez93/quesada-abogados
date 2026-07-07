@@ -80,6 +80,7 @@ from backend.services.economic_reconciliation.manual_reconciliation_group_servic
     add_cashmatic_movement_to_group,
     add_cobro_to_group,
     add_reconciliation_group_item,
+    cents_to_eur,
     create_reconciliation_group,
     get_reconciliation_group,
     get_reconciliation_group_detail,
@@ -152,4 +153,5 @@ __all__ = [
     "add_bank_movement_to_group",
     "add_cashmatic_movement_to_group",
     "add_cobro_to_group",
+    "cents_to_eur",
 ]

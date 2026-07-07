@@ -12,6 +12,11 @@ from frontend.components.app_card import metric_card
 from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
 from frontend.components.app_autocomplete import AppAutocomplete
+from backend.services.economic_reconciliation import (
+    cents_to_eur,
+    get_reconciliation_group_detail,
+    list_reconciliation_groups,
+)
 
 Q_PRIMARY_DARK = "#003B7A"
 Q_MUTED = "#64748B"
@@ -72,7 +77,11 @@ def _money(value):
 def economic_view(page: ft.Page):
     economic_service.initialize_economic_schema()
 
-    state = {"section": "cobros", "message": None}
+    state = {
+        "section": "cobros",
+        "message": None,
+        "reconciliation_selected_group_id": None,
+    }
 
     content_area = ft.Container(expand=True)
     table_container = ft.Container(expand=True)
@@ -113,7 +122,8 @@ def economic_view(page: ft.Page):
                 section_button("cobros", "Cobros"),
                 section_button("facturas", "Facturas"),
                 section_button("gastos", "Gastos"),
-                section_button("movimientos", "Movimientos / conciliación"),
+                section_button("movimientos", "Movimientos"),
+                section_button("conciliacion_manual", "Conciliación manual"),
             ],
             spacing=8,
             wrap=True,
@@ -174,7 +184,17 @@ def economic_view(page: ft.Page):
                 ),
             )
 
-        label, handler = mapping[state["section"]]
+        action = mapping.get(state["section"])
+        if not action:
+            return ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.border.all(1, Q_BORDER),
+                border_radius=12,
+                padding=12,
+                content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.END),
+            )
+
+        label, handler = action
         return ft.Container(
             bgcolor="#FFFFFF",
             border=ft.border.all(1, Q_BORDER),
@@ -183,7 +203,196 @@ def economic_view(page: ft.Page):
             content=ft.Row(controls=[primary_button(label, handler)], alignment=ft.MainAxisAlignment.END),
         )
 
+    def _reconciliation_status_badge(status):
+        status = (status or "DRAFT").upper()
+        color_map = {
+            "BALANCED": "#047857",
+            "UNBALANCED": "#B42318",
+            "REVIEWED": "#0057B8",
+            "IGNORED": "#667085",
+            "DRAFT": "#B54708",
+        }
+        bg_map = {
+            "BALANCED": "#ECFDF3",
+            "UNBALANCED": "#FEF3F2",
+            "REVIEWED": "#EAF3FF",
+            "IGNORED": "#F2F4F7",
+            "DRAFT": "#FFFAEB",
+        }
+        return ft.Container(
+            content=ft.Text(status, size=11, weight=ft.FontWeight.BOLD, color=color_map.get(status, "#344054")),
+            bgcolor=bg_map.get(status, "#F2F4F7"),
+            border_radius=999,
+            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        )
+
+
+    def _money_centimos(value):
+        try:
+            return f"{cents_to_eur(int(value or 0)):.2f} €"
+        except Exception:
+            return "0.00 €"
+
+
+    def build_manual_reconciliation_section():
+        try:
+            groups = list_reconciliation_groups(limit=50)
+        except Exception as exc:
+            return error_alert(f"No se pudieron cargar grupos de conciliación: {exc}")
+
+        if not groups:
+            return empty_state("No hay grupos de conciliación manual todavía")
+
+        selected_id = state.get("reconciliation_selected_group_id")
+        if not selected_id and groups:
+            selected_id = groups[0].id
+            state["reconciliation_selected_group_id"] = selected_id
+
+        try:
+            detail = get_reconciliation_group_detail(int(selected_id)) if selected_id else None
+        except Exception:
+            detail = None
+
+        def select_group(group_id):
+            state["reconciliation_selected_group_id"] = group_id
+            refresh()
+
+        group_cards = []
+        for group in groups:
+            selected = int(group.id) == int(selected_id or 0)
+            group_cards.append(
+                ft.Container(
+                    bgcolor="#FFFFFF" if not selected else "#EAF3FF",
+                    border=ft.border.all(1, "#0057B8" if selected else Q_BORDER),
+                    border_radius=14,
+                    padding=12,
+                    ink=True,
+                    on_click=lambda e, gid=group.id: select_group(gid),
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(group.title or f"Grupo #{group.id}", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK, expand=True),
+                                    _reconciliation_status_badge(group.status),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            ),
+                            ft.Text(f"{group.group_type} · {group.group_date or '-'}", size=12, color=Q_MUTED),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(f"Esperado: {_money_centimos(group.expected_amount_centimos)}", size=12),
+                                    ft.Text(f"Real: {_money_centimos(group.actual_amount_centimos)}", size=12),
+                                    ft.Text(f"Dif: {_money_centimos(group.difference_centimos)}", size=12, weight=ft.FontWeight.BOLD),
+                                ],
+                                wrap=True,
+                                spacing=10,
+                            ),
+                        ],
+                        spacing=6,
+                    ),
+                )
+            )
+
+        expected_items = []
+        actual_items = []
+
+        if detail:
+            for item in detail.items:
+                row = ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=12,
+                    padding=10,
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(item.source_type, size=11, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(_money_centimos(item.amount_centimos), size=12, weight=ft.FontWeight.BOLD),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            ),
+                            ft.Text(item.label or "-", size=12, color="#344054"),
+                        ],
+                        spacing=4,
+                    ),
+                )
+                if item.role == "EXPECTED":
+                    expected_items.append(row)
+                else:
+                    actual_items.append(row)
+
+        detail_panel = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=16,
+            padding=16,
+            expand=True,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text("Detalle del grupo", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            _reconciliation_status_badge(detail.group.status if detail else "DRAFT"),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                    ft.Text(detail.group.title if detail else "Selecciona un grupo", size=13, color=Q_MUTED),
+                    ft.Divider(),
+                    ft.Text("EXPECTED · Cobros / recibos", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Column(expected_items or [ft.Text("Sin items expected", size=12, color=Q_MUTED)], spacing=8),
+                    ft.Divider(),
+                    ft.Text("ACTUAL · Banco / Cashmatic", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Column(actual_items or [ft.Text("Sin items actual", size=12, color=Q_MUTED)], spacing=8),
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        )
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Text("Conciliación manual", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Container(expand=True),
+                        secondary_button("Refrescar", refresh),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                ft.Text(
+                    "Agrupa cobros/recibos esperados contra movimientos reales de banco o Cashmatic. La vinculación sigue siendo manual.",
+                    size=13,
+                    color=Q_MUTED,
+                ),
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            width=430,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text("Grupos", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Column(group_cards, spacing=10, scroll=ft.ScrollMode.AUTO),
+                                ],
+                                spacing=10,
+                            ),
+                        ),
+                        detail_panel,
+                    ],
+                    spacing=16,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    expand=True,
+                ),
+            ],
+            spacing=14,
+            expand=True,
+        )
+
+
     def build_table():
+        if state["section"] == "conciliacion_manual":
+            return build_manual_reconciliation_section()
+
         if state["section"] == "hojas":
             rows = []
             for h in economic_service.list_hojas_encargo():
