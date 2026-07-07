@@ -472,6 +472,182 @@ def mark_reconciliation_group_reviewed(
         return True
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = ?
+        LIMIT 1
+        """,
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _first_existing_table(conn: sqlite3.Connection, candidates: list[str]) -> str:
+    for table_name in candidates:
+        if _table_exists(conn, table_name):
+            return table_name
+    raise RuntimeError(f"No se encontró ninguna tabla candidata: {candidates}")
+
+
+def _first_existing_column(columns: set[str], candidates: list[str]) -> str | None:
+    for column_name in candidates:
+        if column_name in columns:
+            return column_name
+    return None
+
+
+def _cobro_amount_expr(columns: set[str]) -> str:
+    centimos_column = _first_existing_column(
+        columns,
+        [
+            "importe_centimos",
+            "amount_centimos",
+            "total_centimos",
+            "importe_total_centimos",
+            "importe_cobrado_centimos",
+            "cantidad_centimos",
+        ],
+    )
+    if centimos_column:
+        return f"COALESCE({centimos_column}, 0)"
+
+    eur_column = _first_existing_column(
+        columns,
+        [
+            "importe",
+            "amount",
+            "total",
+            "importe_total",
+            "importe_cobrado",
+            "cantidad",
+        ],
+    )
+    if eur_column:
+        return f"CAST(ROUND(COALESCE({eur_column}, 0) * 100) AS INTEGER)"
+
+    raise RuntimeError(
+        "No se encontró columna de importe compatible para cobros. "
+        f"Columnas disponibles: {sorted(columns)}"
+    )
+
+
+def add_cobro_to_group(
+    *,
+    group_id: int,
+    cobro_id: int,
+    role: str = "EXPECTED",
+    notes: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> int:
+    """
+    Añade un cobro/recibo real del CRM al grupo.
+
+    Uso normal:
+    - cobro/recibo físico/CRM = EXPECTED
+    - movimiento banco/Cashmatic = ACTUAL
+
+    No crea cobros.
+    No crea facturas.
+    No vincula automáticamente cliente/expediente.
+    Solo copia el importe y una etiqueta descriptiva al grupo.
+    """
+    role = _validate_role(role)
+
+    with connect(db_path) as conn:
+        table_name = _first_existing_table(
+            conn,
+            [
+                "eco_cobros",
+                "cobros",
+                "economic_cobros",
+                "payments",
+                "pagos",
+            ],
+        )
+
+        columns = _table_columns(conn, table_name)
+        amount_expr = _cobro_amount_expr(columns)
+
+        date_column = _first_existing_column(
+            columns,
+            ["fecha_cobro", "fecha", "payment_date", "created_at", "updated_at"],
+        )
+        concept_column = _first_existing_column(
+            columns,
+            ["concepto", "descripcion", "description", "observaciones", "notes", "metodo_pago"],
+        )
+        client_column = _first_existing_column(
+            columns,
+            ["cliente_id", "client_id", "id_cliente"],
+        )
+        expedient_column = _first_existing_column(
+            columns,
+            ["expediente_id", "expedient_id", "id_expediente"],
+        )
+
+        date_expr = f"{date_column} AS cobro_date" if date_column else "'' AS cobro_date"
+        concept_expr = f"{concept_column} AS concept" if concept_column else "'' AS concept"
+        client_expr = f"{client_column} AS client_id" if client_column else "NULL AS client_id"
+        expedient_expr = f"{expedient_column} AS expedient_id" if expedient_column else "NULL AS expedient_id"
+
+        cobro = conn.execute(
+            f"""
+            SELECT
+                id,
+                {amount_expr} AS amount_centimos,
+                {date_expr},
+                {concept_expr},
+                {client_expr},
+                {expedient_expr}
+            FROM {table_name}
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(cobro_id),),
+        ).fetchone()
+
+    if not cobro:
+        raise ValueError(f"No existe cobro #{cobro_id} en tabla compatible")
+
+    amount = int(cobro["amount_centimos"] or 0)
+
+    label_parts = [
+        "COBRO",
+        f"#{int(cobro_id)}",
+        str(cobro["cobro_date"] or ""),
+        f"{amount / 100:.2f} EUR",
+    ]
+
+    client_id = cobro["client_id"]
+    expedient_id = cobro["expedient_id"]
+
+    if client_id is not None:
+        label_parts.append(f"cliente={client_id}")
+    if expedient_id is not None:
+        label_parts.append(f"expediente={expedient_id}")
+
+    concept = str(cobro["concept"] or "").strip()
+    if concept:
+        label_parts.append(concept[:120])
+
+    label = " | ".join(x for x in label_parts if x).strip()
+
+    return add_reconciliation_group_item(
+        group_id=group_id,
+        source_type="COBRO",
+        source_id=int(cobro_id),
+        role=role,
+        amount_centimos=amount,
+        label=label,
+        notes=notes,
+        db_path=db_path,
+    )
+
+
 def add_bank_movement_to_group(
     *,
     group_id: int,
@@ -548,6 +724,9 @@ def _cashmatic_amount_expr_for_select(conn: sqlite3.Connection) -> str:
 
     if "net_centimos" in columns:
         return "COALESCE(net_centimos, 0)"
+
+    if "net_amount_centimos" in columns:
+        return "COALESCE(net_amount_centimos, 0)"
 
     if "candidate_net_centimos" in columns:
         return "COALESCE(candidate_net_centimos, 0)"
