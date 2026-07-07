@@ -10,6 +10,11 @@ from backend.services.economic_reconciliation.bank_santander_parser_service impo
     SantanderBankDiagnosticRow,
     diagnose_santander_bank_file,
 )
+from backend.services.economic_reconciliation.bank_caja_rural_parser_service import (
+    CajaRuralBankDiagnosticReport,
+    CajaRuralBankDiagnosticRow,
+    diagnose_caja_rural_bank_file,
+)
 from backend.services.economic_reconciliation.cashmatic_import_service import (
     DEFAULT_DB_PATH,
     connect,
@@ -50,7 +55,9 @@ def _insert_or_get_bank_batch(
     conn: sqlite3.Connection,
     *,
     source_file_path: Path,
-    report: SantanderBankDiagnosticReport,
+    report: SantanderBankDiagnosticReport | CajaRuralBankDiagnosticReport,
+    source_type: str,
+    bank_label: str,
 ) -> tuple[int, bool]:
     existing = conn.execute(
         """
@@ -60,7 +67,7 @@ def _insert_or_get_bank_batch(
           AND file_sha256 = ?
         LIMIT 1
         """,
-        ("BANK_SANTANDER", report.file_sha256),
+        (source_type, report.file_sha256),
     ).fetchone()
 
     if existing:
@@ -90,7 +97,7 @@ def _insert_or_get_bank_batch(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            "BANK_SANTANDER",
+            source_type,
             report.source_file,
             str(source_file_path),
             report.file_sha256,
@@ -107,7 +114,7 @@ def _insert_or_get_bank_batch(
             report.last_operation_date,
             "IMPORTED",
             (
-                "Banco Santander importado como movimiento bancario bruto. "
+                f"Banco {bank_label} importado como movimiento bancario bruto. "
                 "No crea cobros, facturas ni vínculos automáticos."
             ),
         ),
@@ -119,9 +126,13 @@ def _insert_bank_movement(
     conn: sqlite3.Connection,
     *,
     batch_id: int,
-    row: SantanderBankDiagnosticRow,
+    row: SantanderBankDiagnosticRow | CajaRuralBankDiagnosticRow,
+    bank_name: str,
 ) -> bool:
     before = conn.total_changes
+
+    statement_number = getattr(row, "statement_number", "")
+    account_label = f"apunte:{statement_number}" if statement_number else None
 
     conn.execute(
         """
@@ -164,8 +175,8 @@ def _insert_bank_movement(
             batch_id,
             row.row_number,
             row.row_hash,
-            "SANTANDER",
-            None,
+            bank_name,
+            account_label,
             None,
             row.operation_date,
             row.value_date,
@@ -201,10 +212,12 @@ def import_santander_bank_file(
             conn,
             source_file_path=source_file_path,
             report=report,
+            source_type="BANK_SANTANDER",
+            bank_label="Santander",
         )
 
         for row in report.rows:
-            if _insert_bank_movement(conn, batch_id=batch_id, row=row):
+            if _insert_bank_movement(conn, batch_id=batch_id, row=row, bank_name="SANTANDER"):
                 inserted += 1
             else:
                 duplicates += 1
@@ -229,6 +242,54 @@ def import_santander_bank_file(
     )
 
 
+def import_caja_rural_bank_file(
+    file_path: str | Path,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> BankImportResult:
+    source_file_path = Path(file_path)
+    report = diagnose_caja_rural_bank_file(source_file_path)
+
+    inserted = 0
+    duplicates = 0
+
+    with connect(db_path) as conn:
+        ensure_bank_schema(conn)
+
+        batch_id, batch_created = _insert_or_get_bank_batch(
+            conn,
+            source_file_path=source_file_path,
+            report=report,
+            source_type="BANK_CAJA_RURAL",
+            bank_label="Caja Rural",
+        )
+
+        for row in report.rows:
+            if _insert_bank_movement(conn, batch_id=batch_id, row=row, bank_name="CAJA_RURAL"):
+                inserted += 1
+            else:
+                duplicates += 1
+
+        conn.commit()
+
+    return BankImportResult(
+        batch_id=batch_id,
+        batch_created=batch_created,
+        source_file=report.source_file,
+        file_sha256=report.file_sha256,
+        total_rows=report.total_rows,
+        inserted_rows=inserted,
+        duplicate_rows=duplicates,
+        income_rows=report.income_rows,
+        expense_rows=report.expense_rows,
+        quarantine_rows=report.quarantine_rows,
+        manual_linking_policy=(
+            "Caja Rural se importa como movimiento bruto. "
+            "No crea cobros, facturas ni vínculos automáticos."
+        ),
+    )
+
+
 def get_bank_import_summary(
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
@@ -243,7 +304,7 @@ def get_bank_import_summary(
                 COALESCE(SUM(candidate_payment_rows), 0) AS income_rows,
                 COALESCE(SUM(quarantine_rows), 0) AS quarantine_rows
             FROM economic_import_batches
-            WHERE source_type = 'BANK_SANTANDER'
+            WHERE source_type IN ('BANK_SANTANDER', 'BANK_CAJA_RURAL')
             """
         ).fetchone()
 
