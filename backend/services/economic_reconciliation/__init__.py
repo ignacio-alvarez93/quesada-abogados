@@ -78,6 +78,7 @@ from backend.services.economic_reconciliation.manual_reconciliation_group_servic
     ReconciliationGroupItem,
     add_bank_movement_to_group,
     add_cashmatic_movement_to_group,
+    add_cobro_to_group,
     add_reconciliation_group_item,
     create_reconciliation_group,
     get_reconciliation_group,
@@ -150,4 +151,5 @@ __all__ = [
     "remove_reconciliation_group_item",
     "add_bank_movement_to_group",
     "add_cashmatic_movement_to_group",
+    "add_cobro_to_group",
 ]
