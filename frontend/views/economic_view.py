@@ -257,9 +257,13 @@ def economic_view(page: ft.Page):
 
     def save_reconciliation_group(e=None):
         try:
+            title = (reconciliation_group_title.value or "").strip()
+            if not title:
+                raise ValueError("Indica un título para el grupo de conciliación")
+
             group_id = create_reconciliation_group(
                 group_type=reconciliation_group_type.value,
-                title=reconciliation_group_title.value,
+                title=title,
                 description=reconciliation_group_description.value,
                 group_date=reconciliation_group_date.value,
                 notes="",
