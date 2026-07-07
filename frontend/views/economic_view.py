@@ -99,6 +99,30 @@ def _get_value(row, key, default=None):
     return getattr(row, key, default)
 
 
+def _date_time_to_display(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
+        try:
+            dt = datetime.strptime(value, fmt)
+            if "H" in fmt:
+                return dt.strftime("%d/%m/%Y %H:%M")
+            return dt.strftime("%d/%m/%Y")
+        except ValueError:
+            pass
+
+    # Si viene con fecha ISO y cola rara, intentamos al menos YYYY-MM-DD.
+    if len(value) >= 10 and value[4:5] == "-" and value[7:8] == "-":
+        try:
+            return datetime.strptime(value[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except ValueError:
+            pass
+
+    return value
+
+
 def _money_centimos(value):
     try:
         return f"{(int(value or 0) / 100):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -637,19 +661,25 @@ def economic_view(page: ft.Page):
 
         rows = []
         for m in items:
+            reason = _get_value(m, "reason_raw") or "-"
             rows.append([
                 _get_value(m, "id") or "-",
-                _get_value(m, "start_time") or "-",
+                _date_time_to_display(_get_value(m, "start_time")),
+                _money_centimos(_get_value(m, "inserted_centimos")),
                 _money_centimos(_get_value(m, "net_amount_centimos")),
                 _get_value(m, "operation") or "-",
                 economic_badge(_get_value(m, "movement_status")),
-                _get_value(m, "reason_raw") or "-",
-                _get_value(m, "reference_raw") or "-",
-                _get_value(m, "source_file_name") or "-",
+                ft.Text(
+                    reason,
+                    size=12,
+                    tooltip=reason,
+                    selectable=True,
+                    no_wrap=False,
+                ),
             ])
 
         return app_table(
-            ["ID", "Fecha", "Importe neto", "Operación", "Estado", "Motivo", "Referencia", "Archivo"],
+            ["ID", "Fecha", "Importe introducido", "Importe neto", "Operación", "Estado", "Motivo"],
             rows,
             height=430,
         ) if rows else empty_state("No hay movimientos Cashmatic importados")
@@ -672,8 +702,8 @@ def economic_view(page: ft.Page):
             rows.append([
                 _get_value(m, "id") or "-",
                 _get_value(m, "bank_name") or bank_name,
-                _get_value(m, "operation_date") or "-",
-                _get_value(m, "value_date") or "-",
+                _date_time_to_display(_get_value(m, "operation_date")),
+                _date_time_to_display(_get_value(m, "value_date")),
                 _money_centimos(_get_value(m, "amount_centimos")),
                 _get_value(m, "movement_type") or "-",
                 economic_badge(_get_value(m, "movement_status")),
