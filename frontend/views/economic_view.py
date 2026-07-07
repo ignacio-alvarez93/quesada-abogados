@@ -910,10 +910,10 @@ def economic_view(page: ft.Page):
         for m in items:
             reason = _get_value(m, "reason_raw") or "-"
             rows.append([
-                _get_value(m, "id") or "-",
+                _get_value(m, "cashmatic_id") or _get_value(m, "id") or "-",
                 _date_time_to_display(_get_value(m, "start_time")),
+                _money_centimos(_get_value(m, "requested_centimos")),
                 _money_centimos(_get_value(m, "inserted_centimos")),
-                _money_centimos(_get_value(m, "net_amount_centimos")),
                 _get_value(m, "operation") or "-",
                 economic_badge(_get_value(m, "movement_status")),
                 ft.Text(
@@ -928,8 +928,8 @@ def economic_view(page: ft.Page):
         headers = [
             {"label": "ID", "key": "ID", "width": 80},
             {"label": "Fecha", "key": "Fecha", "width": 150},
+            {"label": "Solicitado", "key": "Solicitado", "width": 130},
             {"label": "Introducido", "key": "Introducido", "width": 130},
-            {"label": "Neto", "key": "Neto", "width": 110},
             {"label": "Operación", "key": "Operación", "width": 120},
             {"label": "Estado", "key": "Estado", "width": 280},
             {"label": "Motivo", "key": "Motivo", "width": 760},
@@ -943,7 +943,6 @@ def economic_view(page: ft.Page):
             ],
             spacing=10,
         )
-
 
     def build_bank_movements_table(bank_name):
         source_map = {
@@ -1210,7 +1209,6 @@ def economic_view(page: ft.Page):
                     economic_badge(h.get("estado")),
                 ])
             return app_table(
-                ["Nº hoja", "Firma", "Cliente", "Expediente", "Procedimiento", "Bruto", "Neto", "Estado"],
                 rows,
                 height=430,
             ) if rows else empty_state("No hay hojas de encargo")
