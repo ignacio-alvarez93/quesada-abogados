@@ -279,7 +279,7 @@ def economic_view(page: ft.Page):
 
     reconciliation_group_type = select_input(
         "Tipo de grupo",
-        ["CASH_RECEIPT", "BANK_TRANSFER", "CARD_SETTLEMENT", "STRIPE_SETTLEMENT", "MIXED_REVIEW"],
+        ["CASH_RECEIPT", "CARD_SETTLEMENT", "BANK_TRANSFER", "STRIPE_SETTLEMENT", "MIXED_REVIEW"],
         value="BANK_TRANSFER",
         width=260,
     )
@@ -301,7 +301,7 @@ def economic_view(page: ft.Page):
         try:
             title = (reconciliation_group_title.value or "").strip()
             if not title:
-                raise ValueError("Indica un título para el grupo de conciliación")
+                raise ValueError("Indica un título para la conciliación")
 
             group_id = create_reconciliation_group(
                 group_type=reconciliation_group_type.value,
@@ -312,7 +312,7 @@ def economic_view(page: ft.Page):
             )
             state["reconciliation_selected_group_id"] = group_id
             reconciliation_group_dialog.open = False
-            show_message(success_alert("Grupo de conciliación creado"))
+            show_message(success_alert("Conciliación creada"))
             refresh()
         except Exception as exc:
             show_message(error_alert(str(exc)))
@@ -320,7 +320,7 @@ def economic_view(page: ft.Page):
 
 
     reconciliation_group_dialog = form_dialog(
-        "Nuevo grupo de conciliación",
+        "Nueva conciliación de conciliación",
         ft.Column(
             controls=[
                 ft.Text(
@@ -335,7 +335,7 @@ def economic_view(page: ft.Page):
             spacing=10,
             scroll=ft.ScrollMode.AUTO,
         ),
-        [secondary_button("Cancelar", lambda e: close(reconciliation_group_dialog)), primary_button("Crear grupo", save_reconciliation_group)],
+        [secondary_button("Cancelar", lambda e: close(reconciliation_group_dialog)), primary_button("Crear conciliación", save_reconciliation_group)],
     )
     page.overlay.append(reconciliation_group_dialog)
 
@@ -350,7 +350,7 @@ def economic_view(page: ft.Page):
 
     def open_add_cobro_to_group_dialog(e=None):
         if not state.get("reconciliation_selected_group_id"):
-            show_message(error_alert("Selecciona un grupo de conciliación"))
+            show_message(error_alert("Selecciona una conciliación de conciliación"))
             refresh()
             return
 
@@ -368,7 +368,7 @@ def economic_view(page: ft.Page):
         try:
             group_id = state.get("reconciliation_selected_group_id")
             if not group_id:
-                raise ValueError("Selecciona un grupo de conciliación")
+                raise ValueError("Selecciona una conciliación de conciliación")
 
             cobro_id = _leading_id(reconciliation_cobro_dd.value)
             if not cobro_id:
@@ -380,7 +380,7 @@ def economic_view(page: ft.Page):
                 role="EXPECTED",
             )
             add_cobro_to_group_dialog.open = False
-            show_message(success_alert("Cobro añadido al grupo como EXPECTED"))
+            show_message(success_alert("Recibo/cobro añadido a la conciliación"))
             refresh()
         except Exception as exc:
             show_message(error_alert(str(exc)))
@@ -388,11 +388,11 @@ def economic_view(page: ft.Page):
 
 
     add_cobro_to_group_dialog = form_dialog(
-        "Añadir cobro al grupo",
+        "Añadir recibo/cobro al grupo",
         ft.Column(
             controls=[
                 ft.Text(
-                    "El cobro se añadirá como EXPECTED. No se crea factura ni se vincula automáticamente ningún movimiento.",
+                    "El recibo/cobro se añadirá como elemento esperado. No se crea factura ni se vincula automáticamente ningún movimiento.",
                     size=13,
                     color=Q_MUTED,
                 ),
@@ -401,7 +401,7 @@ def economic_view(page: ft.Page):
             spacing=10,
             scroll=ft.ScrollMode.AUTO,
         ),
-        [secondary_button("Cancelar", lambda e: close(add_cobro_to_group_dialog)), primary_button("Añadir cobro", save_add_cobro_to_group)],
+        [secondary_button("Cancelar", lambda e: close(add_cobro_to_group_dialog)), primary_button("Añadir recibo/cobro", save_add_cobro_to_group)],
     )
     page.overlay.append(add_cobro_to_group_dialog)
 
@@ -419,17 +419,17 @@ def economic_view(page: ft.Page):
                         controls=[
                             ft.Text("Conciliación manual", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                             ft.Container(expand=True),
-                            primary_button("Nuevo grupo", open_reconciliation_group_dialog),
+                            primary_button("Nueva conciliación", open_reconciliation_group_dialog),
                             secondary_button("Refrescar", refresh),
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
                     ft.Text(
-                        "Agrupa cobros/recibos esperados contra movimientos reales de banco o Cashmatic. La vinculación sigue siendo manual.",
+                        "Vincula recibos/cobros físicos o del CRM contra movimientos reales ya importados desde Cashmatic, banco o Stripe. La conciliación siempre es manual.",
                         size=13,
                         color=Q_MUTED,
                     ),
-                    empty_state("No hay grupos de conciliación manual todavía"),
+                    empty_state("No hay conciliaciones manuales todavía"),
                 ],
                 spacing=14,
                 expand=True,
@@ -524,18 +524,18 @@ def economic_view(page: ft.Page):
                 controls=[
                     ft.Row(
                         controls=[
-                            ft.Text("Detalle del grupo", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                            ft.Text("Detalle de conciliación", size=18, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                             _reconciliation_status_badge(detail.group.status if detail else "DRAFT"),
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
-                    ft.Text(detail.group.title if detail else "Selecciona un grupo", size=13, color=Q_MUTED),
+                    ft.Text(detail.group.title if detail else "Selecciona una conciliación", size=13, color=Q_MUTED),
                     ft.Divider(),
-                    ft.Text("EXPECTED · Cobros / recibos", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                    ft.Column(expected_items or [ft.Text("Sin items expected", size=12, color=Q_MUTED)], spacing=8),
+                    ft.Text("Recibos / cobros esperados", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Column(expected_items or [ft.Text("Sin recibos/cobros esperados", size=12, color=Q_MUTED)], spacing=8),
                     ft.Divider(),
-                    ft.Text("ACTUAL · Banco / Cashmatic", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                    ft.Column(actual_items or [ft.Text("Sin items actual", size=12, color=Q_MUTED)], spacing=8),
+                    ft.Text("Movimientos reales importados", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    ft.Column(actual_items or [ft.Text("Sin movimientos reales vinculados", size=12, color=Q_MUTED)], spacing=8),
                 ],
                 spacing=10,
                 scroll=ft.ScrollMode.AUTO,
@@ -548,14 +548,14 @@ def economic_view(page: ft.Page):
                     controls=[
                         ft.Text("Conciliación manual", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                         ft.Container(expand=True),
-                        primary_button("Nuevo grupo", open_reconciliation_group_dialog),
-                        secondary_button("Añadir cobro", open_add_cobro_to_group_dialog),
+                        primary_button("Nueva conciliación", open_reconciliation_group_dialog),
+                        secondary_button("Añadir recibo/cobro", open_add_cobro_to_group_dialog),
                         secondary_button("Refrescar", refresh),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
                 ft.Text(
-                    "Agrupa cobros/recibos esperados contra movimientos reales de banco o Cashmatic. La vinculación sigue siendo manual.",
+                    "Vincula recibos/cobros físicos o del CRM contra movimientos reales ya importados desde Cashmatic, banco o Stripe. La conciliación siempre es manual.",
                     size=13,
                     color=Q_MUTED,
                 ),
@@ -565,7 +565,7 @@ def economic_view(page: ft.Page):
                             width=430,
                             content=ft.Column(
                                 controls=[
-                                    ft.Text("Grupos", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text("Conciliaciones", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                                     ft.Column(group_cards, spacing=10, scroll=ft.ScrollMode.AUTO),
                                 ],
                                 spacing=10,
