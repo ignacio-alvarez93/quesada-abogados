@@ -15,6 +15,7 @@ from frontend.components.app_autocomplete import AppAutocomplete
 from backend.services.economic_reconciliation import (
     cents_to_eur,
     create_reconciliation_group,
+    add_cobro_to_group,
     get_reconciliation_group_detail,
     list_reconciliation_groups,
 )
@@ -58,6 +59,26 @@ def _id(value):
     return int(value.split(" - ", 1)[0])
 
 
+def _leading_id(value):
+    value = str(value or "").strip()
+    if not value:
+        return None
+
+    # Soporta:
+    # "13 - texto"
+    # "13 | texto"
+    # "13"
+    for sep in (" - ", " | "):
+        if sep in value:
+            value = value.split(sep, 1)[0].strip()
+            break
+
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
 def _option_by_id(options, value_id, empty_label):
     if not value_id:
         return empty_label
@@ -91,6 +112,27 @@ def economic_view(page: ft.Page):
     cliente_options = [c["display"] for c in clientes]
     expediente_options = [e["display"] for e in economic_service.get_expedientes_for_select()]
     hoja_options = [h["display"] for h in economic_service.get_hojas_for_select()]
+    def _get_cobro_options_for_reconciliation():
+        options = []
+        try:
+            for c in economic_service.list_cobros():
+                label = " | ".join(
+                    x for x in [
+                        f'{c.get("id")}',
+                        c.get("numero_cobro") or "",
+                        _date_to_display(c.get("fecha_cobro")),
+                        f'{c.get("importe") or 0} €',
+                        c.get("forma_pago") or "",
+                        c.get("numero_expediente") or "",
+                    ]
+                    if str(x or "").strip()
+                )
+                options.append(label)
+        except Exception:
+            pass
+        return options
+
+
 
     def show_message(control):
         state["message"] = control
@@ -298,6 +340,72 @@ def economic_view(page: ft.Page):
     page.overlay.append(reconciliation_group_dialog)
 
 
+    reconciliation_cobro_dd = select_input(
+        "Cobro",
+        ["Selecciona cobro"] + _get_cobro_options_for_reconciliation(),
+        value="Selecciona cobro",
+        width=620,
+    )
+
+
+    def open_add_cobro_to_group_dialog(e=None):
+        if not state.get("reconciliation_selected_group_id"):
+            show_message(error_alert("Selecciona un grupo de conciliación"))
+            refresh()
+            return
+
+        _set_dropdown_options(
+            reconciliation_cobro_dd,
+            _get_cobro_options_for_reconciliation(),
+            "Selecciona cobro",
+        )
+        reconciliation_cobro_dd.value = "Selecciona cobro"
+        add_cobro_to_group_dialog.open = True
+        page.update()
+
+
+    def save_add_cobro_to_group(e=None):
+        try:
+            group_id = state.get("reconciliation_selected_group_id")
+            if not group_id:
+                raise ValueError("Selecciona un grupo de conciliación")
+
+            cobro_id = _leading_id(reconciliation_cobro_dd.value)
+            if not cobro_id:
+                raise ValueError("Selecciona un cobro")
+
+            add_cobro_to_group(
+                group_id=int(group_id),
+                cobro_id=int(cobro_id),
+                role="EXPECTED",
+            )
+            add_cobro_to_group_dialog.open = False
+            show_message(success_alert("Cobro añadido al grupo como EXPECTED"))
+            refresh()
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+            refresh()
+
+
+    add_cobro_to_group_dialog = form_dialog(
+        "Añadir cobro al grupo",
+        ft.Column(
+            controls=[
+                ft.Text(
+                    "El cobro se añadirá como EXPECTED. No se crea factura ni se vincula automáticamente ningún movimiento.",
+                    size=13,
+                    color=Q_MUTED,
+                ),
+                reconciliation_cobro_dd,
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        [secondary_button("Cancelar", lambda e: close(add_cobro_to_group_dialog)), primary_button("Añadir cobro", save_add_cobro_to_group)],
+    )
+    page.overlay.append(add_cobro_to_group_dialog)
+
+
     def build_manual_reconciliation_section():
         try:
             groups = list_reconciliation_groups(limit=50)
@@ -441,6 +549,7 @@ def economic_view(page: ft.Page):
                         ft.Text("Conciliación manual", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                         ft.Container(expand=True),
                         primary_button("Nuevo grupo", open_reconciliation_group_dialog),
+                        secondary_button("Añadir cobro", open_add_cobro_to_group_dialog),
                         secondary_button("Refrescar", refresh),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
