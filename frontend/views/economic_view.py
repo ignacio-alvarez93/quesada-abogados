@@ -910,6 +910,120 @@ def economic_view(page: ft.Page):
         refresh_movements_results()
 
 
+
+
+    def movement_reconciliation_status(item):
+        """
+        Estado visual preparado para conciliación manual.
+        No crea vínculos ni conciliaciones automáticas.
+        """
+        raw_status = str(
+            _get_value(item, "reconciliation_status")
+            or _get_value(item, "conciliation_status")
+            or _get_value(item, "manual_reconciliation_status")
+            or ""
+        ).strip().upper()
+
+        if raw_status in {"PARTIAL", "PARTIAL_RECONCILED", "CONCILIACION_PARCIAL", "CONCILIACIÓN_PARCIAL"}:
+            return "Conciliación parcial", "#F59E0B"
+
+        if raw_status in {"RECONCILED", "CONCILIADO", "LINKED", "MANUALLY_LINKED"}:
+            return "Conciliado", "#16A34A"
+
+        linked_markers = [
+            "linked_client_id",
+            "linked_expedient_id",
+            "linked_payment_id",
+            "linked_at",
+            "manual_link_id",
+            "reconciliation_group_id",
+        ]
+
+        if any(_get_value(item, key) not in (None, "", 0) for key in linked_markers):
+            return "Conciliado", "#16A34A"
+
+        partial_markers = [
+            "partial_reconciliation_id",
+            "partial_link_id",
+            "matched_amount_centimos",
+            "reconciled_amount_centimos",
+        ]
+
+        matched = _get_value(item, "matched_amount_centimos") or _get_value(item, "reconciled_amount_centimos")
+        amount = (
+            _get_value(item, "net_amount_centimos")
+            or _get_value(item, "amount_centimos")
+            or _get_value(item, "inserted_centimos")
+            or _get_value(item, "requested_centimos")
+        )
+
+        try:
+            if matched not in (None, "", 0) and amount not in (None, "", 0) and abs(int(matched)) != abs(int(amount)):
+                return "Conciliación parcial", "#F59E0B"
+        except Exception:
+            pass
+
+        if any(_get_value(item, key) not in (None, "", 0) for key in partial_markers):
+            return "Conciliación parcial", "#F59E0B"
+
+        return "No conciliado", "#64748B"
+
+
+    def movement_reconciliation_badge(item):
+        label, color = movement_reconciliation_status(item)
+        return ft.Container(
+            content=ft.Text(label, size=11, weight=ft.FontWeight.BOLD, color=color),
+            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+            border_radius=999,
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, color),
+        )
+
+
+    def open_movement_reconciliation_action(source, item):
+        state["movement_to_reconcile"] = {
+            "source": source,
+            "id": _get_value(item, "id"),
+            "external_id": _get_value(item, "cashmatic_id") or _get_value(item, "bank_movement_id"),
+            "amount_centimos": (
+                _get_value(item, "net_amount_centimos")
+                or _get_value(item, "amount_centimos")
+                or _get_value(item, "inserted_centimos")
+                or _get_value(item, "requested_centimos")
+            ),
+            "date": _get_value(item, "start_time") or _get_value(item, "operation_date"),
+            "reason": _get_value(item, "reason_raw") or _get_value(item, "concept") or _get_value(item, "description"),
+        }
+
+        try:
+            page.snack_bar = ft.SnackBar(
+                ft.Text("Movimiento seleccionado para conciliación manual. Abre o crea una conciliación desde la sección de conciliación."),
+                open=True,
+            )
+            page.update()
+        except Exception:
+            pass
+
+
+    def movement_actions_button(source, item):
+        return ft.PopupMenuButton(
+            icon=ft.Icons.MORE_VERT,
+            tooltip="Acciones",
+            items=[
+                ft.PopupMenuItem(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.LINK, size=16),
+                            ft.Text("Conciliar", size=13),
+                        ],
+                        spacing=8,
+                        tight=True,
+                    ),
+                    on_click=lambda e, s=source, m=item: open_movement_reconciliation_action(s, m),
+                ),
+            ],
+        )
+
     def build_cashmatic_movements_table():
         source = "cashmatic"
         filtered = filtered_movements_for_source(source)
@@ -925,6 +1039,7 @@ def economic_view(page: ft.Page):
                 _money_centimos(_get_value(m, "inserted_centimos")),
                 _get_value(m, "operation") or "-",
                 economic_badge(_get_value(m, "movement_status")),
+                movement_reconciliation_badge(m),
                 ft.Text(
                     reason,
                     size=12,
@@ -932,6 +1047,7 @@ def economic_view(page: ft.Page):
                     selectable=True,
                     no_wrap=False,
                 ),
+                movement_actions_button("cashmatic", m),
             ])
 
         headers = [
@@ -940,8 +1056,10 @@ def economic_view(page: ft.Page):
             {"label": "Solicitado", "key": "Solicitado", "width": 130},
             {"label": "Introducido", "key": "Introducido", "width": 130},
             {"label": "Operación", "key": "Operación", "width": 120},
-            {"label": "Estado", "key": "Estado", "width": 280},
-            {"label": "Motivo", "key": "Motivo", "width": 760},
+            {"label": "Estado", "key": "Estado", "width": 240},
+            {"label": "Conciliación", "key": "Conciliación", "width": 170},
+            {"label": "Motivo", "key": "Motivo", "width": 620},
+            {"label": "", "key": "Acciones", "width": 60},
         ]
 
         table = app_table(headers, rows, height=430) if rows else empty_state("No hay movimientos Cashmatic importados")
@@ -953,46 +1071,61 @@ def economic_view(page: ft.Page):
             spacing=10,
         )
 
+
     def build_bank_movements_table(bank_name):
-        source_map = {
+        bank_to_source = {
             "CAJA_RURAL": "caja_rural",
             "ING": "ing",
             "SANTANDER": "santander",
         }
-        source = source_map.get(bank_name, "ing")
+        source = bank_to_source.get(str(bank_name or "").upper(), "ing")
 
         filtered = filtered_movements_for_source(source)
         items, total_items, page_number, page_size = paginate_movements(filtered)
 
         rows = []
         for m in items:
-            concept = _get_value(m, "concept") or "-"
+            concept = (
+                _get_value(m, "concept")
+                or _get_value(m, "description")
+                or _get_value(m, "reason_raw")
+                or "-"
+            )
+
+            date_value = (
+                _get_value(m, "operation_date")
+                or _get_value(m, "value_date")
+                or _get_value(m, "start_time")
+            )
+
+            amount_value = (
+                _get_value(m, "amount_centimos")
+                or _get_value(m, "net_amount_centimos")
+                or _get_value(m, "inserted_centimos")
+            )
+
             rows.append([
                 _get_value(m, "id") or "-",
-                _date_time_to_display(_get_value(m, "operation_date")),
-                _date_time_to_display(_get_value(m, "value_date")),
-                _money_centimos(_get_value(m, "amount_centimos")),
-                _get_value(m, "movement_type") or "-",
-                economic_badge(_get_value(m, "movement_status")),
+                _date_time_to_display(date_value),
+                _money_centimos(amount_value),
+                movement_reconciliation_badge(m),
                 ft.Text(
                     concept,
                     size=12,
-                    tooltip=concept,
+                    tooltip=str(concept),
                     selectable=True,
                     no_wrap=False,
                 ),
-                _get_value(m, "bank_name") or bank_name,
+                movement_actions_button(source, m),
             ])
 
         headers = [
             {"label": "ID", "key": "ID", "width": 80},
-            {"label": "F. operación", "key": "F. operación", "width": 125},
-            {"label": "F. valor", "key": "F. valor", "width": 125},
-            {"label": "Importe", "key": "Importe", "width": 120},
-            {"label": "Tipo", "key": "Tipo", "width": 230},
-            {"label": "Estado", "key": "Estado", "width": 280},
-            {"label": "Concepto", "key": "Concepto", "width": 820},
-            {"label": "Banco", "key": "Banco", "width": 130},
+            {"label": "Fecha", "key": "Fecha", "width": 150},
+            {"label": "Importe", "key": "Importe", "width": 130},
+            {"label": "Conciliación", "key": "Conciliación", "width": 170},
+            {"label": "Concepto", "key": "Concepto", "width": 900},
+            {"label": "", "key": "Acciones", "width": 60},
         ]
 
         table = app_table(headers, rows, height=430) if rows else empty_state(f"No hay movimientos importados de {bank_name}")
@@ -1003,8 +1136,6 @@ def economic_view(page: ft.Page):
             ],
             spacing=10,
         )
-
-
 
 
     def movement_source_color(source: str):
@@ -1179,7 +1310,6 @@ def economic_view(page: ft.Page):
                     controls=[
                         ft.Text("Movimientos importados", size=22, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                         ft.Container(expand=True),
-                        primary_button("Importar CSV/XLS", seleccionar_movimientos_csv_xls),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
@@ -1189,6 +1319,11 @@ def economic_view(page: ft.Page):
                         movements_source_button("caja_rural", "Caja Rural"),
                         movements_source_button("ing", "ING"),
                         movements_source_button("santander", "Santander"),
+                        ft.IconButton(
+                            icon=ft.Icons.UPLOAD_FILE,
+                            tooltip="Importar CSV/XLS",
+                            on_click=seleccionar_movimientos_csv_xls,
+                        ),
                     ],
                     spacing=8,
                     wrap=True,
