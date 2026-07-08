@@ -1062,6 +1062,7 @@ def economic_view(page: ft.Page):
                 movement_money_text(_get_value(m, "inserted_centimos")),
                 _get_value(m, "operation") or "-",
                 economic_badge(_get_value(m, "movement_status")),
+                movement_reconciliation_badge(m),
                 ft.Text(
                     reason,
                     size=12,
@@ -1069,7 +1070,6 @@ def economic_view(page: ft.Page):
                     selectable=True,
                     no_wrap=False,
                 ),
-                movement_reconciliation_badge(m),
             ])
 
         headers = [
@@ -1080,8 +1080,8 @@ def economic_view(page: ft.Page):
             {"label": "Introducido", "key": "Introducido", "width": 130},
             {"label": "Operación", "key": "Operación", "width": 120},
             {"label": "Estado", "key": "Estado", "width": 240},
-            {"label": "Motivo", "key": "Motivo", "width": 620},
             {"label": "Conciliación", "key": "Conciliación", "width": 170},
+            {"label": "Motivo", "key": "Motivo", "width": 620},
         ]
 
         table = app_table(headers, rows, height=430) if rows else empty_state("No hay movimientos Cashmatic importados")
@@ -1131,6 +1131,7 @@ def economic_view(page: ft.Page):
                 _get_value(m, "id") or "-",
                 _date_time_to_display(date_value),
                 movement_money_text(amount_value),
+                movement_reconciliation_badge(m),
                 ft.Text(
                     concept,
                     size=12,
@@ -1138,7 +1139,6 @@ def economic_view(page: ft.Page):
                     selectable=True,
                     no_wrap=False,
                 ),
-                movement_reconciliation_badge(m),
             ])
 
         headers = [
@@ -1146,8 +1146,8 @@ def economic_view(page: ft.Page):
             {"label": "ID", "key": "ID", "width": 80},
             {"label": "Fecha", "key": "Fecha", "width": 150},
             {"label": "Importe", "key": "Importe", "width": 130},
-            {"label": "Concepto", "key": "Concepto", "width": 900},
             {"label": "Conciliación", "key": "Conciliación", "width": 170},
+            {"label": "Concepto", "key": "Concepto", "width": 900},
         ]
 
         table = app_table(headers, rows, height=430) if rows else empty_state(f"No hay movimientos importados de {bank_name}")
