@@ -250,7 +250,6 @@ def economic_view(page: ft.Page):
             "cobros": ("Nuevo cobro", open_cobro_dialog),
             "facturas": ("Nueva factura", open_factura_dialog),
             "gastos": ("Nuevo gasto", open_gasto_dialog),
-            "movimientos": (None, None),
         }
         if state["section"] == "facturas":
             return ft.Container(
@@ -990,6 +989,22 @@ def economic_view(page: ft.Page):
             spacing=10,
         )
 
+
+
+
+    def movement_source_color(source: str):
+        source = (source or "").lower().strip()
+
+        if source == "cashmatic":
+            return ft.Colors.BLUE_600
+        if source == "caja_rural":
+            return ft.Colors.GREEN_600
+        if source == "ing":
+            return ft.Colors.ORANGE_600
+        if source == "santander":
+            return ft.Colors.RED_600
+
+        return ft.Colors.BLUE_GREY_500
 
     def current_imported_movements_content():
         source = state.get("movements_source") or "cashmatic"
