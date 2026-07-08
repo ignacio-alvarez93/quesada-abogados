@@ -141,6 +141,9 @@ def _insert_bank_movement(
 
     conn.execute(
         """
+        -- Regla crítica:
+        -- INSERT OR IGNORE evita reescribir movimientos existentes.
+        -- Si el movimiento ya estaba conciliado, se preservan todos los campos linked_*.
         INSERT OR IGNORE INTO bank_movements (
             batch_id,
             row_number,

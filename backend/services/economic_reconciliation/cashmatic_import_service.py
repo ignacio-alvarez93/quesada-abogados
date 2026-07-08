@@ -188,6 +188,10 @@ def _insert_movement(
         (canonical_row_hash,),
     ).fetchone()
 
+    # Regla crítica:
+    # Si el movimiento ya existe, NO se actualiza la fila.
+    # Esto preserva conciliaciones manuales y todos los campos linked_*:
+    # cliente, expediente, cobro, gasto, importe vinculado, notas y estado.
     if existing:
         return False
 
