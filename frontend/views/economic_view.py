@@ -8,7 +8,6 @@ from frontend.components.app_dropdown import select_input
 from frontend.components.app_dialog import form_dialog
 from frontend.components.app_table import app_table
 from frontend.components.app_empty_state import empty_state
-from frontend.components.app_card import metric_card
 from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
 from frontend.components.app_autocomplete import AppAutocomplete
@@ -234,10 +233,6 @@ def economic_view(page: ft.Page):
             [
                 ft.Row(
                     controls=[
-                        metric_card("Total cobros", _money(resumen["total_cobros"])),
-                        metric_card("Total facturas", _money(resumen["total_facturas"])),
-                        metric_card("Total gastos", _money(resumen["total_gastos"])),
-                        metric_card("Mov. pendientes", resumen["movimientos_pendientes"]),
                     ],
                     spacing=12,
                     wrap=True,
@@ -255,7 +250,7 @@ def economic_view(page: ft.Page):
             "cobros": ("Nuevo cobro", open_cobro_dialog),
             "facturas": ("Nueva factura", open_factura_dialog),
             "gastos": ("Nuevo gasto", open_gasto_dialog),
-            "movimientos": ("Importar CSV/XLS", open_movimiento_dialog),
+            "movimientos": (None, None),
         }
         if state["section"] == "facturas":
             return ft.Container(
