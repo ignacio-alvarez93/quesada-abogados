@@ -1033,6 +1033,7 @@ def economic_view(page: ft.Page):
         for m in items:
             reason = _get_value(m, "reason_raw") or "-"
             rows.append([
+                movement_actions_button("cashmatic", m),
                 _get_value(m, "cashmatic_id") or _get_value(m, "id") or "-",
                 _date_time_to_display(_get_value(m, "start_time")),
                 _money_centimos(_get_value(m, "requested_centimos")),
@@ -1047,10 +1048,10 @@ def economic_view(page: ft.Page):
                     selectable=True,
                     no_wrap=False,
                 ),
-                movement_actions_button("cashmatic", m),
             ])
 
         headers = [
+            {"label": "", "key": "Acciones", "width": 60},
             {"label": "ID", "key": "ID", "width": 80},
             {"label": "Fecha", "key": "Fecha", "width": 150},
             {"label": "Solicitado", "key": "Solicitado", "width": 130},
@@ -1059,7 +1060,6 @@ def economic_view(page: ft.Page):
             {"label": "Estado", "key": "Estado", "width": 240},
             {"label": "Conciliación", "key": "Conciliación", "width": 170},
             {"label": "Motivo", "key": "Motivo", "width": 620},
-            {"label": "", "key": "Acciones", "width": 60},
         ]
 
         table = app_table(headers, rows, height=430) if rows else empty_state("No hay movimientos Cashmatic importados")
@@ -1105,6 +1105,7 @@ def economic_view(page: ft.Page):
             )
 
             rows.append([
+                movement_actions_button(source, m),
                 _get_value(m, "id") or "-",
                 _date_time_to_display(date_value),
                 _money_centimos(amount_value),
@@ -1116,16 +1117,15 @@ def economic_view(page: ft.Page):
                     selectable=True,
                     no_wrap=False,
                 ),
-                movement_actions_button(source, m),
             ])
 
         headers = [
+            {"label": "", "key": "Acciones", "width": 60},
             {"label": "ID", "key": "ID", "width": 80},
             {"label": "Fecha", "key": "Fecha", "width": 150},
             {"label": "Importe", "key": "Importe", "width": 130},
             {"label": "Conciliación", "key": "Conciliación", "width": 170},
             {"label": "Concepto", "key": "Concepto", "width": 900},
-            {"label": "", "key": "Acciones", "width": 60},
         ]
 
         table = app_table(headers, rows, height=430) if rows else empty_state(f"No hay movimientos importados de {bank_name}")
