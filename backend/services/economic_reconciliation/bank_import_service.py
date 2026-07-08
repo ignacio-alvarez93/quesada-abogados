@@ -56,6 +56,258 @@ def ensure_bank_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+
+def _file_sha256_flexible(path):
+    import hashlib
+    from pathlib import Path
+
+    h = hashlib.sha256()
+    with Path(path).open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _normalize_bank_header_flexible(value: object) -> str:
+    import unicodedata
+
+    raw = str(value or "").strip().lower()
+    raw = unicodedata.normalize("NFKD", raw)
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    raw = raw.replace("\n", " ").replace("\r", " ")
+    raw = raw.replace(".", "")
+    raw = " ".join(raw.split())
+    return raw
+
+
+def _date_flexible_to_sql(value: object) -> str:
+    from datetime import datetime, date, timedelta
+
+    if value is None:
+        return ""
+
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    try:
+        if raw.replace(".", "", 1).isdigit():
+            serial = float(raw)
+            if serial > 1000:
+                return (datetime(1899, 12, 30) + timedelta(days=serial)).strftime("%Y-%m-%d")
+    except Exception:
+        pass
+
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(raw[:10], fmt).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    return raw[:10]
+
+
+def _amount_flexible_to_centimos(value: object) -> int:
+    from decimal import Decimal, ROUND_HALF_UP
+
+    if value is None:
+        return 0
+
+    raw = str(value).strip()
+    if not raw:
+        return 0
+
+    raw = raw.replace("€", "").replace(" ", "")
+
+    if "," in raw and "." in raw:
+        raw = raw.replace(".", "").replace(",", ".")
+    elif "," in raw:
+        raw = raw.replace(",", ".")
+
+    return int((Decimal(raw) * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _sha256_bank_payload(value: str) -> str:
+    import hashlib
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _first_matching_column(header_map: dict[str, int], candidates: list[str]) -> int | None:
+    normalized_candidates = [_normalize_bank_header_flexible(c) for c in candidates]
+    for candidate in normalized_candidates:
+        if candidate in header_map:
+            return header_map[candidate]
+    return None
+
+
+def _find_caja_rural_flexible_header(raw_rows: list[tuple]) -> tuple[int, dict[str, int]] | None:
+    for idx, row in enumerate(raw_rows[:25]):
+        header_map = {_normalize_bank_header_flexible(value): col_idx for col_idx, value in enumerate(row)}
+
+        date_idx = _first_matching_column(
+            header_map,
+            ["Fecha de la operación", "Fecha operacion", "Fecha Ejecución", "Fecha ejecucion"],
+        )
+        value_date_idx = _first_matching_column(
+            header_map,
+            ["Fecha valor", "Fecha Valor"],
+        )
+        concept_idx = _first_matching_column(
+            header_map,
+            ["Tipo movimiento", "Descripcion", "Descripción", "Concepto"],
+        )
+        amount_idx = _first_matching_column(
+            header_map,
+            ["Importe"],
+        )
+        balance_idx = _first_matching_column(
+            header_map,
+            ["Saldo"],
+        )
+
+        if date_idx is not None and value_date_idx is not None and concept_idx is not None and amount_idx is not None and balance_idx is not None:
+            statement_idx = _first_matching_column(
+                header_map,
+                ["Nro. Apunte", "Nro Apunte", "Número apunte", "Numero apunte", "Apunte"],
+            )
+            return idx, {
+                "operation_date": date_idx,
+                "value_date": value_date_idx,
+                "concept": concept_idx,
+                "amount": amount_idx,
+                "balance": balance_idx,
+                "statement_number": statement_idx if statement_idx is not None else -1,
+            }
+
+    return None
+
+
+def diagnose_caja_rural_bank_file_flexible(path):
+    from pathlib import Path
+    from openpyxl import load_workbook
+
+    source_file_path = Path(path)
+    workbook = load_workbook(source_file_path, data_only=True)
+    worksheet = workbook.active
+
+    raw_rows = list(worksheet.iter_rows(values_only=True))
+    header_info = _find_caja_rural_flexible_header(raw_rows)
+
+    if header_info is None:
+        raise ValueError(
+            "Formato Caja Rural no reconocido. No se encontró cabecera compatible "
+            "en las primeras 25 filas."
+        )
+
+    header_idx, columns = header_info
+
+    parsed_rows = []
+    quarantine_rows = 0
+    income_rows = 0
+    expense_rows = 0
+    total_income_centimos = 0
+    total_expense_centimos = 0
+    by_type = {}
+    by_status = {}
+
+    for row_number, row in enumerate(raw_rows[header_idx + 1:], start=header_idx + 2):
+        try:
+            operation_date = _date_flexible_to_sql(row[columns["operation_date"]])
+            value_date = _date_flexible_to_sql(row[columns["value_date"]])
+            concept = str(row[columns["concept"]] or "").strip()
+            amount_centimos = _amount_flexible_to_centimos(row[columns["amount"]])
+            balance_centimos = _amount_flexible_to_centimos(row[columns["balance"]])
+
+            statement_number = ""
+            statement_idx = columns.get("statement_number", -1)
+            if statement_idx is not None and statement_idx >= 0 and statement_idx < len(row):
+                raw_statement = row[statement_idx]
+                statement_number = str(raw_statement or "").strip()
+                if statement_number.endswith(".0"):
+                    statement_number = statement_number[:-2]
+
+            if not operation_date or not concept:
+                quarantine_rows += 1
+                continue
+
+            if amount_centimos > 0:
+                movement_type = "INCOME"
+                movement_status = "BANK_INCOME_REVIEW_REQUIRED"
+                income_rows += 1
+                total_income_centimos += amount_centimos
+            elif amount_centimos < 0:
+                movement_type = "EXPENSE"
+                movement_status = "BANK_EXPENSE_REVIEW_REQUIRED"
+                expense_rows += 1
+                total_expense_centimos += amount_centimos
+            else:
+                movement_type = "ZERO"
+                movement_status = "BANK_ZERO_REVIEW_REQUIRED"
+
+            by_type[movement_type] = by_type.get(movement_type, 0) + 1
+            by_status[movement_status] = by_status.get(movement_status, 0) + 1
+
+            # Si hay Nro. Apunte, lo usamos como parte fuerte del hash.
+            # Si no hay, usamos saldo para distinguir apuntes repetidos.
+            hash_parts = [
+                "CAJA_RURAL_FLEX",
+                operation_date,
+                value_date,
+                concept.lower(),
+                str(amount_centimos),
+                str(balance_centimos),
+                str(statement_number),
+            ]
+            row_hash = _sha256_bank_payload("|".join(hash_parts))
+
+            parsed_rows.append(
+                CajaRuralBankDiagnosticRow(
+                    row_number=row_number,
+                    operation_date=operation_date,
+                    value_date=value_date,
+                    concept=concept,
+                    amount_centimos=amount_centimos,
+                    balance_centimos=balance_centimos,
+                    statement_number=statement_number,
+                    movement_type=movement_type,
+                    movement_status=movement_status,
+                    row_hash=row_hash,
+                    warnings=[],
+                )
+            )
+
+        except Exception:
+            quarantine_rows += 1
+
+    dates = [r.operation_date for r in parsed_rows if r.operation_date]
+
+    return CajaRuralBankDiagnosticReport(
+        source_file=str(source_file_path),
+        detected_format="CAJA_RURAL_FLEXIBLE",
+        file_sha256=_file_sha256_flexible(source_file_path),
+        total_rows=max(len(raw_rows) - header_idx - 1, 0),
+        valid_rows=len(parsed_rows),
+        quarantine_rows=quarantine_rows,
+        income_rows=income_rows,
+        expense_rows=expense_rows,
+        first_operation_date=min(dates) if dates else None,
+        last_operation_date=max(dates) if dates else None,
+        total_income_centimos=total_income_centimos,
+        total_expense_centimos=total_expense_centimos,
+        net_amount_centimos=total_income_centimos + total_expense_centimos,
+        by_type=by_type,
+        by_status=by_status,
+        rows=parsed_rows,
+    )
+
+
+
 def _insert_or_get_bank_batch(
     conn: sqlite3.Connection,
     *,
@@ -256,7 +508,10 @@ def import_caja_rural_bank_file(
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> BankImportResult:
     source_file_path = Path(file_path)
-    report = diagnose_caja_rural_bank_file(source_file_path)
+    try:
+        report = diagnose_caja_rural_bank_file_flexible(source_file_path)
+    except Exception:
+        report = diagnose_caja_rural_bank_file(source_file_path)
 
     inserted = 0
     duplicates = 0

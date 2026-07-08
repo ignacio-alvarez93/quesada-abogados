@@ -1040,29 +1040,429 @@ def economic_view(page: ft.Page):
         )
 
 
-    def open_movement_reconciliation_action(source, item):
-        state["movement_to_reconcile"] = {
-            "source": source,
-            "id": _get_value(item, "id"),
-            "external_id": _get_value(item, "cashmatic_id") or _get_value(item, "bank_movement_id"),
-            "amount_centimos": (
+    def movement_amount_centimos_for_reconciliation(source, item):
+        source = (source or "").lower().strip()
+
+        if source == "cashmatic":
+            return int(
                 _get_value(item, "net_amount_centimos")
-                or _get_value(item, "amount_centimos")
                 or _get_value(item, "inserted_centimos")
                 or _get_value(item, "requested_centimos")
-            ),
-            "date": _get_value(item, "start_time") or _get_value(item, "operation_date"),
-            "reason": _get_value(item, "reason_raw") or _get_value(item, "concept") or _get_value(item, "description"),
-        }
+                or 0
+            )
+
+        return int(_get_value(item, "amount_centimos") or 0)
+
+
+    def movement_date_for_reconciliation(source, item):
+        source = (source or "").lower().strip()
+        if source == "cashmatic":
+            return str(_get_value(item, "start_time") or "")[:10]
+        return str(_get_value(item, "operation_date") or _get_value(item, "value_date") or "")[:10]
+
+
+    def movement_concept_for_reconciliation(source, item):
+        source = (source or "").lower().strip()
+        if source == "cashmatic":
+            return (
+                _get_value(item, "reason_raw")
+                or _get_value(item, "reference_raw")
+                or _get_value(item, "operation")
+                or "Movimiento Cashmatic"
+            )
+        return _get_value(item, "concept") or "Movimiento bancario"
+
+
+    def option_id_from_label(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+
+        # Formatos habituales:
+        # "13 - Cliente"
+        # "#13 · Cliente"
+        # "13 | Cliente"
+        first = raw.split(" - ", 1)[0].split(" · ", 1)[0].split(" | ", 1)[0]
+        first = first.replace("#", "").strip()
 
         try:
-            page.snack_bar = ft.SnackBar(
-                ft.Text("Movimiento seleccionado para conciliación manual. Abre o crea una conciliación desde la sección de conciliación."),
-                open=True,
+            parsed = int(first)
+        except Exception:
+            return None
+
+        return parsed if parsed > 0 else None
+
+
+    def app_autocomplete_control(ac):
+        """
+        AppAutocomplete es un wrapper Python.
+        En layouts Flet hay que insertar su control interno, no el wrapper.
+        """
+        for attr in ["control", "container", "view", "widget", "root"]:
+            value = getattr(ac, attr, None)
+            if value is not None:
+                return value
+
+        for method_name in ["build", "render", "get_control"]:
+            method = getattr(ac, method_name, None)
+            if callable(method):
+                try:
+                    value = method()
+                    if value is not None:
+                        return value
+                except Exception:
+                    pass
+
+        # Fallback mínimo para no romper serialización.
+        inner = getattr(ac, "field", None) or getattr(ac, "text_field", None) or getattr(ac, "input", None)
+        if inner is not None:
+            return inner
+
+        return ft.Text("No se pudo renderizar el selector de cliente.", size=12, color="#B91C1C")
+
+
+    def selected_autocomplete_id(ac):
+        for attr in ["selected_id", "value_id", "current_id"]:
+            value = getattr(ac, attr, None)
+            if value:
+                try:
+                    return int(value)
+                except Exception:
+                    pass
+
+        for method_name in ["get_selected_id", "selected_value", "get_value"]:
+            method = getattr(ac, method_name, None)
+            if callable(method):
+                try:
+                    parsed = option_id_from_label(method())
+                    if parsed:
+                        return parsed
+                except Exception:
+                    pass
+
+        for attr in ["value", "selected_value", "text"]:
+            parsed = option_id_from_label(getattr(ac, attr, None))
+            if parsed:
+                return parsed
+
+        # AppAutocomplete suele envolver un TextField interno.
+        for attr in ["field", "text_field", "input", "control"]:
+            inner = getattr(ac, attr, None)
+            if inner is not None:
+                parsed = option_id_from_label(getattr(inner, "value", None))
+                if parsed:
+                    return parsed
+
+        return None
+
+
+    def get_client_cobros_for_reconciliation(client_id):
+        client_id = int(client_id or 0)
+        if client_id <= 0:
+            return []
+
+        result = []
+        for cobro in economic_service.list_cobros():
+            try:
+                if int(cobro.get("cliente_id") or 0) != client_id:
+                    continue
+            except Exception:
+                continue
+
+            estado = str(cobro.get("estado_conciliacion") or "").upper().strip()
+            if estado in {"CONCILIADO", "MANUALLY_LINKED"}:
+                continue
+
+            result.append(cobro)
+
+        return result
+
+
+    def cobro_option_label(cobro):
+        cobro_id = cobro.get("id")
+        numero = cobro.get("numero_cobro") or f"COB-{cobro_id}"
+        fecha = cobro.get("fecha_cobro") or "-"
+        importe = cobro.get("importe") or 0
+        concepto = cobro.get("concepto") or ""
+        try:
+            importe_txt = f"{float(importe):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+        except Exception:
+            importe_txt = f"{importe} €"
+
+        if concepto:
+            return f"{cobro_id} - {numero} · {fecha} · {importe_txt} · {concepto}"
+        return f"{cobro_id} - {numero} · {fecha} · {importe_txt}"
+
+
+    def update_cobro_as_reconciled(cobro_id, source, movement_id):
+        try:
+            economic_service.update_cobro(
+                int(cobro_id),
+                {
+                    "estado_conciliacion": "CONCILIADO",
+                    "observaciones": f"Conciliado manualmente con movimiento {source} #{movement_id}",
+                },
             )
-            page.update()
+        except Exception:
+            # El link de movimiento es la fuente principal.
+            # Si el update del cobro no está disponible por restricciones del modelo,
+            # no bloqueamos la conciliación.
+            pass
+
+
+    def show_reconciliation_dialog(dialog):
+        """
+        La vista económica abre sus dialogs como variables persistentes:
+        cobro_dialog.open = True; page.update().
+        Por tanto copiamos ese patrón en lugar de usar page.dialog/page.open/overlay.
+        """
+        reconciliation_dialog.title = dialog.title
+        reconciliation_dialog.content = dialog.content
+        reconciliation_dialog.actions = dialog.actions
+        reconciliation_dialog.actions_alignment = dialog.actions_alignment
+        reconciliation_dialog.modal = True
+
+        try:
+            if reconciliation_dialog not in page.overlay:
+                page.overlay.append(reconciliation_dialog)
         except Exception:
             pass
+
+        reconciliation_dialog.open = True
+        page.update()
+
+
+
+
+    reconciliation_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Conciliar movimiento"),
+        content=ft.Container(width=760, content=ft.Text("")),
+        actions=[],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    def open_movement_reconciliation_action(source, item):
+        source = (source or "").lower().strip()
+        movement_id = int(_get_value(item, "id") or 0)
+        amount_centimos = movement_amount_centimos_for_reconciliation(source, item)
+        movement_date = movement_date_for_reconciliation(source, item)
+        movement_concept = movement_concept_for_reconciliation(source, item)
+
+        state["movement_to_reconcile"] = {
+            "source": source,
+            "id": movement_id,
+            "amount_centimos": amount_centimos,
+            "date": movement_date,
+            "concept": movement_concept,
+        }
+
+        if movement_id <= 0:
+            page.snack_bar = ft.SnackBar(ft.Text("No se pudo identificar el movimiento."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        if amount_centimos < 0:
+            page.snack_bar = ft.SnackBar(
+                ft.Text("Este movimiento es negativo. La conciliación de gastos se desarrollará en la siguiente fase.")
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        if amount_centimos == 0:
+            page.snack_bar = ft.SnackBar(ft.Text("No se puede conciliar un movimiento con importe cero."))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        client_ac = AppAutocomplete(page, "Cliente", cliente_options, width=520, max_results=12)
+        cobro_dropdown = ft.Dropdown(
+            label="Cobro existente",
+            width=720,
+            options=[],
+            disabled=True,
+        )
+
+        message_box = ft.Container()
+        selected_client_id_box = {"value": None}
+
+        def set_message(text_value, is_error=False):
+            message_box.content = ft.Container(
+                content=ft.Text(
+                    text_value,
+                    size=12,
+                    color="#B91C1C" if is_error else Q_MUTED,
+                ),
+                padding=ft.padding.symmetric(horizontal=10, vertical=8),
+                border_radius=10,
+                bgcolor="#FEF2F2" if is_error else "#F8FAFC",
+                border=ft.border.all(1, "#FCA5A5" if is_error else Q_BORDER),
+            )
+            try:
+                message_box.update()
+            except Exception:
+                pass
+
+        def refresh_cobros(e=None):
+            client_id = selected_autocomplete_id(client_ac)
+            selected_client_id_box["value"] = client_id
+
+            if not client_id:
+                cobro_dropdown.options = []
+                cobro_dropdown.value = None
+                cobro_dropdown.disabled = True
+                set_message("Selecciona primero un cliente para cargar sus cobros pendientes.")
+                try:
+                    cobro_dropdown.update()
+                except Exception:
+                    pass
+                return
+
+            cobros = get_client_cobros_for_reconciliation(client_id)
+            cobro_dropdown.options = [
+                ft.dropdown.Option(str(c.get("id")), cobro_option_label(c))
+                for c in cobros
+            ]
+            cobro_dropdown.value = None
+            cobro_dropdown.disabled = False if cobros else True
+
+            if cobros:
+                set_message(f"Cobros pendientes encontrados para el cliente: {len(cobros)}")
+            else:
+                set_message("Este cliente no tiene cobros pendientes para vincular.", is_error=True)
+
+            try:
+                cobro_dropdown.update()
+            except Exception:
+                pass
+
+        def close_dialog(e=None):
+            reconciliation_dialog.open = False
+            page.update()
+
+        def save_link(e=None):
+            client_id = selected_client_id_box.get("value") or selected_autocomplete_id(client_ac)
+            cobro_id = option_id_from_label(cobro_dropdown.value) or cobro_dropdown.value
+
+            try:
+                client_id = int(client_id or 0)
+            except Exception:
+                client_id = 0
+
+            try:
+                cobro_id = int(cobro_id or 0)
+            except Exception:
+                cobro_id = 0
+
+            if client_id <= 0:
+                set_message("Selecciona un cliente válido.", is_error=True)
+                return
+
+            if cobro_id <= 0:
+                set_message("Selecciona un cobro existente.", is_error=True)
+                return
+
+            notes = (
+                "Conciliación manual desde Económico > Movimientos\\n"
+                f"Origen: {source}\\n"
+                f"Movimiento: {movement_id}\\n"
+                f"Fecha movimiento: {movement_date}\\n"
+                f"Concepto: {movement_concept}"
+            )
+
+            try:
+                if source == "cashmatic":
+                    from backend.services.economic_reconciliation.cashmatic_link_service import (
+                        CashmaticManualLinkRequest,
+                        link_cashmatic_movement_manually,
+                    )
+
+                    link_cashmatic_movement_manually(
+                        CashmaticManualLinkRequest(
+                            movement_id=movement_id,
+                            client_id=client_id,
+                            payment_id=cobro_id,
+                            linked_amount_centimos=amount_centimos,
+                            notes=notes,
+                        )
+                    )
+                else:
+                    from backend.services.economic_reconciliation.bank_link_service import (
+                        BankManualLinkRequest,
+                        link_bank_movement_manually,
+                    )
+
+                    link_bank_movement_manually(
+                        BankManualLinkRequest(
+                            movement_id=movement_id,
+                            client_id=client_id,
+                            payment_id=cobro_id,
+                            linked_amount_centimos=amount_centimos,
+                            notes=notes,
+                        )
+                    )
+
+                update_cobro_as_reconciled(cobro_id, source, movement_id)
+
+                state.setdefault("movements_cache", {}).pop(source, None)
+                reconciliation_dialog.open = False
+                page.snack_bar = ft.SnackBar(ft.Text("Movimiento conciliado con cobro existente."))
+                page.snack_bar.open = True
+                page.update()
+                refresh()
+            except Exception as exc:
+                set_message(f"No se pudo conciliar: {exc}", is_error=True)
+
+        set_message("Selecciona un cliente y pulsa “Cargar cobros”.")
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Conciliar movimiento con cobro existente"),
+            content=ft.Container(
+                width=780,
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text("Movimiento seleccionado", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                    ft.Text(f"Origen: {source}", size=12, color=Q_MUTED),
+                                    ft.Text(f"Fecha: {movement_date or '-'}", size=12, color=Q_MUTED),
+                                    movement_money_text(amount_centimos),
+                                    ft.Text(str(movement_concept or "-"), size=12, color=Q_PRIMARY_DARK, selectable=True),
+                                ],
+                                spacing=4,
+                            ),
+                            padding=12,
+                            border_radius=12,
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(1, Q_BORDER),
+                        ),
+                        app_autocomplete_control(client_ac),
+                        ft.Row(
+                            controls=[
+                                secondary_button("Cargar cobros del cliente", refresh_cobros),
+                            ],
+                            spacing=10,
+                        ),
+                        cobro_dropdown,
+                        message_box,
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=close_dialog),
+                ft.ElevatedButton("Vincular cobro", on_click=save_link),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        show_reconciliation_dialog(dialog)
+
 
 
     def movement_actions_button(source, item):
@@ -1277,25 +1677,55 @@ def economic_view(page: ft.Page):
         if result is None:
             return "Importación completada."
 
-        parts = []
-        for key in [
-            "batch_id",
-            "inserted_rows",
-            "rows_inserted",
-            "inserted",
-            "duplicates",
-            "duplicate_rows",
-            "quarantine_rows",
-            "quarantine",
-            "valid_rows",
-            "total_rows",
-        ]:
-            if isinstance(result, dict) and key in result:
-                parts.append(f"{key}={result.get(key)}")
-            elif hasattr(result, key):
-                parts.append(f"{key}={getattr(result, key)}")
+        def value(*names):
+            for name in names:
+                if isinstance(result, dict) and name in result:
+                    return result.get(name)
+                if hasattr(result, name):
+                    return getattr(result, name)
+            return None
 
-        return "Importación completada" + (": " + " · ".join(parts) if parts else f": {result}")
+        inserted = value("inserted_rows", "rows_inserted", "inserted", "imported_rows")
+        duplicates = value("duplicate_rows", "duplicates")
+        total = value("total_rows", "valid_rows")
+        quarantine = value("quarantine_rows", "quarantine")
+        batch_id = value("batch_id")
+        source_file = value("source_file")
+
+        parts = []
+        if batch_id is not None:
+            parts.append(f"batch={batch_id}")
+        if inserted is not None:
+            parts.append(f"insertados={inserted}")
+        if duplicates is not None:
+            parts.append(f"duplicados={duplicates}")
+        if quarantine is not None:
+            parts.append(f"cuarentena={quarantine}")
+        if total is not None:
+            parts.append(f"total={total}")
+
+        try:
+            inserted_int = int(inserted or 0)
+        except Exception:
+            inserted_int = 0
+
+        try:
+            duplicates_int = int(duplicates or 0)
+        except Exception:
+            duplicates_int = 0
+
+        if inserted_int == 0 and duplicates_int > 0:
+            base = "Archivo ya importado: no se añadieron movimientos nuevos"
+        elif inserted_int == 0:
+            base = "Importación completada sin movimientos nuevos"
+        else:
+            base = "Importación completada con movimientos nuevos"
+
+        if source_file:
+            parts.append(f"archivo={source_file}")
+
+        return base + (": " + " · ".join(str(x) for x in parts) if parts else "")
+
 
 
     async def seleccionar_movimientos_csv_xls(e=None):
@@ -1322,8 +1752,10 @@ def economic_view(page: ft.Page):
             result = import_movements_backend(source, file_path)
 
             # Forzar recarga real desde backend tras importar.
+            # Los bancos comparten bank_movements filtrado por bank_name.
+            # Limpiamos toda la cache para evitar datos antiguos entre Santander/ING/Caja Rural.
             try:
-                state.setdefault("movements_cache", {}).pop(source, None)
+                state["movements_cache"] = {}
             except Exception:
                 pass
 
@@ -1336,8 +1768,11 @@ def economic_view(page: ft.Page):
             except Exception:
                 pass
 
-            # Reconstruye la vista y vuelve a leer los datos ya importados.
-            refresh()
+            try:
+                movements_results_box.content = current_imported_movements_content()
+                movements_results_box.update()
+            except Exception:
+                pass
 
             try:
                 page.snack_bar = ft.SnackBar(
