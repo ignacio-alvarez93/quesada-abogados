@@ -769,6 +769,27 @@ def economic_view(page: ft.Page):
             )
             items = list(getattr(page_data, "items", None) or [])
 
+            # La tabla bancaria debe representar el extracto:
+            # 1) días más recientes primero;
+            # 2) dentro del mismo día, respetar el orden original del XLS.
+            #
+            # ING, Santander y Caja Rural guardan row_number del archivo origen.
+            # Usar id DESC altera el orden visual dentro del mismo día y confunde
+            # al comparar contra el Excel.
+            def bank_sort_key(item):
+                operation_date = str(_get_value(item, "operation_date") or "")
+                try:
+                    row_number = int(_get_value(item, "row_number") or 999999)
+                except Exception:
+                    row_number = 999999
+
+                return (
+                    operation_date,
+                    -row_number,
+                )
+
+            items = sorted(items, key=bank_sort_key, reverse=True)
+
         cache[source] = items
         return items
 
