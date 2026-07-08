@@ -993,12 +993,50 @@ def economic_view(page: ft.Page):
 
     def movement_reconciliation_badge(item):
         label, color = movement_reconciliation_status(item)
+
+        movement_amount = (
+            _get_value(item, "net_amount_centimos")
+            or _get_value(item, "amount_centimos")
+            or _get_value(item, "inserted_centimos")
+            or _get_value(item, "requested_centimos")
+            or 0
+        )
+
+        linked_amount = (
+            _get_value(item, "linked_amount_centimos")
+            or _get_value(item, "matched_amount_centimos")
+            or _get_value(item, "reconciled_amount_centimos")
+            or 0
+        )
+
+        try:
+            movement_abs = abs(int(movement_amount or 0))
+        except Exception:
+            movement_abs = 0
+
+        try:
+            linked_abs = abs(int(linked_amount or 0))
+        except Exception:
+            linked_abs = 0
+
+        pending_abs = max(movement_abs - linked_abs, 0)
+
+        tooltip = label
+        if label == "Conciliación parcial":
+            tooltip = (
+                "Conciliación parcial\n"
+                f"Movimiento: {_money_centimos(movement_amount)}\n"
+                f"Conciliado: {_money_centimos(linked_amount)}\n"
+                f"Pendiente: {_money_centimos(pending_abs)}"
+            )
+
         return ft.Container(
             content=ft.Text(label, size=11, weight=ft.FontWeight.BOLD, color=color),
             padding=ft.padding.symmetric(horizontal=10, vertical=5),
             border_radius=999,
             bgcolor="#FFFFFF",
             border=ft.border.all(1, color),
+            tooltip=tooltip,
         )
 
 
