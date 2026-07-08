@@ -912,6 +912,28 @@ def economic_view(page: ft.Page):
 
 
 
+
+
+    def movement_money_text(value):
+        try:
+            amount = int(value or 0)
+        except Exception:
+            amount = 0
+
+        color = Q_MUTED
+        if amount > 0:
+            color = "#16A34A"
+        elif amount < 0:
+            color = "#DC2626"
+
+        return ft.Text(
+            _money_centimos(value),
+            size=12,
+            weight=ft.FontWeight.BOLD if amount != 0 else ft.FontWeight.NORMAL,
+            color=color,
+            selectable=True,
+        )
+
     def movement_reconciliation_status(item):
         """
         Estado visual preparado para conciliación manual.
@@ -1036,11 +1058,10 @@ def economic_view(page: ft.Page):
                 movement_actions_button("cashmatic", m),
                 _get_value(m, "cashmatic_id") or _get_value(m, "id") or "-",
                 _date_time_to_display(_get_value(m, "start_time")),
-                _money_centimos(_get_value(m, "requested_centimos")),
-                _money_centimos(_get_value(m, "inserted_centimos")),
+                movement_money_text(_get_value(m, "requested_centimos")),
+                movement_money_text(_get_value(m, "inserted_centimos")),
                 _get_value(m, "operation") or "-",
                 economic_badge(_get_value(m, "movement_status")),
-                movement_reconciliation_badge(m),
                 ft.Text(
                     reason,
                     size=12,
@@ -1048,6 +1069,7 @@ def economic_view(page: ft.Page):
                     selectable=True,
                     no_wrap=False,
                 ),
+                movement_reconciliation_badge(m),
             ])
 
         headers = [
@@ -1058,8 +1080,8 @@ def economic_view(page: ft.Page):
             {"label": "Introducido", "key": "Introducido", "width": 130},
             {"label": "Operación", "key": "Operación", "width": 120},
             {"label": "Estado", "key": "Estado", "width": 240},
-            {"label": "Conciliación", "key": "Conciliación", "width": 170},
             {"label": "Motivo", "key": "Motivo", "width": 620},
+            {"label": "Conciliación", "key": "Conciliación", "width": 170},
         ]
 
         table = app_table(headers, rows, height=430) if rows else empty_state("No hay movimientos Cashmatic importados")
@@ -1108,8 +1130,7 @@ def economic_view(page: ft.Page):
                 movement_actions_button(source, m),
                 _get_value(m, "id") or "-",
                 _date_time_to_display(date_value),
-                _money_centimos(amount_value),
-                movement_reconciliation_badge(m),
+                movement_money_text(amount_value),
                 ft.Text(
                     concept,
                     size=12,
@@ -1117,6 +1138,7 @@ def economic_view(page: ft.Page):
                     selectable=True,
                     no_wrap=False,
                 ),
+                movement_reconciliation_badge(m),
             ])
 
         headers = [
@@ -1124,8 +1146,8 @@ def economic_view(page: ft.Page):
             {"label": "ID", "key": "ID", "width": 80},
             {"label": "Fecha", "key": "Fecha", "width": 150},
             {"label": "Importe", "key": "Importe", "width": 130},
-            {"label": "Conciliación", "key": "Conciliación", "width": 170},
             {"label": "Concepto", "key": "Concepto", "width": 900},
+            {"label": "Conciliación", "key": "Conciliación", "width": 170},
         ]
 
         table = app_table(headers, rows, height=430) if rows else empty_state(f"No hay movimientos importados de {bank_name}")
