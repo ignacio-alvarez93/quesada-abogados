@@ -23,6 +23,8 @@ class BankManualLinkRequest:
     client_id: int | None = None
     expedient_id: int | None = None
     payment_id: int | None = None
+    gasto_id: int | None = None
+    linked_amount_centimos: int | None = None
     linked_by_user_id: int | None = None
     notes: str = ""
 
@@ -40,6 +42,29 @@ def _as_optional_int(value: int | str | None) -> int | None:
         return None
     return parsed
 
+
+
+
+def _columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    try:
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    except Exception:
+        return set()
+
+
+def _ensure_link_columns(conn: sqlite3.Connection, table_name: str) -> None:
+    columns = _columns(conn, table_name)
+
+    if "linked_gasto_id" not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN linked_gasto_id INTEGER")
+
+    columns = _columns(conn, table_name)
+    if "linked_amount_centimos" not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN linked_amount_centimos INTEGER NOT NULL DEFAULT 0")
+
+    columns = _columns(conn, table_name)
+    if "linked_target_type" not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN linked_target_type TEXT")
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
@@ -117,6 +142,7 @@ def _assert_can_link(row: sqlite3.Row) -> None:
         row["linked_client_id"] is not None
         or row["linked_expedient_id"] is not None
         or row["linked_payment_id"] is not None
+        or ("linked_gasto_id" in row.keys() and row["linked_gasto_id"] is not None)
     ):
         raise ValueError("El movimiento bancario ya está vinculado. Desvincúlalo antes de volver a vincular.")
 
@@ -134,21 +160,48 @@ def link_bank_movement_manually(
     client_id = _as_optional_int(request.client_id)
     expedient_id = _as_optional_int(request.expedient_id)
     payment_id = _as_optional_int(request.payment_id)
+    gasto_id = _as_optional_int(request.gasto_id)
     linked_by_user_id = _as_optional_int(request.linked_by_user_id)
     notes = (request.notes or "").strip()
 
-    if client_id is None and expedient_id is None and payment_id is None:
-        raise ValueError("Debes indicar al menos cliente, expediente o cobro.")
+    try:
+        linked_amount_centimos = int(request.linked_amount_centimos or 0)
+    except Exception as exc:
+        raise ValueError("Importe conciliado inválido.") from exc
+
+    if client_id is None and expedient_id is None and payment_id is None and gasto_id is None:
+        raise ValueError("Debes indicar al menos cliente, expediente, cobro o gasto.")
+
+    if payment_id is not None and gasto_id is not None:
+        raise ValueError("No puedes vincular el mismo movimiento a cobro y gasto a la vez.")
 
     with connect(db_path) as conn:
         ensure_bank_schema(conn)
+        _ensure_link_columns(conn, "bank_movements")
 
         row = _get_bank_movement_for_update(conn, movement_id)
         _assert_can_link(row)
 
         _validate_optional_fk(conn, table_name="clientes", record_id=client_id, label="cliente")
         _validate_optional_fk(conn, table_name="expedientes", record_id=expedient_id, label="expediente")
-        _validate_optional_fk(conn, table_name="cobros", record_id=payment_id, label="cobro")
+        # Compatibilidad: en el esquema actual la tabla real suele ser eco_cobros.
+        if payment_id is not None:
+            if _table_exists(conn, "eco_cobros"):
+                _validate_optional_fk(conn, table_name="eco_cobros", record_id=payment_id, label="cobro")
+            else:
+                _validate_optional_fk(conn, table_name="cobros", record_id=payment_id, label="cobro")
+
+        _validate_optional_fk(conn, table_name="eco_gastos", record_id=gasto_id, label="gasto")
+
+        linked_target_type = None
+        if payment_id is not None:
+            linked_target_type = "COBRO"
+        elif gasto_id is not None:
+            linked_target_type = "GASTO"
+        elif expedient_id is not None:
+            linked_target_type = "EXPEDIENTE"
+        elif client_id is not None:
+            linked_target_type = "CLIENTE"
 
         conn.execute(
             """
@@ -157,6 +210,9 @@ def link_bank_movement_manually(
                 linked_client_id = ?,
                 linked_expedient_id = ?,
                 linked_payment_id = ?,
+                linked_gasto_id = ?,
+                linked_amount_centimos = ?,
+                linked_target_type = ?,
                 linked_by_user_id = ?,
                 linked_at = CURRENT_TIMESTAMP,
                 link_notes = CASE
@@ -172,6 +228,9 @@ def link_bank_movement_manually(
                 client_id,
                 expedient_id,
                 payment_id,
+                gasto_id,
+                linked_amount_centimos,
+                linked_target_type,
                 linked_by_user_id,
                 notes,
                 notes,
@@ -201,6 +260,7 @@ def unlink_bank_movement(
 
     with connect(db_path) as conn:
         ensure_bank_schema(conn)
+        _ensure_link_columns(conn, "bank_movements")
 
         row = _get_bank_movement_for_update(conn, movement_id)
 
@@ -220,6 +280,9 @@ def unlink_bank_movement(
                 linked_client_id = NULL,
                 linked_expedient_id = NULL,
                 linked_payment_id = NULL,
+                linked_gasto_id = NULL,
+                linked_amount_centimos = 0,
+                linked_target_type = NULL,
                 linked_by_user_id = NULL,
                 linked_at = NULL,
                 link_notes = CASE
@@ -269,9 +332,15 @@ def get_bank_link_context(
             },
             "payment": {
                 "component": "app_autocomplete",
-                "target_table": "cobros",
+                "target_table": "eco_cobros",
                 "id_field": "id",
                 "destination_field": "linked_payment_id",
+            },
+            "gasto": {
+                "component": "selector",
+                "target_table": "eco_gastos",
+                "id_field": "id",
+                "destination_field": "linked_gasto_id",
             },
         },
         "rules": [
