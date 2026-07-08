@@ -628,21 +628,36 @@ def economic_view(page: ft.Page):
         refresh()
 
 
-    def movements_source_button(key, label):
-        selected = state.get("movements_source") == key
+    def movements_source_button(source_key, label):
+        selected = (state.get("movements_source") or "cashmatic") == source_key
+
+        source_colors = {
+            "cashmatic": "#2563EB",    # azul
+            "caja_rural": "#16A34A",   # verde
+            "ing": "#F97316",          # naranja
+            "santander": "#DC2626",    # rojo
+        }
+
+        color = source_colors.get(source_key, "#64748B")
+
+        def select_source(e=None):
+            state["movements_source"] = source_key
+            state["movements_page"] = 1
+            refresh()
+
         return ft.Container(
             content=ft.Text(
                 label,
-                size=13,
-                weight=ft.FontWeight.BOLD if selected else ft.FontWeight.NORMAL,
-                color="#FFFFFF" if selected else Q_PRIMARY_DARK,
+                size=12,
+                weight=ft.FontWeight.BOLD if selected else ft.FontWeight.W_500,
+                color="#FFFFFF" if selected else color,
             ),
-            bgcolor=Q_PRIMARY_DARK if selected else "#FFFFFF",
-            border=ft.border.all(1, Q_PRIMARY_DARK if selected else Q_BORDER),
-            border_radius=999,
             padding=ft.padding.symmetric(horizontal=14, vertical=8),
+            border_radius=999,
+            bgcolor=color if selected else "#FFFFFF",
+            border=ft.border.all(1.4, color),
+            on_click=select_source,
             ink=True,
-            on_click=lambda e, k=key: set_movements_source(k),
         )
 
 
