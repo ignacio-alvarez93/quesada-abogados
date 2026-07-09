@@ -1065,10 +1065,13 @@ def economic_view(page: ft.Page):
         source = (source or "").lower().strip()
 
         if source == "cashmatic":
+            # En conciliación económica Cashmatic debe mandar el importe requerido:
+            # es el importe que se pretendía cobrar al cliente.
+            # El neto/insertado puede variar por devoluciones, incidencias o caja.
             return int(
-                _get_value(item, "net_amount_centimos")
+                _get_value(item, "requested_centimos")
                 or _get_value(item, "inserted_centimos")
-                or _get_value(item, "requested_centimos")
+                or _get_value(item, "net_amount_centimos")
                 or 0
             )
 
@@ -1267,6 +1270,20 @@ def economic_view(page: ft.Page):
         source = (source or "").lower().strip()
         movement_id = int(_get_value(item, "id") or 0)
         amount_centimos = movement_amount_centimos_for_reconciliation(source, item)
+
+        if int(amount_centimos or 0) <= 0:
+            try:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(
+                        "De momento solo se concilian movimientos positivos contra cobros. "
+                        "Los movimientos negativos se vincularán cuando esté activo el módulo de gastos."
+                    ),
+                    open=True,
+                )
+                page.update()
+            except Exception:
+                pass
+            return
         movement_date = movement_date_for_reconciliation(source, item)
         movement_concept = movement_concept_for_reconciliation(source, item)
 
