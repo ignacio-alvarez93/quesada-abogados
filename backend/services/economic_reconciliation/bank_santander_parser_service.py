@@ -276,6 +276,38 @@ def _extract_export_timestamp(rows: list[list[str]]) -> str | None:
     return None
 
 
+def normalize_santander_concept_for_hash(concept: str) -> str:
+    """
+    Normaliza únicamente el concepto usado para row_hash.
+
+    El concepto visible se conserva intacto. Esta función evita duplicados
+    semánticos cuando Santander exporta la misma operación con literales
+    distintos en descargas diferentes.
+
+    Caso real:
+    - "Comision Por Instalacion O Mantenimiento De Tpv 0049..."
+    - "Cobro Tarifa Plana"
+    """
+    import unicodedata
+
+    raw = clean_text(concept)
+    normalized = unicodedata.normalize("NFKD", raw)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = " ".join(normalized.lower().split())
+
+    if "cobro tarifa plana" in normalized:
+        return "SANTANDER_TPV_TARIFA_PLANA"
+
+    if (
+        "comision por instalacion" in normalized
+        and "mantenimiento" in normalized
+        and "tpv" in normalized
+    ):
+        return "SANTANDER_TPV_TARIFA_PLANA"
+
+    return normalized
+
+
 def classify_santander_movement(concept: str, amount_centimos: int) -> tuple[str, str, list[str]]:
     concept_clean = clean_text(concept)
     concept_upper = concept_clean.upper()
@@ -391,10 +423,12 @@ def diagnose_santander_bank_file(path: str | Path) -> SantanderBankDiagnosticRep
         by_type[movement_type] = by_type.get(movement_type, 0) + 1
         by_status[movement_status] = by_status.get(movement_status, 0) + 1
 
+        normalized_concept_for_hash = normalize_santander_concept_for_hash(concept)
+
         hash_payload = {
             "operation_date": operation_date,
             "value_date": value_date,
-            "concept": concept,
+            "concept": normalized_concept_for_hash,
             "amount_centimos": amount_centimos,
             "balance_centimos": balance_centimos,
         }
