@@ -1218,20 +1218,91 @@ def economic_view(page: ft.Page):
         return f"{cobro_id} - {numero} · {fecha} · {importe_txt}"
 
 
-    def update_cobro_as_reconciled(cobro_id, source, movement_id):
+    def update_cobro_as_reconciled(cobro_id, source=None, movement_id=None):
+        """
+        Recalcula el estado de conciliación del cobro según el total vinculado.
+
+        Modelo actual:
+        - eco_cobros.importe está en euros.
+        - bank_movements / cashmatic_movements guardan importes en céntimos.
+        - Un cobro puede tener uno o varios movimientos vinculados.
+        """
+        import sqlite3
+
         try:
-            economic_service.update_cobro(
-                int(cobro_id),
-                {
-                    "estado_conciliacion": "CONCILIADO",
-                    "observaciones": f"Conciliado manualmente con movimiento {source} #{movement_id}",
-                },
-            )
+            cobro_id = int(cobro_id or 0)
         except Exception:
-            # El link de movimiento es la fuente principal.
-            # Si el update del cobro no está disponible por restricciones del modelo,
-            # no bloqueamos la conciliación.
-            pass
+            cobro_id = 0
+
+        if cobro_id <= 0:
+            return
+
+        conn = sqlite3.connect("database/quesada.db")
+        conn.row_factory = sqlite3.Row
+
+        try:
+            cobro = conn.execute(
+                """
+                SELECT id, importe, estado_conciliacion
+                FROM eco_cobros
+                WHERE id = ?
+                  AND COALESCE(activo, 1) = 1
+                """,
+                (cobro_id,),
+            ).fetchone()
+
+            if not cobro:
+                return
+
+            cobro_amount_centimos = int(round(float(cobro["importe"] or 0) * 100))
+
+            bank_linked_centimos = int(conn.execute(
+                """
+                SELECT COALESCE(SUM(
+                    COALESCE(NULLIF(linked_amount_centimos, 0), amount_centimos, 0)
+                ), 0) AS total
+                FROM bank_movements
+                WHERE linked_payment_id = ?
+                  AND ignored_at IS NULL
+                """,
+                (cobro_id,),
+            ).fetchone()["total"] or 0)
+
+            cashmatic_linked_centimos = int(conn.execute(
+                """
+                SELECT COALESCE(SUM(
+                    COALESCE(NULLIF(linked_amount_centimos, 0), requested_centimos, net_amount_centimos, 0)
+                ), 0) AS total
+                FROM cashmatic_movements
+                WHERE linked_payment_id = ?
+                  AND ignored_at IS NULL
+                """,
+                (cobro_id,),
+            ).fetchone()["total"] or 0)
+
+            linked_total_centimos = bank_linked_centimos + cashmatic_linked_centimos
+
+            if linked_total_centimos <= 0:
+                new_status = "PENDIENTE"
+            elif linked_total_centimos < cobro_amount_centimos:
+                new_status = "PARCIAL"
+            elif linked_total_centimos == cobro_amount_centimos:
+                new_status = "CONCILIADO"
+            else:
+                new_status = "SOBRANTE_REVISION"
+
+            conn.execute(
+                """
+                UPDATE eco_cobros
+                SET estado_conciliacion = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (new_status, cobro_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
 
     def show_reconciliation_dialog(dialog):
