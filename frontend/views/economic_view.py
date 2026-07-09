@@ -1451,6 +1451,71 @@ def economic_view(page: ft.Page):
             reconciliation_dialog.open = False
             page.update()
 
+        def get_cobro_pending_centimos(cobro_id):
+            """
+            Devuelve cuánto queda pendiente de aplicar al cobro.
+
+            eco_cobros.importe está en euros.
+            Los movimientos importados guardan importes en céntimos.
+            """
+            import sqlite3
+
+            try:
+                cobro_id = int(cobro_id or 0)
+            except Exception:
+                return 0
+
+            if cobro_id <= 0:
+                return 0
+
+            conn = sqlite3.connect("database/quesada.db")
+            conn.row_factory = sqlite3.Row
+
+            try:
+                cobro = conn.execute(
+                    """
+                    SELECT id, importe
+                    FROM eco_cobros
+                    WHERE id = ?
+                      AND COALESCE(activo, 1) = 1
+                    """,
+                    (cobro_id,),
+                ).fetchone()
+
+                if not cobro:
+                    return 0
+
+                total_centimos = int(round(float(cobro["importe"] or 0) * 100))
+
+                bank_linked_centimos = int(conn.execute(
+                    """
+                    SELECT COALESCE(SUM(
+                        COALESCE(NULLIF(linked_amount_centimos, 0), amount_centimos, 0)
+                    ), 0) AS total
+                    FROM bank_movements
+                    WHERE linked_payment_id = ?
+                      AND ignored_at IS NULL
+                    """,
+                    (cobro_id,),
+                ).fetchone()["total"] or 0)
+
+                cashmatic_linked_centimos = int(conn.execute(
+                    """
+                    SELECT COALESCE(SUM(
+                        COALESCE(NULLIF(linked_amount_centimos, 0), requested_centimos, net_amount_centimos, 0)
+                    ), 0) AS total
+                    FROM cashmatic_movements
+                    WHERE linked_payment_id = ?
+                      AND ignored_at IS NULL
+                    """,
+                    (cobro_id,),
+                ).fetchone()["total"] or 0)
+
+                pending = total_centimos - bank_linked_centimos - cashmatic_linked_centimos
+                return max(0, int(pending))
+            finally:
+                conn.close()
+
         def save_link(e=None):
             client_id = selected_client_id_box.get("value") or selected_autocomplete_id(client_ac)
             cobro_id = option_id_from_label(cobro_dropdown.value) or cobro_dropdown.value
@@ -1473,6 +1538,18 @@ def economic_view(page: ft.Page):
                 set_message("Selecciona un cobro existente.", is_error=True)
                 return
 
+            pending_centimos = get_cobro_pending_centimos(cobro_id)
+
+            if pending_centimos <= 0:
+                set_message(
+                    "Este cobro ya no tiene importe pendiente de conciliación.",
+                    is_error=True,
+                )
+                return
+
+            applied_amount_centimos = min(int(amount_centimos or 0), int(pending_centimos or 0))
+            remaining_movement_centimos = int(amount_centimos or 0) - int(applied_amount_centimos or 0)
+
             notes = (
                 "Conciliación manual desde Económico > Movimientos\\n"
                 f"Origen: {source}\\n"
@@ -1493,7 +1570,7 @@ def economic_view(page: ft.Page):
                             movement_id=movement_id,
                             client_id=client_id,
                             payment_id=cobro_id,
-                            linked_amount_centimos=amount_centimos,
+                            linked_amount_centimos=applied_amount_centimos,
                             notes=notes,
                         )
                     )
@@ -1508,7 +1585,7 @@ def economic_view(page: ft.Page):
                             movement_id=movement_id,
                             client_id=client_id,
                             payment_id=cobro_id,
-                            linked_amount_centimos=amount_centimos,
+                            linked_amount_centimos=applied_amount_centimos,
                             notes=notes,
                         )
                     )
