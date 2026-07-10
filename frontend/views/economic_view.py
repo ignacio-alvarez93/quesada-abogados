@@ -1458,23 +1458,15 @@ def economic_view(page: ft.Page):
         )
 
         message_box = ft.Container()
+        movement_summary_box = ft.Container()
         selected_client_id_box = {"value": None}
 
         def set_message(text_value, is_error=False):
-            lines = str(text_value or "").split("\n")
             message_box.content = ft.Container(
-                content=ft.Column(
-                    controls=[
-                        ft.Text(
-                            line,
-                            size=12,
-                            color="#B91C1C" if is_error else Q_MUTED,
-                            weight=ft.FontWeight.BOLD if idx == 0 else ft.FontWeight.NORMAL,
-                        )
-                        for idx, line in enumerate(lines)
-                    ],
-                    spacing=3,
-                    tight=True,
+                content=ft.Text(
+                    text_value,
+                    size=12,
+                    color="#B91C1C" if is_error else Q_MUTED,
                 ),
                 padding=ft.padding.symmetric(horizontal=10, vertical=8),
                 border_radius=10,
@@ -1556,6 +1548,503 @@ def economic_view(page: ft.Page):
             return cobro_option_label(cobro)
 
 
+
+        def ensure_reconciliation_applications_table():
+            """
+            Tabla puente para permitir que un mismo movimiento importado
+            se aplique a varios cobros.
+
+            Los campos linked_* de bank_movements/cashmatic_movements quedan
+            como resumen legacy, pero ya no bloquean la aplicación parcial.
+            """
+            import sqlite3
+
+            conn = sqlite3.connect("database/quesada.db")
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS economic_reconciliation_applications (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_type TEXT NOT NULL,
+                        source_movement_id INTEGER NOT NULL,
+                        payment_id INTEGER NOT NULL,
+                        client_id INTEGER,
+                        expedient_id INTEGER,
+                        amount_centimos INTEGER NOT NULL,
+                        notes TEXT,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(source_type, source_movement_id, payment_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_era_source
+                    ON economic_reconciliation_applications(source_type, source_movement_id)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_era_payment
+                    ON economic_reconciliation_applications(payment_id)
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+
+        def seed_current_movement_legacy_link_to_applications():
+            """
+            Si el movimiento ya tenía linked_payment_id antes de existir
+            applications, crea la aplicación equivalente una sola vez.
+            """
+            import sqlite3
+
+            ensure_reconciliation_applications_table()
+
+            source_type = "cashmatic" if source == "cashmatic" else "bank"
+            table = "cashmatic_movements" if source == "cashmatic" else "bank_movements"
+
+            conn = sqlite3.connect("database/quesada.db")
+            conn.row_factory = sqlite3.Row
+
+            try:
+                row = conn.execute(
+                    f"""
+                    SELECT
+                        id,
+                        linked_payment_id,
+                        linked_client_id,
+                        linked_expedient_id,
+                        linked_amount_centimos,
+                        link_notes
+                    FROM {table}
+                    WHERE id = ?
+                    """,
+                    (movement_id,),
+                ).fetchone()
+
+                if not row:
+                    return
+
+                payment_id = row["linked_payment_id"]
+                amount = int(row["linked_amount_centimos"] or 0)
+
+                if not payment_id or amount <= 0:
+                    return
+
+                exists = conn.execute(
+                    """
+                    SELECT id
+                    FROM economic_reconciliation_applications
+                    WHERE source_type = ?
+                      AND source_movement_id = ?
+                      AND payment_id = ?
+                    """,
+                    (source_type, movement_id, payment_id),
+                ).fetchone()
+
+                if exists:
+                    return
+
+                conn.execute(
+                    """
+                    INSERT INTO economic_reconciliation_applications (
+                        source_type,
+                        source_movement_id,
+                        payment_id,
+                        client_id,
+                        expedient_id,
+                        amount_centimos,
+                        notes
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_type,
+                        movement_id,
+                        payment_id,
+                        row["linked_client_id"],
+                        row["linked_expedient_id"],
+                        amount,
+                        row["link_notes"] or "Migrado desde vínculo legacy linked_payment_id",
+                    ),
+                )
+
+                conn.commit()
+            finally:
+                conn.close()
+
+
+        def sync_current_movement_legacy_summary_from_applications():
+            """
+            Recalcula los campos linked_* del movimiento como resumen:
+            - linked_amount_centimos = total aplicado;
+            - linked_payment_id = primer cobro vinculado, solo como referencia legacy.
+            """
+            import sqlite3
+
+            ensure_reconciliation_applications_table()
+
+            source_type = "cashmatic" if source == "cashmatic" else "bank"
+            table = "cashmatic_movements" if source == "cashmatic" else "bank_movements"
+
+            conn = sqlite3.connect("database/quesada.db")
+            conn.row_factory = sqlite3.Row
+
+            try:
+                summary = conn.execute(
+                    """
+                    SELECT
+                        COALESCE(SUM(amount_centimos), 0) AS total,
+                        MIN(payment_id) AS first_payment_id,
+                        MIN(client_id) AS first_client_id,
+                        MIN(expedient_id) AS first_expedient_id
+                    FROM economic_reconciliation_applications
+                    WHERE source_type = ?
+                      AND source_movement_id = ?
+                    """,
+                    (source_type, movement_id),
+                ).fetchone()
+
+                total = int(summary["total"] or 0)
+                first_payment_id = summary["first_payment_id"]
+                first_client_id = summary["first_client_id"]
+                first_expedient_id = summary["first_expedient_id"]
+
+                conn.execute(
+                    f"""
+                    UPDATE {table}
+                    SET
+                        linked_payment_id = ?,
+                        linked_client_id = ?,
+                        linked_expedient_id = ?,
+                        linked_amount_centimos = ?,
+                        linked_target_type = CASE WHEN ? > 0 THEN 'payment' ELSE linked_target_type END,
+                        linked_at = CASE WHEN ? > 0 THEN CURRENT_TIMESTAMP ELSE linked_at END
+                    WHERE id = ?
+                    """,
+                    (
+                        first_payment_id,
+                        first_client_id,
+                        first_expedient_id,
+                        total,
+                        total,
+                        total,
+                        movement_id,
+                    ),
+                )
+
+                conn.commit()
+            finally:
+                conn.close()
+
+
+        def apply_reconciliation_application(cobro_id, client_id, applied_amount_centimos, notes):
+            """
+            Inserta una aplicación parcial/total del movimiento contra un cobro.
+
+            Permite varios cobros por movimiento.
+            """
+            import sqlite3
+
+            ensure_reconciliation_applications_table()
+            seed_current_movement_legacy_link_to_applications()
+
+            source_type = "cashmatic" if source == "cashmatic" else "bank"
+
+            cobro_id = int(cobro_id or 0)
+            client_id = int(client_id or 0) if client_id else None
+            applied_amount_centimos = int(applied_amount_centimos or 0)
+
+            if cobro_id <= 0:
+                raise ValueError("Selecciona un cobro válido.")
+
+            if applied_amount_centimos <= 0:
+                raise ValueError("No hay importe pendiente para aplicar.")
+
+            conn = sqlite3.connect("database/quesada.db")
+            conn.row_factory = sqlite3.Row
+
+            try:
+                existing = conn.execute(
+                    """
+                    SELECT id, amount_centimos
+                    FROM economic_reconciliation_applications
+                    WHERE source_type = ?
+                      AND source_movement_id = ?
+                      AND payment_id = ?
+                    """,
+                    (source_type, movement_id, cobro_id),
+                ).fetchone()
+
+                if existing:
+                    new_amount = int(existing["amount_centimos"] or 0) + applied_amount_centimos
+                    conn.execute(
+                        """
+                        UPDATE economic_reconciliation_applications
+                        SET amount_centimos = ?,
+                            client_id = COALESCE(client_id, ?),
+                            notes = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (new_amount, client_id, notes, existing["id"]),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO economic_reconciliation_applications (
+                            source_type,
+                            source_movement_id,
+                            payment_id,
+                            client_id,
+                            amount_centimos,
+                            notes
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            source_type,
+                            movement_id,
+                            cobro_id,
+                            client_id,
+                            applied_amount_centimos,
+                            notes,
+                        ),
+                    )
+
+                conn.commit()
+            finally:
+                conn.close()
+
+            sync_current_movement_legacy_summary_from_applications()
+
+
+        def get_current_movement_reconciliation_summary():
+            """
+            Lee el estado real del movimiento seleccionado usando applications.
+            """
+            import sqlite3
+
+            ensure_reconciliation_applications_table()
+            seed_current_movement_legacy_link_to_applications()
+
+            movement_abs = abs(int(amount_centimos or 0))
+            source_type = "cashmatic" if source == "cashmatic" else "bank"
+            table = "cashmatic_movements" if source == "cashmatic" else "bank_movements"
+            amount_field = "requested_centimos" if source == "cashmatic" else "amount_centimos"
+
+            conn = sqlite3.connect("database/quesada.db")
+            conn.row_factory = sqlite3.Row
+
+            try:
+                movement_row = conn.execute(
+                    f"""
+                    SELECT id, {amount_field} AS movement_amount_centimos
+                    FROM {table}
+                    WHERE id = ?
+                    """,
+                    (movement_id,),
+                ).fetchone()
+
+                if movement_row:
+                    movement_abs = abs(int(movement_row["movement_amount_centimos"] or movement_abs or 0))
+
+                rows = conn.execute(
+                    """
+                    SELECT
+                        a.id,
+                        a.payment_id,
+                        a.amount_centimos,
+                        a.created_at,
+                        c.numero_cobro,
+                        c.estado_conciliacion,
+                        cl.nombre,
+                        cl.primer_apellido,
+                        cl.segundo_apellido
+                    FROM economic_reconciliation_applications a
+                    LEFT JOIN eco_cobros c ON c.id = a.payment_id
+                    LEFT JOIN clientes cl ON cl.id = c.cliente_id
+                    WHERE a.source_type = ?
+                      AND a.source_movement_id = ?
+                    ORDER BY a.created_at ASC, a.id ASC
+                    """,
+                    (source_type, movement_id),
+                ).fetchall()
+
+                linked_rows = []
+                linked_total = 0
+
+                for row in rows:
+                    amount = abs(int(row["amount_centimos"] or 0))
+                    linked_total += amount
+
+                    cliente = " ".join(
+                        str(row[x] or "").strip()
+                        for x in ["nombre", "primer_apellido", "segundo_apellido"]
+                    ).strip()
+
+                    linked_rows.append(
+                        {
+                            "payment_id": row["payment_id"],
+                            "numero_cobro": row["numero_cobro"] or f"Cobro #{row['payment_id']}",
+                            "cliente": cliente,
+                            "amount": amount,
+                            "estado": row["estado_conciliacion"] or "",
+                            "linked_at": row["created_at"] or "",
+                        }
+                    )
+
+                pending = max(0, movement_abs - linked_total)
+
+                return {
+                    "movement_amount": movement_abs,
+                    "linked_total": linked_total,
+                    "pending": pending,
+                    "linked_rows": linked_rows,
+                }
+            finally:
+                conn.close()
+
+
+        def render_movement_summary_card(cobro_id=None):
+            """
+            Card principal del movimiento dentro del diálogo.
+
+            Debe mostrar por defecto:
+            - movimiento;
+            - cobros ya vinculados;
+            - total aplicado;
+            - pendiente/sobrante por vincular.
+            """
+            summary = get_current_movement_reconciliation_summary()
+
+            movement_abs = int(summary["movement_amount"] or 0)
+            already_applied = int(summary["linked_total"] or 0)
+            movement_pending = int(summary["pending"] or 0)
+            linked_rows = summary.get("linked_rows") or []
+
+            controls = [
+                ft.Text("Movimiento seleccionado", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                ft.Text(f"Origen: {source}", size=12, color=Q_MUTED),
+                ft.Text(f"Movimiento: {movement_id}", size=12, color=Q_MUTED),
+                ft.Text(f"Fecha: {movement_date}", size=12, color=Q_MUTED),
+                ft.Text(f"Concepto: {movement_concept}", size=12, color=Q_MUTED, selectable=True),
+                ft.Divider(height=8),
+                ft.Text(
+                    f"Importe movimiento: {_money_centimos(movement_abs)}",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    f"Total ya vinculado: {_money_centimos(already_applied)}",
+                    size=12,
+                    color="#16A34A" if already_applied else Q_MUTED,
+                ),
+                ft.Text(
+                    f"Pendiente por vincular: {_money_centimos(movement_pending)}",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color="#F59E0B" if movement_pending else "#16A34A",
+                ),
+            ]
+
+            controls.append(ft.Divider(height=8))
+            controls.append(
+                ft.Text(
+                    "Cobros vinculados",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                )
+            )
+
+            if linked_rows:
+                for linked in linked_rows:
+                    linked_label = linked.get("numero_cobro") or f"Cobro #{linked.get('payment_id')}"
+                    cliente = linked.get("cliente") or "-"
+                    estado = linked.get("estado") or "-"
+                    controls.append(
+                        ft.Container(
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        f"{linked_label} · {_money_centimos(linked.get('amount') or 0)}",
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(f"Cliente: {cliente}", size=11, color=Q_MUTED),
+                                    ft.Text(f"Estado cobro: {estado}", size=11, color=Q_MUTED),
+                                ],
+                                spacing=2,
+                                tight=True,
+                            ),
+                            padding=ft.padding.symmetric(horizontal=10, vertical=7),
+                            border_radius=10,
+                            bgcolor="#FFFFFF",
+                            border=ft.border.all(1, Q_BORDER),
+                        )
+                    )
+            else:
+                controls.append(
+                    ft.Text("Todavía no hay cobros vinculados a este movimiento.", size=12, color=Q_MUTED)
+                )
+
+            try:
+                selected_cobro_id = int(cobro_id or 0)
+            except Exception:
+                selected_cobro_id = 0
+
+            if selected_cobro_id > 0:
+                amounts = get_cobro_reconciliation_amounts(selected_cobro_id)
+                cobro_pending = int(amounts["pending"] or 0)
+                applied_preview = min(movement_pending, cobro_pending)
+                remaining_preview = max(0, movement_pending - applied_preview)
+
+                controls.extend(
+                    [
+                        ft.Divider(height=8),
+                        ft.Text("Nuevo cobro seleccionado", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                        ft.Text(f"Cobro total: {_money_centimos(amounts['total'])}", size=12, color=Q_MUTED),
+                        ft.Text(f"Ya aplicado al cobro: {_money_centimos(amounts['linked'])}", size=12, color=Q_MUTED),
+                        ft.Text(
+                            f"Pendiente del cobro: {_money_centimos(cobro_pending)}",
+                            size=12,
+                            color="#F59E0B" if cobro_pending else "#16A34A",
+                        ),
+                        ft.Text(
+                            f"Se aplicará ahora: {_money_centimos(applied_preview)}",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            f"Pendiente que quedará en el movimiento: {_money_centimos(remaining_preview)}",
+                            size=12,
+                            color="#F59E0B" if remaining_preview else "#16A34A",
+                        ),
+                    ]
+                )
+
+            movement_summary_box.content = ft.Container(
+                content=ft.Column(controls=controls, spacing=4, tight=True),
+                padding=ft.padding.all(12),
+                border_radius=12,
+                bgcolor="#F8FAFC",
+                border=ft.border.all(1, Q_BORDER),
+            )
+
+            try:
+                movement_summary_box.update()
+            except Exception:
+                pass
+
+
         def refresh_selected_cobro_pending_message(e=None):
             cobro_id = option_id_from_label(cobro_dropdown.value) or cobro_dropdown.value
 
@@ -1564,26 +2053,17 @@ def economic_view(page: ft.Page):
             except Exception:
                 cobro_id = 0
 
+            render_movement_summary_card(cobro_id)
+
             if cobro_id <= 0:
-                set_message(
-                    f"Movimiento a conciliar: {_money_centimos(amount_centimos)}. "
-                    "Selecciona un cobro para ver cuánto se aplicará."
-                )
+                set_message("Selecciona un cobro para continuar.")
                 return
 
             amounts = get_cobro_reconciliation_amounts(cobro_id)
-            applied_preview = min(int(amount_centimos or 0), int(amounts["pending"] or 0))
-            remaining_preview = max(0, int(amount_centimos or 0) - int(applied_preview or 0))
-
-            set_message(
-                "Resumen de aplicación:\n"
-                f"Movimiento: {_money_centimos(amount_centimos)}\n"
-                f"Cobro total: {_money_centimos(amounts['total'])}\n"
-                f"Ya aplicado al cobro: {_money_centimos(amounts['linked'])}\n"
-                f"Pendiente del cobro: {_money_centimos(amounts['pending'])}\n"
-                f"Se aplicará ahora: {_money_centimos(applied_preview)}\n"
-                f"Sobrante del movimiento no aplicado: {_money_centimos(remaining_preview)}"
-            )
+            if int(amounts["pending"] or 0) <= 0:
+                set_message("Este cobro ya no tiene importe pendiente.", is_error=True)
+            else:
+                set_message("Revisa el resumen del movimiento y pulsa Guardar vinculación.")
 
         cobro_dropdown.on_change = refresh_selected_cobro_pending_message
 
@@ -1611,12 +2091,7 @@ def economic_view(page: ft.Page):
             cobro_dropdown.disabled = False if cobros else True
 
             if cobros:
-                set_message(
-                    "Resumen de conciliación\n"
-                    f"Movimiento a conciliar: {_money_centimos(amount_centimos)}\n"
-                    f"Cobros pendientes encontrados: {len(cobros)}\n"
-                    "Selecciona un cobro para ver total, aplicado, pendiente y sobrante."
-                )
+                set_message(f"Cobros pendientes encontrados para el cliente: {len(cobros)}")
             else:
                 set_message("Este cliente no tiene cobros pendientes para vincular.", is_error=True)
 
@@ -1725,8 +2200,15 @@ def economic_view(page: ft.Page):
                 )
                 return
 
-            applied_amount_centimos = min(int(amount_centimos or 0), int(pending_centimos or 0))
-            remaining_movement_centimos = int(amount_centimos or 0) - int(applied_amount_centimos or 0)
+            movement_summary = get_current_movement_reconciliation_summary()
+            movement_pending_centimos = int(movement_summary.get("pending") or 0)
+
+            if movement_pending_centimos <= 0:
+                set_message("Este movimiento ya no tiene importe pendiente por vincular.", is_error=True)
+                return
+
+            applied_amount_centimos = min(int(movement_pending_centimos or 0), int(pending_centimos or 0))
+            remaining_movement_centimos = int(movement_pending_centimos or 0) - int(applied_amount_centimos or 0)
 
             application_type = "TOTAL"
             if remaining_movement_centimos > 0:
@@ -1750,36 +2232,12 @@ def economic_view(page: ft.Page):
             )
 
             try:
-                if source == "cashmatic":
-                    from backend.services.economic_reconciliation.cashmatic_link_service import (
-                        CashmaticManualLinkRequest,
-                        link_cashmatic_movement_manually,
-                    )
-
-                    link_cashmatic_movement_manually(
-                        CashmaticManualLinkRequest(
-                            movement_id=movement_id,
-                            client_id=client_id,
-                            payment_id=cobro_id,
-                            linked_amount_centimos=applied_amount_centimos,
-                            notes=notes,
-                        )
-                    )
-                else:
-                    from backend.services.economic_reconciliation.bank_link_service import (
-                        BankManualLinkRequest,
-                        link_bank_movement_manually,
-                    )
-
-                    link_bank_movement_manually(
-                        BankManualLinkRequest(
-                            movement_id=movement_id,
-                            client_id=client_id,
-                            payment_id=cobro_id,
-                            linked_amount_centimos=applied_amount_centimos,
-                            notes=notes,
-                        )
-                    )
+                apply_reconciliation_application(
+                    cobro_id=cobro_id,
+                    client_id=client_id,
+                    applied_amount_centimos=applied_amount_centimos,
+                    notes=notes,
+                )
 
                 update_cobro_as_reconciled(cobro_id, source, movement_id)
 
@@ -1792,6 +2250,7 @@ def economic_view(page: ft.Page):
             except Exception as exc:
                 set_message(f"No se pudo conciliar: {exc}", is_error=True)
 
+        render_movement_summary_card()
         set_message("Selecciona un cliente y pulsa “Cargar cobros”.")
 
         dialog = ft.AlertDialog(
@@ -1801,6 +2260,7 @@ def economic_view(page: ft.Page):
                 width=780,
                 content=ft.Column(
                     controls=[
+                        movement_summary_box,
                         ft.Container(
                             content=ft.Column(
                                 controls=[
@@ -2241,6 +2701,7 @@ def economic_view(page: ft.Page):
                     economic_badge(h.get("estado")),
                 ])
             return app_table(
+                ["Nº hoja", "Fecha", "Cliente", "Expediente", "Procedimiento", "Bruto", "Neto", "Estado"],
                 rows,
                 height=430,
             ) if rows else empty_state("No hay hojas de encargo")
