@@ -982,9 +982,6 @@ def economic_view(page: ft.Page):
             "reconciliation_group_id",
         ]
 
-        if any(_get_value(item, key) not in (None, "", 0) for key in linked_markers):
-            return "Conciliado", "#16A34A"
-
         partial_markers = [
             "partial_reconciliation_id",
             "partial_link_id",
@@ -992,22 +989,37 @@ def economic_view(page: ft.Page):
             "reconciled_amount_centimos",
         ]
 
-        matched = _get_value(item, "matched_amount_centimos") or _get_value(item, "reconciled_amount_centimos")
+        linked_amount = (
+            _get_value(item, "linked_amount_centimos")
+            or _get_value(item, "matched_amount_centimos")
+            or _get_value(item, "reconciled_amount_centimos")
+            or 0
+        )
+
+        # Para Cashmatic, el importe económico real del movimiento es requested_centimos.
+        # Para bancos, amount_centimos.
         amount = (
-            _get_value(item, "net_amount_centimos")
+            _get_value(item, "requested_centimos")
             or _get_value(item, "amount_centimos")
+            or _get_value(item, "net_amount_centimos")
             or _get_value(item, "inserted_centimos")
-            or _get_value(item, "requested_centimos")
+            or 0
         )
 
         try:
-            if matched not in (None, "", 0) and amount not in (None, "", 0) and abs(int(matched)) != abs(int(amount)):
+            linked_abs = abs(int(linked_amount or 0))
+            amount_abs = abs(int(amount or 0))
+
+            if linked_abs > 0 and amount_abs > 0 and linked_abs < amount_abs:
                 return "Conciliación parcial", "#F59E0B"
         except Exception:
             pass
 
         if any(_get_value(item, key) not in (None, "", 0) for key in partial_markers):
             return "Conciliación parcial", "#F59E0B"
+
+        if any(_get_value(item, key) not in (None, "", 0) for key in linked_markers):
+            return "Conciliado", "#16A34A"
 
         return "No conciliado", "#64748B"
 
@@ -1016,10 +1028,10 @@ def economic_view(page: ft.Page):
         label, color = movement_reconciliation_status(item)
 
         movement_amount = (
-            _get_value(item, "net_amount_centimos")
+            _get_value(item, "requested_centimos")
             or _get_value(item, "amount_centimos")
+            or _get_value(item, "net_amount_centimos")
             or _get_value(item, "inserted_centimos")
-            or _get_value(item, "requested_centimos")
             or 0
         )
 
@@ -1059,6 +1071,57 @@ def economic_view(page: ft.Page):
             border=ft.border.all(1, color),
             tooltip=tooltip,
         )
+
+
+    def movement_applied_pending_summary(source, item):
+        """
+        Resumen visual de conciliación de un movimiento importado.
+
+        Diferencia entre:
+        - importe del movimiento;
+        - importe aplicado a cobro;
+        - sobrante no aplicado.
+        """
+        movement_amount = abs(int(movement_amount_centimos_for_reconciliation(source, item) or 0))
+        applied_amount = abs(int(_get_value(item, "linked_amount_centimos") or 0))
+        pending_amount = max(0, movement_amount - applied_amount)
+
+        if applied_amount <= 0:
+            return {
+                "label": "Pendiente",
+                "detail": f"Movimiento: {_money_centimos(movement_amount)}",
+                "movement_amount": movement_amount,
+                "applied_amount": 0,
+                "pending_amount": movement_amount,
+                "is_partial": False,
+            }
+
+        if pending_amount > 0:
+            return {
+                "label": "Conciliación parcial",
+                "detail": (
+                    f"Movimiento: {_money_centimos(movement_amount)}\n"
+                    f"Aplicado: {_money_centimos(applied_amount)}\n"
+                    f"Sobrante pendiente: {_money_centimos(pending_amount)}"
+                ),
+                "movement_amount": movement_amount,
+                "applied_amount": applied_amount,
+                "pending_amount": pending_amount,
+                "is_partial": True,
+            }
+
+        return {
+            "label": "Conciliado",
+            "detail": (
+                f"Movimiento: {_money_centimos(movement_amount)}\n"
+                f"Aplicado: {_money_centimos(applied_amount)}\n"
+                "Sobrante pendiente: 0,00 €"
+            ),
+            "movement_amount": movement_amount,
+            "applied_amount": applied_amount,
+            "pending_amount": 0,
+            "is_partial": False,
+        }
 
 
     def movement_amount_centimos_for_reconciliation(source, item):
