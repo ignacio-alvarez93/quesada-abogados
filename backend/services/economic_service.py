@@ -338,7 +338,49 @@ def next_numero_hoja(fecha_firma):
 
 
 def next_numero_cobro(fecha_cobro):
-    return _next_number("eco_cobros", "numero_cobro", "COB", fecha_cobro)
+    """
+    Genera el siguiente número de cobro siguiendo la secuencia global del año.
+
+    Regla:
+    - COB-YYYY-0001, COB-YYYY-0002, ...
+    - No debe reiniciarse ni retroceder por mes/día de fecha_cobro.
+    - Debe mirar todos los numero_cobro existentes del mismo año y tomar MAX + 1.
+
+    Motivo:
+    En conciliación bancaria puede generarse un cobro con fecha de movimiento anterior
+    a la fecha actual. Aun así, el número del cobro debe continuar la secuencia general.
+    """
+    import re
+
+    fecha = _date(fecha_cobro)
+    year = fecha[:4] if fecha else datetime.today().strftime("%Y")
+    prefix = f"COB-{year}-"
+
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT numero_cobro
+            FROM eco_cobros
+            WHERE numero_cobro LIKE ?
+            """,
+            (prefix + "%",),
+        ).fetchall()
+
+    max_number = 0
+    pattern = re.compile(rf"^{re.escape(prefix)}(\d+)$")
+
+    for row in rows:
+        value = row["numero_cobro"] if hasattr(row, "keys") else row[0]
+        match = pattern.match(str(value or "").strip())
+        if not match:
+            continue
+
+        try:
+            max_number = max(max_number, int(match.group(1)))
+        except Exception:
+            continue
+
+    return f"{prefix}{max_number + 1:04d}"
 
 
 def next_numero_factura(fecha_factura):
@@ -510,7 +552,10 @@ def list_hojas_encargo(active_only=True):
 def create_cobro(data):
     fecha_cobro = _date(data.get("fecha_cobro"))
     year = fecha_cobro[:4] if fecha_cobro else datetime.today().strftime("%Y")
-    numero = _text(data.get("numero_cobro")) or next_numero_cobro(fecha_cobro)
+    # La numeración de cobros debe ser única, correlativa y gobernada por backend.
+    # No aceptamos numero_cobro desde formularios para evitar arrastres de UI,
+    # duplicados o reinicios por fecha de movimiento.
+    numero = next_numero_cobro(fecha_cobro)
     tipo_cobro = _text(data.get("tipo_cobro") or "PAGO_EXPEDIENTE")
     facturable = int(data.get("facturable", 0))
     expediente_id = _int_or_none(data.get("expediente_id"))

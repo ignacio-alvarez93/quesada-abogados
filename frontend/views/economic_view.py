@@ -2505,11 +2505,8 @@ def economic_view(page: ft.Page):
 
         def generate_linked_cobro_from_movement(e=None):
             """
-            Prepara la generación de un cobro desde el pendiente del movimiento.
-
-            Objetivo funcional:
-            - Usar el pendiente por vincular del movimiento como importe del nuevo cobro.
-            - Mantener referencia al movimiento para vincularlo después.
+            Inicia flujo:
+            conciliación -> pestaña Cobros -> nuevo cobro precargado -> vuelta a conciliación.
             """
             summary = get_current_movement_reconciliation_summary()
             pending = int(summary.get("pending") or 0)
@@ -2518,29 +2515,58 @@ def economic_view(page: ft.Page):
                 set_message("Este movimiento no tiene importe pendiente para generar un cobro.", is_error=True)
                 return
 
-            state["generated_cobro_from_movement"] = {
+            selected_client_id = selected_autocomplete_id(client_ac)
+            if not selected_client_id:
+                selected_client_id = selected_client_id_box.get("value")
+
+            try:
+                movement_item_snapshot = dict(item)
+            except Exception:
+                movement_item_snapshot = {}
+
+            state["pending_linked_cobro_from_reconciliation"] = {
                 "source": source,
                 "movement_id": movement_id,
+                "movement_item": movement_item_snapshot,
+                "movement_amount_centimos": amount_centimos,
                 "amount_centimos": pending,
+                "amount_eur": pending / 100,
+                "date": movement_date,
+                "concept": movement_concept,
+                "client_id": selected_client_id,
+                "return_section": "movimientos",
+                "auto_reopen_reconciliation": True,
+                "auto_link_after_create": True,
+            }
+
+            state["movement_to_reconcile"] = {
+                "source": source,
+                "id": movement_id,
+                "item": movement_item_snapshot,
+                "amount_centimos": amount_centimos,
                 "date": movement_date,
                 "concept": movement_concept,
             }
 
-            set_message(
-                "Preparado cobro vinculado desde movimiento. "
-                f"Importe sugerido: {_money_centimos(pending)}. "
-                "Abre/usa el alta de cobro y después vincúlalo desde este diálogo."
-            )
-
-            page.snack_bar = ft.SnackBar(
-                ft.Text(f"Cobro vinculado preparado por {_money_centimos(pending)}.")
-            )
-            page.snack_bar.open = True
-
             try:
-                page.update()
+                reconciliation_dialog.open = False
             except Exception:
                 pass
+
+            state["section"] = "cobros"
+            try:
+                refresh()
+            except Exception:
+                pass
+
+            try:
+                open_cobro_dialog()
+            except Exception as exc:
+                set_message(f"No se pudo abrir el alta de cobro: {exc}", is_error=True)
+                try:
+                    page.update()
+                except Exception:
+                    pass
 
 
         def save_link(e=None):
@@ -3376,8 +3402,372 @@ def economic_view(page: ft.Page):
     cobro_recibo = text_input("Ruta recibo/documento", width=620)
     cobro_obs = multiline_input("Observaciones", width=620)
 
+    def _find_cliente_option_by_id_for_cobro(cliente_id):
+        try:
+            cliente_id = int(cliente_id or 0)
+        except Exception:
+            return ""
+
+        if cliente_id <= 0:
+            return ""
+
+        for option in cliente_options:
+            try:
+                if int(_id(option) or 0) == cliente_id:
+                    return option
+            except Exception:
+                continue
+
+        return ""
+
+
+    def _sql_or_display_date_to_display(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return _today_display()
+
+        if "/" in raw:
+            return raw
+
+        try:
+            return _date_to_display(raw)
+        except Exception:
+            return raw
+
+
+    def _money_centimos_to_input_value(centimos):
+        try:
+            return f"{int(centimos or 0) / 100:.2f}"
+        except Exception:
+            return ""
+
+
+    def _find_created_cobro_id(cliente_id, fecha_sql, importe_value, concepto):
+        import sqlite3
+
+        conn = sqlite3.connect("database/quesada.db")
+        conn.row_factory = sqlite3.Row
+
+        try:
+            row = conn.execute(
+                """
+                SELECT id
+                FROM eco_cobros
+                WHERE cliente_id = ?
+                  AND fecha_cobro = ?
+                  AND CAST(importe AS REAL) = CAST(? AS REAL)
+                  AND COALESCE(concepto, '') = COALESCE(?, '')
+                  AND COALESCE(activo, 1) = 1
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (cliente_id, fecha_sql, importe_value, concepto),
+            ).fetchone()
+
+            if row:
+                return int(row["id"] or 0)
+
+            row = conn.execute(
+                """
+                SELECT id
+                FROM eco_cobros
+                WHERE cliente_id = ?
+                  AND COALESCE(activo, 1) = 1
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (cliente_id,),
+            ).fetchone()
+
+            return int(row["id"] or 0) if row else 0
+        finally:
+            conn.close()
+
+
+    def _ensure_reconciliation_applications_table_global():
+        import sqlite3
+
+        conn = sqlite3.connect("database/quesada.db")
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS economic_reconciliation_applications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_type TEXT NOT NULL,
+                    source_movement_id INTEGER NOT NULL,
+                    payment_id INTEGER NOT NULL,
+                    client_id INTEGER,
+                    expedient_id INTEGER,
+                    amount_centimos INTEGER NOT NULL,
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(source_type, source_movement_id, payment_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_era_source
+                ON economic_reconciliation_applications(source_type, source_movement_id)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_era_payment
+                ON economic_reconciliation_applications(payment_id)
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+    def _sync_movement_legacy_summary_from_applications_global(source, movement_id):
+        import sqlite3
+
+        _ensure_reconciliation_applications_table_global()
+
+        source_type = "cashmatic" if source == "cashmatic" else "bank"
+        table = "cashmatic_movements" if source == "cashmatic" else "bank_movements"
+
+        conn = sqlite3.connect("database/quesada.db")
+        conn.row_factory = sqlite3.Row
+
+        try:
+            summary = conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(amount_centimos), 0) AS total,
+                    MIN(payment_id) AS first_payment_id,
+                    MIN(client_id) AS first_client_id,
+                    MIN(expedient_id) AS first_expedient_id
+                FROM economic_reconciliation_applications
+                WHERE source_type = ?
+                  AND source_movement_id = ?
+                """,
+                (source_type, movement_id),
+            ).fetchone()
+
+            total = int(summary["total"] or 0)
+
+            conn.execute(
+                f"""
+                UPDATE {table}
+                SET
+                    linked_payment_id = ?,
+                    linked_client_id = ?,
+                    linked_expedient_id = ?,
+                    linked_amount_centimos = ?,
+                    linked_target_type = CASE WHEN ? > 0 THEN 'payment' ELSE linked_target_type END,
+                    linked_at = CASE WHEN ? > 0 THEN CURRENT_TIMESTAMP ELSE linked_at END
+                WHERE id = ?
+                """,
+                (
+                    summary["first_payment_id"],
+                    summary["first_client_id"],
+                    summary["first_expedient_id"],
+                    total,
+                    total,
+                    total,
+                    movement_id,
+                ),
+            )
+
+            conn.commit()
+        finally:
+            conn.close()
+
+
+    def _auto_link_created_cobro_to_pending_movement(cobro_id, cliente_id):
+        import sqlite3
+
+        ctx = state.get("pending_linked_cobro_from_reconciliation") or {}
+        if not ctx or not ctx.get("auto_link_after_create"):
+            return False
+
+        source = ctx.get("source")
+        movement_id = int(ctx.get("movement_id") or 0)
+        suggested_amount_centimos = int(ctx.get("amount_centimos") or 0)
+
+        if not source or movement_id <= 0 or cobro_id <= 0 or suggested_amount_centimos <= 0:
+            return False
+
+        source_type = "cashmatic" if source == "cashmatic" else "bank"
+
+        _ensure_reconciliation_applications_table_global()
+
+        # ------------------------------------------------------------
+        # El importe a aplicar NO es necesariamente el pendiente completo
+        # del movimiento. Si el usuario edita el cobro y lo crea por menos,
+        # solo debe aplicarse el importe real del cobro creado.
+        # ------------------------------------------------------------
+        import sqlite3
+
+        conn_amount = sqlite3.connect("database/quesada.db")
+        conn_amount.row_factory = sqlite3.Row
+
+        try:
+            cobro_row = conn_amount.execute(
+                """
+                SELECT id, importe
+                FROM eco_cobros
+                WHERE id = ?
+                  AND COALESCE(activo, 1) = 1
+                """,
+                (cobro_id,),
+            ).fetchone()
+
+            if not cobro_row:
+                return False
+
+            cobro_amount_centimos = int(round(float(cobro_row["importe"] or 0) * 100))
+
+            already_applied_to_movement = int(conn_amount.execute(
+                """
+                SELECT COALESCE(SUM(amount_centimos), 0) AS total
+                FROM economic_reconciliation_applications
+                WHERE source_type = ?
+                  AND source_movement_id = ?
+                """,
+                (source_type, movement_id),
+            ).fetchone()["total"] or 0)
+
+            table = "cashmatic_movements" if source == "cashmatic" else "bank_movements"
+            amount_field = "requested_centimos" if source == "cashmatic" else "amount_centimos"
+
+            movement_row = conn_amount.execute(
+                f"""
+                SELECT {amount_field} AS movement_amount_centimos
+                FROM {table}
+                WHERE id = ?
+                """,
+                (movement_id,),
+            ).fetchone()
+
+            movement_amount_centimos = abs(int(
+                (movement_row["movement_amount_centimos"] if movement_row else suggested_amount_centimos) or 0
+            ))
+
+            movement_pending_centimos = max(0, movement_amount_centimos - already_applied_to_movement)
+            amount_centimos = min(cobro_amount_centimos, movement_pending_centimos)
+
+            if amount_centimos <= 0:
+                return False
+        finally:
+            conn_amount.close()
+
+        notes = "\n".join(
+            [
+                "Cobro generado y vinculado automáticamente desde Económico > Movimientos",
+                f"Origen: {source}",
+                f"Movimiento: {movement_id}",
+                f"Fecha movimiento: {ctx.get('date') or ''}",
+                f"Concepto movimiento: {ctx.get('concept') or ''}",
+                f"Importe sugerido inicialmente: {_money_centimos(suggested_amount_centimos)}",
+                f"Importe real del cobro creado: {_money_centimos(cobro_amount_centimos)}",
+                f"Importe aplicado finalmente: {_money_centimos(amount_centimos)}",
+            ]
+        )
+
+        conn = sqlite3.connect("database/quesada.db")
+        try:
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM economic_reconciliation_applications
+                WHERE source_type = ?
+                  AND source_movement_id = ?
+                  AND payment_id = ?
+                """,
+                (source_type, movement_id, cobro_id),
+            ).fetchone()
+
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE economic_reconciliation_applications
+                    SET amount_centimos = ?,
+                        client_id = COALESCE(client_id, ?),
+                        notes = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (amount_centimos, cliente_id, notes, existing[0]),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO economic_reconciliation_applications (
+                        source_type,
+                        source_movement_id,
+                        payment_id,
+                        client_id,
+                        amount_centimos,
+                        notes
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_type,
+                        movement_id,
+                        cobro_id,
+                        cliente_id,
+                        amount_centimos,
+                        notes,
+                    ),
+                )
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        _sync_movement_legacy_summary_from_applications_global(source, movement_id)
+        update_cobro_as_reconciled(cobro_id, source, movement_id)
+
+        try:
+            state.setdefault("movements_cache", {}).pop(source, None)
+        except Exception:
+            state["movements_cache"] = {}
+
+        return True
+
+
+    def _reopen_reconciliation_after_generated_cobro():
+        ctx = state.get("pending_linked_cobro_from_reconciliation") or {}
+        if not ctx or not ctx.get("auto_reopen_reconciliation"):
+            return
+
+        source = ctx.get("source")
+        movement_id = int(ctx.get("movement_id") or 0)
+        item = ctx.get("movement_item") or {}
+
+        if not item:
+            item = {
+                "id": movement_id,
+                "requested_centimos": ctx.get("movement_amount_centimos"),
+                "amount_centimos": ctx.get("movement_amount_centimos"),
+                "start_time": ctx.get("date"),
+                "operation_date": ctx.get("date"),
+                "concept": ctx.get("concept"),
+                "description": ctx.get("concept"),
+                "motivo": ctx.get("concept"),
+            }
+
+        if not source or movement_id <= 0:
+            return
+
+        try:
+            open_movement_reconciliation_action(source, item)
+        except Exception:
+            pass
+
+
     def open_cobro_dialog(e=None):
         refresh_runtime_options()
+
+        linked_ctx = state.get("pending_linked_cobro_from_reconciliation") or {}
+
         cobro_cliente_ac.set_value("", update=False)
         cobro_expediente_dd.value = "Sin expediente"
         cobro_hoja_dd.value = "Sin hoja"
@@ -3390,38 +3780,114 @@ def economic_view(page: ft.Page):
         cobro_concepto.value = ""
         cobro_recibo.value = ""
         cobro_obs.value = ""
+
+        if linked_ctx:
+            # En cobros generados desde conciliación nunca arrastramos numeración.
+            # La numeración debe asignarla economic_service.create_cobro().
+            cobro_numero.value = ""
+
+            cliente_option = _find_cliente_option_by_id_for_cobro(linked_ctx.get("client_id"))
+            if cliente_option:
+                cobro_cliente_ac.set_value(cliente_option, update=False)
+
+            cobro_fecha.value = _sql_or_display_date_to_display(linked_ctx.get("date"))
+            cobro_importe.value = _money_centimos_to_input_value(linked_ctx.get("amount_centimos"))
+            cobro_forma.value = "EFECTIVO"
+
+            # Para permitir crear el cobro sin hoja desde conciliación.
+            cobro_tipo.value = "CONSULTA"
+
+            concept = str(linked_ctx.get("concept") or "").strip()
+            cobro_concepto.value = f"Cobro generado desde movimiento: {concept}"[:400]
+            cobro_obs.value = (
+                "Cobro generado desde conciliación de movimientos.\n"
+                f"Origen: {linked_ctx.get('source')}\n"
+                f"Movimiento: {linked_ctx.get('movement_id')}\n"
+                f"Importe a vincular: {_money_centimos(linked_ctx.get('amount_centimos') or 0)}"
+            )
+
         cobro_dialog.open = True
         page.update()
+
 
     def save_cobro(e=None):
         try:
             cliente_id = _id(cobro_cliente_ac.get_value())
             if not cliente_id:
                 raise ValueError("Selecciona un cliente pagador válido")
+
             # Las consultas previas pueden registrarse sin expediente y sin hoja.
             # Los pagos de expediente sí deben vincularse a una hoja de encargo.
             if cobro_tipo.value != "CONSULTA" and cobro_hoja_dd.value == "Sin hoja":
                 raise ValueError("Selecciona una hoja de encargo para el cobro")
 
-            economic_service.create_cobro({
+            fecha_sql = _date_to_sql(cobro_fecha.value)
+            importe_value = cobro_importe.value
+            concepto_value = cobro_concepto.value
+
+            cobro_payload = {
                 "cliente_id": cliente_id,
                 "expediente_id": None if cobro_expediente_dd.value == "Sin expediente" else _id(cobro_expediente_dd.value),
                 "hoja_encargo_id": None if cobro_hoja_dd.value == "Sin hoja" else _id(cobro_hoja_dd.value),
-                "numero_cobro": cobro_numero.value,
-                "fecha_cobro": _date_to_sql(cobro_fecha.value),
-                "importe": cobro_importe.value,
+                "fecha_cobro": fecha_sql,
+                "importe": importe_value,
                 "forma_pago": cobro_forma.value,
                 "tipo_cobro": cobro_tipo.value,
                 "facturable": 1 if cobro_facturable.value == "Sí" else 0,
-                "concepto": cobro_concepto.value,
+                "concepto": concepto_value,
                 "recibo_ruta": cobro_recibo.value,
                 "observaciones": cobro_obs.value,
-            })
+            }
+
+            # No forzar numeración si el campo está vacío.
+            # Dejamos que economic_service.create_cobro use su secuencia normal.
+            if str(cobro_numero.value or "").strip():
+                cobro_payload["numero_cobro"] = cobro_numero.value
+
+            create_result = economic_service.create_cobro(cobro_payload)
+
+            created_cobro_id = 0
+            if isinstance(create_result, dict):
+                created_cobro_id = int(create_result.get("id") or create_result.get("cobro_id") or 0)
+            elif isinstance(create_result, int):
+                created_cobro_id = int(create_result or 0)
+
+            if created_cobro_id <= 0:
+                created_cobro_id = _find_created_cobro_id(
+                    cliente_id=cliente_id,
+                    fecha_sql=fecha_sql,
+                    importe_value=importe_value,
+                    concepto=concepto_value,
+                )
+
+            linked_from_reconciliation = False
+            if state.get("pending_linked_cobro_from_reconciliation"):
+                linked_from_reconciliation = _auto_link_created_cobro_to_pending_movement(
+                    created_cobro_id,
+                    cliente_id,
+                )
+
             cobro_dialog.open = False
-            show_message(success_alert("Cobro creado"))
+
+            if linked_from_reconciliation:
+                state["section"] = "movimientos"
+                show_message(success_alert("Cobro creado y vinculado al movimiento"))
+
+                try:
+                    refresh()
+                except Exception:
+                    pass
+
+                _reopen_reconciliation_after_generated_cobro()
+                state.pop("pending_linked_cobro_from_reconciliation", None)
+            else:
+                show_message(success_alert("Cobro creado"))
+                refresh()
+
         except Exception as exc:
             show_message(error_alert(str(exc)))
-        refresh()
+            refresh()
+
 
     cobro_dialog = form_dialog(
         "Cobro",
