@@ -1106,8 +1106,9 @@ def economic_view(page: ft.Page):
 
         Estados visibles:
         - MOVIMIENTO INTERNO
-        - CONCILIADO
         - REVISAR
+        - CONCILIADO PARCIAL
+        - CONCILIADO
         """
         movement_status = str(_get_value(item, "movement_status") or "").strip().upper()
         operation = str(_get_value(item, "operation") or "").strip().lower()
@@ -1123,14 +1124,18 @@ def economic_view(page: ft.Page):
         ).strip().upper()
 
         if raw_status in {
-            "RECONCILED",
-            "CONCILIADO",
-            "LINKED",
-            "MANUALLY_LINKED",
             "PARTIAL",
             "PARTIAL_RECONCILED",
             "CONCILIACION_PARCIAL",
             "CONCILIACIÓN_PARCIAL",
+        }:
+            return "CONCILIADO PARCIAL", "#7E22CE"
+
+        if raw_status in {
+            "RECONCILED",
+            "CONCILIADO",
+            "LINKED",
+            "MANUALLY_LINKED",
         }:
             return "CONCILIADO", "#16A34A"
 
@@ -1143,23 +1148,41 @@ def economic_view(page: ft.Page):
             "reconciliation_group_id",
         ]
 
+        movement_amount = (
+            _get_value(item, "requested_centimos")
+            or _get_value(item, "amount_centimos")
+            or _get_value(item, "net_amount_centimos")
+            or _get_value(item, "inserted_centimos")
+            or 0
+        )
+
         linked_amount = (
             _get_value(item, "linked_amount_centimos")
             or _get_value(item, "matched_amount_centimos")
             or _get_value(item, "reconciled_amount_centimos")
+            or 0
         )
+
+        try:
+            movement_abs = abs(int(movement_amount or 0))
+        except Exception:
+            movement_abs = 0
+
+        try:
+            linked_abs = abs(int(linked_amount or 0))
+        except Exception:
+            linked_abs = 0
+
+        if linked_abs > 0:
+            if movement_abs > 0 and linked_abs < movement_abs:
+                return "CONCILIADO PARCIAL", "#7E22CE"
+            return "CONCILIADO", "#16A34A"
 
         if any(_get_value(item, key) for key in linked_markers):
             return "CONCILIADO", "#16A34A"
 
-        try:
-            if int(linked_amount or 0) > 0:
-                return "CONCILIADO", "#16A34A"
-        except Exception:
-            pass
-
-        # Payment no vinculado o payment con revisión: se puede conciliar/revisar.
-        # Morado para recuperar el estilo visual anterior de estados.
+        # Payment Cashmatic no vinculado o payment con revisión: se puede conciliar/revisar.
+        # Bancos sin vínculo: también deben quedar en REVISAR.
         if operation == "payment" or movement_status in {
             "CANDIDATE_PAYMENT_MANUAL_LINK_REQUIRED",
             "PAYMENT_REVIEW_REQUIRED",
@@ -1167,7 +1190,8 @@ def economic_view(page: ft.Page):
         }:
             return "REVISAR", "#7E22CE"
 
-        return "MOVIMIENTO INTERNO", "#6B7280"
+        return "REVISAR", "#7E22CE"
+
 
 
     def movement_reconciliation_badge(item):
@@ -1183,6 +1207,11 @@ def economic_view(page: ft.Page):
                 "bg": "#DCFCE7",
                 "fg": "#166534",
                 "border": "#22C55E",
+            },
+            "CONCILIADO PARCIAL": {
+                "bg": "#F3E8FF",
+                "fg": "#7E22CE",
+                "border": "#A855F7",
             },
             "REVISAR": {
                 "bg": "#F3E8FF",
@@ -2994,32 +3023,29 @@ def economic_view(page: ft.Page):
             concept = (
                 _get_value(m, "concept")
                 or _get_value(m, "description")
+                or _get_value(m, "motivo")
                 or _get_value(m, "reason_raw")
                 or "-"
             )
 
-            date_value = (
+            operation_date = (
                 _get_value(m, "operation_date")
-                or _get_value(m, "value_date")
+                or _get_value(m, "date")
+                or _get_value(m, "fecha")
                 or _get_value(m, "start_time")
-            )
-
-            amount_value = (
-                _get_value(m, "amount_centimos")
-                or _get_value(m, "net_amount_centimos")
-                or _get_value(m, "inserted_centimos")
             )
 
             rows.append([
                 movement_actions_button(source, m),
                 _get_value(m, "id") or "-",
-                _date_time_to_display(date_value),
-                movement_money_text(amount_value),
+                _date_time_to_display(operation_date),
+                movement_money_text(_get_value(m, "amount_centimos")),
                 movement_reconciliation_badge(m),
+                movement_applied_pending_summary(source, m),
                 ft.Text(
                     concept,
                     size=12,
-                    tooltip=str(concept),
+                    tooltip=str(concept or ""),
                     selectable=True,
                     no_wrap=False,
                 ),
@@ -3030,11 +3056,12 @@ def economic_view(page: ft.Page):
             {"label": "ID", "key": "ID", "width": 80},
             {"label": "Fecha", "key": "Fecha", "width": 150},
             {"label": "Importe", "key": "Importe", "width": 130},
-            {"label": "Conciliación", "key": "Conciliación", "width": 170},
-            {"label": "Concepto", "key": "Concepto", "width": 900},
+            {"label": "Estado", "key": "Estado", "width": 190},
+            {"label": "Conciliación", "key": "Conciliación", "width": 190},
+            {"label": "Concepto", "key": "Concepto", "width": 760},
         ]
 
-        table = app_table(headers, rows, height=430) if rows else empty_state(f"No hay movimientos importados de {bank_name}")
+        table = app_table(headers, rows, height=430) if rows else empty_state(f"No hay movimientos {bank_name} importados")
         return ft.Column(
             controls=[
                 movements_pagination(total_items, page_number, page_size),
@@ -3042,6 +3069,7 @@ def economic_view(page: ft.Page):
             ],
             spacing=10,
         )
+
 
 
     def movement_source_color(source: str):
