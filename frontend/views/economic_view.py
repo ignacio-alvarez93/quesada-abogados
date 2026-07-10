@@ -1057,11 +1057,64 @@ def economic_view(page: ft.Page):
             selectable=True,
         )
 
+    def is_cashmatic_candidate_payment(item):
+        """
+        Cashmatic:
+        - payment: conciliable, aunque esté en REVISAR.
+        - movimiento interno: no conciliable.
+        """
+        status = str(_get_value(item, "movement_status") or "").strip().upper()
+        operation = str(_get_value(item, "operation") or "").strip().lower()
+        candidate_payment = str(_get_value(item, "candidate_payment") or "").strip().lower()
+
+        if status in {
+            "INTERNAL_CASHMATIC_MOVEMENT",
+            "IGNORED",
+            "IGNORADO",
+        }:
+            return False
+
+        if operation == "payment":
+            return True
+
+        if status in {
+            "CANDIDATE_PAYMENT_MANUAL_LINK_REQUIRED",
+            "PAYMENT_REVIEW_REQUIRED",
+            "CONCILIADO",
+            "PARCIAL",
+            "CONCILIACION_PARCIAL",
+            "MANUALLY_LINKED",
+        }:
+            return True
+
+        if candidate_payment in {"1", "true", "yes", "sí", "si"}:
+            return True
+
+        return False
+
+
+
+    def is_movement_reconcilable(source, item):
+        if source != "cashmatic":
+            return True
+        return is_cashmatic_candidate_payment(item)
+
+
     def movement_reconciliation_status(item):
         """
-        Estado visual preparado para conciliación manual.
-        No crea vínculos ni conciliaciones automáticas.
+        Estado visual simplificado para movimientos importados.
+
+        Estados visibles:
+        - MOVIMIENTO INTERNO
+        - CONCILIADO
+        - REVISAR
         """
+        movement_status = str(_get_value(item, "movement_status") or "").strip().upper()
+        operation = str(_get_value(item, "operation") or "").strip().lower()
+
+        if movement_status == "INTERNAL_CASHMATIC_MOVEMENT":
+            return "MOVIMIENTO INTERNO", "#6B7280"
+
         raw_status = str(
             _get_value(item, "reconciliation_status")
             or _get_value(item, "conciliation_status")
@@ -1069,11 +1122,17 @@ def economic_view(page: ft.Page):
             or ""
         ).strip().upper()
 
-        if raw_status in {"PARTIAL", "PARTIAL_RECONCILED", "CONCILIACION_PARCIAL", "CONCILIACIÓN_PARCIAL"}:
-            return "Conciliación parcial", "#F59E0B"
-
-        if raw_status in {"RECONCILED", "CONCILIADO", "LINKED", "MANUALLY_LINKED"}:
-            return "Conciliado", "#16A34A"
+        if raw_status in {
+            "RECONCILED",
+            "CONCILIADO",
+            "LINKED",
+            "MANUALLY_LINKED",
+            "PARTIAL",
+            "PARTIAL_RECONCILED",
+            "CONCILIACION_PARCIAL",
+            "CONCILIACIÓN_PARCIAL",
+        }:
+            return "CONCILIADO", "#16A34A"
 
         linked_markers = [
             "linked_client_id",
@@ -1084,58 +1143,94 @@ def economic_view(page: ft.Page):
             "reconciliation_group_id",
         ]
 
-        partial_markers = [
-            "partial_reconciliation_id",
-            "partial_link_id",
-            "matched_amount_centimos",
-            "reconciled_amount_centimos",
-        ]
-
         linked_amount = (
             _get_value(item, "linked_amount_centimos")
             or _get_value(item, "matched_amount_centimos")
             or _get_value(item, "reconciled_amount_centimos")
-            or 0
         )
 
-        # Para Cashmatic, el importe económico real del movimiento es requested_centimos.
-        # Para bancos, amount_centimos.
-        amount = (
-            _get_value(item, "requested_centimos")
-            or _get_value(item, "amount_centimos")
-            or _get_value(item, "net_amount_centimos")
-            or _get_value(item, "inserted_centimos")
-            or 0
-        )
+        if any(_get_value(item, key) for key in linked_markers):
+            return "CONCILIADO", "#16A34A"
 
         try:
-            linked_abs = abs(int(linked_amount or 0))
-            amount_abs = abs(int(amount or 0))
-
-            if linked_abs > 0 and amount_abs > 0 and linked_abs < amount_abs:
-                return "Conciliación parcial", "#F59E0B"
+            if int(linked_amount or 0) > 0:
+                return "CONCILIADO", "#16A34A"
         except Exception:
             pass
 
-        if any(_get_value(item, key) not in (None, "", 0) for key in partial_markers):
-            return "Conciliación parcial", "#F59E0B"
+        # Payment no vinculado o payment con revisión: se puede conciliar/revisar.
+        # Morado para recuperar el estilo visual anterior de estados.
+        if operation == "payment" or movement_status in {
+            "CANDIDATE_PAYMENT_MANUAL_LINK_REQUIRED",
+            "PAYMENT_REVIEW_REQUIRED",
+            "QUARANTINE",
+        }:
+            return "REVISAR", "#7E22CE"
 
-        if any(_get_value(item, key) not in (None, "", 0) for key in linked_markers):
-            return "Conciliado", "#16A34A"
-
-        return "No conciliado", "#64748B"
+        return "MOVIMIENTO INTERNO", "#6B7280"
 
 
     def movement_reconciliation_badge(item):
         label, color = movement_reconciliation_status(item)
 
-        movement_amount = (
-            _get_value(item, "requested_centimos")
-            or _get_value(item, "amount_centimos")
-            or _get_value(item, "net_amount_centimos")
-            or _get_value(item, "inserted_centimos")
-            or 0
+        palette = {
+            "MOVIMIENTO INTERNO": {
+                "bg": "#F3F4F6",
+                "fg": "#374151",
+                "border": "#9CA3AF",
+            },
+            "CONCILIADO": {
+                "bg": "#DCFCE7",
+                "fg": "#166534",
+                "border": "#22C55E",
+            },
+            "REVISAR": {
+                "bg": "#F3E8FF",
+                "fg": "#7E22CE",
+                "border": "#A855F7",
+            },
+        }
+
+        cfg = palette.get(label, {
+            "bg": "#EEF2FF",
+            "fg": color or "#3730A3",
+            "border": color or "#818CF8",
+        })
+
+        return ft.Container(
+            content=ft.Text(
+                label,
+                size=11,
+                weight=ft.FontWeight.BOLD,
+                color=cfg["fg"],
+            ),
+            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+            border_radius=999,
+            bgcolor=cfg["bg"],
+            border=ft.border.all(1.4, cfg["border"]),
         )
+
+
+
+    def movement_applied_pending_summary(source, item):
+        """
+        Columna 'Conciliación' de movimientos importados.
+
+        No es un estado.
+        Debe mostrar resumen económico:
+        - Pendiente
+        - Aplicado
+        - Completo
+
+        Y en tooltip:
+        - Movimiento
+        - Aplicado
+        - Pendiente
+        """
+        if source == "cashmatic" and not is_movement_reconcilable(source, item):
+            return ft.Text("-", size=12, color=Q_MUTED)
+
+        movement_amount = movement_amount_centimos_for_reconciliation(source, item)
 
         linked_amount = (
             _get_value(item, "linked_amount_centimos")
@@ -1156,74 +1251,49 @@ def economic_view(page: ft.Page):
 
         pending_abs = max(movement_abs - linked_abs, 0)
 
-        tooltip = label
-        if label == "Conciliación parcial":
-            tooltip = (
-                "Conciliación parcial\n"
-                f"Movimiento: {_money_centimos(movement_amount)}\n"
-                f"Conciliado: {_money_centimos(linked_amount)}\n"
-                f"Pendiente: {_money_centimos(pending_abs)}"
-            )
+        if movement_abs <= 0:
+            label = "-"
+            fg = Q_MUTED
+            bg = "#F9FAFB"
+            border = "#E5E7EB"
+        elif linked_abs <= 0:
+            label = f"Pendiente: {_money_centimos(pending_abs)}"
+            fg = "#7E22CE"
+            bg = "#F3E8FF"
+            border = "#A855F7"
+        elif pending_abs > 0:
+            label = f"Aplicado: {_money_centimos(linked_abs)}"
+            fg = "#92400E"
+            bg = "#FEF3C7"
+            border = "#F59E0B"
+        else:
+            label = "Completo"
+            fg = "#166534"
+            bg = "#DCFCE7"
+            border = "#22C55E"
+
+        tooltip = (
+            "Conciliación del movimiento\n"
+            f"Movimiento: {_money_centimos(movement_abs)}\n"
+            f"Aplicado: {_money_centimos(linked_abs)}\n"
+            f"Pendiente: {_money_centimos(pending_abs)}"
+        )
 
         return ft.Container(
-            content=ft.Text(label, size=11, weight=ft.FontWeight.BOLD, color=color),
+            content=ft.Text(
+                label,
+                size=11,
+                weight=ft.FontWeight.BOLD,
+                color=fg,
+                no_wrap=True,
+            ),
             padding=ft.padding.symmetric(horizontal=10, vertical=5),
             border_radius=999,
-            bgcolor="#FFFFFF",
-            border=ft.border.all(1, color),
+            bgcolor=bg,
+            border=ft.border.all(1.2, border),
             tooltip=tooltip,
         )
 
-
-    def movement_applied_pending_summary(source, item):
-        """
-        Resumen visual de conciliación de un movimiento importado.
-
-        Diferencia entre:
-        - importe del movimiento;
-        - importe aplicado a cobro;
-        - sobrante no aplicado.
-        """
-        movement_amount = abs(int(movement_amount_centimos_for_reconciliation(source, item) or 0))
-        applied_amount = abs(int(_get_value(item, "linked_amount_centimos") or 0))
-        pending_amount = max(0, movement_amount - applied_amount)
-
-        if applied_amount <= 0:
-            return {
-                "label": "Pendiente",
-                "detail": f"Movimiento: {_money_centimos(movement_amount)}",
-                "movement_amount": movement_amount,
-                "applied_amount": 0,
-                "pending_amount": movement_amount,
-                "is_partial": False,
-            }
-
-        if pending_amount > 0:
-            return {
-                "label": "Conciliación parcial",
-                "detail": (
-                    f"Movimiento: {_money_centimos(movement_amount)}\n"
-                    f"Aplicado: {_money_centimos(applied_amount)}\n"
-                    f"Sobrante pendiente: {_money_centimos(pending_amount)}"
-                ),
-                "movement_amount": movement_amount,
-                "applied_amount": applied_amount,
-                "pending_amount": pending_amount,
-                "is_partial": True,
-            }
-
-        return {
-            "label": "Conciliado",
-            "detail": (
-                f"Movimiento: {_money_centimos(movement_amount)}\n"
-                f"Aplicado: {_money_centimos(applied_amount)}\n"
-                "Sobrante pendiente: 0,00 €"
-            ),
-            "movement_amount": movement_amount,
-            "applied_amount": applied_amount,
-            "pending_amount": 0,
-            "is_partial": False,
-        }
 
 
     def movement_amount_centimos_for_reconciliation(source, item):
@@ -1681,6 +1751,17 @@ def economic_view(page: ft.Page):
     )
 
     def open_movement_reconciliation_action(source, item):
+        if not is_movement_reconcilable(source, item):
+            page.snack_bar = ft.SnackBar(
+                ft.Text(
+                    "Cashmatic: solo los movimientos payment candidatos son conciliables. "
+                    "Este movimiento es interno, revisión o cuarentena."
+                )
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
         source = (source or "").lower().strip()
         movement_id = int(_get_value(item, "id") or 0)
         amount_centimos = movement_amount_centimos_for_reconciliation(source, item)
@@ -2828,6 +2909,9 @@ def economic_view(page: ft.Page):
 
 
     def movement_actions_button(source, item):
+        if not is_movement_reconcilable(source, item):
+            return ft.Container(width=1, height=1)
+
         return ft.PopupMenuButton(
             icon=ft.Icons.MORE_VERT,
             tooltip="Acciones",
@@ -2861,8 +2945,8 @@ def economic_view(page: ft.Page):
                 movement_money_text(_get_value(m, "requested_centimos")),
                 movement_money_text(_get_value(m, "inserted_centimos")),
                 _get_value(m, "operation") or "-",
-                economic_badge(_get_value(m, "movement_status")),
                 movement_reconciliation_badge(m),
+                movement_applied_pending_summary("cashmatic", m),
                 ft.Text(
                     reason,
                     size=12,
