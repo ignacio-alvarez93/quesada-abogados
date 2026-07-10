@@ -1550,12 +1550,25 @@ def economic_view(page: ft.Page):
             applied_amount_centimos = min(int(amount_centimos or 0), int(pending_centimos or 0))
             remaining_movement_centimos = int(amount_centimos or 0) - int(applied_amount_centimos or 0)
 
-            notes = (
-                "Conciliación manual desde Económico > Movimientos\\n"
-                f"Origen: {source}\\n"
-                f"Movimiento: {movement_id}\\n"
-                f"Fecha movimiento: {movement_date}\\n"
-                f"Concepto: {movement_concept}"
+            application_type = "TOTAL"
+            if remaining_movement_centimos > 0:
+                application_type = "PARCIAL_SOBRANTE"
+            elif applied_amount_centimos < amount_centimos:
+                application_type = "PARCIAL"
+
+            notes = "\n".join(
+                [
+                    "Conciliación manual desde Económico > Movimientos",
+                    f"Origen: {source}",
+                    f"Movimiento: {movement_id}",
+                    f"Fecha movimiento: {movement_date}",
+                    f"Concepto: {movement_concept}",
+                    f"Importe movimiento: {amount_centimos / 100:.2f} EUR",
+                    f"Pendiente previo del cobro: {pending_centimos / 100:.2f} EUR",
+                    f"Importe aplicado al cobro: {applied_amount_centimos / 100:.2f} EUR",
+                    f"Sobrante no aplicado del movimiento: {remaining_movement_centimos / 100:.2f} EUR",
+                    f"Tipo aplicación: {application_type}",
+                ]
             )
 
             try:
