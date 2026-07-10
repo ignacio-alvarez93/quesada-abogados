@@ -137,6 +137,108 @@ def _money(value):
         return "0.00 €"
 
 
+def reconciliation_badge(status):
+    raw = str(status or "").strip()
+    key = raw.upper().replace(" ", "_")
+
+    palette = {
+        "CONCILIADO": {
+            "label": "✓ CONCILIADO",
+            "bg": "#DCFCE7",
+            "fg": "#166534",
+            "border": "#22C55E",
+        },
+        "PENDIENTE": {
+            "label": "● PENDIENTE",
+            "bg": "#FEF3C7",
+            "fg": "#92400E",
+            "border": "#F59E0B",
+        },
+        "PARCIAL": {
+            "label": "◐ PARCIAL",
+            "bg": "#DBEAFE",
+            "fg": "#1D4ED8",
+            "border": "#3B82F6",
+        },
+        "CONCILIACION_PARCIAL": {
+            "label": "◐ PARCIAL",
+            "bg": "#DBEAFE",
+            "fg": "#1D4ED8",
+            "border": "#3B82F6",
+        },
+        "SOBRANTE_REVISION": {
+            "label": "⚠ SOBRANTE",
+            "bg": "#FFE4E6",
+            "fg": "#BE123C",
+            "border": "#FB7185",
+        },
+        "REVIEW_REQUIRED": {
+            "label": "⚠ REVISAR",
+            "bg": "#FFE4E6",
+            "fg": "#BE123C",
+            "border": "#FB7185",
+        },
+        "PAYMENT_REVIEW_REQUIRED": {
+            "label": "⚠ REVISAR",
+            "bg": "#FFE4E6",
+            "fg": "#BE123C",
+            "border": "#FB7185",
+        },
+        "MANUALLY_LINKED": {
+            "label": "🔗 MANUAL",
+            "bg": "#F3E8FF",
+            "fg": "#7E22CE",
+            "border": "#A855F7",
+        },
+        "IGNORADO": {
+            "label": "IGNORADO",
+            "bg": "#F3F4F6",
+            "fg": "#374151",
+            "border": "#9CA3AF",
+        },
+        "IGNORED": {
+            "label": "IGNORADO",
+            "bg": "#F3F4F6",
+            "fg": "#374151",
+            "border": "#9CA3AF",
+        },
+        "ERROR": {
+            "label": "✕ ERROR",
+            "bg": "#FEE2E2",
+            "fg": "#991B1B",
+            "border": "#EF4444",
+        },
+        "QUARANTINE": {
+            "label": "⛔ CUARENTENA",
+            "bg": "#FEE2E2",
+            "fg": "#991B1B",
+            "border": "#EF4444",
+        },
+    }
+
+    cfg = palette.get(key)
+    if not cfg:
+        cfg = {
+            "label": raw or "-",
+            "bg": "#EEF2FF",
+            "fg": "#3730A3",
+            "border": "#818CF8",
+        }
+
+    return ft.Container(
+        content=ft.Text(
+            cfg["label"],
+            size=11,
+            weight=ft.FontWeight.BOLD,
+            color=cfg["fg"],
+        ),
+        padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        border_radius=999,
+        bgcolor=cfg["bg"],
+        border=ft.border.all(1.4, cfg["border"]),
+    )
+
+
 def economic_view(page: ft.Page):
     economic_service.initialize_economic_schema()
 
@@ -3121,7 +3223,7 @@ def economic_view(page: ft.Page):
                     h.get("procedimiento") or "-",
                     _money(h.get("importe_bruto")),
                     _money(h.get("importe_neto")),
-                    economic_badge(h.get("estado")),
+                    reconciliation_badge(h.get("estado")),
                 ])
             return app_table(
                 ["Nº hoja", "Fecha", "Cliente", "Expediente", "Procedimiento", "Bruto", "Neto", "Estado"],
@@ -3143,7 +3245,7 @@ def economic_view(page: ft.Page):
                     c.get("forma_pago") or "-",
                     "Sí" if c.get("facturable") else "No",
                     c.get("numero_factura") or "-",
-                    economic_badge(c.get("estado_conciliacion")),
+                    reconciliation_badge(c.get("estado_conciliacion")),
                     secondary_button("Editar", lambda e, cobro=dict(c): open_edit_cobro_dialog(cobro)),
                 ])
             return app_table(
