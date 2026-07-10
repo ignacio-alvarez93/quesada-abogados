@@ -2169,6 +2169,46 @@ def economic_view(page: ft.Page):
             finally:
                 conn.close()
 
+        def generate_linked_cobro_from_movement(e=None):
+            """
+            Prepara la generación de un cobro desde el pendiente del movimiento.
+
+            Objetivo funcional:
+            - Usar el pendiente por vincular del movimiento como importe del nuevo cobro.
+            - Mantener referencia al movimiento para vincularlo después.
+            """
+            summary = get_current_movement_reconciliation_summary()
+            pending = int(summary.get("pending") or 0)
+
+            if pending <= 0:
+                set_message("Este movimiento no tiene importe pendiente para generar un cobro.", is_error=True)
+                return
+
+            state["generated_cobro_from_movement"] = {
+                "source": source,
+                "movement_id": movement_id,
+                "amount_centimos": pending,
+                "date": movement_date,
+                "concept": movement_concept,
+            }
+
+            set_message(
+                "Preparado cobro vinculado desde movimiento. "
+                f"Importe sugerido: {_money_centimos(pending)}. "
+                "Abre/usa el alta de cobro y después vincúlalo desde este diálogo."
+            )
+
+            page.snack_bar = ft.SnackBar(
+                ft.Text(f"Cobro vinculado preparado por {_money_centimos(pending)}.")
+            )
+            page.snack_bar.open = True
+
+            try:
+                page.update()
+            except Exception:
+                pass
+
+
         def save_link(e=None):
             client_id = selected_client_id_box.get("value") or selected_autocomplete_id(client_ac)
             cobro_id = option_id_from_label(cobro_dropdown.value) or cobro_dropdown.value
@@ -2242,11 +2282,22 @@ def economic_view(page: ft.Page):
                 update_cobro_as_reconciled(cobro_id, source, movement_id)
 
                 state.setdefault("movements_cache", {}).pop(source, None)
-                reconciliation_dialog.open = False
-                page.snack_bar = ft.SnackBar(ft.Text("Movimiento conciliado con cobro existente."))
+
+                # Mantener el diálogo abierto para poder aplicar el sobrante
+                # del mismo movimiento contra otros cobros.
+                cobro_dropdown.value = None
+                render_movement_summary_card()
+
+                try:
+                    cobro_dropdown.update()
+                except Exception:
+                    pass
+
+                set_message("Cobro vinculado. Puedes seleccionar otro cobro si queda importe pendiente en el movimiento.")
+
+                page.snack_bar = ft.SnackBar(ft.Text("Cobro vinculado al movimiento."))
                 page.snack_bar.open = True
                 page.update()
-                refresh()
             except Exception as exc:
                 set_message(f"No se pudo conciliar: {exc}", is_error=True)
 
@@ -2261,22 +2312,6 @@ def economic_view(page: ft.Page):
                 content=ft.Column(
                     controls=[
                         movement_summary_box,
-                        ft.Container(
-                            content=ft.Column(
-                                controls=[
-                                    ft.Text("Movimiento seleccionado", size=13, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                    ft.Text(f"Origen: {source}", size=12, color=Q_MUTED),
-                                    ft.Text(f"Fecha: {movement_date or '-'}", size=12, color=Q_MUTED),
-                                    movement_money_text(amount_centimos),
-                                    ft.Text(str(movement_concept or "-"), size=12, color=Q_PRIMARY_DARK, selectable=True),
-                                ],
-                                spacing=4,
-                            ),
-                            padding=12,
-                            border_radius=12,
-                            bgcolor="#F8FAFC",
-                            border=ft.border.all(1, Q_BORDER),
-                        ),
                         app_autocomplete_control(client_ac),
                         ft.Row(
                             controls=[
@@ -2293,6 +2328,7 @@ def economic_view(page: ft.Page):
             ),
             actions=[
                 ft.TextButton("Cancelar", on_click=close_dialog),
+                ft.OutlinedButton("Generar cobro vinculado", on_click=generate_linked_cobro_from_movement),
                 ft.ElevatedButton("Vincular cobro", on_click=save_link),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
