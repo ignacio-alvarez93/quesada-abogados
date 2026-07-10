@@ -1283,19 +1283,25 @@ def economic_view(page: ft.Page):
 
     def update_cobro_as_reconciled(cobro_id, source=None, movement_id=None):
         """
-        Recalcula el estado de conciliación del cobro según el total vinculado.
+        Recalcula estado_conciliacion del cobro.
 
-        Modelo actual:
-        - eco_cobros.importe está en euros.
-        - bank_movements / cashmatic_movements guardan importes en céntimos.
-        - Un cobro puede tener uno o varios movimientos vinculados.
+        Fuente principal actual:
+        - economic_reconciliation_applications
+
+        Compatibilidad:
+        - bank_movements.linked_payment_id
+        - cashmatic_movements.linked_payment_id
+
+        Importante:
+        Desde que un movimiento puede aplicarse a varios cobros, linked_payment_id
+        ya no puede ser la fuente principal, porque solo representa un resumen legacy.
         """
         import sqlite3
 
         try:
             cobro_id = int(cobro_id or 0)
         except Exception:
-            cobro_id = 0
+            return
 
         if cobro_id <= 0:
             return
@@ -1304,9 +1310,27 @@ def economic_view(page: ft.Page):
         conn.row_factory = sqlite3.Row
 
         try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS economic_reconciliation_applications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_type TEXT NOT NULL,
+                    source_movement_id INTEGER NOT NULL,
+                    payment_id INTEGER NOT NULL,
+                    client_id INTEGER,
+                    expedient_id INTEGER,
+                    amount_centimos INTEGER NOT NULL,
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(source_type, source_movement_id, payment_id)
+                )
+                """
+            )
+
             cobro = conn.execute(
                 """
-                SELECT id, importe, estado_conciliacion
+                SELECT id, importe
                 FROM eco_cobros
                 WHERE id = ?
                   AND COALESCE(activo, 1) = 1
@@ -1319,40 +1343,69 @@ def economic_view(page: ft.Page):
 
             cobro_amount_centimos = int(round(float(cobro["importe"] or 0) * 100))
 
-            bank_linked_centimos = int(conn.execute(
+            applications_total_centimos = int(conn.execute(
                 """
-                SELECT COALESCE(SUM(
-                    COALESCE(NULLIF(linked_amount_centimos, 0), amount_centimos, 0)
-                ), 0) AS total
-                FROM bank_movements
-                WHERE linked_payment_id = ?
-                  AND ignored_at IS NULL
+                SELECT COALESCE(SUM(amount_centimos), 0) AS total
+                FROM economic_reconciliation_applications
+                WHERE payment_id = ?
                 """,
                 (cobro_id,),
             ).fetchone()["total"] or 0)
 
-            cashmatic_linked_centimos = int(conn.execute(
+            # Compatibilidad legacy: solo sumar vínculos antiguos que NO estén ya
+            # migrados a applications, para evitar doble cómputo.
+            bank_legacy_centimos = int(conn.execute(
                 """
                 SELECT COALESCE(SUM(
-                    COALESCE(NULLIF(linked_amount_centimos, 0), requested_centimos, net_amount_centimos, 0)
+                    COALESCE(NULLIF(b.linked_amount_centimos, 0), b.amount_centimos, 0)
                 ), 0) AS total
-                FROM cashmatic_movements
-                WHERE linked_payment_id = ?
-                  AND ignored_at IS NULL
+                FROM bank_movements b
+                WHERE b.linked_payment_id = ?
+                  AND b.ignored_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM economic_reconciliation_applications a
+                      WHERE a.source_type = 'bank'
+                        AND a.source_movement_id = b.id
+                        AND a.payment_id = b.linked_payment_id
+                  )
                 """,
                 (cobro_id,),
             ).fetchone()["total"] or 0)
 
-            linked_total_centimos = bank_linked_centimos + cashmatic_linked_centimos
+            cashmatic_legacy_centimos = int(conn.execute(
+                """
+                SELECT COALESCE(SUM(
+                    COALESCE(NULLIF(c.linked_amount_centimos, 0), c.requested_centimos, c.net_amount_centimos, 0)
+                ), 0) AS total
+                FROM cashmatic_movements c
+                WHERE c.linked_payment_id = ?
+                  AND c.ignored_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM economic_reconciliation_applications a
+                      WHERE a.source_type = 'cashmatic'
+                        AND a.source_movement_id = c.id
+                        AND a.payment_id = c.linked_payment_id
+                  )
+                """,
+                (cobro_id,),
+            ).fetchone()["total"] or 0)
+
+            linked_total_centimos = (
+                applications_total_centimos
+                + bank_legacy_centimos
+                + cashmatic_legacy_centimos
+            )
 
             if linked_total_centimos <= 0:
-                new_status = "PENDIENTE"
+                status = "PENDIENTE"
             elif linked_total_centimos < cobro_amount_centimos:
-                new_status = "PARCIAL"
+                status = "PARCIAL"
             elif linked_total_centimos == cobro_amount_centimos:
-                new_status = "CONCILIADO"
+                status = "CONCILIADO"
             else:
-                new_status = "SOBRANTE_REVISION"
+                status = "SOBRANTE_REVISION"
 
             conn.execute(
                 """
@@ -1361,11 +1414,13 @@ def economic_view(page: ft.Page):
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (new_status, cobro_id),
+                (status, cobro_id),
             )
+
             conn.commit()
         finally:
             conn.close()
+
 
 
     def show_reconciliation_dialog(dialog):
@@ -2281,19 +2336,46 @@ def economic_view(page: ft.Page):
 
                 update_cobro_as_reconciled(cobro_id, source, movement_id)
 
+                # Limpiar caché del origen para que la tabla lea de BD el nuevo estado.
                 state.setdefault("movements_cache", {}).pop(source, None)
 
                 # Mantener el diálogo abierto para poder aplicar el sobrante
                 # del mismo movimiento contra otros cobros.
                 cobro_dropdown.value = None
+
+                # Refrescar lista de cobros por si el cobro seleccionado ya quedó conciliado
+                # y debe desaparecer de pendientes.
+                try:
+                    refresh_cobros()
+                except Exception:
+                    pass
+
+                # Refrescar tabla de movimientos sin cerrar el diálogo.
+                try:
+                    refresh_movements_results()
+                except Exception:
+                    try:
+                        refresh()
+                    except Exception:
+                        pass
+
+                # Refrescar el card del diálogo con el estado real posterior al vínculo.
                 render_movement_summary_card()
+                summary_after_link = get_current_movement_reconciliation_summary()
+                pending_after_link = int(summary_after_link.get("pending") or 0)
 
                 try:
                     cobro_dropdown.update()
                 except Exception:
                     pass
 
-                set_message("Cobro vinculado. Puedes seleccionar otro cobro si queda importe pendiente en el movimiento.")
+                if pending_after_link <= 0:
+                    set_message("Movimiento totalmente conciliado. No queda importe pendiente por vincular.")
+                else:
+                    set_message(
+                        "Cobro vinculado. "
+                        f"Pendiente del movimiento por vincular: {_money_centimos(pending_after_link)}."
+                    )
 
                 page.snack_bar = ft.SnackBar(ft.Text("Cobro vinculado al movimiento."))
                 page.snack_bar.open = True
