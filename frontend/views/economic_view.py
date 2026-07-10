@@ -1244,25 +1244,138 @@ def economic_view(page: ft.Page):
 
 
     def get_client_cobros_for_reconciliation(client_id):
-        client_id = int(client_id or 0)
+        """
+        Devuelve solo cobros del cliente con pendiente real.
+
+        No basta con estado_conciliacion = PENDIENTE, porque el estado puede estar
+        desactualizado o venir de legacy. Se calcula pendiente económico real:
+        importe cobro - applications - vínculos legacy no migrados.
+        """
+        import sqlite3
+
+        try:
+            client_id = int(client_id or 0)
+        except Exception:
+            return []
+
         if client_id <= 0:
             return []
 
-        result = []
-        for cobro in economic_service.list_cobros():
-            try:
-                if int(cobro.get("cliente_id") or 0) != client_id:
+        conn = sqlite3.connect("database/quesada.db")
+        conn.row_factory = sqlite3.Row
+
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS economic_reconciliation_applications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_type TEXT NOT NULL,
+                    source_movement_id INTEGER NOT NULL,
+                    payment_id INTEGER NOT NULL,
+                    client_id INTEGER,
+                    expedient_id INTEGER,
+                    amount_centimos INTEGER NOT NULL,
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(source_type, source_movement_id, payment_id)
+                )
+                """
+            )
+
+            rows = conn.execute(
+                """
+                SELECT
+                    c.*,
+                    cl.nombre,
+                    cl.primer_apellido,
+                    cl.segundo_apellido,
+                    e.numero_expediente,
+                    h.numero_hoja
+                FROM eco_cobros c
+                LEFT JOIN clientes cl ON cl.id = c.cliente_id
+                LEFT JOIN expedientes e ON e.id = c.expediente_id
+                LEFT JOIN eco_hojas_encargo h ON h.id = c.hoja_encargo_id
+                WHERE c.cliente_id = ?
+                  AND COALESCE(c.activo, 1) = 1
+                ORDER BY c.fecha_cobro DESC, c.id DESC
+                """,
+                (client_id,),
+            ).fetchall()
+
+            result = []
+
+            for row in rows:
+                cobro = dict(row)
+                cobro_id = int(cobro.get("id") or 0)
+                total = int(round(float(cobro.get("importe") or 0) * 100))
+
+                if cobro_id <= 0 or total <= 0:
                     continue
-            except Exception:
-                continue
 
-            estado = str(cobro.get("estado_conciliacion") or "").upper().strip()
-            if estado in {"CONCILIADO", "MANUALLY_LINKED"}:
-                continue
+                applications = int(conn.execute(
+                    """
+                    SELECT COALESCE(SUM(amount_centimos), 0) AS total
+                    FROM economic_reconciliation_applications
+                    WHERE payment_id = ?
+                    """,
+                    (cobro_id,),
+                ).fetchone()["total"] or 0)
 
-            result.append(cobro)
+                bank_legacy = int(conn.execute(
+                    """
+                    SELECT COALESCE(SUM(
+                        COALESCE(NULLIF(b.linked_amount_centimos, 0), b.amount_centimos, 0)
+                    ), 0) AS total
+                    FROM bank_movements b
+                    WHERE b.linked_payment_id = ?
+                      AND b.ignored_at IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM economic_reconciliation_applications a
+                          WHERE a.source_type = 'bank'
+                            AND a.source_movement_id = b.id
+                            AND a.payment_id = b.linked_payment_id
+                      )
+                    """,
+                    (cobro_id,),
+                ).fetchone()["total"] or 0)
 
-        return result
+                cashmatic_legacy = int(conn.execute(
+                    """
+                    SELECT COALESCE(SUM(
+                        COALESCE(NULLIF(cm.linked_amount_centimos, 0), cm.requested_centimos, cm.net_amount_centimos, 0)
+                    ), 0) AS total
+                    FROM cashmatic_movements cm
+                    WHERE cm.linked_payment_id = ?
+                      AND cm.ignored_at IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM economic_reconciliation_applications a
+                          WHERE a.source_type = 'cashmatic'
+                            AND a.source_movement_id = cm.id
+                            AND a.payment_id = cm.linked_payment_id
+                      )
+                    """,
+                    (cobro_id,),
+                ).fetchone()["total"] or 0)
+
+                linked = applications + bank_legacy + cashmatic_legacy
+                pending = max(0, total - linked)
+
+                if pending <= 0:
+                    continue
+
+                cobro["importe_total_centimos"] = total
+                cobro["importe_vinculado_centimos"] = linked
+                cobro["importe_pendiente_centimos"] = pending
+                result.append(cobro)
+
+            return result
+        finally:
+            conn.close()
+
+
 
 
     def cobro_option_label(cobro):
@@ -1271,14 +1384,24 @@ def economic_view(page: ft.Page):
         fecha = cobro.get("fecha_cobro") or "-"
         importe = cobro.get("importe") or 0
         concepto = cobro.get("concepto") or ""
+
         try:
             importe_txt = f"{float(importe):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
         except Exception:
             importe_txt = f"{importe} €"
 
+        pendiente = cobro.get("importe_pendiente_centimos")
+        vinculado = cobro.get("importe_vinculado_centimos")
+
+        extra = ""
+        if pendiente not in (None, ""):
+            extra = f" · Pendiente: {_money_centimos(pendiente)}"
+            if vinculado not in (None, "", 0):
+                extra += f" · Vinculado: {_money_centimos(vinculado)}"
+
         if concepto:
-            return f"{cobro_id} - {numero} · {fecha} · {importe_txt} · {concepto}"
-        return f"{cobro_id} - {numero} · {fecha} · {importe_txt}"
+            return f"{cobro_id} - {numero} · {fecha} · {importe_txt}{extra} · {concepto}"
+        return f"{cobro_id} - {numero} · {fecha} · {importe_txt}{extra}"
 
 
     def update_cobro_as_reconciled(cobro_id, source=None, movement_id=None):
@@ -1504,7 +1627,163 @@ def economic_view(page: ft.Page):
             page.update()
             return
 
-        client_ac = AppAutocomplete(page, "Cliente", cliente_options, width=520, max_results=12)
+        def get_client_ids_with_pending_cobros_for_reconciliation():
+            """
+            Devuelve clientes que tienen al menos un cobro con pendiente real.
+
+            Usa:
+            - eco_cobros.importe como total del cobro;
+            - economic_reconciliation_applications como fuente principal;
+            - legacy bank/cashmatic linked_payment_id solo si no está migrado a applications.
+            """
+            import sqlite3
+
+            conn = sqlite3.connect("database/quesada.db")
+            conn.row_factory = sqlite3.Row
+
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS economic_reconciliation_applications (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_type TEXT NOT NULL,
+                        source_movement_id INTEGER NOT NULL,
+                        payment_id INTEGER NOT NULL,
+                        client_id INTEGER,
+                        expedient_id INTEGER,
+                        amount_centimos INTEGER NOT NULL,
+                        notes TEXT,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(source_type, source_movement_id, payment_id)
+                    )
+                    """
+                )
+
+                rows = conn.execute(
+                    """
+                    SELECT
+                        c.id AS cobro_id,
+                        c.cliente_id,
+                        c.importe
+                    FROM eco_cobros c
+                    WHERE COALESCE(c.activo, 1) = 1
+                    """
+                ).fetchall()
+
+                client_ids = set()
+
+                for row in rows:
+                    cobro_id = int(row["cobro_id"] or 0)
+                    client_id = int(row["cliente_id"] or 0)
+                    total = int(round(float(row["importe"] or 0) * 100))
+
+                    if cobro_id <= 0 or client_id <= 0 or total <= 0:
+                        continue
+
+                    applications = int(conn.execute(
+                        """
+                        SELECT COALESCE(SUM(amount_centimos), 0) AS total
+                        FROM economic_reconciliation_applications
+                        WHERE payment_id = ?
+                        """,
+                        (cobro_id,),
+                    ).fetchone()["total"] or 0)
+
+                    bank_legacy = int(conn.execute(
+                        """
+                        SELECT COALESCE(SUM(
+                            COALESCE(NULLIF(b.linked_amount_centimos, 0), b.amount_centimos, 0)
+                        ), 0) AS total
+                        FROM bank_movements b
+                        WHERE b.linked_payment_id = ?
+                          AND b.ignored_at IS NULL
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM economic_reconciliation_applications a
+                              WHERE a.source_type = 'bank'
+                                AND a.source_movement_id = b.id
+                                AND a.payment_id = b.linked_payment_id
+                          )
+                        """,
+                        (cobro_id,),
+                    ).fetchone()["total"] or 0)
+
+                    cashmatic_legacy = int(conn.execute(
+                        """
+                        SELECT COALESCE(SUM(
+                            COALESCE(NULLIF(cm.linked_amount_centimos, 0), cm.requested_centimos, cm.net_amount_centimos, 0)
+                        ), 0) AS total
+                        FROM cashmatic_movements cm
+                        WHERE cm.linked_payment_id = ?
+                          AND cm.ignored_at IS NULL
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM economic_reconciliation_applications a
+                              WHERE a.source_type = 'cashmatic'
+                                AND a.source_movement_id = cm.id
+                                AND a.payment_id = cm.linked_payment_id
+                          )
+                        """,
+                        (cobro_id,),
+                    ).fetchone()["total"] or 0)
+
+                    linked = applications + bank_legacy + cashmatic_legacy
+                    pending = total - linked
+
+                    if pending > 0:
+                        client_ids.add(client_id)
+
+                return client_ids
+            finally:
+                conn.close()
+
+
+        def client_option_id_for_reconciliation(option):
+            """
+            Extrae id de cliente desde las opciones usadas por AppAutocomplete.
+            Soporta dicts y labels tipo '12 - Nombre'.
+            """
+            if isinstance(option, dict):
+                for key in ["id", "cliente_id", "value"]:
+                    value = option.get(key)
+                    if value not in (None, ""):
+                        try:
+                            return int(value)
+                        except Exception:
+                            pass
+
+            try:
+                parsed = option_id_from_label(option)
+                if parsed not in (None, ""):
+                    return int(parsed)
+            except Exception:
+                pass
+
+            raw = str(option or "").strip()
+            if " - " in raw:
+                raw = raw.split(" - ", 1)[0].strip()
+
+            try:
+                return int(raw)
+            except Exception:
+                return None
+
+
+        pending_client_ids = get_client_ids_with_pending_cobros_for_reconciliation()
+        reconciliation_cliente_options = [
+            option
+            for option in cliente_options
+            if client_option_id_for_reconciliation(option) in pending_client_ids
+        ]
+
+        client_ac = AppAutocomplete(
+            page,
+            "Cliente con cobros pendientes",
+            reconciliation_cliente_options,
+            width=520,
+            max_results=12,
+        )
         cobro_dropdown = ft.Dropdown(
             label="Cobro existente",
             width=720,
