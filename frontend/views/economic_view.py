@@ -1461,11 +1461,20 @@ def economic_view(page: ft.Page):
         selected_client_id_box = {"value": None}
 
         def set_message(text_value, is_error=False):
+            lines = str(text_value or "").split("\n")
             message_box.content = ft.Container(
-                content=ft.Text(
-                    text_value,
-                    size=12,
-                    color="#B91C1C" if is_error else Q_MUTED,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            line,
+                            size=12,
+                            color="#B91C1C" if is_error else Q_MUTED,
+                            weight=ft.FontWeight.BOLD if idx == 0 else ft.FontWeight.NORMAL,
+                        )
+                        for idx, line in enumerate(lines)
+                    ],
+                    spacing=3,
+                    tight=True,
                 ),
                 padding=ft.padding.symmetric(horizontal=10, vertical=8),
                 border_radius=10,
@@ -1476,6 +1485,107 @@ def economic_view(page: ft.Page):
                 message_box.update()
             except Exception:
                 pass
+
+        def get_cobro_reconciliation_amounts(cobro_id):
+            """
+            Devuelve total, ya aplicado y pendiente del cobro para mostrarlo en UI.
+            """
+            import sqlite3
+
+            try:
+                cobro_id = int(cobro_id or 0)
+            except Exception:
+                return {"total": 0, "linked": 0, "pending": 0}
+
+            if cobro_id <= 0:
+                return {"total": 0, "linked": 0, "pending": 0}
+
+            conn = sqlite3.connect("database/quesada.db")
+            conn.row_factory = sqlite3.Row
+
+            try:
+                cobro = conn.execute(
+                    """
+                    SELECT id, importe
+                    FROM eco_cobros
+                    WHERE id = ?
+                      AND COALESCE(activo, 1) = 1
+                    """,
+                    (cobro_id,),
+                ).fetchone()
+
+                if not cobro:
+                    return {"total": 0, "linked": 0, "pending": 0}
+
+                total = int(round(float(cobro["importe"] or 0) * 100))
+
+                bank = int(conn.execute(
+                    """
+                    SELECT COALESCE(SUM(
+                        COALESCE(NULLIF(linked_amount_centimos, 0), amount_centimos, 0)
+                    ), 0) AS total
+                    FROM bank_movements
+                    WHERE linked_payment_id = ?
+                      AND ignored_at IS NULL
+                    """,
+                    (cobro_id,),
+                ).fetchone()["total"] or 0)
+
+                cashmatic = int(conn.execute(
+                    """
+                    SELECT COALESCE(SUM(
+                        COALESCE(NULLIF(linked_amount_centimos, 0), requested_centimos, net_amount_centimos, 0)
+                    ), 0) AS total
+                    FROM cashmatic_movements
+                    WHERE linked_payment_id = ?
+                      AND ignored_at IS NULL
+                    """,
+                    (cobro_id,),
+                ).fetchone()["total"] or 0)
+
+                linked = bank + cashmatic
+                pending = max(0, total - linked)
+
+                return {"total": total, "linked": linked, "pending": pending}
+            finally:
+                conn.close()
+
+
+        def cobro_option_label_with_pending(cobro):
+            cobro_id = cobro.get("id") if isinstance(cobro, dict) else None
+            return cobro_option_label(cobro)
+
+
+        def refresh_selected_cobro_pending_message(e=None):
+            cobro_id = option_id_from_label(cobro_dropdown.value) or cobro_dropdown.value
+
+            try:
+                cobro_id = int(cobro_id or 0)
+            except Exception:
+                cobro_id = 0
+
+            if cobro_id <= 0:
+                set_message(
+                    f"Movimiento a conciliar: {_money_centimos(amount_centimos)}. "
+                    "Selecciona un cobro para ver cuánto se aplicará."
+                )
+                return
+
+            amounts = get_cobro_reconciliation_amounts(cobro_id)
+            applied_preview = min(int(amount_centimos or 0), int(amounts["pending"] or 0))
+            remaining_preview = max(0, int(amount_centimos or 0) - int(applied_preview or 0))
+
+            set_message(
+                "Resumen de aplicación:\n"
+                f"Movimiento: {_money_centimos(amount_centimos)}\n"
+                f"Cobro total: {_money_centimos(amounts['total'])}\n"
+                f"Ya aplicado al cobro: {_money_centimos(amounts['linked'])}\n"
+                f"Pendiente del cobro: {_money_centimos(amounts['pending'])}\n"
+                f"Se aplicará ahora: {_money_centimos(applied_preview)}\n"
+                f"Sobrante del movimiento no aplicado: {_money_centimos(remaining_preview)}"
+            )
+
+        cobro_dropdown.on_change = refresh_selected_cobro_pending_message
 
         def refresh_cobros(e=None):
             client_id = selected_autocomplete_id(client_ac)
@@ -1501,7 +1611,12 @@ def economic_view(page: ft.Page):
             cobro_dropdown.disabled = False if cobros else True
 
             if cobros:
-                set_message(f"Cobros pendientes encontrados para el cliente: {len(cobros)}")
+                set_message(
+                    "Resumen de conciliación\n"
+                    f"Movimiento a conciliar: {_money_centimos(amount_centimos)}\n"
+                    f"Cobros pendientes encontrados: {len(cobros)}\n"
+                    "Selecciona un cobro para ver total, aplicado, pendiente y sobrante."
+                )
             else:
                 set_message("Este cliente no tiene cobros pendientes para vincular.", is_error=True)
 
