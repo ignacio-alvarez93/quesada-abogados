@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS eco_cobros (
     concepto TEXT,
     tipo_cobro TEXT NOT NULL DEFAULT 'PAGO_EXPEDIENTE',
     facturable INTEGER NOT NULL DEFAULT 0,
+    tipo_fiscal TEXT NOT NULL DEFAULT 'PROVISION',
+    iva_porcentaje REAL NOT NULL DEFAULT 0,
+    irpf_porcentaje REAL NOT NULL DEFAULT 0,
     factura_id INTEGER,
     estado_conciliacion TEXT NOT NULL DEFAULT 'PENDIENTE',
     recibo_ruta TEXT,
@@ -52,6 +55,13 @@ CREATE TABLE IF NOT EXISTS eco_cobros (
     FOREIGN KEY (hoja_encargo_id) REFERENCES eco_hojas_encargo(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS eco_configuracion (
+    clave TEXT PRIMARY KEY,
+    valor TEXT,
+    descripcion TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS eco_facturas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     numero_factura TEXT NOT NULL UNIQUE,
@@ -62,7 +72,15 @@ CREATE TABLE IF NOT EXISTS eco_facturas (
     base_imponible REAL NOT NULL DEFAULT 0,
     iva REAL NOT NULL DEFAULT 0,
     irpf REAL NOT NULL DEFAULT 0,
+    suplidos REAL NOT NULL DEFAULT 0,
     total REAL NOT NULL DEFAULT 0,
+    tipo_fiscal TEXT NOT NULL DEFAULT 'PROVISION',
+    concepto TEXT,
+    tipo_factura TEXT NOT NULL DEFAULT 'NORMAL',
+    factura_rectificada_id INTEGER,
+    metodo_rectificacion TEXT,
+    codigo_causa_rectificacion TEXT,
+    causa_rectificacion TEXT,
     estado TEXT NOT NULL DEFAULT 'BORRADOR',
     exportada_holded INTEGER NOT NULL DEFAULT 0,
     fecha_exportacion TEXT,
@@ -148,5 +166,28 @@ CREATE INDEX IF NOT EXISTS idx_eco_cobros_fecha ON eco_cobros(fecha_cobro);
 CREATE INDEX IF NOT EXISTS idx_eco_cobros_cliente ON eco_cobros(cliente_id);
 CREATE INDEX IF NOT EXISTS idx_eco_cobros_hoja ON eco_cobros(hoja_encargo_id);
 CREATE INDEX IF NOT EXISTS idx_eco_facturas_fecha ON eco_facturas(fecha_factura);
+CREATE INDEX IF NOT EXISTS idx_eco_facturas_tipo ON eco_facturas(tipo_factura);
+CREATE INDEX IF NOT EXISTS idx_eco_facturas_rectificada ON eco_facturas(factura_rectificada_id);
 CREATE INDEX IF NOT EXISTS idx_eco_gastos_fecha ON eco_gastos(fecha_gasto);
 CREATE INDEX IF NOT EXISTS idx_eco_movimientos_origen ON eco_movimientos_importados(origen);
+
+-- ============================================================
+-- Una factura rectificativa inmoviliza su factura original.
+-- ============================================================
+CREATE TRIGGER IF NOT EXISTS
+trg_eco_facturas_mark_original_rectified
+AFTER INSERT ON eco_facturas
+WHEN NEW.factura_rectificada_id IS NOT NULL
+     AND UPPER(
+            COALESCE(NEW.tipo_factura, 'NORMAL')
+         ) = 'RECTIFICATIVA'
+BEGIN
+    UPDATE eco_facturas
+    SET estado = 'RECTIFICADA',
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = NEW.factura_rectificada_id
+      AND UPPER(
+            COALESCE(tipo_factura, 'NORMAL')
+          ) != 'RECTIFICATIVA';
+END;
+

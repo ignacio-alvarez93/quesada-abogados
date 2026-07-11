@@ -1,7 +1,9 @@
+from pathlib import Path
 import flet as ft
 from datetime import datetime
 
 from backend.services import economic_service
+from backend.services import holded_invoice_export_service
 from frontend.components.app_button import primary_button, secondary_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -10,8 +12,11 @@ from frontend.components.app_table import app_table
 from frontend.components.app_empty_state import empty_state
 from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
+from frontend.components.economic_payment_card import economic_payment_card
+from frontend.components.economic_invoice_card import economic_invoice_card
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.listing import compact_pagination_bar
+from frontend.components.listing.counter_chips import counter_chips
 from backend.services.economic_reconciliation import (
     list_bank_movements,
     list_cashmatic_movements,
@@ -247,6 +252,19 @@ def economic_view(page: ft.Page):
         "message": None,
         "reconciliation_selected_group_id": None,
         "movements_source": "cashmatic",
+        "cobros_page": 1,
+        "cobros_page_size": 10,
+        "cobros_search": "",
+        "cobros_status_filter": "all",
+        "cobros_date_from": "",
+        "cobros_date_to": "",
+        "facturas_page": 1,
+        "facturas_page_size": 10,
+        "facturas_search": "",
+        "facturas_status_filter": "all",
+        "facturas_holded_filter": "all",
+        "facturas_date_from": "",
+        "facturas_date_to": "",
     }
 
     content_area = ft.Container(expand=True)
@@ -321,6 +339,453 @@ def economic_view(page: ft.Page):
         content_area.content = build_view()
         page.update()
 
+    def _cobro_search_blob(cobro):
+        cliente = " ".join(
+            part
+            for part in [
+                str(cobro.get("nombre") or "").strip(),
+                str(cobro.get("primer_apellido") or "").strip(),
+                str(cobro.get("segundo_apellido") or "").strip(),
+            ]
+            if part
+        )
+
+        facturacion_label = (
+            "facturado"
+            if cobro.get("numero_factura") or cobro.get("factura_id")
+            else "facturable"
+            if cobro.get("facturable")
+            else "no facturable"
+        )
+
+        values = [
+            cobro.get("id"),
+            cobro.get("numero_cobro"),
+            cobro.get("fecha_cobro"),
+            _date_to_display(cobro.get("fecha_cobro")),
+            cliente,
+            cobro.get("cliente_id"),
+            cobro.get("numero_expediente"),
+            cobro.get("expediente_id"),
+            cobro.get("numero_hoja"),
+            cobro.get("hoja_encargo_id"),
+            cobro.get("importe"),
+            _money(cobro.get("importe")),
+            cobro.get("forma_pago"),
+            cobro.get("tipo_cobro"),
+            cobro.get("tipo_fiscal"),
+            cobro.get("concepto"),
+            cobro.get("numero_factura"),
+            cobro.get("factura_id"),
+            cobro.get("estado_conciliacion"),
+            facturacion_label,
+        ]
+
+        blob = []
+
+        for value in values:
+            blob.append(str(value or ""))
+
+            try:
+                blob.extend(_date_search_tokens(value))
+            except Exception:
+                pass
+
+        return " ".join(blob).lower()
+
+
+    def cobro_matches_search(cobro):
+        query = str(state.get("cobros_search") or "").strip().lower()
+
+        if not query:
+            return True
+
+        # Permite buscar varias palabras sin necesidad de que estén juntas.
+        tokens = [token for token in query.split() if token]
+        blob = _cobro_search_blob(cobro)
+
+        return all(token in blob for token in tokens)
+
+
+    def _normalized_cobro_date(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+
+        normalized = _date_to_sql(raw)
+        if normalized:
+            return normalized
+
+        if len(raw) >= 10 and raw[4:5] == "-" and raw[7:8] == "-":
+            return raw[:10]
+
+        return ""
+
+
+    def _cobro_status_keys(cobro):
+        keys = set()
+
+        reconciliation = str(
+            cobro.get("estado_conciliacion") or "PENDIENTE"
+        ).strip().upper().replace(" ", "_")
+
+        if reconciliation in ("", "PENDIENTE"):
+            keys.add("pending_reconciliation")
+        elif reconciliation in (
+            "PARCIAL",
+            "CONCILIACION_PARCIAL",
+            "CONCILIADO_PARCIAL",
+        ):
+            keys.add("partial_reconciliation")
+        elif reconciliation == "CONCILIADO":
+            keys.add("reconciled")
+        else:
+            keys.add("review")
+
+        if cobro.get("numero_factura") or cobro.get("factura_id"):
+            keys.add("invoiced")
+        else:
+            keys.add("not_invoiced")
+
+        return keys
+
+
+    def cobro_matches_period(cobro):
+        cobro_date = _normalized_cobro_date(cobro.get("fecha_cobro"))
+        date_from = str(state.get("cobros_date_from") or "").strip()
+        date_to = str(state.get("cobros_date_to") or "").strip()
+
+        if date_from and (not cobro_date or cobro_date < date_from):
+            return False
+
+        if date_to and (not cobro_date or cobro_date > date_to):
+            return False
+
+        return True
+
+
+    def cobro_matches_status(cobro):
+        active_status = str(
+            state.get("cobros_status_filter") or "all"
+        ).strip()
+
+        if active_status in ("", "all"):
+            return True
+
+        return active_status in _cobro_status_keys(cobro)
+
+
+    def filtered_cobros(include_status=True):
+        results = [
+            cobro
+            for cobro in economic_service.list_cobros()
+            if cobro_matches_search(cobro)
+            and cobro_matches_period(cobro)
+        ]
+
+        if include_status:
+            results = [
+                cobro
+                for cobro in results
+                if cobro_matches_status(cobro)
+            ]
+
+        return results
+
+
+    def cobros_status_counts():
+        base_cobros = filtered_cobros(include_status=False)
+
+        counts = {
+            "all": len(base_cobros),
+            "invoiced": 0,
+            "not_invoiced": 0,
+            "pending_reconciliation": 0,
+            "partial_reconciliation": 0,
+            "reconciled": 0,
+            "review": 0,
+        }
+
+        for cobro in base_cobros:
+            for key in _cobro_status_keys(cobro):
+                counts[key] = counts.get(key, 0) + 1
+
+        return counts
+
+
+    def build_cobros_status_filters():
+        status_map = {
+            "all": ("Todos", "#F8FAFC", "#475569", "#CBD5E1"),
+            "invoiced": ("Facturados", "#ECFDF3", "#027A48", "#6CE9A6"),
+            "not_invoiced": (
+                "No facturados",
+                "#F1F5F9",
+                "#475569",
+                "#CBD5E1",
+            ),
+            "pending_reconciliation": (
+                "Pendientes",
+                "#FFFAEB",
+                "#B54708",
+                "#FEC84B",
+            ),
+            "partial_reconciliation": (
+                "Parciales",
+                "#EAF3FF",
+                "#0057B8",
+                "#84CAFF",
+            ),
+            "reconciled": (
+                "Conciliados",
+                "#ECFDF3",
+                "#027A48",
+                "#6CE9A6",
+            ),
+            "review": (
+                "Revisar",
+                "#FEF3F2",
+                "#B42318",
+                "#FDA29B",
+            ),
+        }
+
+        return counter_chips(
+            options=[
+                ("invoiced", "Facturados"),
+                ("not_invoiced", "No facturados"),
+                ("pending_reconciliation", "Pendientes"),
+                ("partial_reconciliation", "Parciales"),
+                ("reconciled", "Conciliados"),
+                ("review", "Revisar"),
+            ],
+            counts=cobros_status_counts(),
+            active_value=state.get("cobros_status_filter") or "all",
+            on_select=on_cobros_status_select,
+            include_all=True,
+            all_label="Todos",
+            all_value="all",
+            status_map=status_map,
+            bordered_status=True,
+        )
+
+
+    def build_cobros_period_summary():
+        date_from = str(state.get("cobros_date_from") or "").strip()
+        date_to = str(state.get("cobros_date_to") or "").strip()
+
+        if not date_from and not date_to:
+            return ft.Text(
+                "Sin filtro temporal",
+                size=11,
+                color=Q_MUTED,
+            )
+
+        from_label = _date_to_display(date_from) if date_from else "Inicio"
+        to_label = _date_to_display(date_to) if date_to else "Hoy"
+
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.DATE_RANGE,
+                        size=14,
+                        color="#0057B8",
+                    ),
+                    ft.Text(
+                        f"{from_label} → {to_label}",
+                        size=11,
+                        weight=ft.FontWeight.BOLD,
+                        color="#0057B8",
+                    ),
+                ],
+                spacing=5,
+                tight=True,
+            ),
+            bgcolor="#EAF3FF",
+            border=ft.border.all(1, "#84CAFF"),
+            border_radius=20,
+            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        )
+
+
+    def refresh_cobros_results_only():
+        cobros_results_box.content = build_cobros_results()
+        cobros_status_box.content = build_cobros_status_filters()
+        cobros_period_summary_box.content = build_cobros_period_summary()
+
+        has_search = bool(
+            str(state.get("cobros_search") or "").strip()
+        )
+        has_period = bool(
+            state.get("cobros_date_from")
+            or state.get("cobros_date_to")
+        )
+        has_status_filter = (
+            str(state.get("cobros_status_filter") or "all").strip()
+            not in ("", "all")
+        )
+        has_any_filter = (
+            has_search
+            or has_period
+            or has_status_filter
+        )
+
+        # La X debe estar disponible siempre que exista cualquier filtro:
+        # texto, periodo o estado.
+        cobros_clear_button.disabled = not has_any_filter
+        cobros_clear_button.icon_color = (
+            Q_PRIMARY_DARK if has_any_filter else "#98A2B3"
+        )
+        cobros_clear_button.tooltip = (
+            "Reiniciar todos los filtros"
+            if has_any_filter
+            else "No hay filtros activos"
+        )
+
+        cobros_period_button.icon_color = (
+            "#0057B8" if has_period else Q_PRIMARY_DARK
+        )
+
+        try:
+            cobros_results_box.update()
+            cobros_status_box.update()
+            cobros_period_summary_box.update()
+            cobros_clear_button.update()
+            cobros_period_button.update()
+        except Exception:
+            page.update()
+
+
+    def on_cobros_search_change(e=None):
+        state["cobros_search"] = str(cobros_filter.value or "")
+        state["cobros_page"] = 1
+        refresh_cobros_results_only()
+
+
+    def clear_cobros_search(e=None):
+        """
+        Reinicia todos los filtros de la vista Cobros:
+        búsqueda, periodo, estado y paginación.
+        """
+        state.update(
+            {
+                "cobros_search": "",
+                "cobros_date_from": "",
+                "cobros_date_to": "",
+                "cobros_status_filter": "all",
+                "cobros_page": 1,
+            }
+        )
+
+        cobros_filter.value = ""
+        cobros_date_from_input.value = ""
+        cobros_date_to_input.value = ""
+        cobros_period_error.value = ""
+
+        # Actualiza resultados, chips, resumen temporal e iconos.
+        refresh_cobros_results_only()
+
+        try:
+            cobros_filter.update()
+            cobros_date_from_input.update()
+            cobros_date_to_input.update()
+            cobros_period_error.update()
+        except Exception:
+            page.update()
+
+
+    def on_cobros_status_select(status_value):
+        state["cobros_status_filter"] = str(status_value or "all")
+        state["cobros_page"] = 1
+        refresh_cobros_results_only()
+
+
+    def open_cobros_period_dialog(e=None):
+        cobros_date_from_input.value = (
+            _date_to_display(state.get("cobros_date_from"))
+            if state.get("cobros_date_from")
+            else ""
+        )
+        cobros_date_to_input.value = (
+            _date_to_display(state.get("cobros_date_to"))
+            if state.get("cobros_date_to")
+            else ""
+        )
+
+        cobros_period_error.value = ""
+        cobros_period_dialog.open = True
+        page.update()
+
+
+    def close_cobros_period_dialog(e=None):
+        cobros_period_dialog.open = False
+        page.update()
+
+
+    def apply_cobros_period_filter(e=None):
+        raw_from = str(cobros_date_from_input.value or "").strip()
+        raw_to = str(cobros_date_to_input.value or "").strip()
+
+        date_from = _date_to_sql(raw_from) if raw_from else ""
+        date_to = _date_to_sql(raw_to) if raw_to else ""
+
+        if raw_from and not date_from:
+            cobros_period_error.value = (
+                "La fecha inicial no es válida. Usa DD/MM/AAAA."
+            )
+            cobros_period_error.update()
+            return
+
+        if raw_to and not date_to:
+            cobros_period_error.value = (
+                "La fecha final no es válida. Usa DD/MM/AAAA."
+            )
+            cobros_period_error.update()
+            return
+
+        if date_from and date_to and date_from > date_to:
+            cobros_period_error.value = (
+                "La fecha inicial no puede ser posterior a la fecha final."
+            )
+            cobros_period_error.update()
+            return
+
+        state["cobros_date_from"] = date_from
+        state["cobros_date_to"] = date_to
+        state["cobros_page"] = 1
+
+        cobros_period_dialog.open = False
+        refresh_cobros_results_only()
+        page.update()
+
+
+    def clear_cobros_period_filter(e=None):
+        cobros_date_from_input.value = ""
+        cobros_date_to_input.value = ""
+        cobros_period_error.value = ""
+
+        state["cobros_date_from"] = ""
+        state["cobros_date_to"] = ""
+        state["cobros_page"] = 1
+
+        cobros_period_dialog.open = False
+        refresh_cobros_results_only()
+        page.update()
+
+
+    def go_cobros_page(page_number):
+        try:
+            requested_page = int(page_number)
+        except (TypeError, ValueError):
+            requested_page = 1
+
+        cobros = filtered_cobros()
+        page_size = max(1, int(state.get("cobros_page_size") or 10))
+        total_pages = max(1, (len(cobros) + page_size - 1) // page_size)
+
+        state["cobros_page"] = max(1, min(requested_page, total_pages))
+        refresh_cobros_results_only()
+
     def build_view():
         resumen = economic_service.resumen_economico()
         controls = [
@@ -331,28 +796,22 @@ def economic_view(page: ft.Page):
         if state["message"]:
             controls.append(state["message"])
 
-        controls.extend(
-            [
-                ft.Row(
-                    controls=[
-                    ],
-                    spacing=12,
-                    wrap=True,
-                ),
-                build_nav(),
-                build_actions(),
-                table_container,
-            ]
-        )
+        controls.append(build_nav())
+
+        action_control = build_actions()
+        if action_control is not None:
+            controls.append(action_control)
+
+        controls.append(table_container)
+
         return ft.Column(controls=controls, spacing=18, expand=True)
 
     def build_actions():
-        mapping = {
-            "hojas": ("Nueva hoja de encargo", open_hoja_dialog),
-            "cobros": ("Nuevo cobro", open_cobro_dialog),
-            "facturas": ("Nueva factura", open_factura_dialog),
-            "gastos": ("Nuevo gasto", open_gasto_dialog),
-        }
+        # En Cobros, el alta está integrada como icono
+        # junto a la barra de búsqueda.
+        if state["section"] == "cobros":
+            return None
+
         if state["section"] == "facturas":
             return ft.Container(
                 bgcolor="#FFFFFF",
@@ -366,23 +825,27 @@ def economic_view(page: ft.Page):
                 ),
             )
 
+        mapping = {
+            "hojas": ("Nueva hoja de encargo", open_hoja_dialog),
+            "gastos": ("Nuevo gasto", open_gasto_dialog),
+        }
+
         action = mapping.get(state["section"])
+
         if not action:
-            return ft.Container(
-                bgcolor="#FFFFFF",
-                border=ft.border.all(1, Q_BORDER),
-                border_radius=12,
-                padding=12,
-                content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.END),
-            )
+            return None
 
         label, handler = action
+
         return ft.Container(
             bgcolor="#FFFFFF",
             border=ft.border.all(1, Q_BORDER),
             border_radius=12,
             padding=12,
-            content=ft.Row(controls=[primary_button(label, handler)], alignment=ft.MainAxisAlignment.END),
+            content=ft.Row(
+                controls=[primary_button(label, handler)],
+                alignment=ft.MainAxisAlignment.END,
+            ),
         )
 
     def _reconciliation_status_badge(status):
@@ -3319,6 +3782,1283 @@ def economic_view(page: ft.Page):
         )
 
 
+    def _factura_client_name(factura):
+        return " ".join(
+            part
+            for part in [
+                str(factura.get("nombre") or "").strip(),
+                str(factura.get("primer_apellido") or "").strip(),
+                str(factura.get("segundo_apellido") or "").strip(),
+            ]
+            if part
+        )
+
+
+    def _factura_search_blob(factura):
+        values = [
+            factura.get("id"),
+            factura.get("numero_factura"),
+            factura.get("fecha_factura"),
+            _date_to_display(factura.get("fecha_factura")),
+            _factura_client_name(factura),
+            factura.get("cliente_id"),
+            factura.get("numero_expediente"),
+            factura.get("expediente_id"),
+            factura.get("numero_hoja"),
+            factura.get("hoja_encargo_id"),
+            factura.get("base_imponible"),
+            _money(factura.get("base_imponible")),
+            factura.get("iva"),
+            _money(factura.get("iva")),
+            factura.get("irpf"),
+            _money(factura.get("irpf")),
+            factura.get("suplidos"),
+            _money(factura.get("suplidos")),
+            factura.get("total"),
+            _money(factura.get("total")),
+            factura.get("estado"),
+            factura.get("tipo_fiscal"),
+            factura.get("concepto"),
+            (
+                "exportada holded"
+                if factura.get("exportada_holded")
+                else "pendiente holded"
+            ),
+            factura.get("observaciones"),
+        ]
+
+        blob = []
+
+        for value in values:
+            blob.append(str(value or ""))
+
+            try:
+                blob.extend(_date_search_tokens(value))
+            except Exception:
+                pass
+
+        return " ".join(blob).lower()
+
+
+    def factura_matches_search(factura):
+        query = str(
+            state.get("facturas_search") or ""
+        ).strip().lower()
+
+        if not query:
+            return True
+
+        return query in _factura_search_blob(factura)
+
+
+    def factura_matches_period(factura):
+        date_value = str(factura.get("fecha_factura") or "").strip()
+        date_from = str(
+            state.get("facturas_date_from") or ""
+        ).strip()
+        date_to = str(
+            state.get("facturas_date_to") or ""
+        ).strip()
+
+        if date_from and date_value < date_from:
+            return False
+
+        if date_to and date_value > date_to:
+            return False
+
+        return True
+
+
+    def factura_matches_status(factura):
+        selected = str(
+            state.get("facturas_status_filter") or "all"
+        ).strip().lower()
+
+        if selected in ("", "all"):
+            return True
+
+        estado = str(
+            factura.get("estado") or "BORRADOR"
+        ).strip().lower()
+
+        return estado == selected
+
+
+    def factura_matches_holded(factura):
+        selected = str(
+            state.get("facturas_holded_filter") or "all"
+        ).strip().lower()
+
+        if selected in ("", "all"):
+            return True
+
+        exported = bool(factura.get("exportada_holded"))
+
+        if selected == "exported":
+            return exported
+
+        if selected == "pending":
+            return not exported
+
+        return True
+
+
+    def filtered_facturas(
+        *,
+        include_status=True,
+        include_holded=True,
+    ):
+        result = []
+
+        for factura in economic_service.list_facturas():
+            factura = dict(factura)
+
+            if not factura_matches_search(factura):
+                continue
+
+            if not factura_matches_period(factura):
+                continue
+
+            if include_status and not factura_matches_status(factura):
+                continue
+
+            if include_holded and not factura_matches_holded(factura):
+                continue
+
+            result.append(factura)
+
+        return result
+
+
+    def facturas_status_counts():
+        counts = {
+            "all": 0,
+            "borrador": 0,
+            "emitida": 0,
+            "exportada": 0,
+            "anulada": 0,
+        }
+
+        for factura in filtered_facturas(
+            include_status=False,
+            include_holded=True,
+        ):
+            counts["all"] += 1
+
+            estado = str(
+                factura.get("estado") or "BORRADOR"
+            ).strip().lower()
+
+            if estado in counts:
+                counts[estado] += 1
+
+        return counts
+
+
+    def facturas_holded_counts():
+        counts = {
+            "all": 0,
+            "pending": 0,
+            "exported": 0,
+        }
+
+        for factura in filtered_facturas(
+            include_status=True,
+            include_holded=False,
+        ):
+            counts["all"] += 1
+
+            if factura.get("exportada_holded"):
+                counts["exported"] += 1
+            else:
+                counts["pending"] += 1
+
+        return counts
+
+
+    def build_facturas_status_filters():
+        status_map = {
+            "borrador": (
+                "Borrador",
+                "#F1F5F9",
+                "#475569",
+                "#CBD5E1",
+            ),
+            "emitida": (
+                "Emitida",
+                "#ECFDF3",
+                "#027A48",
+                "#6CE9A6",
+            ),
+            "exportada": (
+                "Exportada",
+                "#EAF3FF",
+                "#0057B8",
+                "#84CAFF",
+            ),
+            "anulada": (
+                "Anulada",
+                "#FEF3F2",
+                "#B42318",
+                "#FDA29B",
+            ),
+        }
+
+        return counter_chips(
+            options=[
+                ("borrador", "Borradores"),
+                ("emitida", "Emitidas"),
+                ("exportada", "Exportadas"),
+                ("anulada", "Anuladas"),
+            ],
+            counts=facturas_status_counts(),
+            active_value=state.get("facturas_status_filter") or "all",
+            on_select=on_facturas_status_select,
+            include_all=True,
+            all_label="Todas",
+            all_value="all",
+            status_map=status_map,
+            bordered_status=True,
+        )
+
+
+    def build_facturas_holded_filters():
+        status_map = {
+            "pending": (
+                "Pendiente Holded",
+                "#FFFAEB",
+                "#B54708",
+                "#FEC84B",
+            ),
+            "exported": (
+                "Exportada a Holded",
+                "#ECFDF3",
+                "#027A48",
+                "#6CE9A6",
+            ),
+        }
+
+        return counter_chips(
+            options=[
+                ("pending", "Pendientes Holded"),
+                ("exported", "En Holded"),
+            ],
+            counts=facturas_holded_counts(),
+            active_value=state.get("facturas_holded_filter") or "all",
+            on_select=on_facturas_holded_select,
+            include_all=True,
+            all_label="Todo Holded",
+            all_value="all",
+            status_map=status_map,
+            bordered_status=True,
+        )
+
+
+    def build_facturas_period_summary():
+        date_from = str(
+            state.get("facturas_date_from") or ""
+        ).strip()
+        date_to = str(
+            state.get("facturas_date_to") or ""
+        ).strip()
+
+        if not date_from and not date_to:
+            return ft.Text(
+                "Sin filtro temporal",
+                size=11,
+                color=Q_MUTED,
+            )
+
+        from_label = (
+            _date_to_display(date_from)
+            if date_from
+            else "Inicio"
+        )
+        to_label = (
+            _date_to_display(date_to)
+            if date_to
+            else "Hoy"
+        )
+
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.DATE_RANGE,
+                        size=14,
+                        color="#0057B8",
+                    ),
+                    ft.Text(
+                        f"{from_label} → {to_label}",
+                        size=11,
+                        weight=ft.FontWeight.BOLD,
+                        color="#0057B8",
+                    ),
+                ],
+                spacing=5,
+                tight=True,
+            ),
+            bgcolor="#EAF3FF",
+            border=ft.border.all(1, "#84CAFF"),
+            border_radius=20,
+            padding=ft.padding.symmetric(
+                horizontal=10,
+                vertical=5,
+            ),
+        )
+
+
+    def go_facturas_page(page_number):
+        state["facturas_page"] = max(1, int(page_number or 1))
+        refresh_facturas_results_only()
+
+
+    factura_delete_state = {
+        "id": None,
+        "numero": "",
+    }
+
+
+    def open_edit_factura_linked_cobro(factura):
+        if bool(factura.get("_period_closed")):
+            show_message(
+                error_alert(
+                    "La factura pertenece a un periodo cerrado"
+                )
+            )
+            refresh()
+            return
+
+        if bool(factura.get("exportada_holded")):
+            show_message(
+                error_alert(
+                    "La factura está exportada a Holded "
+                    "y permanece bloqueada"
+                )
+            )
+            refresh()
+            return
+
+        cobro_id = factura.get("cobro_id")
+
+        if not cobro_id:
+            show_message(
+                error_alert(
+                    "La factura no tiene un cobro vinculado modificable"
+                )
+            )
+            refresh()
+            return
+
+        cobro = economic_service.get_cobro(cobro_id)
+
+        if not cobro:
+            show_message(
+                error_alert("No se encontró el cobro vinculado")
+            )
+            refresh()
+            return
+
+        open_edit_cobro_dialog(cobro)
+
+
+    rectification_state = {
+        "factura": None,
+    }
+
+
+    def _rectification_float(control):
+        raw = str(control.value or "").strip()
+        raw = raw.replace(",", ".")
+
+        if raw in ("", "-", "+"):
+            return 0.0
+
+        return round(float(raw), 2)
+
+
+    def update_rectification_total(e=None):
+        try:
+            base = _rectification_float(
+                rectification_base_input
+            )
+            iva = _rectification_float(
+                rectification_iva_input
+            )
+            irpf = _rectification_float(
+                rectification_irpf_input
+            )
+            suplidos = _rectification_float(
+                rectification_suplidos_input
+            )
+
+            total = round(
+                base + iva - irpf + suplidos,
+                2,
+            )
+
+            rectification_total_text.value = (
+                f"Total rectificativa: {total:.2f} €"
+            )
+            rectification_error_text.value = ""
+
+        except Exception:
+            rectification_total_text.value = (
+                "Total rectificativa: —"
+            )
+            rectification_error_text.value = (
+                "Revisa los importes introducidos"
+            )
+
+        try:
+            rectification_total_text.update()
+            rectification_error_text.update()
+        except Exception:
+            pass
+
+
+    def apply_rectification_mode(e=None):
+        factura = (
+            rectification_state.get("factura")
+            or {}
+        )
+
+        total_mode = (
+            rectification_mode.value
+            == "ANULACION_TOTAL"
+        )
+
+        controls = [
+            rectification_base_input,
+            rectification_iva_input,
+            rectification_irpf_input,
+            rectification_suplidos_input,
+        ]
+
+        if total_mode:
+            rectification_base_input.value = (
+                f"{-float(factura.get('base_imponible') or 0):.2f}"
+            )
+            rectification_iva_input.value = (
+                f"{-float(factura.get('iva') or 0):.2f}"
+            )
+            rectification_irpf_input.value = (
+                f"{-float(factura.get('irpf') or 0):.2f}"
+            )
+            rectification_suplidos_input.value = (
+                f"{-float(factura.get('suplidos') or 0):.2f}"
+            )
+
+        for control in controls:
+            control.disabled = total_mode
+
+        update_rectification_total()
+
+        try:
+            for control in controls:
+                control.update()
+        except Exception:
+            page.update()
+
+
+    def open_rectification_dialog(factura):
+        if not bool(
+            factura.get("exportada_holded")
+        ):
+            show_message(
+                error_alert(
+                    "La factura no está exportada. "
+                    "Puedes modificarla directamente."
+                )
+            )
+            return
+
+        if (
+            str(
+                factura.get("tipo_factura")
+                or "NORMAL"
+            ).upper()
+            == "RECTIFICATIVA"
+        ):
+            show_message(
+                error_alert(
+                    "Esta acción no está disponible para "
+                    "una rectificativa."
+                )
+            )
+            return
+
+        rectification_state["factura"] = dict(factura)
+
+        rectification_original_text.value = (
+            f"Factura original: "
+            f"{factura.get('numero_factura') or '-'} · "
+            f"{float(factura.get('total') or 0):.2f} €"
+        )
+
+        rectification_date_input.value = (
+            datetime.today().strftime("%Y-%m-%d")
+        )
+        rectification_mode.value = "ANULACION_TOTAL"
+        rectification_cause_code.value = (
+            "ANULACION_OPERACION"
+        )
+        rectification_cause_input.value = ""
+        rectification_observations_input.value = ""
+
+        apply_rectification_mode()
+
+        rectification_dialog.open = True
+        page.update()
+
+
+    def close_rectification_dialog(e=None):
+        rectification_dialog.open = False
+        rectification_state["factura"] = None
+        page.update()
+
+
+    def confirm_rectification(e=None):
+        factura = (
+            rectification_state.get("factura")
+            or {}
+        )
+
+        factura_id = factura.get("id")
+
+        if not factura_id:
+            show_message(
+                error_alert(
+                    "No se ha identificado la factura original"
+                )
+            )
+            return
+
+        try:
+            rectificativa_id = (
+                economic_service
+                .create_factura_rectificativa(
+                    factura_id,
+                    {
+                        "fecha_factura":
+                            rectification_date_input.value,
+                        "codigo_causa_rectificacion":
+                            rectification_cause_code.value,
+                        "causa_rectificacion":
+                            rectification_cause_input.value,
+                        "base_imponible":
+                            _rectification_float(
+                                rectification_base_input
+                            ),
+                        "iva":
+                            _rectification_float(
+                                rectification_iva_input
+                            ),
+                        "irpf":
+                            _rectification_float(
+                                rectification_irpf_input
+                            ),
+                        "suplidos":
+                            _rectification_float(
+                                rectification_suplidos_input
+                            ),
+                        "observaciones":
+                            rectification_observations_input.value,
+                    },
+                )
+            )
+
+            rectification_dialog.open = False
+            rectification_state["factura"] = None
+
+            show_message(
+                success_alert(
+                    "Factura rectificativa creada "
+                    f"correctamente (ID {rectificativa_id})"
+                )
+            )
+
+            refresh()
+
+        except Exception as exc:
+            rectification_error_text.value = str(exc)
+
+            try:
+                rectification_error_text.update()
+            except Exception:
+                page.update()
+
+
+    def open_delete_factura_dialog(factura):
+        if bool(factura.get("_period_closed")):
+            show_message(
+                error_alert(
+                    "La factura pertenece a un periodo cerrado"
+                )
+            )
+            refresh()
+            return
+
+        if bool(factura.get("exportada_holded")):
+            show_message(
+                error_alert(
+                    "La factura está exportada a Holded "
+                    "y no puede eliminarse"
+                )
+            )
+            refresh()
+            return
+
+        factura_delete_state["id"] = factura.get("id")
+        factura_delete_state["numero"] = (
+            factura.get("numero_factura")
+            or f"Factura #{factura.get('id') or '-'}"
+        )
+
+        factura_delete_message.value = (
+            f"Se eliminará {factura_delete_state['numero']}. "
+            "El cobro vinculado se conservará y volverá a quedar "
+            "disponible como facturable."
+        )
+
+        factura_delete_dialog.open = True
+        page.update()
+
+
+    def close_delete_factura_dialog(e=None):
+        factura_delete_dialog.open = False
+        page.update()
+
+
+    def confirm_delete_factura(e=None):
+        try:
+            factura_id = factura_delete_state.get("id")
+
+            if not factura_id:
+                raise ValueError("Factura no identificada")
+
+            economic_service.delete_factura(factura_id)
+
+            factura_delete_dialog.open = False
+            factura_delete_state["id"] = None
+            factura_delete_state["numero"] = ""
+
+            show_message(
+                success_alert(
+                    "Factura eliminada; el cobro se ha conservado"
+                )
+            )
+        except Exception as exc:
+            factura_delete_dialog.open = False
+            show_message(error_alert(str(exc)))
+
+        refresh()
+
+
+    def mark_factura_exportada_holded(factura):
+        try:
+            factura_id = factura.get("id")
+
+            if not factura_id:
+                raise ValueError("Factura no identificada")
+
+            if bool(factura.get("exportada_holded")):
+                raise ValueError(
+                    "La factura ya está exportada a Holded"
+                )
+
+            economic_service.mark_factura_exportada_holded(
+                factura_id
+            )
+
+            show_message(
+                success_alert(
+                    "Factura marcada como exportada a Holded"
+                )
+            )
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+
+        refresh()
+
+
+    def export_all_pending_invoices_to_holded(e=None):
+        try:
+            result = (
+                holded_invoice_export_service
+                .export_pending_invoices_to_holded()
+            )
+
+            show_message(
+                success_alert(
+                    (
+                        f"Exportadas {result['count']} facturas "
+                        f"a {result['filename']}"
+                    )
+                )
+            )
+
+            try:
+                page.run_task(
+                    page.launch_url,
+                    Path(result["path"]).as_uri(),
+                )
+            except Exception:
+                pass
+
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+
+        refresh()
+
+
+    facturas_export_holded_button = ft.OutlinedButton(
+        content=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.UPLOAD_FILE_OUTLINED,
+                    size=17,
+                    color="#027A48",
+                ),
+                ft.Text(
+                    "Exportar pendientes a Holded",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color="#027A48",
+                ),
+            ],
+            spacing=7,
+            tight=True,
+        ),
+        on_click=export_all_pending_invoices_to_holded,
+        tooltip=(
+            "Genera el Excel de todas las facturas pendientes "
+            "de exportar a Holded"
+        ),
+        style=ft.ButtonStyle(
+            side=ft.BorderSide(
+                1,
+                "#6CE9A6",
+            ),
+            bgcolor="#ECFDF3",
+            shape=ft.RoundedRectangleBorder(radius=10),
+            padding=ft.padding.symmetric(
+                horizontal=12,
+                vertical=9,
+            ),
+        ),
+    )
+
+
+    def build_facturas_results():
+        facturas = filtered_facturas()
+
+        if not facturas:
+            state["facturas_page"] = 1
+
+            if str(state.get("facturas_search") or "").strip():
+                empty_result = empty_state(
+                    "No hay facturas que coincidan con la búsqueda"
+                )
+            else:
+                empty_result = empty_state("No hay facturas")
+
+            return ft.Column(
+                controls=[
+                        empty_result,
+                ],
+                spacing=12,
+            )
+
+        page_size = max(
+            1,
+            int(state.get("facturas_page_size") or 10),
+        )
+        total_items = len(facturas)
+        total_pages = max(
+            1,
+            (total_items + page_size - 1) // page_size,
+        )
+
+        current_page = max(
+            1,
+            min(
+                int(state.get("facturas_page") or 1),
+                total_pages,
+            ),
+        )
+        state["facturas_page"] = current_page
+
+        start_index = (current_page - 1) * page_size
+        end_index = start_index + page_size
+        visible_facturas = facturas[start_index:end_index]
+
+        closure_date = (
+            economic_service.get_invoice_closure_date()
+        )
+
+        cards = []
+
+        for factura in visible_facturas:
+            factura_data = dict(factura)
+
+            factura_date = str(
+                factura_data.get("fecha_factura") or ""
+            )
+
+            factura_data["_period_closed"] = bool(
+                closure_date
+                and factura_date
+                and factura_date <= closure_date
+            )
+
+            cards.append(
+                economic_invoice_card(
+                    factura_data,
+                    date_display=_date_to_display,
+                    on_edit=open_edit_factura_linked_cobro,
+                    on_delete=open_delete_factura_dialog,
+                    on_export_holded=mark_factura_exportada_holded,
+                    on_rectify=open_rectification_dialog,
+                )
+            )
+
+        closure_date = (
+            economic_service.get_invoice_closure_date()
+        )
+
+        holded_closure_chip = (
+            ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.LOCK_OUTLINE,
+                            size=14,
+                            color="#027A48",
+                        ),
+                        ft.Text(
+                            (
+                                "Holded cerrado hasta "
+                                f"{_date_to_display(closure_date)}"
+                            ),
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color="#027A48",
+                        ),
+                    ],
+                    spacing=5,
+                    tight=True,
+                ),
+                bgcolor="#ECFDF3",
+                border=ft.border.all(1, "#6CE9A6"),
+                border_radius=20,
+                padding=ft.padding.symmetric(
+                    horizontal=10,
+                    vertical=5,
+                ),
+            )
+            if closure_date
+            else ft.Container()
+        )
+
+        toolbar = ft.Row(
+            controls=[
+                ft.Text(
+                    (
+                        f"Resultados: {total_items}"
+                        if str(
+                            state.get("facturas_search") or ""
+                        ).strip()
+                        else f"Facturas registradas: {total_items}"
+                    ),
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                holded_closure_chip,
+                compact_pagination_bar(
+                    page=current_page,
+                    page_size=page_size,
+                    total_items=total_items,
+                    on_page_change=go_facturas_page,
+                    label_prefix="Facturas",
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+        )
+
+        return ft.Column(
+            controls=[
+                toolbar,
+                ft.Container(
+                    height=620,
+                    content=ft.Column(
+                        controls=cards,
+                        spacing=8,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+            ],
+            spacing=8,
+        )
+
+
+    def refresh_facturas_results_only():
+        facturas_results_box.content = build_facturas_results()
+        facturas_status_box.content = build_facturas_status_filters()
+        facturas_holded_box.content = build_facturas_holded_filters()
+        facturas_period_summary_box.content = (
+            build_facturas_period_summary()
+        )
+
+        has_search = bool(
+            str(state.get("facturas_search") or "").strip()
+        )
+        has_period = bool(
+            state.get("facturas_date_from")
+            or state.get("facturas_date_to")
+        )
+        has_status = (
+            str(
+                state.get("facturas_status_filter") or "all"
+            ).strip()
+            not in ("", "all")
+        )
+        has_holded = (
+            str(
+                state.get("facturas_holded_filter") or "all"
+            ).strip()
+            not in ("", "all")
+        )
+
+        has_any_filter = (
+            has_search
+            or has_period
+            or has_status
+            or has_holded
+        )
+
+        facturas_clear_button.disabled = not has_any_filter
+        facturas_clear_button.icon_color = (
+            Q_PRIMARY_DARK
+            if has_any_filter
+            else "#98A2B3"
+        )
+        facturas_clear_button.tooltip = (
+            "Reiniciar todos los filtros"
+            if has_any_filter
+            else "No hay filtros activos"
+        )
+
+        facturas_period_button.icon_color = (
+            "#0057B8"
+            if has_period
+            else Q_PRIMARY_DARK
+        )
+
+        try:
+            facturas_results_box.update()
+            facturas_status_box.update()
+            facturas_holded_box.update()
+            facturas_period_summary_box.update()
+            facturas_clear_button.update()
+            facturas_period_button.update()
+        except Exception:
+            page.update()
+
+
+    def on_facturas_search_change(e=None):
+        state["facturas_search"] = str(
+            facturas_filter.value or ""
+        )
+        state["facturas_page"] = 1
+        refresh_facturas_results_only()
+
+
+    def clear_facturas_filters(e=None):
+        state.update(
+            {
+                "facturas_search": "",
+                "facturas_status_filter": "all",
+                "facturas_holded_filter": "all",
+                "facturas_date_from": "",
+                "facturas_date_to": "",
+                "facturas_page": 1,
+            }
+        )
+
+        facturas_filter.value = ""
+        facturas_date_from_input.value = ""
+        facturas_date_to_input.value = ""
+        facturas_period_error.value = ""
+
+        refresh_facturas_results_only()
+
+        try:
+            facturas_filter.update()
+            facturas_date_from_input.update()
+            facturas_date_to_input.update()
+            facturas_period_error.update()
+        except Exception:
+            page.update()
+
+
+    def on_facturas_status_select(status_value):
+        state["facturas_status_filter"] = str(
+            status_value or "all"
+        )
+        state["facturas_page"] = 1
+        refresh_facturas_results_only()
+
+
+    def on_facturas_holded_select(status_value):
+        state["facturas_holded_filter"] = str(
+            status_value or "all"
+        )
+        state["facturas_page"] = 1
+        refresh_facturas_results_only()
+
+
+    def open_facturas_period_dialog(e=None):
+        facturas_date_from_input.value = (
+            _date_to_display(state.get("facturas_date_from"))
+            if state.get("facturas_date_from")
+            else ""
+        )
+        facturas_date_to_input.value = (
+            _date_to_display(state.get("facturas_date_to"))
+            if state.get("facturas_date_to")
+            else ""
+        )
+
+        facturas_period_error.value = ""
+        facturas_period_dialog.open = True
+        page.update()
+
+
+    def close_facturas_period_dialog(e=None):
+        facturas_period_dialog.open = False
+        page.update()
+
+
+    def apply_facturas_period_filter(e=None):
+        raw_from = str(
+            facturas_date_from_input.value or ""
+        ).strip()
+        raw_to = str(
+            facturas_date_to_input.value or ""
+        ).strip()
+
+        date_from = _date_to_sql(raw_from) if raw_from else ""
+        date_to = _date_to_sql(raw_to) if raw_to else ""
+
+        if raw_from and not date_from:
+            facturas_period_error.value = (
+                "La fecha inicial no es válida. Usa DD/MM/AAAA."
+            )
+            facturas_period_error.update()
+            return
+
+        if raw_to and not date_to:
+            facturas_period_error.value = (
+                "La fecha final no es válida. Usa DD/MM/AAAA."
+            )
+            facturas_period_error.update()
+            return
+
+        if date_from and date_to and date_from > date_to:
+            facturas_period_error.value = (
+                "La fecha inicial no puede ser posterior "
+                "a la fecha final."
+            )
+            facturas_period_error.update()
+            return
+
+        state["facturas_date_from"] = date_from
+        state["facturas_date_to"] = date_to
+        state["facturas_page"] = 1
+
+        facturas_period_dialog.open = False
+        refresh_facturas_results_only()
+        page.update()
+
+
+    def clear_facturas_period_filter(e=None):
+        facturas_date_from_input.value = ""
+        facturas_date_to_input.value = ""
+        facturas_period_error.value = ""
+
+        state["facturas_date_from"] = ""
+        state["facturas_date_to"] = ""
+        state["facturas_page"] = 1
+
+        facturas_period_dialog.open = False
+        refresh_facturas_results_only()
+        page.update()
+
+
+    def build_facturas_section():
+        facturas_filter.value = (
+            state.get("facturas_search") or ""
+        )
+        facturas_results_box.content = build_facturas_results()
+        facturas_status_box.content = build_facturas_status_filters()
+        facturas_holded_box.content = build_facturas_holded_filters()
+        facturas_period_summary_box.content = (
+            build_facturas_period_summary()
+        )
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        facturas_filter,
+                        facturas_period_button,
+                        facturas_clear_button,
+                        facturas_export_holded_button,
+                    ],
+                    spacing=6,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    controls=[
+                        facturas_period_summary_box,
+                        ft.Container(expand=True),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    controls=[
+                        facturas_status_box,
+                        facturas_holded_box,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                facturas_results_box,
+            ],
+            spacing=8,
+        )
+
+
+    def build_cobros_results():
+        cobros = filtered_cobros()
+
+        if not cobros:
+            state["cobros_page"] = 1
+
+            if str(state.get("cobros_search") or "").strip():
+                return empty_state(
+                    "No hay cobros que coincidan con la búsqueda"
+                )
+
+            return empty_state("No hay cobros")
+
+        page_size = max(1, int(state.get("cobros_page_size") or 10))
+        total_items = len(cobros)
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+
+        current_page = max(
+            1,
+            min(int(state.get("cobros_page") or 1), total_pages),
+        )
+        state["cobros_page"] = current_page
+
+        start_index = (current_page - 1) * page_size
+        end_index = start_index + page_size
+        visible_cobros = cobros[start_index:end_index]
+
+        cards = [
+            economic_payment_card(
+                dict(cobro),
+                date_display=_date_to_display,
+                on_edit=lambda item: open_edit_cobro_dialog(dict(item)),
+            )
+            for cobro in visible_cobros
+        ]
+
+        toolbar = ft.Row(
+            controls=[
+                ft.Text(
+                    (
+                        f"Resultados: {total_items}"
+                        if str(state.get("cobros_search") or "").strip()
+                        else f"Cobros registrados: {total_items}"
+                    ),
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                compact_pagination_bar(
+                    page=current_page,
+                    page_size=page_size,
+                    total_items=total_items,
+                    on_page_change=go_cobros_page,
+                    label_prefix="Cobros",
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+        )
+
+        return ft.Column(
+            controls=[
+                toolbar,
+                ft.Container(
+                    height=620,
+                    content=ft.Column(
+                        controls=cards,
+                        spacing=8,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+            ],
+            spacing=8,
+        )
+
+
+    def build_cobros_section():
+        cobros_results_box.content = build_cobros_results()
+        cobros_status_box.content = build_cobros_status_filters()
+        cobros_period_summary_box.content = build_cobros_period_summary()
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        cobros_filter,
+                        ft.IconButton(
+                            icon=ft.Icons.ADD_CIRCLE_OUTLINE,
+                            icon_color=Q_PRIMARY_DARK,
+                            tooltip="Nuevo cobro",
+                            on_click=open_cobro_dialog,
+                        ),
+                        cobros_period_button,
+                        cobros_clear_button,
+                    ],
+                    spacing=6,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    controls=[
+                        cobros_period_summary_box,
+                        ft.Container(expand=True),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                cobros_status_box,
+                cobros_results_box,
+            ],
+            spacing=8,
+        )
+
+
     def build_table():
         if state["section"] == "conciliacion_manual":
             return build_manual_reconciliation_section()
@@ -3344,48 +5084,10 @@ def economic_view(page: ft.Page):
             ) if rows else empty_state("No hay hojas de encargo")
 
         if state["section"] == "cobros":
-            rows = []
-            for c in economic_service.list_cobros():
-                cliente = f"{c.get('nombre') or ''} {c.get('primer_apellido') or ''} {c.get('segundo_apellido') or ''}".strip()
-                rows.append([
-                    ft.Text(c.get("numero_cobro") or "-", weight=ft.FontWeight.BOLD, size=13, color=Q_PRIMARY_DARK),
-                    _date_to_display(c.get("fecha_cobro")),
-                    cliente,
-                    c.get("numero_expediente") or "-",
-                    c.get("numero_hoja") or "-",
-                    _money(c.get("importe")),
-                    c.get("forma_pago") or "-",
-                    "Sí" if c.get("facturable") else "No",
-                    c.get("numero_factura") or "-",
-                    reconciliation_badge(c.get("estado_conciliacion")),
-                    secondary_button("Editar", lambda e, cobro=dict(c): open_edit_cobro_dialog(cobro)),
-                ])
-            return app_table(
-                ["Nº cobro", "Fecha", "Cliente", "Expediente", "Hoja", "Importe", "Forma", "Facturable", "Factura", "Conciliación", "Editar"],
-                rows,
-                height=430,
-            ) if rows else empty_state("No hay cobros")
+            return build_cobros_section()
 
         if state["section"] == "facturas":
-            rows = []
-            for f in economic_service.list_facturas():
-                cliente = f"{f.get('nombre') or ''} {f.get('primer_apellido') or ''} {f.get('segundo_apellido') or ''}".strip()
-                rows.append([
-                    f.get("numero_factura") or "-",
-                    _date_to_display(f.get("fecha_factura")),
-                    cliente,
-                    f.get("numero_expediente") or "-",
-                    _money(f.get("base_imponible")),
-                    _money(f.get("iva")),
-                    _money(f.get("total")),
-                    economic_badge(f.get("estado")),
-                    "Sí" if f.get("exportada_holded") else "No",
-                ])
-            return app_table(
-                ["Nº factura", "Fecha", "Cliente", "Expediente", "Base", "IVA", "Total", "Estado", "Holded"],
-                rows,
-                height=430,
-            ) if rows else empty_state("No hay facturas")
+            return build_facturas_section()
 
         if state["section"] == "gastos":
             rows = []
@@ -3410,6 +5112,418 @@ def economic_view(page: ft.Page):
             return build_imported_movements_section()
 
         return empty_state("Selecciona una sección")
+
+    cobros_filter = text_input(
+        "Buscar cobro, cliente, fecha, importe, expediente...",
+        width=620,
+    )
+    cobros_filter.value = ""
+    cobros_filter.on_change = on_cobros_search_change
+
+    cobros_clear_button = ft.IconButton(
+        icon=ft.Icons.CLOSE,
+        icon_color="#98A2B3",
+        tooltip="No hay filtros activos",
+        disabled=True,
+        on_click=clear_cobros_search,
+    )
+
+    cobros_period_button = ft.IconButton(
+        icon=ft.Icons.CALENDAR_MONTH,
+        icon_color=Q_PRIMARY_DARK,
+        tooltip="Filtrar cobros por periodo",
+        on_click=open_cobros_period_dialog,
+    )
+
+    cobros_results_box = ft.Container()
+    cobros_status_box = ft.Container()
+    cobros_period_summary_box = ft.Container()
+
+    cobros_date_from_input = text_input(
+        "Desde DD/MM/AAAA",
+        width=210,
+    )
+    cobros_date_to_input = text_input(
+        "Hasta DD/MM/AAAA",
+        width=210,
+    )
+    cobros_period_error = ft.Text(
+        "",
+        size=12,
+        color="#B42318",
+    )
+
+    cobros_period_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Filtrar cobros por periodo",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        ),
+        content=ft.Column(
+            controls=[
+                ft.Text(
+                    "Introduce una o ambas fechas. Los límites están incluidos.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                ft.Row(
+                    controls=[
+                        cobros_date_from_input,
+                        cobros_date_to_input,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                cobros_period_error,
+            ],
+            spacing=12,
+            tight=True,
+        ),
+        actions=[
+            ft.TextButton(
+                "Quitar periodo",
+                on_click=clear_cobros_period_filter,
+            ),
+            ft.TextButton(
+                "Cancelar",
+                on_click=close_cobros_period_dialog,
+            ),
+            ft.TextButton(
+                "Aplicar",
+                on_click=apply_cobros_period_filter,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(cobros_period_dialog)
+
+    facturas_filter = text_input(
+        "Buscar factura, cliente, fecha, importe, expediente...",
+        width=620,
+    )
+    facturas_filter.value = ""
+    facturas_filter.on_change = on_facturas_search_change
+
+    facturas_clear_button = ft.IconButton(
+        icon=ft.Icons.CLOSE,
+        icon_color="#98A2B3",
+        tooltip="No hay filtros activos",
+        disabled=True,
+        on_click=clear_facturas_filters,
+    )
+
+    facturas_period_button = ft.IconButton(
+        icon=ft.Icons.CALENDAR_MONTH,
+        icon_color=Q_PRIMARY_DARK,
+        tooltip="Filtrar facturas por periodo",
+        on_click=open_facturas_period_dialog,
+    )
+
+    facturas_results_box = ft.Container()
+    facturas_status_box = ft.Container()
+    facturas_holded_box = ft.Container()
+    facturas_period_summary_box = ft.Container()
+
+    facturas_date_from_input = text_input(
+        "Desde DD/MM/AAAA",
+        width=210,
+    )
+    facturas_date_to_input = text_input(
+        "Hasta DD/MM/AAAA",
+        width=210,
+    )
+    facturas_period_error = ft.Text(
+        "",
+        size=12,
+        color="#B42318",
+    )
+
+    facturas_period_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Filtrar facturas por periodo",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        ),
+        content=ft.Column(
+            controls=[
+                ft.Text(
+                    (
+                        "Introduce una o ambas fechas. "
+                        "Los límites están incluidos."
+                    ),
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                ft.Row(
+                    controls=[
+                        facturas_date_from_input,
+                        facturas_date_to_input,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                facturas_period_error,
+            ],
+            spacing=12,
+            tight=True,
+        ),
+        actions=[
+            ft.TextButton(
+                "Quitar periodo",
+                on_click=clear_facturas_period_filter,
+            ),
+            ft.TextButton(
+                "Cancelar",
+                on_click=close_facturas_period_dialog,
+            ),
+            ft.TextButton(
+                "Aplicar",
+                on_click=apply_facturas_period_filter,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(facturas_period_dialog)
+
+
+    factura_delete_message = ft.Text(
+        "",
+        size=13,
+        color=Q_PRIMARY_DARK,
+    )
+
+    rectification_original_text = ft.Text(
+        "",
+        size=13,
+        weight=ft.FontWeight.BOLD,
+    )
+
+    rectification_date_input = ft.TextField(
+        label="Fecha de la rectificativa",
+        hint_text="AAAA-MM-DD",
+        width=220,
+        dense=True,
+    )
+
+    rectification_mode = ft.Dropdown(
+        label="Tipo de rectificación",
+        width=260,
+        value="ANULACION_TOTAL",
+        options=[
+            ft.dropdown.Option(
+                "ANULACION_TOTAL",
+                "Anulación total",
+            ),
+            ft.dropdown.Option(
+                "AJUSTE_MANUAL",
+                "Ajuste manual",
+            ),
+        ],
+    )
+    rectification_mode.on_change = apply_rectification_mode
+
+    rectification_cause_code = ft.Dropdown(
+        label="Causa",
+        width=280,
+        value="ANULACION_OPERACION",
+        options=[
+            ft.dropdown.Option(
+                "ERROR_IMPORTE",
+                "Error en el importe",
+            ),
+            ft.dropdown.Option(
+                "ERROR_DATOS",
+                "Error en los datos",
+            ),
+            ft.dropdown.Option(
+                "DEVOLUCION",
+                "Devolución",
+            ),
+            ft.dropdown.Option(
+                "DESCUENTO_POSTERIOR",
+                "Descuento posterior",
+            ),
+            ft.dropdown.Option(
+                "ANULACION_OPERACION",
+                "Anulación de la operación",
+            ),
+            ft.dropdown.Option(
+                "OTRA",
+                "Otra causa",
+            ),
+        ],
+    )
+
+    rectification_cause_input = ft.TextField(
+        label="Motivo detallado",
+        multiline=True,
+        min_lines=2,
+        max_lines=4,
+    )
+
+    rectification_base_input = ft.TextField(
+        label="Base rectificada",
+        width=180,
+        value="0.00",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        on_change=update_rectification_total,
+    )
+
+    rectification_iva_input = ft.TextField(
+        label="IVA rectificado",
+        width=180,
+        value="0.00",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        on_change=update_rectification_total,
+    )
+
+    rectification_irpf_input = ft.TextField(
+        label="IRPF rectificado",
+        width=180,
+        value="0.00",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        on_change=update_rectification_total,
+    )
+
+    rectification_suplidos_input = ft.TextField(
+        label="Suplidos rectificados",
+        width=180,
+        value="0.00",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        on_change=update_rectification_total,
+    )
+
+    rectification_total_text = ft.Text(
+        "Total rectificativa: 0.00 €",
+        size=15,
+        weight=ft.FontWeight.BOLD,
+    )
+
+    rectification_observations_input = ft.TextField(
+        label="Observaciones internas",
+        multiline=True,
+        min_lines=2,
+        max_lines=3,
+    )
+
+    rectification_error_text = ft.Text(
+        "",
+        color="#B42318",
+        size=12,
+    )
+
+    rectification_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Generar factura rectificativa"),
+        content=ft.Container(
+            width=760,
+            content=ft.Column(
+                controls=[
+                    rectification_original_text,
+                    ft.Row(
+                        controls=[
+                            rectification_date_input,
+                            rectification_mode,
+                        ],
+                        wrap=True,
+                    ),
+                    rectification_cause_code,
+                    rectification_cause_input,
+                    ft.Text(
+                        "Importes de la rectificación",
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.Row(
+                        controls=[
+                            rectification_base_input,
+                            rectification_iva_input,
+                            rectification_irpf_input,
+                            rectification_suplidos_input,
+                        ],
+                        wrap=True,
+                        spacing=10,
+                    ),
+                    rectification_total_text,
+                    rectification_observations_input,
+                    rectification_error_text,
+                ],
+                tight=True,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        ),
+        actions=[
+            ft.TextButton(
+                "Cancelar",
+                on_click=close_rectification_dialog,
+            ),
+            ft.FilledButton(
+                "Crear rectificativa",
+                on_click=confirm_rectification,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(rectification_dialog)
+
+
+    factura_delete_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.DELETE_OUTLINE,
+                    color="#B42318",
+                ),
+                ft.Text(
+                    "Eliminar factura",
+                    weight=ft.FontWeight.BOLD,
+                    color="#B42318",
+                ),
+            ],
+            spacing=8,
+        ),
+        content=ft.Column(
+            controls=[
+                factura_delete_message,
+                ft.Container(
+                    bgcolor="#FFFAEB",
+                    border=ft.border.all(1, "#FEC84B"),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Text(
+                        (
+                            "La factura desaparecerá del listado, "
+                            "pero el cobro no será eliminado."
+                        ),
+                        size=11,
+                        color="#B54708",
+                    ),
+                ),
+            ],
+            spacing=12,
+            tight=True,
+            width=480,
+        ),
+        actions=[
+            secondary_button(
+                "Cancelar",
+                close_delete_factura_dialog,
+            ),
+            ft.TextButton(
+                "Eliminar factura",
+                on_click=confirm_delete_factura,
+                style=ft.ButtonStyle(
+                    color="#B42318",
+                ),
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+        shape=ft.RoundedRectangleBorder(radius=16),
+    )
+    page.overlay.append(factura_delete_dialog)
+
 
     movements_filter = text_input("Filtrar por concepto / motivo / fecha / ID", width=560)
     movements_filter.value = ""
@@ -3611,7 +5725,30 @@ def economic_view(page: ft.Page):
     cobro_importe = required_text_input("Importe", width=160)
     cobro_forma = select_input("Forma pago", ["EFECTIVO", "TRANSFERENCIA", "TARJETA", "BIZUM", "OTRO"], value="EFECTIVO", width=180)
     cobro_tipo = select_input("Tipo", ["CONSULTA", "PAGO_EXPEDIENTE", "PAGO_PARCIAL", "RESERVA", "DEVOLUCION", "AJUSTE"], value="PAGO_EXPEDIENTE", width=220)
-    cobro_facturable = select_input("Facturable", ["No", "Sí"], value="No", width=120)
+    cobro_facturable = select_input(
+        "Facturable",
+        ["No", "Sí"],
+        value="No",
+        width=120,
+    )
+    cobro_tipo_fiscal = select_input(
+        "Naturaleza fiscal",
+        ["PROVISIÓN", "SUPLIDO"],
+        value="PROVISIÓN",
+        width=180,
+    )
+    cobro_iva_porcentaje = select_input(
+        "IVA",
+        ["0", "4", "10", "21"],
+        value="0",
+        width=140,
+    )
+    cobro_irpf_porcentaje = select_input(
+        "IRPF",
+        ["0", "7", "15"],
+        value="0",
+        width=140,
+    )
     cobro_concepto = text_input("Concepto", width=420)
     cobro_recibo = text_input("Ruta recibo/documento", width=620)
     cobro_obs = multiline_input("Observaciones", width=620)
@@ -3977,6 +6114,10 @@ def economic_view(page: ft.Page):
             pass
 
 
+
+
+
+
     def open_cobro_dialog(e=None):
         refresh_runtime_options()
 
@@ -3991,6 +6132,9 @@ def economic_view(page: ft.Page):
         cobro_forma.value = "EFECTIVO"
         cobro_tipo.value = "PAGO_EXPEDIENTE"
         cobro_facturable.value = "No"
+        cobro_tipo_fiscal.value = "PROVISIÓN"
+        cobro_iva_porcentaje.value = "0"
+        cobro_irpf_porcentaje.value = "0"
         cobro_concepto.value = ""
         cobro_recibo.value = ""
         cobro_obs.value = ""
@@ -4048,6 +6192,13 @@ def economic_view(page: ft.Page):
                 "forma_pago": cobro_forma.value,
                 "tipo_cobro": cobro_tipo.value,
                 "facturable": 1 if cobro_facturable.value == "Sí" else 0,
+                "tipo_fiscal": cobro_tipo_fiscal.value,
+                "iva_porcentaje": (
+                    "0"
+                    if cobro_tipo_fiscal.value == "SUPLIDO"
+                    else cobro_iva_porcentaje.value
+                ),
+                "irpf_porcentaje": cobro_irpf_porcentaje.value,
                 "concepto": concepto_value,
                 "recibo_ruta": cobro_recibo.value,
                 "observaciones": cobro_obs.value,
@@ -4103,32 +6254,280 @@ def economic_view(page: ft.Page):
             refresh()
 
 
-    cobro_dialog = form_dialog(
-        "Cobro",
-        ft.Column(
-            [
-                cobro_cliente_ac.control,
-                cobro_expediente_dd,
-                ft.Row(
-                    [
-                        cobro_hoja_dd,
-                        secondary_button("Buscar hojas", refresh_cobro_hojas_for_expediente),
-                    ],
-                    wrap=True,
-                    spacing=10,
+    def _cobro_form_section(
+        title,
+        icon,
+        controls,
+        *,
+        subtitle=None,
+        accent="#0057B8",
+    ):
+        section_header = [
+            ft.Container(
+                width=34,
+                height=34,
+                border_radius=10,
+                bgcolor="#EAF3FF",
+                alignment=ft.Alignment(0, 0),
+                content=ft.Icon(
+                    icon,
+                    size=18,
+                    color=accent,
                 ),
-                ft.Row([cobro_fecha, cobro_numero, cobro_importe], wrap=True, spacing=10),
-                ft.Row([cobro_forma, cobro_tipo, cobro_facturable], wrap=True, spacing=10),
-                cobro_concepto,
-                cobro_recibo,
-                cobro_obs,
+            ),
+            ft.Column(
+                controls=[
+                    ft.Text(
+                        title,
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    *(
+                        [
+                            ft.Text(
+                                subtitle,
+                                size=11,
+                                color=Q_MUTED,
+                            )
+                        ]
+                        if subtitle
+                        else []
+                    ),
+                ],
+                spacing=1,
+            ),
+        ]
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, "#D8E2EE"),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=section_header,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Divider(height=1, color="#E4E7EC"),
+                    *controls,
+                ],
+                spacing=12,
+            ),
+        )
+
+
+    cobro_dialog_header = ft.Container(
+        bgcolor="#F8FAFC",
+        border=ft.border.all(1, "#D8E2EE"),
+        border_radius=14,
+        padding=14,
+        content=ft.Row(
+            controls=[
+                ft.Container(
+                    width=44,
+                    height=44,
+                    border_radius=12,
+                    bgcolor="#EAF3FF",
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Icon(
+                        ft.Icons.PAYMENTS_OUTLINED,
+                        size=24,
+                        color="#0057B8",
+                    ),
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            "Registrar nuevo cobro",
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            "Añade el pago, vincúlalo al expediente y configura su facturación.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=2,
+                    expand=True,
+                ),
             ],
-            width=760,
-            height=620,
             spacing=12,
-            scroll=ft.ScrollMode.AUTO,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
-        [secondary_button("Cancelar", lambda e: close(cobro_dialog)), primary_button("Guardar", save_cobro)],
+    )
+
+
+    cobro_dialog_content = ft.Column(
+        controls=[
+            cobro_dialog_header,
+
+            _cobro_form_section(
+                "Cliente pagador",
+                ft.Icons.PERSON_OUTLINE,
+                controls=[
+                    cobro_cliente_ac.control,
+                ],
+                subtitle="Selecciona la persona que realiza o asume el pago.",
+            ),
+
+            _cobro_form_section(
+                "Datos principales",
+                ft.Icons.RECEIPT_LONG_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            cobro_fecha,
+                            cobro_importe,
+                            cobro_forma,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            cobro_tipo,
+                            cobro_numero,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                subtitle="Fecha, importe, modalidad y naturaleza del cobro.",
+            ),
+
+            _cobro_form_section(
+                "Vinculación",
+                ft.Icons.LINK_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            cobro_expediente_dd,
+                            cobro_hoja_dd,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border_radius=10,
+                        padding=10,
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.INFO_OUTLINE,
+                                    size=16,
+                                    color="#0057B8",
+                                ),
+                                ft.Text(
+                                    (
+                                        "Los pagos de expediente deben vincularse a una hoja "
+                                        "de encargo. Las consultas pueden registrarse sin hoja."
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=8,
+                            wrap=True,
+                        ),
+                    ),
+                ],
+                subtitle="Relaciona el cobro con su expediente y hoja de encargo.",
+            ),
+
+            _cobro_form_section(
+                "Facturación",
+                ft.Icons.DESCRIPTION_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            cobro_facturable,
+                            cobro_tipo_fiscal,
+                            cobro_iva_porcentaje,
+                            cobro_irpf_porcentaje,
+                            ft.Container(
+                                width=310,
+                                bgcolor="#FFFAEB",
+                                border=ft.border.all(1, "#FEC84B"),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Text(
+                                    (
+                                        "Al marcarlo como facturable, el sistema generará "
+                                        "automáticamente una factura si todavía no existe."
+                                    ),
+                                    size=11,
+                                    color="#B54708",
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                subtitle="Define si el ingreso debe generar factura.",
+                accent="#B54708",
+            ),
+
+            _cobro_form_section(
+                "Información adicional",
+                ft.Icons.NOTES_OUTLINED,
+                controls=[
+                    cobro_concepto,
+                    cobro_recibo,
+                    cobro_obs,
+                ],
+                subtitle="Concepto, justificante y observaciones internas.",
+            ),
+        ],
+        width=820,
+        height=650,
+        spacing=12,
+        scroll=ft.ScrollMode.AUTO,
+    )
+
+
+    cobro_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.ADD_CARD,
+                    size=22,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    "Nuevo cobro",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        content=cobro_dialog_content,
+        actions=[
+            secondary_button(
+                "Cancelar",
+                lambda e: close(cobro_dialog),
+            ),
+            primary_button(
+                "Guardar cobro",
+                save_cobro,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+        shape=ft.RoundedRectangleBorder(radius=16),
+        inset_padding=ft.padding.symmetric(
+            horizontal=24,
+            vertical=18,
+        ),
     )
     page.overlay.append(cobro_dialog)
 
@@ -4140,7 +6539,30 @@ def economic_view(page: ft.Page):
     edit_cobro_importe = required_text_input("Importe", width=160)
     edit_cobro_forma = select_input("Forma pago", ["EFECTIVO", "TRANSFERENCIA", "TARJETA", "BIZUM", "OTRO"], value="EFECTIVO", width=180)
     edit_cobro_tipo = select_input("Tipo", ["CONSULTA", "PAGO_EXPEDIENTE", "PAGO_PARCIAL", "RESERVA", "DEVOLUCION", "AJUSTE"], value="PAGO_EXPEDIENTE", width=220)
-    edit_cobro_facturable = select_input("Facturable", ["No", "Sí"], value="No", width=120)
+    edit_cobro_facturable = select_input(
+        "Facturable",
+        ["No", "Sí"],
+        value="No",
+        width=120,
+    )
+    edit_cobro_tipo_fiscal = select_input(
+        "Naturaleza fiscal",
+        ["PROVISIÓN", "SUPLIDO"],
+        value="PROVISIÓN",
+        width=180,
+    )
+    edit_cobro_iva_porcentaje = select_input(
+        "IVA",
+        ["0", "4", "10", "21"],
+        value="0",
+        width=140,
+    )
+    edit_cobro_irpf_porcentaje = select_input(
+        "IRPF",
+        ["0", "7", "15"],
+        value="0",
+        width=140,
+    )
     edit_cobro_expediente_dd = select_input("Expediente", ["Sin expediente"] + expediente_options, value="Sin expediente", width=420)
     edit_cobro_hoja_dd = select_input("Hoja de encargo", ["Sin hoja"], value="Sin hoja", width=420)
     edit_cobro_concepto = text_input("Concepto", width=420)
@@ -4196,6 +6618,17 @@ def economic_view(page: ft.Page):
         edit_cobro_forma.value = cobro.get("forma_pago") or "EFECTIVO"
         edit_cobro_tipo.value = cobro.get("tipo_cobro") or "PAGO_EXPEDIENTE"
         edit_cobro_facturable.value = "Sí" if cobro.get("facturable") else "No"
+        edit_cobro_tipo_fiscal.value = (
+            "SUPLIDO"
+            if str(cobro.get("tipo_fiscal") or "").upper() == "SUPLIDO"
+            else "PROVISIÓN"
+        )
+        edit_cobro_iva_porcentaje.value = str(
+            int(float(cobro.get("iva_porcentaje") or 0))
+        )
+        edit_cobro_irpf_porcentaje.value = str(
+            int(float(cobro.get("irpf_porcentaje") or 0))
+        )
         edit_cobro_concepto.value = cobro.get("concepto") or ""
         edit_cobro_recibo.value = cobro.get("recibo_ruta") or ""
         edit_cobro_obs.value = cobro.get("observaciones") or ""
@@ -4220,6 +6653,13 @@ def economic_view(page: ft.Page):
                 "forma_pago": edit_cobro_forma.value,
                 "tipo_cobro": edit_cobro_tipo.value,
                 "facturable": 1 if edit_cobro_facturable.value == "Sí" else 0,
+                "tipo_fiscal": edit_cobro_tipo_fiscal.value,
+                "iva_porcentaje": (
+                    "0"
+                    if edit_cobro_tipo_fiscal.value == "SUPLIDO"
+                    else edit_cobro_iva_porcentaje.value
+                ),
+                "irpf_porcentaje": edit_cobro_irpf_porcentaje.value,
                 "concepto": edit_cobro_concepto.value,
                 "recibo_ruta": edit_cobro_recibo.value,
                 "observaciones": edit_cobro_obs.value,
@@ -4231,36 +6671,210 @@ def economic_view(page: ft.Page):
             show_message(error_alert(str(exc)))
         refresh()
 
-    edit_cobro_dialog = form_dialog(
-        "Editar cobro",
-        ft.Column(
-            [
-                edit_cobro_expediente_dd,
-                ft.Row(
-                    [
-                        edit_cobro_hoja_dd,
-                        secondary_button("Buscar hojas", refresh_edit_cobro_hojas),
-                    ],
-                    wrap=True,
-                    spacing=10,
+    edit_cobro_dialog_header = ft.Container(
+        bgcolor="#F8FAFC",
+        border=ft.border.all(1, "#D8E2EE"),
+        border_radius=14,
+        padding=14,
+        content=ft.Row(
+            controls=[
+                ft.Container(
+                    width=44,
+                    height=44,
+                    border_radius=12,
+                    bgcolor="#EAF3FF",
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Icon(
+                        ft.Icons.EDIT_NOTE,
+                        size=24,
+                        color="#0057B8",
+                    ),
                 ),
-                ft.Row([edit_cobro_fecha, edit_cobro_importe], wrap=True, spacing=10),
-                ft.Row([edit_cobro_forma, edit_cobro_tipo, edit_cobro_facturable], wrap=True, spacing=10),
-                edit_cobro_concepto,
-                edit_cobro_recibo,
-                edit_cobro_obs,
-                ft.Text(
-                    "Si marcas el cobro como facturable, se generará factura automáticamente si aún no existe.",
-                    size=12,
-                    color=Q_MUTED,
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            "Modificar cobro",
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            "Actualiza los datos económicos, la vinculación y la facturación.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=2,
+                    expand=True,
                 ),
             ],
-            width=760,
-            height=620,
             spacing=12,
-            scroll=ft.ScrollMode.AUTO,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
-        [secondary_button("Cancelar", lambda e: close(edit_cobro_dialog)), primary_button("Guardar cambios", save_edit_cobro)],
+    )
+
+
+    edit_cobro_dialog_content = ft.Column(
+        controls=[
+            edit_cobro_dialog_header,
+
+            _cobro_form_section(
+                "Datos principales",
+                ft.Icons.RECEIPT_LONG_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            edit_cobro_fecha,
+                            edit_cobro_importe,
+                            edit_cobro_forma,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            edit_cobro_tipo,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                subtitle="Fecha, importe, forma de pago y naturaleza del cobro.",
+            ),
+
+            _cobro_form_section(
+                "Vinculación",
+                ft.Icons.LINK_OUTLINED,
+                controls=[
+                    edit_cobro_expediente_dd,
+                    ft.Row(
+                        controls=[
+                            edit_cobro_hoja_dd,
+                            secondary_button(
+                                "Buscar hojas",
+                                refresh_edit_cobro_hojas,
+                            ),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border_radius=10,
+                        padding=10,
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.INFO_OUTLINE,
+                                    size=16,
+                                    color="#0057B8",
+                                ),
+                                ft.Text(
+                                    (
+                                        "Los pagos de expediente deben permanecer vinculados "
+                                        "a una hoja de encargo. Las consultas pueden quedar sin hoja."
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=8,
+                            wrap=True,
+                        ),
+                    ),
+                ],
+                subtitle="Modifica el expediente y la hoja asociados al cobro.",
+            ),
+
+            _cobro_form_section(
+                "Facturación",
+                ft.Icons.DESCRIPTION_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            edit_cobro_facturable,
+                            edit_cobro_tipo_fiscal,
+                            edit_cobro_iva_porcentaje,
+                            edit_cobro_irpf_porcentaje,
+                            ft.Container(
+                                width=310,
+                                bgcolor="#FFFAEB",
+                                border=ft.border.all(1, "#FEC84B"),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Text(
+                                    (
+                                        "Si marcas el cobro como facturable, el sistema generará "
+                                        "automáticamente una factura si todavía no existe."
+                                    ),
+                                    size=11,
+                                    color="#B54708",
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                subtitle="Controla si el cobro debe generar factura.",
+                accent="#B54708",
+            ),
+
+            _cobro_form_section(
+                "Información adicional",
+                ft.Icons.NOTES_OUTLINED,
+                controls=[
+                    edit_cobro_concepto,
+                    edit_cobro_recibo,
+                    edit_cobro_obs,
+                ],
+                subtitle="Concepto, justificante y observaciones internas.",
+            ),
+        ],
+        width=820,
+        height=650,
+        spacing=12,
+        scroll=ft.ScrollMode.AUTO,
+    )
+
+
+    edit_cobro_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.EDIT_OUTLINED,
+                    size=22,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    "Editar cobro",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        content=edit_cobro_dialog_content,
+        actions=[
+            secondary_button(
+                "Cancelar",
+                lambda e: close(edit_cobro_dialog),
+            ),
+            primary_button(
+                "Guardar cambios",
+                save_edit_cobro,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+        shape=ft.RoundedRectangleBorder(radius=16),
+        inset_padding=ft.padding.symmetric(
+            horizontal=24,
+            vertical=18,
+        ),
     )
     page.overlay.append(edit_cobro_dialog)
 
