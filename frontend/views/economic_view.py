@@ -10,8 +10,10 @@ from frontend.components.app_table import app_table
 from frontend.components.app_empty_state import empty_state
 from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
+from frontend.components.economic_payment_card import economic_payment_card
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.listing import compact_pagination_bar
+from frontend.components.listing.counter_chips import counter_chips
 from backend.services.economic_reconciliation import (
     list_bank_movements,
     list_cashmatic_movements,
@@ -247,6 +249,12 @@ def economic_view(page: ft.Page):
         "message": None,
         "reconciliation_selected_group_id": None,
         "movements_source": "cashmatic",
+        "cobros_page": 1,
+        "cobros_page_size": 10,
+        "cobros_search": "",
+        "cobros_status_filter": "all",
+        "cobros_date_from": "",
+        "cobros_date_to": "",
     }
 
     content_area = ft.Container(expand=True)
@@ -321,6 +329,415 @@ def economic_view(page: ft.Page):
         content_area.content = build_view()
         page.update()
 
+    def _cobro_search_blob(cobro):
+        cliente = " ".join(
+            part
+            for part in [
+                str(cobro.get("nombre") or "").strip(),
+                str(cobro.get("primer_apellido") or "").strip(),
+                str(cobro.get("segundo_apellido") or "").strip(),
+            ]
+            if part
+        )
+
+        facturacion_label = (
+            "facturado"
+            if cobro.get("numero_factura") or cobro.get("factura_id")
+            else "facturable"
+            if cobro.get("facturable")
+            else "no facturable"
+        )
+
+        values = [
+            cobro.get("id"),
+            cobro.get("numero_cobro"),
+            cobro.get("fecha_cobro"),
+            _date_to_display(cobro.get("fecha_cobro")),
+            cliente,
+            cobro.get("cliente_id"),
+            cobro.get("numero_expediente"),
+            cobro.get("expediente_id"),
+            cobro.get("numero_hoja"),
+            cobro.get("hoja_encargo_id"),
+            cobro.get("importe"),
+            _money(cobro.get("importe")),
+            cobro.get("forma_pago"),
+            cobro.get("tipo_cobro"),
+            cobro.get("concepto"),
+            cobro.get("numero_factura"),
+            cobro.get("factura_id"),
+            cobro.get("estado_conciliacion"),
+            facturacion_label,
+        ]
+
+        blob = []
+
+        for value in values:
+            blob.append(str(value or ""))
+
+            try:
+                blob.extend(_date_search_tokens(value))
+            except Exception:
+                pass
+
+        return " ".join(blob).lower()
+
+
+    def cobro_matches_search(cobro):
+        query = str(state.get("cobros_search") or "").strip().lower()
+
+        if not query:
+            return True
+
+        # Permite buscar varias palabras sin necesidad de que estén juntas.
+        tokens = [token for token in query.split() if token]
+        blob = _cobro_search_blob(cobro)
+
+        return all(token in blob for token in tokens)
+
+
+    def _normalized_cobro_date(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+
+        normalized = _date_to_sql(raw)
+        if normalized:
+            return normalized
+
+        if len(raw) >= 10 and raw[4:5] == "-" and raw[7:8] == "-":
+            return raw[:10]
+
+        return ""
+
+
+    def _cobro_status_keys(cobro):
+        keys = set()
+
+        reconciliation = str(
+            cobro.get("estado_conciliacion") or "PENDIENTE"
+        ).strip().upper().replace(" ", "_")
+
+        if reconciliation in ("", "PENDIENTE"):
+            keys.add("pending_reconciliation")
+        elif reconciliation in (
+            "PARCIAL",
+            "CONCILIACION_PARCIAL",
+            "CONCILIADO_PARCIAL",
+        ):
+            keys.add("partial_reconciliation")
+        elif reconciliation == "CONCILIADO":
+            keys.add("reconciled")
+        else:
+            keys.add("review")
+
+        if cobro.get("numero_factura") or cobro.get("factura_id"):
+            keys.add("invoiced")
+        else:
+            keys.add("not_invoiced")
+
+        return keys
+
+
+    def cobro_matches_period(cobro):
+        cobro_date = _normalized_cobro_date(cobro.get("fecha_cobro"))
+        date_from = str(state.get("cobros_date_from") or "").strip()
+        date_to = str(state.get("cobros_date_to") or "").strip()
+
+        if date_from and (not cobro_date or cobro_date < date_from):
+            return False
+
+        if date_to and (not cobro_date or cobro_date > date_to):
+            return False
+
+        return True
+
+
+    def cobro_matches_status(cobro):
+        active_status = str(
+            state.get("cobros_status_filter") or "all"
+        ).strip()
+
+        if active_status in ("", "all"):
+            return True
+
+        return active_status in _cobro_status_keys(cobro)
+
+
+    def filtered_cobros(include_status=True):
+        results = [
+            cobro
+            for cobro in economic_service.list_cobros()
+            if cobro_matches_search(cobro)
+            and cobro_matches_period(cobro)
+        ]
+
+        if include_status:
+            results = [
+                cobro
+                for cobro in results
+                if cobro_matches_status(cobro)
+            ]
+
+        return results
+
+
+    def cobros_status_counts():
+        base_cobros = filtered_cobros(include_status=False)
+
+        counts = {
+            "all": len(base_cobros),
+            "invoiced": 0,
+            "not_invoiced": 0,
+            "pending_reconciliation": 0,
+            "partial_reconciliation": 0,
+            "reconciled": 0,
+            "review": 0,
+        }
+
+        for cobro in base_cobros:
+            for key in _cobro_status_keys(cobro):
+                counts[key] = counts.get(key, 0) + 1
+
+        return counts
+
+
+    def build_cobros_status_filters():
+        status_map = {
+            "all": ("Todos", "#F8FAFC", "#475569", "#CBD5E1"),
+            "invoiced": ("Facturados", "#ECFDF3", "#027A48", "#6CE9A6"),
+            "not_invoiced": (
+                "No facturados",
+                "#F1F5F9",
+                "#475569",
+                "#CBD5E1",
+            ),
+            "pending_reconciliation": (
+                "Pendientes",
+                "#FFFAEB",
+                "#B54708",
+                "#FEC84B",
+            ),
+            "partial_reconciliation": (
+                "Parciales",
+                "#EAF3FF",
+                "#0057B8",
+                "#84CAFF",
+            ),
+            "reconciled": (
+                "Conciliados",
+                "#ECFDF3",
+                "#027A48",
+                "#6CE9A6",
+            ),
+            "review": (
+                "Revisar",
+                "#FEF3F2",
+                "#B42318",
+                "#FDA29B",
+            ),
+        }
+
+        return counter_chips(
+            options=[
+                ("invoiced", "Facturados"),
+                ("not_invoiced", "No facturados"),
+                ("pending_reconciliation", "Pendientes"),
+                ("partial_reconciliation", "Parciales"),
+                ("reconciled", "Conciliados"),
+                ("review", "Revisar"),
+            ],
+            counts=cobros_status_counts(),
+            active_value=state.get("cobros_status_filter") or "all",
+            on_select=on_cobros_status_select,
+            include_all=True,
+            all_label="Todos",
+            all_value="all",
+            status_map=status_map,
+            bordered_status=True,
+        )
+
+
+    def build_cobros_period_summary():
+        date_from = str(state.get("cobros_date_from") or "").strip()
+        date_to = str(state.get("cobros_date_to") or "").strip()
+
+        if not date_from and not date_to:
+            return ft.Text(
+                "Sin filtro temporal",
+                size=11,
+                color=Q_MUTED,
+            )
+
+        from_label = _date_to_display(date_from) if date_from else "Inicio"
+        to_label = _date_to_display(date_to) if date_to else "Hoy"
+
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.DATE_RANGE,
+                        size=14,
+                        color="#0057B8",
+                    ),
+                    ft.Text(
+                        f"{from_label} → {to_label}",
+                        size=11,
+                        weight=ft.FontWeight.BOLD,
+                        color="#0057B8",
+                    ),
+                ],
+                spacing=5,
+                tight=True,
+            ),
+            bgcolor="#EAF3FF",
+            border=ft.border.all(1, "#84CAFF"),
+            border_radius=20,
+            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        )
+
+
+    def refresh_cobros_results_only():
+        cobros_results_box.content = build_cobros_results()
+        cobros_status_box.content = build_cobros_status_filters()
+        cobros_period_summary_box.content = build_cobros_period_summary()
+
+        has_search = bool(str(state.get("cobros_search") or "").strip())
+        has_period = bool(
+            state.get("cobros_date_from")
+            or state.get("cobros_date_to")
+        )
+
+        cobros_clear_button.disabled = not has_search
+        cobros_clear_button.icon_color = (
+            Q_PRIMARY_DARK if has_search else "#98A2B3"
+        )
+
+        cobros_period_button.icon_color = (
+            "#0057B8" if has_period else Q_PRIMARY_DARK
+        )
+
+        try:
+            cobros_results_box.update()
+            cobros_status_box.update()
+            cobros_period_summary_box.update()
+            cobros_clear_button.update()
+            cobros_period_button.update()
+        except Exception:
+            page.update()
+
+
+    def on_cobros_search_change(e=None):
+        state["cobros_search"] = str(cobros_filter.value or "")
+        state["cobros_page"] = 1
+        refresh_cobros_results_only()
+
+
+    def clear_cobros_search(e=None):
+        cobros_filter.value = ""
+        state["cobros_search"] = ""
+        state["cobros_page"] = 1
+
+        refresh_cobros_results_only()
+
+        try:
+            cobros_filter.update()
+        except Exception:
+            page.update()
+
+
+    def on_cobros_status_select(status_value):
+        state["cobros_status_filter"] = str(status_value or "all")
+        state["cobros_page"] = 1
+        refresh_cobros_results_only()
+
+
+    def open_cobros_period_dialog(e=None):
+        cobros_date_from_input.value = (
+            _date_to_display(state.get("cobros_date_from"))
+            if state.get("cobros_date_from")
+            else ""
+        )
+        cobros_date_to_input.value = (
+            _date_to_display(state.get("cobros_date_to"))
+            if state.get("cobros_date_to")
+            else ""
+        )
+
+        cobros_period_error.value = ""
+        cobros_period_dialog.open = True
+        page.update()
+
+
+    def close_cobros_period_dialog(e=None):
+        cobros_period_dialog.open = False
+        page.update()
+
+
+    def apply_cobros_period_filter(e=None):
+        raw_from = str(cobros_date_from_input.value or "").strip()
+        raw_to = str(cobros_date_to_input.value or "").strip()
+
+        date_from = _date_to_sql(raw_from) if raw_from else ""
+        date_to = _date_to_sql(raw_to) if raw_to else ""
+
+        if raw_from and not date_from:
+            cobros_period_error.value = (
+                "La fecha inicial no es válida. Usa DD/MM/AAAA."
+            )
+            cobros_period_error.update()
+            return
+
+        if raw_to and not date_to:
+            cobros_period_error.value = (
+                "La fecha final no es válida. Usa DD/MM/AAAA."
+            )
+            cobros_period_error.update()
+            return
+
+        if date_from and date_to and date_from > date_to:
+            cobros_period_error.value = (
+                "La fecha inicial no puede ser posterior a la fecha final."
+            )
+            cobros_period_error.update()
+            return
+
+        state["cobros_date_from"] = date_from
+        state["cobros_date_to"] = date_to
+        state["cobros_page"] = 1
+
+        cobros_period_dialog.open = False
+        refresh_cobros_results_only()
+        page.update()
+
+
+    def clear_cobros_period_filter(e=None):
+        cobros_date_from_input.value = ""
+        cobros_date_to_input.value = ""
+        cobros_period_error.value = ""
+
+        state["cobros_date_from"] = ""
+        state["cobros_date_to"] = ""
+        state["cobros_page"] = 1
+
+        cobros_period_dialog.open = False
+        refresh_cobros_results_only()
+        page.update()
+
+
+    def go_cobros_page(page_number):
+        try:
+            requested_page = int(page_number)
+        except (TypeError, ValueError):
+            requested_page = 1
+
+        cobros = filtered_cobros()
+        page_size = max(1, int(state.get("cobros_page_size") or 10))
+        total_pages = max(1, (len(cobros) + page_size - 1) // page_size)
+
+        state["cobros_page"] = max(1, min(requested_page, total_pages))
+        refresh_cobros_results_only()
+
     def build_view():
         resumen = economic_service.resumen_economico()
         controls = [
@@ -331,28 +748,22 @@ def economic_view(page: ft.Page):
         if state["message"]:
             controls.append(state["message"])
 
-        controls.extend(
-            [
-                ft.Row(
-                    controls=[
-                    ],
-                    spacing=12,
-                    wrap=True,
-                ),
-                build_nav(),
-                build_actions(),
-                table_container,
-            ]
-        )
+        controls.append(build_nav())
+
+        action_control = build_actions()
+        if action_control is not None:
+            controls.append(action_control)
+
+        controls.append(table_container)
+
         return ft.Column(controls=controls, spacing=18, expand=True)
 
     def build_actions():
-        mapping = {
-            "hojas": ("Nueva hoja de encargo", open_hoja_dialog),
-            "cobros": ("Nuevo cobro", open_cobro_dialog),
-            "facturas": ("Nueva factura", open_factura_dialog),
-            "gastos": ("Nuevo gasto", open_gasto_dialog),
-        }
+        # En Cobros, el alta está integrada como icono
+        # junto a la barra de búsqueda.
+        if state["section"] == "cobros":
+            return None
+
         if state["section"] == "facturas":
             return ft.Container(
                 bgcolor="#FFFFFF",
@@ -366,23 +777,27 @@ def economic_view(page: ft.Page):
                 ),
             )
 
+        mapping = {
+            "hojas": ("Nueva hoja de encargo", open_hoja_dialog),
+            "gastos": ("Nuevo gasto", open_gasto_dialog),
+        }
+
         action = mapping.get(state["section"])
+
         if not action:
-            return ft.Container(
-                bgcolor="#FFFFFF",
-                border=ft.border.all(1, Q_BORDER),
-                border_radius=12,
-                padding=12,
-                content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.END),
-            )
+            return None
 
         label, handler = action
+
         return ft.Container(
             bgcolor="#FFFFFF",
             border=ft.border.all(1, Q_BORDER),
             border_radius=12,
             padding=12,
-            content=ft.Row(controls=[primary_button(label, handler)], alignment=ft.MainAxisAlignment.END),
+            content=ft.Row(
+                controls=[primary_button(label, handler)],
+                alignment=ft.MainAxisAlignment.END,
+            ),
         )
 
     def _reconciliation_status_badge(status):
@@ -3319,6 +3734,120 @@ def economic_view(page: ft.Page):
         )
 
 
+    def build_cobros_results():
+        cobros = filtered_cobros()
+
+        if not cobros:
+            state["cobros_page"] = 1
+
+            if str(state.get("cobros_search") or "").strip():
+                return empty_state(
+                    "No hay cobros que coincidan con la búsqueda"
+                )
+
+            return empty_state("No hay cobros")
+
+        page_size = max(1, int(state.get("cobros_page_size") or 10))
+        total_items = len(cobros)
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+
+        current_page = max(
+            1,
+            min(int(state.get("cobros_page") or 1), total_pages),
+        )
+        state["cobros_page"] = current_page
+
+        start_index = (current_page - 1) * page_size
+        end_index = start_index + page_size
+        visible_cobros = cobros[start_index:end_index]
+
+        cards = [
+            economic_payment_card(
+                dict(cobro),
+                date_display=_date_to_display,
+                on_edit=lambda item: open_edit_cobro_dialog(dict(item)),
+            )
+            for cobro in visible_cobros
+        ]
+
+        toolbar = ft.Row(
+            controls=[
+                ft.Text(
+                    (
+                        f"Resultados: {total_items}"
+                        if str(state.get("cobros_search") or "").strip()
+                        else f"Cobros registrados: {total_items}"
+                    ),
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                compact_pagination_bar(
+                    page=current_page,
+                    page_size=page_size,
+                    total_items=total_items,
+                    on_page_change=go_cobros_page,
+                    label_prefix="Cobros",
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+        )
+
+        return ft.Column(
+            controls=[
+                toolbar,
+                ft.Container(
+                    height=620,
+                    content=ft.Column(
+                        controls=cards,
+                        spacing=8,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+            ],
+            spacing=8,
+        )
+
+
+    def build_cobros_section():
+        cobros_results_box.content = build_cobros_results()
+        cobros_status_box.content = build_cobros_status_filters()
+        cobros_period_summary_box.content = build_cobros_period_summary()
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        cobros_filter,
+                        ft.IconButton(
+                            icon=ft.Icons.ADD_CIRCLE_OUTLINE,
+                            icon_color=Q_PRIMARY_DARK,
+                            tooltip="Nuevo cobro",
+                            on_click=open_cobro_dialog,
+                        ),
+                        cobros_period_button,
+                        cobros_clear_button,
+                    ],
+                    spacing=6,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    controls=[
+                        cobros_period_summary_box,
+                        ft.Container(expand=True),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                cobros_status_box,
+                cobros_results_box,
+            ],
+            spacing=8,
+        )
+
+
     def build_table():
         if state["section"] == "conciliacion_manual":
             return build_manual_reconciliation_section()
@@ -3344,27 +3873,7 @@ def economic_view(page: ft.Page):
             ) if rows else empty_state("No hay hojas de encargo")
 
         if state["section"] == "cobros":
-            rows = []
-            for c in economic_service.list_cobros():
-                cliente = f"{c.get('nombre') or ''} {c.get('primer_apellido') or ''} {c.get('segundo_apellido') or ''}".strip()
-                rows.append([
-                    ft.Text(c.get("numero_cobro") or "-", weight=ft.FontWeight.BOLD, size=13, color=Q_PRIMARY_DARK),
-                    _date_to_display(c.get("fecha_cobro")),
-                    cliente,
-                    c.get("numero_expediente") or "-",
-                    c.get("numero_hoja") or "-",
-                    _money(c.get("importe")),
-                    c.get("forma_pago") or "-",
-                    "Sí" if c.get("facturable") else "No",
-                    c.get("numero_factura") or "-",
-                    reconciliation_badge(c.get("estado_conciliacion")),
-                    secondary_button("Editar", lambda e, cobro=dict(c): open_edit_cobro_dialog(cobro)),
-                ])
-            return app_table(
-                ["Nº cobro", "Fecha", "Cliente", "Expediente", "Hoja", "Importe", "Forma", "Facturable", "Factura", "Conciliación", "Editar"],
-                rows,
-                height=430,
-            ) if rows else empty_state("No hay cobros")
+            return build_cobros_section()
 
         if state["section"] == "facturas":
             rows = []
@@ -3410,6 +3919,91 @@ def economic_view(page: ft.Page):
             return build_imported_movements_section()
 
         return empty_state("Selecciona una sección")
+
+    cobros_filter = text_input(
+        "Buscar cobro, cliente, fecha, importe, expediente...",
+        width=620,
+    )
+    cobros_filter.value = ""
+    cobros_filter.on_change = on_cobros_search_change
+
+    cobros_clear_button = ft.IconButton(
+        icon=ft.Icons.CLOSE,
+        icon_color="#98A2B3",
+        tooltip="Limpiar búsqueda",
+        disabled=True,
+        on_click=clear_cobros_search,
+    )
+
+    cobros_period_button = ft.IconButton(
+        icon=ft.Icons.CALENDAR_MONTH,
+        icon_color=Q_PRIMARY_DARK,
+        tooltip="Filtrar cobros por periodo",
+        on_click=open_cobros_period_dialog,
+    )
+
+    cobros_results_box = ft.Container()
+    cobros_status_box = ft.Container()
+    cobros_period_summary_box = ft.Container()
+
+    cobros_date_from_input = text_input(
+        "Desde DD/MM/AAAA",
+        width=210,
+    )
+    cobros_date_to_input = text_input(
+        "Hasta DD/MM/AAAA",
+        width=210,
+    )
+    cobros_period_error = ft.Text(
+        "",
+        size=12,
+        color="#B42318",
+    )
+
+    cobros_period_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Filtrar cobros por periodo",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        ),
+        content=ft.Column(
+            controls=[
+                ft.Text(
+                    "Introduce una o ambas fechas. Los límites están incluidos.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                ft.Row(
+                    controls=[
+                        cobros_date_from_input,
+                        cobros_date_to_input,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                cobros_period_error,
+            ],
+            spacing=12,
+            tight=True,
+        ),
+        actions=[
+            ft.TextButton(
+                "Quitar periodo",
+                on_click=clear_cobros_period_filter,
+            ),
+            ft.TextButton(
+                "Cancelar",
+                on_click=close_cobros_period_dialog,
+            ),
+            ft.TextButton(
+                "Aplicar",
+                on_click=apply_cobros_period_filter,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(cobros_period_dialog)
 
     movements_filter = text_input("Filtrar por concepto / motivo / fecha / ID", width=560)
     movements_filter.value = ""
