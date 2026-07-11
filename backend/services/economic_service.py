@@ -110,6 +110,17 @@ def _ensure_column(conn, table, column, definition):
 def initialize_economic_schema():
     schema_path = Path(__file__).resolve().parents[2] / "database" / "economic_schema.sql"
     with _connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS eco_configuracion (
+                clave TEXT PRIMARY KEY,
+                valor TEXT,
+                descripcion TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
         conn.executescript(schema_path.read_text(encoding="utf-8"))
 
         _ensure_column(
@@ -288,15 +299,303 @@ def renumerar_cobros_por_year(conn, year):
 
 
 def renumerar_facturas_por_year(conn, year):
-    _renumerar_por_fecha(
-        conn=conn,
-        table="eco_facturas",
-        id_field="id",
-        number_field="numero_factura",
-        date_field="fecha_factura",
-        prefix="FRA",
-        year=year,
+    """
+    Renumera únicamente facturas normales no exportadas.
+
+    Las facturas exportadas conservan su número.
+    Las rectificativas nunca participan en la serie FRA.
+    """
+    year = str(year or "").strip()[:4]
+
+    if not year.isdigit():
+        raise ValueError(
+            "El ejercicio de facturación no es válido"
+        )
+
+    prefix = f"FRA-{year}-"
+
+    # --------------------------------------------------------
+    # Las facturas normales exportadas son inmutables.
+    # --------------------------------------------------------
+    exported_rows = conn.execute(
+        """
+        SELECT numero_factura
+        FROM eco_facturas
+        WHERE COALESCE(activo, 1) = 1
+          AND COALESCE(exportada_holded, 0) = 1
+          AND numero_factura LIKE ?
+          AND factura_rectificada_id IS NULL
+          AND UPPER(
+                COALESCE(tipo_factura, 'NORMAL')
+              ) != 'RECTIFICATIVA'
+        """,
+        (prefix + "%",),
+    ).fetchall()
+
+    max_exported_sequence = 0
+    reserved_numbers = set()
+
+    for row in exported_rows:
+        number = str(
+            row["numero_factura"] or ""
+        ).strip()
+
+        reserved_numbers.add(number)
+
+        try:
+            sequence = int(
+                number.rsplit("-", 1)[-1]
+            )
+        except (TypeError, ValueError):
+            continue
+
+        max_exported_sequence = max(
+            max_exported_sequence,
+            sequence,
+        )
+
+    # --------------------------------------------------------
+    # Solo se renumeran las facturas normales pendientes.
+    # --------------------------------------------------------
+    pending_rows = conn.execute(
+        """
+        SELECT
+            id,
+            numero_factura,
+            fecha_factura
+        FROM eco_facturas
+        WHERE COALESCE(activo, 1) = 1
+          AND COALESCE(exportada_holded, 0) = 0
+          AND substr(fecha_factura, 1, 4) = ?
+          AND factura_rectificada_id IS NULL
+          AND UPPER(
+                COALESCE(tipo_factura, 'NORMAL')
+              ) != 'RECTIFICATIVA'
+        ORDER BY
+            fecha_factura ASC,
+            id ASC
+        """,
+        (year,),
+    ).fetchall()
+
+    assignments = []
+    sequence = max_exported_sequence + 1
+
+    for row in pending_rows:
+        candidate = (
+            f"{prefix}{sequence:04d}"
+        )
+
+        while candidate in reserved_numbers:
+            sequence += 1
+            candidate = (
+                f"{prefix}{sequence:04d}"
+            )
+
+        assignments.append(
+            (
+                int(row["id"]),
+                candidate,
+            )
+        )
+
+        reserved_numbers.add(candidate)
+        sequence += 1
+
+    # Números temporales para no colisionar con UNIQUE.
+    for invoice_id, final_number in assignments:
+        conn.execute(
+            """
+            UPDATE eco_facturas
+            SET numero_factura = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND COALESCE(exportada_holded, 0) = 0
+              AND factura_rectificada_id IS NULL
+              AND UPPER(
+                    COALESCE(tipo_factura, 'NORMAL')
+                  ) != 'RECTIFICATIVA'
+            """,
+            (
+                f"TMP-FRA-{year}-{invoice_id}",
+                invoice_id,
+            ),
+        )
+
+    for invoice_id, final_number in assignments:
+        conn.execute(
+            """
+            UPDATE eco_facturas
+            SET numero_factura = ?,
+                tipo_factura = 'NORMAL',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND COALESCE(exportada_holded, 0) = 0
+              AND factura_rectificada_id IS NULL
+              AND UPPER(
+                    COALESCE(tipo_factura, 'NORMAL')
+                  ) != 'RECTIFICATIVA'
+            """,
+            (
+                final_number,
+                invoice_id,
+            ),
+        )
+
+    return [
+        {
+            "factura_id": invoice_id,
+            "numero_factura": number,
+        }
+        for invoice_id, number in assignments
+    ]
+
+
+
+INVOICE_CLOSURE_SETTING_KEY = "invoice_closed_until"
+
+
+def get_economic_setting(key, default=None):
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT valor
+            FROM eco_configuracion
+            WHERE clave = ?
+            """,
+            (_text(key),),
+        ).fetchone()
+
+    if not row:
+        return default
+
+    value = row["valor"]
+
+    if value is None or str(value).strip() == "":
+        return default
+
+    return value
+
+
+def set_economic_setting(key, value, description=None):
+    key = _text(key)
+
+    if not key:
+        raise ValueError("Clave de configuración no válida")
+
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO eco_configuracion (
+                clave,
+                valor,
+                descripcion,
+                updated_at
+            )
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(clave) DO UPDATE SET
+                valor = excluded.valor,
+                descripcion = COALESCE(
+                    excluded.descripcion,
+                    eco_configuracion.descripcion
+                ),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                key,
+                _raw(value),
+                _raw(description),
+            ),
+        )
+        conn.commit()
+
+    return value
+
+
+def get_invoice_closure_date():
+    """
+    La fecha de cierre no se configura manualmente.
+
+    Se obtiene de la factura activa con fecha más reciente que ya
+    haya sido exportada a Holded.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT MAX(fecha_factura) AS closure_date
+            FROM eco_facturas
+            WHERE COALESCE(activo, 1) = 1
+              AND COALESCE(exportada_holded, 0) = 1
+            """
+        ).fetchone()
+
+    if not row:
+        return None
+
+    return row["closure_date"] or None
+
+def set_invoice_closure_date(value):
+    new_date = _date(value)
+
+    if not new_date:
+        raise ValueError("Indica una fecha de cierre válida")
+
+    current_date = get_invoice_closure_date()
+
+    if current_date and new_date < current_date:
+        raise ValueError(
+            "La fecha de cierre no puede retroceder. "
+            f"El periodo ya está cerrado hasta {current_date}"
+        )
+
+    set_economic_setting(
+        INVOICE_CLOSURE_SETTING_KEY,
+        new_date,
+        (
+            "Último día cerrado para creación, modificación "
+            "y eliminación de facturas"
+        ),
     )
+
+    registrar_evento(
+        "eco_configuracion",
+        0,
+        "MODIFICACION",
+        "CIERRE DE FACTURACION",
+        f"Facturación cerrada hasta {new_date}",
+    )
+
+    return new_date
+
+
+def is_invoice_date_closed(value):
+    closure_date = get_invoice_closure_date()
+
+    if not closure_date:
+        return False
+
+    invoice_date = _date(value)
+
+    if not invoice_date:
+        return False
+
+    return invoice_date <= closure_date
+
+
+def assert_invoice_date_open(value, action="modificar"):
+    closure_date = get_invoice_closure_date()
+
+    if not closure_date:
+        return
+
+    invoice_date = _date(value)
+
+    if invoice_date and invoice_date <= closure_date:
+        raise ValueError(
+            f"No se puede {action} una factura con fecha "
+            f"{invoice_date}. La facturación está cerrada "
+            f"hasta {closure_date}"
+        )
 
 
 def _calculate_invoice_from_total(
@@ -382,6 +681,10 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
         return None
 
     fecha = cobro.get("fecha_cobro") or datetime.today().strftime("%Y-%m-%d")
+    assert_invoice_date_open(
+        fecha,
+        action="crear o recalcular",
+    )
     year = fecha[:4]
     importe = float(cobro.get("importe") or 0)
 
@@ -408,6 +711,42 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
     factura_id = cobro.get("factura_id")
 
     if factura_id:
+        existing_invoice = _dict(
+            conn.execute(
+                """
+                SELECT id, numero_factura, exportada_holded
+                FROM eco_facturas
+                WHERE id = ?
+                  AND COALESCE(activo, 1) = 1
+                """,
+                (int(factura_id),),
+            ).fetchone()
+        )
+
+        if existing_invoice and int(
+            existing_invoice.get("exportada_holded") or 0
+        ):
+            raise ValueError(
+                "La factura está exportada a Holded y permanece bloqueada"
+            )
+
+        existing_invoice_full = _dict(
+            conn.execute(
+                """
+                SELECT fecha_factura
+                FROM eco_facturas
+                WHERE id = ?
+                """,
+                (int(factura_id),),
+            ).fetchone()
+        )
+
+        if existing_invoice_full:
+            assert_invoice_date_open(
+                existing_invoice_full.get("fecha_factura"),
+                action="modificar",
+            )
+
         conn.execute(
             """
             UPDATE eco_facturas
@@ -586,6 +925,69 @@ def next_numero_cobro(fecha_cobro):
 
 def next_numero_factura(fecha_factura):
     return _next_number("eco_facturas", "numero_factura", "FRA", fecha_factura)
+
+
+
+def next_numero_rectificativa(
+    fecha_factura,
+    conn=None,
+):
+    """
+    Devuelve el siguiente número de la serie rectificativa.
+
+    La secuencia:
+    - es independiente de FRA;
+    - se calcula por ejercicio;
+    - incluye registros activos, inactivos, pendientes y exportados;
+    - nunca reutiliza un número previamente asignado;
+    - puede utilizar la conexión transaccional de creación.
+    """
+    fecha = _date(fecha_factura)
+    year = fecha[:4]
+    prefix = f"R-{year}-"
+
+    owns_connection = conn is None
+
+    if owns_connection:
+        conn = _connect()
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT numero_factura
+            FROM eco_facturas
+            WHERE numero_factura LIKE ?
+            """,
+            (prefix + "%",),
+        ).fetchall()
+
+        max_sequence = 0
+
+        for row in rows:
+            raw_number = str(
+                row["numero_factura"] or ""
+            ).strip()
+
+            if not raw_number.startswith(prefix):
+                continue
+
+            raw_sequence = raw_number[len(prefix):]
+
+            if not raw_sequence.isdigit():
+                continue
+
+            max_sequence = max(
+                max_sequence,
+                int(raw_sequence),
+            )
+
+        return (
+            f"{prefix}{max_sequence + 1:04d}"
+        )
+
+    finally:
+        if owns_connection:
+            conn.close()
 
 
 def get_clientes_for_select():
@@ -898,6 +1300,59 @@ def update_cobro(cobro_id, data):
         raise ValueError("Los cobros de expediente deben estar asociados a una hoja de encargo")
 
     with _connect() as conn:
+        locked_invoice = _dict(
+            conn.execute(
+                """
+                SELECT f.id, f.numero_factura, f.exportada_holded
+                FROM eco_cobros cob
+                JOIN eco_facturas f
+                  ON f.id = cob.factura_id
+                WHERE cob.id = ?
+                  AND COALESCE(cob.activo, 1) = 1
+                  AND COALESCE(f.activo, 1) = 1
+                  AND COALESCE(f.exportada_holded, 0) = 1
+                """,
+                (cobro_id,),
+            ).fetchone()
+        )
+
+        if locked_invoice:
+            raise ValueError(
+                "El cobro está vinculado a una factura exportada "
+                "a Holded y no puede modificarse"
+            )
+
+        linked_invoice = _dict(
+            conn.execute(
+                """
+                SELECT f.id,
+                       f.numero_factura,
+                       f.fecha_factura
+                FROM eco_cobros cob
+                JOIN eco_facturas f
+                  ON f.id = cob.factura_id
+                WHERE cob.id = ?
+                  AND COALESCE(cob.activo, 1) = 1
+                  AND COALESCE(f.activo, 1) = 1
+                """,
+                (cobro_id,),
+            ).fetchone()
+        )
+
+        if linked_invoice:
+            assert_invoice_date_open(
+                linked_invoice.get("fecha_factura"),
+                action="modificar",
+            )
+
+        new_invoice_date = _date(data.get("fecha_cobro"))
+
+        if linked_invoice and new_invoice_date:
+            assert_invoice_date_open(
+                new_invoice_date,
+                action="mover",
+            )
+
         old = _dict(
             conn.execute(
                 "SELECT * FROM eco_cobros WHERE id = ? AND activo = 1",
@@ -995,8 +1450,609 @@ def list_cobros(active_only=True):
         return [_dict(r) for r in conn.execute(sql).fetchall()]
 
 
+def get_cobro(cobro_id):
+    sql = """
+        SELECT cob.*,
+               c.nombre,
+               c.primer_apellido,
+               c.segundo_apellido,
+               e.numero_expediente,
+               h.numero_hoja,
+               f.numero_factura,
+               COALESCE(f.exportada_holded, 0) AS factura_exportada_holded
+        FROM eco_cobros cob
+        JOIN clientes c
+          ON c.id = cob.cliente_id
+        LEFT JOIN expedientes e
+          ON e.id = cob.expediente_id
+        LEFT JOIN eco_hojas_encargo h
+          ON h.id = cob.hoja_encargo_id
+        LEFT JOIN eco_facturas f
+          ON f.id = cob.factura_id
+        WHERE cob.id = ?
+          AND COALESCE(cob.activo, 1) = 1
+    """
+
+    with _connect() as conn:
+        return _dict(
+            conn.execute(sql, (int(cobro_id),)).fetchone()
+        )
+
+
+RECTIFICATION_CAUSE_CODES = {
+    "ERROR_IMPORTE",
+    "ERROR_DATOS",
+    "DEVOLUCION",
+    "DESCUENTO_POSTERIOR",
+    "ANULACION_OPERACION",
+    "OTRA",
+}
+
+
+def get_rectification_balance(factura_original_id):
+    factura_original_id = int(factura_original_id)
+
+    with _connect() as conn:
+        original = _dict(
+            conn.execute(
+                """
+                SELECT *
+                FROM eco_facturas
+                WHERE id = ?
+                  AND COALESCE(activo, 1) = 1
+                """,
+                (factura_original_id,),
+            ).fetchone()
+        )
+
+        if not original:
+            raise ValueError("Factura original no encontrada")
+
+        totals = _dict(
+            conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(base_imponible), 0) AS rect_base,
+                    COALESCE(SUM(iva), 0) AS rect_iva,
+                    COALESCE(SUM(irpf), 0) AS rect_irpf,
+                    COALESCE(SUM(suplidos), 0) AS rect_suplidos,
+                    COALESCE(SUM(total), 0) AS rect_total
+                FROM eco_facturas
+                WHERE factura_rectificada_id = ?
+                  AND COALESCE(activo, 1) = 1
+                  AND UPPER(
+                        COALESCE(tipo_factura, 'NORMAL')
+                      ) = 'RECTIFICATIVA'
+                """,
+                (factura_original_id,),
+            ).fetchone()
+        ) or {}
+
+    return {
+        "original": original,
+        "rectificado": {
+            "base_imponible": round(
+                _float(totals.get("rect_base")),
+                2,
+            ),
+            "iva": round(
+                _float(totals.get("rect_iva")),
+                2,
+            ),
+            "irpf": round(
+                _float(totals.get("rect_irpf")),
+                2,
+            ),
+            "suplidos": round(
+                _float(totals.get("rect_suplidos")),
+                2,
+            ),
+            "total": round(
+                _float(totals.get("rect_total")),
+                2,
+            ),
+        },
+    }
+
+
+def create_factura_rectificativa(
+    factura_original_id,
+    data,
+):
+    factura_original_id = int(factura_original_id)
+    data = dict(data or {})
+
+    fecha = _date(data.get("fecha_factura"))
+    assert_invoice_date_open(
+        fecha,
+        action="crear factura rectificativa",
+    )
+
+    codigo_causa = _text(
+        data.get("codigo_causa_rectificacion")
+        or "OTRA"
+    ).upper()
+
+    causa = _text(data.get("causa_rectificacion"))
+
+    if codigo_causa not in RECTIFICATION_CAUSE_CODES:
+        raise ValueError(
+            "La causa seleccionada no es válida"
+        )
+
+    if not causa:
+        raise ValueError(
+            "Debes indicar el motivo de la rectificación"
+        )
+
+    base = round(
+        _float(data.get("base_imponible")),
+        2,
+    )
+    iva = round(
+        _float(data.get("iva")),
+        2,
+    )
+    irpf = round(
+        _float(data.get("irpf")),
+        2,
+    )
+    suplidos = round(
+        _float(data.get("suplidos")),
+        2,
+    )
+
+    total = round(
+        base + iva - irpf + suplidos,
+        2,
+    )
+
+    if (
+        base == 0
+        and iva == 0
+        and irpf == 0
+        and suplidos == 0
+    ):
+        raise ValueError(
+            "La rectificativa no puede tener todos "
+            "los importes a cero"
+        )
+
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        original = _dict(
+            conn.execute(
+                """
+                SELECT *
+                FROM eco_facturas
+                WHERE id = ?
+                  AND COALESCE(activo, 1) = 1
+                """,
+                (factura_original_id,),
+            ).fetchone()
+        )
+
+        if not original:
+            raise ValueError(
+                "Factura original no encontrada"
+            )
+
+        if not int(
+            original.get("exportada_holded") or 0
+        ):
+            raise ValueError(
+                "La factura todavía no está exportada. "
+                "Debes modificarla directamente."
+            )
+
+        if (
+            _text(
+                original.get("tipo_factura")
+                or "NORMAL"
+            ).upper()
+            == "RECTIFICATIVA"
+        ):
+            raise ValueError(
+                "No se puede generar desde aquí una "
+                "rectificativa de otra rectificativa"
+            )
+
+        accumulated = _dict(
+            conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(base_imponible), 0) AS base,
+                    COALESCE(SUM(iva), 0) AS iva,
+                    COALESCE(SUM(irpf), 0) AS irpf,
+                    COALESCE(SUM(suplidos), 0) AS suplidos,
+                    COALESCE(SUM(total), 0) AS total
+                FROM eco_facturas
+                WHERE factura_rectificada_id = ?
+                  AND COALESCE(activo, 1) = 1
+                  AND UPPER(
+                        COALESCE(tipo_factura, 'NORMAL')
+                      ) = 'RECTIFICATIVA'
+                """,
+                (factura_original_id,),
+            ).fetchone()
+        ) or {}
+
+        resulting_base = round(
+            _float(original.get("base_imponible"))
+            + _float(accumulated.get("base"))
+            + base,
+            2,
+        )
+        resulting_iva = round(
+            _float(original.get("iva"))
+            + _float(accumulated.get("iva"))
+            + iva,
+            2,
+        )
+        resulting_irpf = round(
+            _float(original.get("irpf"))
+            + _float(accumulated.get("irpf"))
+            + irpf,
+            2,
+        )
+        resulting_suplidos = round(
+            _float(original.get("suplidos"))
+            + _float(accumulated.get("suplidos"))
+            + suplidos,
+            2,
+        )
+        resulting_total = round(
+            _float(original.get("total"))
+            + _float(accumulated.get("total"))
+            + total,
+            2,
+        )
+
+        if resulting_base < -0.01:
+            raise ValueError(
+                "La rectificación supera la base pendiente"
+            )
+
+        if resulting_iva < -0.01:
+            raise ValueError(
+                "La rectificación supera el IVA pendiente"
+            )
+
+        if resulting_irpf < -0.01:
+            raise ValueError(
+                "La rectificación supera el IRPF pendiente"
+            )
+
+        if resulting_suplidos < -0.01:
+            raise ValueError(
+                "La rectificación supera los suplidos pendientes"
+            )
+
+        if resulting_total < -0.01:
+            raise ValueError(
+                "La rectificación supera el total de "
+                "la factura original"
+            )
+
+        numero = next_numero_rectificativa(
+            fecha,
+            conn=conn,
+        )
+
+        concepto = _text(
+            data.get("concepto")
+        ) or (
+            f"Rectificación de "
+            f"{original.get('numero_factura')}: {causa}"
+        )
+
+        cur = conn.execute(
+            """
+            INSERT INTO eco_facturas (
+                numero_factura,
+                fecha_factura,
+                cliente_id,
+                expediente_id,
+                hoja_encargo_id,
+                base_imponible,
+                iva,
+                irpf,
+                suplidos,
+                total,
+                tipo_fiscal,
+                concepto,
+                tipo_factura,
+                factura_rectificada_id,
+                metodo_rectificacion,
+                codigo_causa_rectificacion,
+                causa_rectificacion,
+                estado,
+                exportada_holded,
+                documento_ruta,
+                observaciones,
+                activo
+            )
+            VALUES (
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?,
+                'RECTIFICATIVA',
+                ?,
+                'DIFERENCIAS',
+                ?,
+                ?,
+                'EMITIDA',
+                0,
+                NULL,
+                ?,
+                1
+            )
+            """,
+            (
+                numero,
+                fecha,
+                int(original["cliente_id"]),
+                original.get("expediente_id"),
+                original.get("hoja_encargo_id"),
+                base,
+                iva,
+                irpf,
+                suplidos,
+                total,
+                _text(
+                    original.get("tipo_fiscal")
+                    or "PROVISION"
+                ).upper(),
+                concepto,
+                factura_original_id,
+                codigo_causa,
+                causa,
+                _text(data.get("observaciones")),
+            ),
+        )
+
+        rectificativa_id = int(cur.lastrowid)
+        conn.commit()
+
+    registrar_evento(
+        "eco_facturas",
+        rectificativa_id,
+        "RECTIFICACION",
+        "FACTURA RECTIFICATIVA CREADA",
+        (
+            f"{numero} rectifica "
+            f"{original.get('numero_factura')} · "
+            f"{total:.2f} € · {causa}"
+        ),
+    )
+
+    registrar_evento(
+        "eco_facturas",
+        factura_original_id,
+        "RECTIFICADA",
+        "FACTURA RECTIFICADA",
+        (
+            f"{numero} · {total:.2f} € · {causa}"
+        ),
+    )
+
+    return rectificativa_id
+
+
+def get_factura(factura_id):
+    sql = """
+        SELECT f.*,
+               c.nombre,
+               c.primer_apellido,
+               c.segundo_apellido,
+               e.numero_expediente,
+               h.numero_hoja,
+               fc.cobro_id,
+               cob.numero_cobro,
+               original.numero_factura
+                   AS numero_factura_rectificada
+        FROM eco_facturas f
+        JOIN clientes c
+          ON c.id = f.cliente_id
+        LEFT JOIN expedientes e
+          ON e.id = f.expediente_id
+        LEFT JOIN eco_hojas_encargo h
+          ON h.id = f.hoja_encargo_id
+        LEFT JOIN eco_factura_cobros fc
+          ON fc.id = (
+              SELECT fc2.id
+              FROM eco_factura_cobros fc2
+              WHERE fc2.factura_id = f.id
+              ORDER BY fc2.id
+              LIMIT 1
+          )
+        LEFT JOIN eco_cobros cob
+          ON cob.id = fc.cobro_id
+        LEFT JOIN eco_facturas original
+          ON original.id = f.factura_rectificada_id
+        WHERE f.id = ?
+          AND COALESCE(f.activo, 1) = 1
+    """
+
+    with _connect() as conn:
+        return _dict(
+            conn.execute(sql, (int(factura_id),)).fetchone()
+        )
+
+
+def mark_factura_exportada_holded(factura_id):
+    factura_id = int(factura_id)
+
+    with _connect() as conn:
+        factura = _dict(
+            conn.execute(
+                """
+                SELECT *
+                FROM eco_facturas
+                WHERE id = ?
+                  AND COALESCE(activo, 1) = 1
+                """,
+                (factura_id,),
+            ).fetchone()
+        )
+
+        if not factura:
+            raise ValueError("Factura no encontrada")
+
+        if int(factura.get("exportada_holded") or 0):
+            raise ValueError(
+                "La factura ya está exportada a Holded"
+            )
+
+        current_closure = get_invoice_closure_date()
+        factura_date = str(
+            factura.get("fecha_factura") or ""
+        )
+
+        if (
+            current_closure
+            and factura_date
+            and factura_date <= current_closure
+        ):
+            raise ValueError(
+                "La factura pertenece a un periodo ya cerrado "
+                f"en Holded hasta {current_closure}"
+            )
+
+        conn.execute(
+            """
+            UPDATE eco_facturas
+            SET exportada_holded = 1,
+                estado = 'EXPORTADA',
+                fecha_exportacion = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (factura_id,),
+        )
+
+        conn.commit()
+
+    registrar_evento(
+        "eco_facturas",
+        factura_id,
+        "EXPORTACION",
+        "FACTURA EXPORTADA A HOLDED",
+        (
+            f"{factura.get('numero_factura') or factura_id} "
+            "marcada como exportada a Holded"
+        ),
+    )
+
+    return factura_id
+
+
+def delete_factura(factura_id):
+    factura_id = int(factura_id)
+
+    with _connect() as conn:
+        factura = _dict(
+            conn.execute(
+                """
+                SELECT *
+                FROM eco_facturas
+                WHERE id = ?
+                  AND COALESCE(activo, 1) = 1
+                """,
+                (factura_id,),
+            ).fetchone()
+        )
+
+        if not factura:
+            raise ValueError("Factura no encontrada")
+
+        if int(factura.get("exportada_holded") or 0):
+            raise ValueError(
+                "La factura está exportada a Holded "
+                "y no puede eliminarse"
+            )
+
+        assert_invoice_date_open(
+            factura.get("fecha_factura"),
+            action="eliminar",
+        )
+
+        cobro_rows = conn.execute(
+            """
+            SELECT cobro_id
+            FROM eco_factura_cobros
+            WHERE factura_id = ?
+            """,
+            (factura_id,),
+        ).fetchall()
+
+        cobro_ids = [
+            int(row["cobro_id"])
+            for row in cobro_rows
+            if row["cobro_id"] is not None
+        ]
+
+        conn.execute(
+            """
+            DELETE FROM eco_factura_cobros
+            WHERE factura_id = ?
+            """,
+            (factura_id,),
+        )
+
+        if cobro_ids:
+            placeholders = ", ".join("?" for _ in cobro_ids)
+
+            conn.execute(
+                f"""
+                UPDATE eco_cobros
+                SET factura_id = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                  AND factura_id = ?
+                """,
+                (*cobro_ids, factura_id),
+            )
+
+        conn.execute(
+            """
+            UPDATE eco_facturas
+            SET activo = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (factura_id,),
+        )
+
+        year = str(
+            factura.get("fecha_factura")
+            or datetime.today().strftime("%Y")
+        )[:4]
+
+        renumerar_facturas_por_year(conn, year)
+        conn.commit()
+
+    registrar_evento(
+        "eco_facturas",
+        factura_id,
+        "ELIMINACION",
+        "FACTURA ELIMINADA",
+        (
+            f"{factura.get('numero_factura') or factura_id} · "
+            "cobro conservado y desvinculado"
+        ),
+    )
+
+    return factura_id
+
+
 def create_factura(data, cobro_ids=None):
     fecha = _date(data.get("fecha_factura"))
+    assert_invoice_date_open(
+        fecha,
+        action="crear",
+    )
     year = fecha[:4] if fecha else datetime.today().strftime("%Y")
     numero = _text(data.get("numero_factura")) or next_numero_factura(fecha)
     base = _float(data.get("base_imponible"))
@@ -1093,12 +2149,35 @@ def create_factura(data, cobro_ids=None):
 
 def list_facturas(active_only=True):
     sql = """
-        SELECT f.*, c.nombre, c.primer_apellido, c.segundo_apellido,
-               e.numero_expediente, h.numero_hoja
+        SELECT f.*,
+               c.nombre,
+               c.primer_apellido,
+               c.segundo_apellido,
+               e.numero_expediente,
+               h.numero_hoja,
+               fc.cobro_id,
+               cob.numero_cobro,
+               original.numero_factura
+                   AS numero_factura_rectificada
         FROM eco_facturas f
-        JOIN clientes c ON c.id = f.cliente_id
-        LEFT JOIN expedientes e ON e.id = f.expediente_id
-        LEFT JOIN eco_hojas_encargo h ON h.id = f.hoja_encargo_id
+        JOIN clientes c
+          ON c.id = f.cliente_id
+        LEFT JOIN expedientes e
+          ON e.id = f.expediente_id
+        LEFT JOIN eco_hojas_encargo h
+          ON h.id = f.hoja_encargo_id
+        LEFT JOIN eco_factura_cobros fc
+          ON fc.id = (
+              SELECT fc2.id
+              FROM eco_factura_cobros fc2
+              WHERE fc2.factura_id = f.id
+              ORDER BY fc2.id
+              LIMIT 1
+          )
+        LEFT JOIN eco_cobros cob
+          ON cob.id = fc.cobro_id
+        LEFT JOIN eco_facturas original
+          ON original.id = f.factura_rectificada_id
     """
     if active_only:
         sql += " WHERE f.activo = 1"

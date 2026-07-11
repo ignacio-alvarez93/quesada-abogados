@@ -1,7 +1,9 @@
+from pathlib import Path
 import flet as ft
 from datetime import datetime
 
 from backend.services import economic_service
+from backend.services import holded_invoice_export_service
 from frontend.components.app_button import primary_button, secondary_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -4111,6 +4113,443 @@ def economic_view(page: ft.Page):
         refresh_facturas_results_only()
 
 
+    factura_delete_state = {
+        "id": None,
+        "numero": "",
+    }
+
+
+    def open_edit_factura_linked_cobro(factura):
+        if bool(factura.get("_period_closed")):
+            show_message(
+                error_alert(
+                    "La factura pertenece a un periodo cerrado"
+                )
+            )
+            refresh()
+            return
+
+        if bool(factura.get("exportada_holded")):
+            show_message(
+                error_alert(
+                    "La factura está exportada a Holded "
+                    "y permanece bloqueada"
+                )
+            )
+            refresh()
+            return
+
+        cobro_id = factura.get("cobro_id")
+
+        if not cobro_id:
+            show_message(
+                error_alert(
+                    "La factura no tiene un cobro vinculado modificable"
+                )
+            )
+            refresh()
+            return
+
+        cobro = economic_service.get_cobro(cobro_id)
+
+        if not cobro:
+            show_message(
+                error_alert("No se encontró el cobro vinculado")
+            )
+            refresh()
+            return
+
+        open_edit_cobro_dialog(cobro)
+
+
+    rectification_state = {
+        "factura": None,
+    }
+
+
+    def _rectification_float(control):
+        raw = str(control.value or "").strip()
+        raw = raw.replace(",", ".")
+
+        if raw in ("", "-", "+"):
+            return 0.0
+
+        return round(float(raw), 2)
+
+
+    def update_rectification_total(e=None):
+        try:
+            base = _rectification_float(
+                rectification_base_input
+            )
+            iva = _rectification_float(
+                rectification_iva_input
+            )
+            irpf = _rectification_float(
+                rectification_irpf_input
+            )
+            suplidos = _rectification_float(
+                rectification_suplidos_input
+            )
+
+            total = round(
+                base + iva - irpf + suplidos,
+                2,
+            )
+
+            rectification_total_text.value = (
+                f"Total rectificativa: {total:.2f} €"
+            )
+            rectification_error_text.value = ""
+
+        except Exception:
+            rectification_total_text.value = (
+                "Total rectificativa: —"
+            )
+            rectification_error_text.value = (
+                "Revisa los importes introducidos"
+            )
+
+        try:
+            rectification_total_text.update()
+            rectification_error_text.update()
+        except Exception:
+            pass
+
+
+    def apply_rectification_mode(e=None):
+        factura = (
+            rectification_state.get("factura")
+            or {}
+        )
+
+        total_mode = (
+            rectification_mode.value
+            == "ANULACION_TOTAL"
+        )
+
+        controls = [
+            rectification_base_input,
+            rectification_iva_input,
+            rectification_irpf_input,
+            rectification_suplidos_input,
+        ]
+
+        if total_mode:
+            rectification_base_input.value = (
+                f"{-float(factura.get('base_imponible') or 0):.2f}"
+            )
+            rectification_iva_input.value = (
+                f"{-float(factura.get('iva') or 0):.2f}"
+            )
+            rectification_irpf_input.value = (
+                f"{-float(factura.get('irpf') or 0):.2f}"
+            )
+            rectification_suplidos_input.value = (
+                f"{-float(factura.get('suplidos') or 0):.2f}"
+            )
+
+        for control in controls:
+            control.disabled = total_mode
+
+        update_rectification_total()
+
+        try:
+            for control in controls:
+                control.update()
+        except Exception:
+            page.update()
+
+
+    def open_rectification_dialog(factura):
+        if not bool(
+            factura.get("exportada_holded")
+        ):
+            show_message(
+                error_alert(
+                    "La factura no está exportada. "
+                    "Puedes modificarla directamente."
+                )
+            )
+            return
+
+        if (
+            str(
+                factura.get("tipo_factura")
+                or "NORMAL"
+            ).upper()
+            == "RECTIFICATIVA"
+        ):
+            show_message(
+                error_alert(
+                    "Esta acción no está disponible para "
+                    "una rectificativa."
+                )
+            )
+            return
+
+        rectification_state["factura"] = dict(factura)
+
+        rectification_original_text.value = (
+            f"Factura original: "
+            f"{factura.get('numero_factura') or '-'} · "
+            f"{float(factura.get('total') or 0):.2f} €"
+        )
+
+        rectification_date_input.value = (
+            datetime.today().strftime("%Y-%m-%d")
+        )
+        rectification_mode.value = "ANULACION_TOTAL"
+        rectification_cause_code.value = (
+            "ANULACION_OPERACION"
+        )
+        rectification_cause_input.value = ""
+        rectification_observations_input.value = ""
+
+        apply_rectification_mode()
+
+        rectification_dialog.open = True
+        page.update()
+
+
+    def close_rectification_dialog(e=None):
+        rectification_dialog.open = False
+        rectification_state["factura"] = None
+        page.update()
+
+
+    def confirm_rectification(e=None):
+        factura = (
+            rectification_state.get("factura")
+            or {}
+        )
+
+        factura_id = factura.get("id")
+
+        if not factura_id:
+            show_message(
+                error_alert(
+                    "No se ha identificado la factura original"
+                )
+            )
+            return
+
+        try:
+            rectificativa_id = (
+                economic_service
+                .create_factura_rectificativa(
+                    factura_id,
+                    {
+                        "fecha_factura":
+                            rectification_date_input.value,
+                        "codigo_causa_rectificacion":
+                            rectification_cause_code.value,
+                        "causa_rectificacion":
+                            rectification_cause_input.value,
+                        "base_imponible":
+                            _rectification_float(
+                                rectification_base_input
+                            ),
+                        "iva":
+                            _rectification_float(
+                                rectification_iva_input
+                            ),
+                        "irpf":
+                            _rectification_float(
+                                rectification_irpf_input
+                            ),
+                        "suplidos":
+                            _rectification_float(
+                                rectification_suplidos_input
+                            ),
+                        "observaciones":
+                            rectification_observations_input.value,
+                    },
+                )
+            )
+
+            rectification_dialog.open = False
+            rectification_state["factura"] = None
+
+            show_message(
+                success_alert(
+                    "Factura rectificativa creada "
+                    f"correctamente (ID {rectificativa_id})"
+                )
+            )
+
+            refresh()
+
+        except Exception as exc:
+            rectification_error_text.value = str(exc)
+
+            try:
+                rectification_error_text.update()
+            except Exception:
+                page.update()
+
+
+    def open_delete_factura_dialog(factura):
+        if bool(factura.get("_period_closed")):
+            show_message(
+                error_alert(
+                    "La factura pertenece a un periodo cerrado"
+                )
+            )
+            refresh()
+            return
+
+        if bool(factura.get("exportada_holded")):
+            show_message(
+                error_alert(
+                    "La factura está exportada a Holded "
+                    "y no puede eliminarse"
+                )
+            )
+            refresh()
+            return
+
+        factura_delete_state["id"] = factura.get("id")
+        factura_delete_state["numero"] = (
+            factura.get("numero_factura")
+            or f"Factura #{factura.get('id') or '-'}"
+        )
+
+        factura_delete_message.value = (
+            f"Se eliminará {factura_delete_state['numero']}. "
+            "El cobro vinculado se conservará y volverá a quedar "
+            "disponible como facturable."
+        )
+
+        factura_delete_dialog.open = True
+        page.update()
+
+
+    def close_delete_factura_dialog(e=None):
+        factura_delete_dialog.open = False
+        page.update()
+
+
+    def confirm_delete_factura(e=None):
+        try:
+            factura_id = factura_delete_state.get("id")
+
+            if not factura_id:
+                raise ValueError("Factura no identificada")
+
+            economic_service.delete_factura(factura_id)
+
+            factura_delete_dialog.open = False
+            factura_delete_state["id"] = None
+            factura_delete_state["numero"] = ""
+
+            show_message(
+                success_alert(
+                    "Factura eliminada; el cobro se ha conservado"
+                )
+            )
+        except Exception as exc:
+            factura_delete_dialog.open = False
+            show_message(error_alert(str(exc)))
+
+        refresh()
+
+
+    def mark_factura_exportada_holded(factura):
+        try:
+            factura_id = factura.get("id")
+
+            if not factura_id:
+                raise ValueError("Factura no identificada")
+
+            if bool(factura.get("exportada_holded")):
+                raise ValueError(
+                    "La factura ya está exportada a Holded"
+                )
+
+            economic_service.mark_factura_exportada_holded(
+                factura_id
+            )
+
+            show_message(
+                success_alert(
+                    "Factura marcada como exportada a Holded"
+                )
+            )
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+
+        refresh()
+
+
+    def export_all_pending_invoices_to_holded(e=None):
+        try:
+            result = (
+                holded_invoice_export_service
+                .export_pending_invoices_to_holded()
+            )
+
+            show_message(
+                success_alert(
+                    (
+                        f"Exportadas {result['count']} facturas "
+                        f"a {result['filename']}"
+                    )
+                )
+            )
+
+            try:
+                page.run_task(
+                    page.launch_url,
+                    Path(result["path"]).as_uri(),
+                )
+            except Exception:
+                pass
+
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+
+        refresh()
+
+
+    facturas_export_holded_button = ft.OutlinedButton(
+        content=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.UPLOAD_FILE_OUTLINED,
+                    size=17,
+                    color="#027A48",
+                ),
+                ft.Text(
+                    "Exportar pendientes a Holded",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color="#027A48",
+                ),
+            ],
+            spacing=7,
+            tight=True,
+        ),
+        on_click=export_all_pending_invoices_to_holded,
+        tooltip=(
+            "Genera el Excel de todas las facturas pendientes "
+            "de exportar a Holded"
+        ),
+        style=ft.ButtonStyle(
+            side=ft.BorderSide(
+                1,
+                "#6CE9A6",
+            ),
+            bgcolor="#ECFDF3",
+            shape=ft.RoundedRectangleBorder(radius=10),
+            padding=ft.padding.symmetric(
+                horizontal=12,
+                vertical=9,
+            ),
+        ),
+    )
+
+
     def build_facturas_results():
         facturas = filtered_facturas()
 
@@ -4118,11 +4557,18 @@ def economic_view(page: ft.Page):
             state["facturas_page"] = 1
 
             if str(state.get("facturas_search") or "").strip():
-                return empty_state(
+                empty_result = empty_state(
                     "No hay facturas que coincidan con la búsqueda"
                 )
+            else:
+                empty_result = empty_state("No hay facturas")
 
-            return empty_state("No hay facturas")
+            return ft.Column(
+                controls=[
+                        empty_result,
+                ],
+                spacing=12,
+            )
 
         page_size = max(
             1,
@@ -4147,13 +4593,73 @@ def economic_view(page: ft.Page):
         end_index = start_index + page_size
         visible_facturas = facturas[start_index:end_index]
 
-        cards = [
-            economic_invoice_card(
-                dict(factura),
-                date_display=_date_to_display,
+        closure_date = (
+            economic_service.get_invoice_closure_date()
+        )
+
+        cards = []
+
+        for factura in visible_facturas:
+            factura_data = dict(factura)
+
+            factura_date = str(
+                factura_data.get("fecha_factura") or ""
             )
-            for factura in visible_facturas
-        ]
+
+            factura_data["_period_closed"] = bool(
+                closure_date
+                and factura_date
+                and factura_date <= closure_date
+            )
+
+            cards.append(
+                economic_invoice_card(
+                    factura_data,
+                    date_display=_date_to_display,
+                    on_edit=open_edit_factura_linked_cobro,
+                    on_delete=open_delete_factura_dialog,
+                    on_export_holded=mark_factura_exportada_holded,
+                    on_rectify=open_rectification_dialog,
+                )
+            )
+
+        closure_date = (
+            economic_service.get_invoice_closure_date()
+        )
+
+        holded_closure_chip = (
+            ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.LOCK_OUTLINE,
+                            size=14,
+                            color="#027A48",
+                        ),
+                        ft.Text(
+                            (
+                                "Holded cerrado hasta "
+                                f"{_date_to_display(closure_date)}"
+                            ),
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color="#027A48",
+                        ),
+                    ],
+                    spacing=5,
+                    tight=True,
+                ),
+                bgcolor="#ECFDF3",
+                border=ft.border.all(1, "#6CE9A6"),
+                border_radius=20,
+                padding=ft.padding.symmetric(
+                    horizontal=10,
+                    vertical=5,
+                ),
+            )
+            if closure_date
+            else ft.Container()
+        )
 
         toolbar = ft.Row(
             controls=[
@@ -4169,6 +4675,7 @@ def economic_view(page: ft.Page):
                     weight=ft.FontWeight.BOLD,
                     color=Q_PRIMARY_DARK,
                 ),
+                holded_closure_chip,
                 compact_pagination_bar(
                     page=current_page,
                     page_size=page_size,
@@ -4410,6 +4917,7 @@ def economic_view(page: ft.Page):
                         facturas_filter,
                         facturas_period_button,
                         facturas_clear_button,
+                        facturas_export_holded_button,
                     ],
                     spacing=6,
                     wrap=True,
@@ -4778,6 +5286,243 @@ def economic_view(page: ft.Page):
         actions_alignment=ft.MainAxisAlignment.END,
     )
     page.overlay.append(facturas_period_dialog)
+
+
+    factura_delete_message = ft.Text(
+        "",
+        size=13,
+        color=Q_PRIMARY_DARK,
+    )
+
+    rectification_original_text = ft.Text(
+        "",
+        size=13,
+        weight=ft.FontWeight.BOLD,
+    )
+
+    rectification_date_input = ft.TextField(
+        label="Fecha de la rectificativa",
+        hint_text="AAAA-MM-DD",
+        width=220,
+        dense=True,
+    )
+
+    rectification_mode = ft.Dropdown(
+        label="Tipo de rectificación",
+        width=260,
+        value="ANULACION_TOTAL",
+        options=[
+            ft.dropdown.Option(
+                "ANULACION_TOTAL",
+                "Anulación total",
+            ),
+            ft.dropdown.Option(
+                "AJUSTE_MANUAL",
+                "Ajuste manual",
+            ),
+        ],
+    )
+    rectification_mode.on_change = apply_rectification_mode
+
+    rectification_cause_code = ft.Dropdown(
+        label="Causa",
+        width=280,
+        value="ANULACION_OPERACION",
+        options=[
+            ft.dropdown.Option(
+                "ERROR_IMPORTE",
+                "Error en el importe",
+            ),
+            ft.dropdown.Option(
+                "ERROR_DATOS",
+                "Error en los datos",
+            ),
+            ft.dropdown.Option(
+                "DEVOLUCION",
+                "Devolución",
+            ),
+            ft.dropdown.Option(
+                "DESCUENTO_POSTERIOR",
+                "Descuento posterior",
+            ),
+            ft.dropdown.Option(
+                "ANULACION_OPERACION",
+                "Anulación de la operación",
+            ),
+            ft.dropdown.Option(
+                "OTRA",
+                "Otra causa",
+            ),
+        ],
+    )
+
+    rectification_cause_input = ft.TextField(
+        label="Motivo detallado",
+        multiline=True,
+        min_lines=2,
+        max_lines=4,
+    )
+
+    rectification_base_input = ft.TextField(
+        label="Base rectificada",
+        width=180,
+        value="0.00",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        on_change=update_rectification_total,
+    )
+
+    rectification_iva_input = ft.TextField(
+        label="IVA rectificado",
+        width=180,
+        value="0.00",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        on_change=update_rectification_total,
+    )
+
+    rectification_irpf_input = ft.TextField(
+        label="IRPF rectificado",
+        width=180,
+        value="0.00",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        on_change=update_rectification_total,
+    )
+
+    rectification_suplidos_input = ft.TextField(
+        label="Suplidos rectificados",
+        width=180,
+        value="0.00",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        on_change=update_rectification_total,
+    )
+
+    rectification_total_text = ft.Text(
+        "Total rectificativa: 0.00 €",
+        size=15,
+        weight=ft.FontWeight.BOLD,
+    )
+
+    rectification_observations_input = ft.TextField(
+        label="Observaciones internas",
+        multiline=True,
+        min_lines=2,
+        max_lines=3,
+    )
+
+    rectification_error_text = ft.Text(
+        "",
+        color="#B42318",
+        size=12,
+    )
+
+    rectification_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Generar factura rectificativa"),
+        content=ft.Container(
+            width=760,
+            content=ft.Column(
+                controls=[
+                    rectification_original_text,
+                    ft.Row(
+                        controls=[
+                            rectification_date_input,
+                            rectification_mode,
+                        ],
+                        wrap=True,
+                    ),
+                    rectification_cause_code,
+                    rectification_cause_input,
+                    ft.Text(
+                        "Importes de la rectificación",
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.Row(
+                        controls=[
+                            rectification_base_input,
+                            rectification_iva_input,
+                            rectification_irpf_input,
+                            rectification_suplidos_input,
+                        ],
+                        wrap=True,
+                        spacing=10,
+                    ),
+                    rectification_total_text,
+                    rectification_observations_input,
+                    rectification_error_text,
+                ],
+                tight=True,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        ),
+        actions=[
+            ft.TextButton(
+                "Cancelar",
+                on_click=close_rectification_dialog,
+            ),
+            ft.FilledButton(
+                "Crear rectificativa",
+                on_click=confirm_rectification,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(rectification_dialog)
+
+
+    factura_delete_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.DELETE_OUTLINE,
+                    color="#B42318",
+                ),
+                ft.Text(
+                    "Eliminar factura",
+                    weight=ft.FontWeight.BOLD,
+                    color="#B42318",
+                ),
+            ],
+            spacing=8,
+        ),
+        content=ft.Column(
+            controls=[
+                factura_delete_message,
+                ft.Container(
+                    bgcolor="#FFFAEB",
+                    border=ft.border.all(1, "#FEC84B"),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Text(
+                        (
+                            "La factura desaparecerá del listado, "
+                            "pero el cobro no será eliminado."
+                        ),
+                        size=11,
+                        color="#B54708",
+                    ),
+                ),
+            ],
+            spacing=12,
+            tight=True,
+            width=480,
+        ),
+        actions=[
+            secondary_button(
+                "Cancelar",
+                close_delete_factura_dialog,
+            ),
+            ft.TextButton(
+                "Eliminar factura",
+                on_click=confirm_delete_factura,
+                style=ft.ButtonStyle(
+                    color="#B42318",
+                ),
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+        shape=ft.RoundedRectangleBorder(radius=16),
+    )
+    page.overlay.append(factura_delete_dialog)
 
 
     movements_filter = text_input("Filtrar por concepto / motivo / fecha / ID", width=560)
