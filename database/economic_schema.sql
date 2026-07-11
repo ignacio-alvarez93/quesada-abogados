@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS eco_facturas (
     base_imponible REAL NOT NULL DEFAULT 0,
     iva REAL NOT NULL DEFAULT 0,
     irpf REAL NOT NULL DEFAULT 0,
+    suplidos REAL NOT NULL DEFAULT 0,
     total REAL NOT NULL DEFAULT 0,
     estado TEXT NOT NULL DEFAULT 'BORRADOR',
     exportada_holded INTEGER NOT NULL DEFAULT 0,

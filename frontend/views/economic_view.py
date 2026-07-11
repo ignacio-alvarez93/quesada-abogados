@@ -3810,9 +3810,13 @@ def economic_view(page: ft.Page):
             _money(factura.get("iva")),
             factura.get("irpf"),
             _money(factura.get("irpf")),
+            factura.get("suplidos"),
+            _money(factura.get("suplidos")),
             factura.get("total"),
             _money(factura.get("total")),
             factura.get("estado"),
+            factura.get("tipo_fiscal"),
+            factura.get("concepto"),
             (
                 "exportada holded"
                 if factura.get("exportada_holded")

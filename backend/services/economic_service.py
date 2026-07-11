@@ -130,6 +130,24 @@ def initialize_economic_schema():
             "irpf_porcentaje",
             "REAL NOT NULL DEFAULT 0",
         )
+        _ensure_column(
+            conn,
+            "eco_facturas",
+            "suplidos",
+            "REAL NOT NULL DEFAULT 0",
+        )
+        _ensure_column(
+            conn,
+            "eco_facturas",
+            "tipo_fiscal",
+            "TEXT NOT NULL DEFAULT 'PROVISION'",
+        )
+        _ensure_column(
+            conn,
+            "eco_facturas",
+            "concepto",
+            "TEXT",
+        )
 
         initialize_expediente_clientes_schema(conn)
         initialize_economic_consultas_schema(conn)
@@ -338,16 +356,25 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
     year = fecha[:4]
     importe = float(cobro.get("importe") or 0)
 
-    iva_porcentaje = cobro.get("iva_porcentaje")
+    tipo_fiscal = str(
+        cobro.get("tipo_fiscal") or "PROVISION"
+    ).strip().upper()
 
-    if str(cobro.get("tipo_fiscal") or "").upper() == "SUPLIDO":
-        iva_porcentaje = 0
-
-    fiscal = _calculate_invoice_from_total(
-        importe,
-        iva_porcentaje,
-        cobro.get("irpf_porcentaje"),
-    )
+    if tipo_fiscal == "SUPLIDO":
+        fiscal = {
+            "base_imponible": 0.0,
+            "iva": 0.0,
+            "irpf": 0.0,
+            "suplidos": round(importe, 2),
+            "total": round(importe, 2),
+        }
+    else:
+        fiscal = _calculate_invoice_from_total(
+            importe,
+            cobro.get("iva_porcentaje"),
+            cobro.get("irpf_porcentaje"),
+        )
+        fiscal["suplidos"] = 0.0
 
     factura_id = cobro.get("factura_id")
 
@@ -362,7 +389,10 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
                 base_imponible = ?,
                 iva = ?,
                 irpf = ?,
+                suplidos = ?,
                 total = ?,
+                tipo_fiscal = ?,
+                concepto = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
               AND COALESCE(activo, 1) = 1
@@ -375,7 +405,10 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
                 fiscal["base_imponible"],
                 fiscal["iva"],
                 fiscal["irpf"],
+                fiscal["suplidos"],
                 fiscal["total"],
+                tipo_fiscal,
+                _text(cobro.get("concepto")),
                 int(factura_id),
             ),
         )
@@ -406,14 +439,20 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
             base_imponible,
             iva,
             irpf,
+            suplidos,
             total,
+            tipo_fiscal,
+            concepto,
             estado,
             exportada_holded,
             documento_ruta,
             observaciones,
             activo
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, 1
+        )
         """,
         (
             numero_factura,
@@ -424,7 +463,10 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
             fiscal["base_imponible"],
             fiscal["iva"],
             fiscal["irpf"],
+            fiscal["suplidos"],
             fiscal["total"],
+            tipo_fiscal,
+            _text(cobro.get("concepto")),
             "EMITIDA",
             0,
             "",
@@ -931,7 +973,20 @@ def create_factura(data, cobro_ids=None):
     base = _float(data.get("base_imponible"))
     iva = _float(data.get("iva"))
     irpf = _float(data.get("irpf"))
-    total = _float(data.get("total")) or (base + iva - irpf)
+    suplidos = _float(data.get("suplidos"))
+    raw_tipo_fiscal = _text(
+        data.get("tipo_fiscal") or "PROVISION"
+    ).strip().upper()
+    tipo_fiscal = (
+        "SUPLIDO"
+        if raw_tipo_fiscal == "SUPLIDO"
+        else "PROVISION"
+    )
+    concepto = _text(data.get("concepto"))
+    total = (
+        _float(data.get("total"))
+        or (base + iva - irpf + suplidos)
+    )
     expediente_id = _int_or_none(data.get("expediente_id"))
     hoja_id = _int_or_none(data.get("hoja_encargo_id"))
     cliente_id = int(data.get("cliente_id"))
@@ -941,10 +996,14 @@ def create_factura(data, cobro_ids=None):
             """
             INSERT INTO eco_facturas (
                 numero_factura, fecha_factura, cliente_id, expediente_id, hoja_encargo_id,
-                base_imponible, iva, irpf, total, estado, exportada_holded,
+                base_imponible, iva, irpf, suplidos, total,
+                tipo_fiscal, concepto, estado, exportada_holded,
                 documento_ruta, observaciones, activo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, 1
+            )
             """,
             (
                 numero,
@@ -955,7 +1014,10 @@ def create_factura(data, cobro_ids=None):
                 base,
                 iva,
                 irpf,
+                suplidos,
                 total,
+                tipo_fiscal,
+                concepto,
                 _text(data.get("estado") or "EMITIDA"),
                 int(data.get("exportada_holded", 0)),
                 _raw(data.get("documento_ruta")),

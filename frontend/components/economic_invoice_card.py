@@ -21,6 +21,22 @@ INVOICE_STATUS_MAP = {
 }
 
 
+FISCAL_TYPE_MAP = {
+    "PROVISION": (
+        "Provisión",
+        "#EAF3FF",
+        "#0057B8",
+        "#84CAFF",
+    ),
+    "SUPLIDO": (
+        "Suplido",
+        "#FDF2FA",
+        "#9D174D",
+        "#F9A8D4",
+    ),
+}
+
+
 HOLDED_STATUS_MAP = {
     "HOLDED_PENDING": (
         "Pendiente Holded",
@@ -213,6 +229,12 @@ def economic_invoice_card(
         else "HOLDED_PENDING"
     )
 
+    fiscal_type = (
+        "SUPLIDO"
+        if str(factura.get("tipo_fiscal") or "").upper() == "SUPLIDO"
+        else "PROVISION"
+    )
+
     actions = [
         control
         for control in [
@@ -234,6 +256,12 @@ def economic_invoice_card(
         status_chip(
             holded_status,
             status_map=HOLDED_STATUS_MAP,
+            compact=True,
+            bordered=True,
+        ),
+        status_chip(
+            fiscal_type,
+            status_map=FISCAL_TYPE_MAP,
             compact=True,
             bordered=True,
         ),
@@ -274,6 +302,13 @@ def economic_invoice_card(
                     border_color="#FEC84B",
                     text_color="#B54708",
                 ),
+                _amount_indicator(
+                    "Suplidos",
+                    factura.get("suplidos"),
+                    bgcolor="#FDF2FA",
+                    border_color="#F9A8D4",
+                    text_color="#9D174D",
+                ),
             ],
             spacing=14,
             wrap=True,
@@ -294,6 +329,40 @@ def economic_invoice_card(
             wrap=True,
         ),
     ]
+
+    concepto = str(factura.get("concepto") or "").strip()
+
+    if concepto:
+        body.append(
+            ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.DESCRIPTION_OUTLINED,
+                            size=15,
+                            color=Q_PRIMARY,
+                        ),
+                        ft.Text(
+                            concepto,
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                            selectable=True,
+                            max_lines=2,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                    ],
+                    spacing=7,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                bgcolor="#F8FAFC",
+                border_radius=8,
+                padding=ft.padding.symmetric(
+                    horizontal=10,
+                    vertical=7,
+                ),
+            )
+        )
 
     observaciones = str(factura.get("observaciones") or "").strip()
 
