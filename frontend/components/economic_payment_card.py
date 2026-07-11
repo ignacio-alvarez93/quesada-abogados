@@ -34,6 +34,22 @@ RECONCILIATION_STATUS_MAP = {
 }
 
 
+FISCAL_STATUS_MAP = {
+    "PROVISION": (
+        "Provisión",
+        "#EAF3FF",
+        "#0057B8",
+        "#84CAFF",
+    ),
+    "SUPLIDO": (
+        "Suplido",
+        "#FFF4E5",
+        "#B54708",
+        "#FEC84B",
+    ),
+}
+
+
 FACTURATION_STATUS_MAP = {
     "NO_FACTURABLE": ("No facturable", "#F1F5F9", "#475569", "#CBD5E1"),
     "FACTURABLE": ("Facturable", "#FFFAEB", "#B54708", "#FEC84B"),
@@ -170,6 +186,11 @@ def economic_payment_card(
 
     reconciliation_status = _reconciliation_status(cobro)
     facturation_status = _facturation_status(cobro)
+    fiscal_status = (
+        "SUPLIDO"
+        if str(cobro.get("tipo_fiscal") or "").upper() == "SUPLIDO"
+        else "PROVISION"
+    )
 
     actions = [
         control
@@ -192,6 +213,12 @@ def economic_payment_card(
         status_chip(
             facturation_status,
             status_map=FACTURATION_STATUS_MAP,
+            compact=True,
+            bordered=True,
+        ),
+        status_chip(
+            fiscal_status,
+            status_map=FISCAL_STATUS_MAP,
             compact=True,
             bordered=True,
         ),

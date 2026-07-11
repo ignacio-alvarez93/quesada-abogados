@@ -115,6 +115,12 @@ def initialize_economic_schema():
         _ensure_column(
             conn,
             "eco_cobros",
+            "tipo_fiscal",
+            "TEXT NOT NULL DEFAULT 'PROVISION'",
+        )
+        _ensure_column(
+            conn,
+            "eco_cobros",
             "iva_porcentaje",
             "REAL NOT NULL DEFAULT 0",
         )
@@ -332,9 +338,14 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
     year = fecha[:4]
     importe = float(cobro.get("importe") or 0)
 
+    iva_porcentaje = cobro.get("iva_porcentaje")
+
+    if str(cobro.get("tipo_fiscal") or "").upper() == "SUPLIDO":
+        iva_porcentaje = 0
+
     fiscal = _calculate_invoice_from_total(
         importe,
-        cobro.get("iva_porcentaje"),
+        iva_porcentaje,
         cobro.get("irpf_porcentaje"),
     )
 
@@ -626,7 +637,7 @@ def create_hoja_encargo(data):
                 forma_pago_pactada, numero_plazos, fecha_maxima_pago, documento_ruta,
                 estado, observaciones, activo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 expediente_id,
@@ -677,6 +688,17 @@ def create_cobro(data):
     numero = next_numero_cobro(fecha_cobro)
     tipo_cobro = _text(data.get("tipo_cobro") or "PAGO_EXPEDIENTE")
     facturable = int(data.get("facturable", 0))
+
+    raw_tipo_fiscal = _text(
+        data.get("tipo_fiscal") or "PROVISION"
+    ).strip().upper()
+
+    tipo_fiscal = (
+        "SUPLIDO"
+        if raw_tipo_fiscal == "SUPLIDO"
+        else "PROVISION"
+    )
+
     iva_porcentaje = (
         _float(data.get("iva_porcentaje"))
         if facturable
@@ -687,6 +709,11 @@ def create_cobro(data):
         if facturable
         else 0.0
     )
+
+    # Regla fiscal de negocio:
+    # los suplidos no soportan IVA.
+    if tipo_fiscal == "SUPLIDO":
+        iva_porcentaje = 0.0
     expediente_id = _int_or_none(data.get("expediente_id"))
     hoja_id = _int_or_none(data.get("hoja_encargo_id"))
     cliente_id = int(data.get("cliente_id"))
@@ -712,10 +739,14 @@ def create_cobro(data):
             INSERT INTO eco_cobros (
                 numero_cobro, fecha_cobro, cliente_id, expediente_id, hoja_encargo_id,
                 importe, forma_pago, concepto, tipo_cobro, facturable,
-                iva_porcentaje, irpf_porcentaje, estado_conciliacion,
+                tipo_fiscal, iva_porcentaje, irpf_porcentaje,
+                estado_conciliacion,
                 recibo_ruta, observaciones, activo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, 1
+            )
             """,
             (
                 numero,
@@ -728,6 +759,7 @@ def create_cobro(data):
                 _text(data.get("concepto")),
                 tipo_cobro,
                 facturable,
+                tipo_fiscal,
                 iva_porcentaje,
                 irpf_porcentaje,
                 _text(data.get("estado_conciliacion") or "PENDIENTE"),
@@ -762,6 +794,17 @@ def update_cobro(cobro_id, data):
     year = fecha_cobro[:4] if fecha_cobro else datetime.today().strftime("%Y")
     tipo_cobro = _text(data.get("tipo_cobro") or "PAGO_EXPEDIENTE")
     facturable = int(data.get("facturable", 0))
+
+    raw_tipo_fiscal = _text(
+        data.get("tipo_fiscal") or "PROVISION"
+    ).strip().upper()
+
+    tipo_fiscal = (
+        "SUPLIDO"
+        if raw_tipo_fiscal == "SUPLIDO"
+        else "PROVISION"
+    )
+
     iva_porcentaje = (
         _float(data.get("iva_porcentaje"))
         if facturable
@@ -772,6 +815,11 @@ def update_cobro(cobro_id, data):
         if facturable
         else 0.0
     )
+
+    # Regla fiscal de negocio:
+    # los suplidos no soportan IVA.
+    if tipo_fiscal == "SUPLIDO":
+        iva_porcentaje = 0.0
     expediente_id = _int_or_none(data.get("expediente_id"))
     hoja_id = _int_or_none(data.get("hoja_encargo_id"))
 
@@ -811,6 +859,7 @@ def update_cobro(cobro_id, data):
                 concepto = ?,
                 tipo_cobro = ?,
                 facturable = ?,
+                tipo_fiscal = ?,
                 iva_porcentaje = ?,
                 irpf_porcentaje = ?,
                 recibo_ruta = ?,
@@ -827,6 +876,7 @@ def update_cobro(cobro_id, data):
                 _text(data.get("concepto")),
                 tipo_cobro,
                 facturable,
+                tipo_fiscal,
                 iva_porcentaje,
                 irpf_porcentaje,
                 _raw(data.get("recibo_ruta")),

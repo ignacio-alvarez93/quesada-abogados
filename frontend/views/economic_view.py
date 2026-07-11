@@ -371,6 +371,7 @@ def economic_view(page: ft.Page):
             _money(cobro.get("importe")),
             cobro.get("forma_pago"),
             cobro.get("tipo_cobro"),
+            cobro.get("tipo_fiscal"),
             cobro.get("concepto"),
             cobro.get("numero_factura"),
             cobro.get("factura_id"),
@@ -4981,6 +4982,12 @@ def economic_view(page: ft.Page):
         value="No",
         width=120,
     )
+    cobro_tipo_fiscal = select_input(
+        "Naturaleza fiscal",
+        ["PROVISIÓN", "SUPLIDO"],
+        value="PROVISIÓN",
+        width=180,
+    )
     cobro_iva_porcentaje = select_input(
         "IVA",
         ["0", "4", "10", "21"],
@@ -5376,6 +5383,7 @@ def economic_view(page: ft.Page):
         cobro_forma.value = "EFECTIVO"
         cobro_tipo.value = "PAGO_EXPEDIENTE"
         cobro_facturable.value = "No"
+        cobro_tipo_fiscal.value = "PROVISIÓN"
         cobro_iva_porcentaje.value = "0"
         cobro_irpf_porcentaje.value = "0"
         cobro_concepto.value = ""
@@ -5435,7 +5443,12 @@ def economic_view(page: ft.Page):
                 "forma_pago": cobro_forma.value,
                 "tipo_cobro": cobro_tipo.value,
                 "facturable": 1 if cobro_facturable.value == "Sí" else 0,
-                "iva_porcentaje": cobro_iva_porcentaje.value,
+                "tipo_fiscal": cobro_tipo_fiscal.value,
+                "iva_porcentaje": (
+                    "0"
+                    if cobro_tipo_fiscal.value == "SUPLIDO"
+                    else cobro_iva_porcentaje.value
+                ),
                 "irpf_porcentaje": cobro_irpf_porcentaje.value,
                 "concepto": concepto_value,
                 "recibo_ruta": cobro_recibo.value,
@@ -5685,6 +5698,7 @@ def economic_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             cobro_facturable,
+                            cobro_tipo_fiscal,
                             cobro_iva_porcentaje,
                             cobro_irpf_porcentaje,
                             ft.Container(
@@ -5782,6 +5796,12 @@ def economic_view(page: ft.Page):
         value="No",
         width=120,
     )
+    edit_cobro_tipo_fiscal = select_input(
+        "Naturaleza fiscal",
+        ["PROVISIÓN", "SUPLIDO"],
+        value="PROVISIÓN",
+        width=180,
+    )
     edit_cobro_iva_porcentaje = select_input(
         "IVA",
         ["0", "4", "10", "21"],
@@ -5849,6 +5869,11 @@ def economic_view(page: ft.Page):
         edit_cobro_forma.value = cobro.get("forma_pago") or "EFECTIVO"
         edit_cobro_tipo.value = cobro.get("tipo_cobro") or "PAGO_EXPEDIENTE"
         edit_cobro_facturable.value = "Sí" if cobro.get("facturable") else "No"
+        edit_cobro_tipo_fiscal.value = (
+            "SUPLIDO"
+            if str(cobro.get("tipo_fiscal") or "").upper() == "SUPLIDO"
+            else "PROVISIÓN"
+        )
         edit_cobro_iva_porcentaje.value = str(
             int(float(cobro.get("iva_porcentaje") or 0))
         )
@@ -5879,7 +5904,12 @@ def economic_view(page: ft.Page):
                 "forma_pago": edit_cobro_forma.value,
                 "tipo_cobro": edit_cobro_tipo.value,
                 "facturable": 1 if edit_cobro_facturable.value == "Sí" else 0,
-                "iva_porcentaje": edit_cobro_iva_porcentaje.value,
+                "tipo_fiscal": edit_cobro_tipo_fiscal.value,
+                "iva_porcentaje": (
+                    "0"
+                    if edit_cobro_tipo_fiscal.value == "SUPLIDO"
+                    else edit_cobro_iva_porcentaje.value
+                ),
                 "irpf_porcentaje": edit_cobro_irpf_porcentaje.value,
                 "concepto": edit_cobro_concepto.value,
                 "recibo_ruta": edit_cobro_recibo.value,
@@ -6015,6 +6045,7 @@ def economic_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             edit_cobro_facturable,
+                            edit_cobro_tipo_fiscal,
                             edit_cobro_iva_porcentaje,
                             edit_cobro_irpf_porcentaje,
                             ft.Container(
