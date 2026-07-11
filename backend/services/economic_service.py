@@ -311,7 +311,11 @@ def _calculate_invoice_from_total(
     if iva_porcentaje < 0 or irpf_porcentaje < 0:
         raise ValueError("IVA e IRPF no pueden ser negativos")
 
-    divisor = 1 + (iva_porcentaje / 100) - (irpf_porcentaje / 100)
+    divisor = (
+        1
+        + (iva_porcentaje / 100)
+        - (irpf_porcentaje / 100)
+    )
 
     if divisor <= 0:
         raise ValueError(
@@ -322,13 +326,39 @@ def _calculate_invoice_from_total(
     iva = round(base * iva_porcentaje / 100, 2)
     irpf = round(base * irpf_porcentaje / 100, 2)
 
-    # El total definitivo debe coincidir con el importe cobrado.
-    diferencia = round(total - (base + iva - irpf), 2)
+    diferencia = round(
+        total - (base + iva - irpf),
+        2,
+    )
 
     if diferencia:
-        base = round(base + diferencia, 2)
-        iva = round(base * iva_porcentaje / 100, 2)
-        irpf = round(base + iva - total, 2)
+        if iva_porcentaje:
+            # El céntimo residual se ajusta en la cuota de IVA.
+            iva = round(iva + diferencia, 2)
+
+        elif irpf_porcentaje:
+            # El IRPF se resta del total.
+            irpf = round(irpf - diferencia, 2)
+
+        else:
+            base = round(base + diferencia, 2)
+
+    # Un porcentaje del 0 % nunca genera importe fiscal.
+    if iva_porcentaje == 0:
+        iva = 0.0
+
+    if irpf_porcentaje == 0:
+        irpf = 0.0
+
+    calculated_total = round(
+        base + iva - irpf,
+        2,
+    )
+
+    if calculated_total != total:
+        raise ValueError(
+            "No se pudo cuadrar el cálculo fiscal con el total cobrado"
+        )
 
     return {
         "base_imponible": base,
@@ -336,7 +366,6 @@ def _calculate_invoice_from_total(
         "irpf": irpf,
         "total": total,
     }
-
 
 def _crear_factura_automatica_por_cobro(conn, cobro_id):
     cobro = _dict(
