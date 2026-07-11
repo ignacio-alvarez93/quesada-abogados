@@ -602,15 +602,33 @@ def economic_view(page: ft.Page):
         cobros_status_box.content = build_cobros_status_filters()
         cobros_period_summary_box.content = build_cobros_period_summary()
 
-        has_search = bool(str(state.get("cobros_search") or "").strip())
+        has_search = bool(
+            str(state.get("cobros_search") or "").strip()
+        )
         has_period = bool(
             state.get("cobros_date_from")
             or state.get("cobros_date_to")
         )
+        has_status_filter = (
+            str(state.get("cobros_status_filter") or "all").strip()
+            not in ("", "all")
+        )
+        has_any_filter = (
+            has_search
+            or has_period
+            or has_status_filter
+        )
 
-        cobros_clear_button.disabled = not has_search
+        # La X debe estar disponible siempre que exista cualquier filtro:
+        # texto, periodo o estado.
+        cobros_clear_button.disabled = not has_any_filter
         cobros_clear_button.icon_color = (
-            Q_PRIMARY_DARK if has_search else "#98A2B3"
+            Q_PRIMARY_DARK if has_any_filter else "#98A2B3"
+        )
+        cobros_clear_button.tooltip = (
+            "Reiniciar todos los filtros"
+            if has_any_filter
+            else "No hay filtros activos"
         )
 
         cobros_period_button.icon_color = (
@@ -634,14 +652,33 @@ def economic_view(page: ft.Page):
 
 
     def clear_cobros_search(e=None):
-        cobros_filter.value = ""
-        state["cobros_search"] = ""
-        state["cobros_page"] = 1
+        """
+        Reinicia todos los filtros de la vista Cobros:
+        búsqueda, periodo, estado y paginación.
+        """
+        state.update(
+            {
+                "cobros_search": "",
+                "cobros_date_from": "",
+                "cobros_date_to": "",
+                "cobros_status_filter": "all",
+                "cobros_page": 1,
+            }
+        )
 
+        cobros_filter.value = ""
+        cobros_date_from_input.value = ""
+        cobros_date_to_input.value = ""
+        cobros_period_error.value = ""
+
+        # Actualiza resultados, chips, resumen temporal e iconos.
         refresh_cobros_results_only()
 
         try:
             cobros_filter.update()
+            cobros_date_from_input.update()
+            cobros_date_to_input.update()
+            cobros_period_error.update()
         except Exception:
             page.update()
 
@@ -3930,7 +3967,7 @@ def economic_view(page: ft.Page):
     cobros_clear_button = ft.IconButton(
         icon=ft.Icons.CLOSE,
         icon_color="#98A2B3",
-        tooltip="Limpiar búsqueda",
+        tooltip="No hay filtros activos",
         disabled=True,
         on_click=clear_cobros_search,
     )
