@@ -4734,32 +4734,277 @@ def economic_view(page: ft.Page):
             refresh()
 
 
-    cobro_dialog = form_dialog(
-        "Cobro",
-        ft.Column(
-            [
-                cobro_cliente_ac.control,
-                cobro_expediente_dd,
-                ft.Row(
-                    [
-                        cobro_hoja_dd,
-                        secondary_button("Buscar hojas", refresh_cobro_hojas_for_expediente),
-                    ],
-                    wrap=True,
-                    spacing=10,
+    def _cobro_form_section(
+        title,
+        icon,
+        controls,
+        *,
+        subtitle=None,
+        accent="#0057B8",
+    ):
+        section_header = [
+            ft.Container(
+                width=34,
+                height=34,
+                border_radius=10,
+                bgcolor="#EAF3FF",
+                alignment=ft.Alignment(0, 0),
+                content=ft.Icon(
+                    icon,
+                    size=18,
+                    color=accent,
                 ),
-                ft.Row([cobro_fecha, cobro_numero, cobro_importe], wrap=True, spacing=10),
-                ft.Row([cobro_forma, cobro_tipo, cobro_facturable], wrap=True, spacing=10),
-                cobro_concepto,
-                cobro_recibo,
-                cobro_obs,
+            ),
+            ft.Column(
+                controls=[
+                    ft.Text(
+                        title,
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    *(
+                        [
+                            ft.Text(
+                                subtitle,
+                                size=11,
+                                color=Q_MUTED,
+                            )
+                        ]
+                        if subtitle
+                        else []
+                    ),
+                ],
+                spacing=1,
+            ),
+        ]
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, "#D8E2EE"),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=section_header,
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Divider(height=1, color="#E4E7EC"),
+                    *controls,
+                ],
+                spacing=12,
+            ),
+        )
+
+
+    cobro_dialog_header = ft.Container(
+        bgcolor="#F8FAFC",
+        border=ft.border.all(1, "#D8E2EE"),
+        border_radius=14,
+        padding=14,
+        content=ft.Row(
+            controls=[
+                ft.Container(
+                    width=44,
+                    height=44,
+                    border_radius=12,
+                    bgcolor="#EAF3FF",
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Icon(
+                        ft.Icons.PAYMENTS_OUTLINED,
+                        size=24,
+                        color="#0057B8",
+                    ),
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            "Registrar nuevo cobro",
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            "Añade el pago, vincúlalo al expediente y configura su facturación.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=2,
+                    expand=True,
+                ),
             ],
-            width=760,
-            height=620,
             spacing=12,
-            scroll=ft.ScrollMode.AUTO,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
-        [secondary_button("Cancelar", lambda e: close(cobro_dialog)), primary_button("Guardar", save_cobro)],
+    )
+
+
+    cobro_dialog_content = ft.Column(
+        controls=[
+            cobro_dialog_header,
+
+            _cobro_form_section(
+                "Cliente pagador",
+                ft.Icons.PERSON_OUTLINE,
+                controls=[
+                    cobro_cliente_ac.control,
+                ],
+                subtitle="Selecciona la persona que realiza o asume el pago.",
+            ),
+
+            _cobro_form_section(
+                "Datos principales",
+                ft.Icons.RECEIPT_LONG_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            cobro_fecha,
+                            cobro_importe,
+                            cobro_forma,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            cobro_tipo,
+                            cobro_numero,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                subtitle="Fecha, importe, modalidad y naturaleza del cobro.",
+            ),
+
+            _cobro_form_section(
+                "Vinculación",
+                ft.Icons.LINK_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            cobro_expediente_dd,
+                            cobro_hoja_dd,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border_radius=10,
+                        padding=10,
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.INFO_OUTLINE,
+                                    size=16,
+                                    color="#0057B8",
+                                ),
+                                ft.Text(
+                                    (
+                                        "Los pagos de expediente deben vincularse a una hoja "
+                                        "de encargo. Las consultas pueden registrarse sin hoja."
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=8,
+                            wrap=True,
+                        ),
+                    ),
+                ],
+                subtitle="Relaciona el cobro con su expediente y hoja de encargo.",
+            ),
+
+            _cobro_form_section(
+                "Facturación",
+                ft.Icons.DESCRIPTION_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            cobro_facturable,
+                            ft.Container(
+                                width=600,
+                                bgcolor="#FFFAEB",
+                                border=ft.border.all(1, "#FEC84B"),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Text(
+                                    (
+                                        "Al marcarlo como facturable, el sistema generará "
+                                        "automáticamente una factura si todavía no existe."
+                                    ),
+                                    size=11,
+                                    color="#B54708",
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                subtitle="Define si el ingreso debe generar factura.",
+                accent="#B54708",
+            ),
+
+            _cobro_form_section(
+                "Información adicional",
+                ft.Icons.NOTES_OUTLINED,
+                controls=[
+                    cobro_concepto,
+                    cobro_recibo,
+                    cobro_obs,
+                ],
+                subtitle="Concepto, justificante y observaciones internas.",
+            ),
+        ],
+        width=820,
+        height=650,
+        spacing=12,
+        scroll=ft.ScrollMode.AUTO,
+    )
+
+
+    cobro_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.ADD_CARD,
+                    size=22,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    "Nuevo cobro",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        content=cobro_dialog_content,
+        actions=[
+            secondary_button(
+                "Cancelar",
+                lambda e: close(cobro_dialog),
+            ),
+            primary_button(
+                "Guardar cobro",
+                save_cobro,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+        shape=ft.RoundedRectangleBorder(radius=16),
+        inset_padding=ft.padding.symmetric(
+            horizontal=24,
+            vertical=18,
+        ),
     )
     page.overlay.append(cobro_dialog)
 
