@@ -11,6 +11,7 @@ from frontend.components.app_empty_state import empty_state
 from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
 from frontend.components.economic_payment_card import economic_payment_card
+from frontend.components.economic_invoice_card import economic_invoice_card
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.listing import compact_pagination_bar
 from frontend.components.listing.counter_chips import counter_chips
@@ -255,6 +256,13 @@ def economic_view(page: ft.Page):
         "cobros_status_filter": "all",
         "cobros_date_from": "",
         "cobros_date_to": "",
+        "facturas_page": 1,
+        "facturas_page_size": 10,
+        "facturas_search": "",
+        "facturas_status_filter": "all",
+        "facturas_holded_filter": "all",
+        "facturas_date_from": "",
+        "facturas_date_to": "",
     }
 
     content_area = ft.Container(expand=True)
@@ -3771,6 +3779,659 @@ def economic_view(page: ft.Page):
         )
 
 
+    def _factura_client_name(factura):
+        return " ".join(
+            part
+            for part in [
+                str(factura.get("nombre") or "").strip(),
+                str(factura.get("primer_apellido") or "").strip(),
+                str(factura.get("segundo_apellido") or "").strip(),
+            ]
+            if part
+        )
+
+
+    def _factura_search_blob(factura):
+        values = [
+            factura.get("id"),
+            factura.get("numero_factura"),
+            factura.get("fecha_factura"),
+            _date_to_display(factura.get("fecha_factura")),
+            _factura_client_name(factura),
+            factura.get("cliente_id"),
+            factura.get("numero_expediente"),
+            factura.get("expediente_id"),
+            factura.get("numero_hoja"),
+            factura.get("hoja_encargo_id"),
+            factura.get("base_imponible"),
+            _money(factura.get("base_imponible")),
+            factura.get("iva"),
+            _money(factura.get("iva")),
+            factura.get("irpf"),
+            _money(factura.get("irpf")),
+            factura.get("total"),
+            _money(factura.get("total")),
+            factura.get("estado"),
+            (
+                "exportada holded"
+                if factura.get("exportada_holded")
+                else "pendiente holded"
+            ),
+            factura.get("observaciones"),
+        ]
+
+        blob = []
+
+        for value in values:
+            blob.append(str(value or ""))
+
+            try:
+                blob.extend(_date_search_tokens(value))
+            except Exception:
+                pass
+
+        return " ".join(blob).lower()
+
+
+    def factura_matches_search(factura):
+        query = str(
+            state.get("facturas_search") or ""
+        ).strip().lower()
+
+        if not query:
+            return True
+
+        return query in _factura_search_blob(factura)
+
+
+    def factura_matches_period(factura):
+        date_value = str(factura.get("fecha_factura") or "").strip()
+        date_from = str(
+            state.get("facturas_date_from") or ""
+        ).strip()
+        date_to = str(
+            state.get("facturas_date_to") or ""
+        ).strip()
+
+        if date_from and date_value < date_from:
+            return False
+
+        if date_to and date_value > date_to:
+            return False
+
+        return True
+
+
+    def factura_matches_status(factura):
+        selected = str(
+            state.get("facturas_status_filter") or "all"
+        ).strip().lower()
+
+        if selected in ("", "all"):
+            return True
+
+        estado = str(
+            factura.get("estado") or "BORRADOR"
+        ).strip().lower()
+
+        return estado == selected
+
+
+    def factura_matches_holded(factura):
+        selected = str(
+            state.get("facturas_holded_filter") or "all"
+        ).strip().lower()
+
+        if selected in ("", "all"):
+            return True
+
+        exported = bool(factura.get("exportada_holded"))
+
+        if selected == "exported":
+            return exported
+
+        if selected == "pending":
+            return not exported
+
+        return True
+
+
+    def filtered_facturas(
+        *,
+        include_status=True,
+        include_holded=True,
+    ):
+        result = []
+
+        for factura in economic_service.list_facturas():
+            factura = dict(factura)
+
+            if not factura_matches_search(factura):
+                continue
+
+            if not factura_matches_period(factura):
+                continue
+
+            if include_status and not factura_matches_status(factura):
+                continue
+
+            if include_holded and not factura_matches_holded(factura):
+                continue
+
+            result.append(factura)
+
+        return result
+
+
+    def facturas_status_counts():
+        counts = {
+            "all": 0,
+            "borrador": 0,
+            "emitida": 0,
+            "exportada": 0,
+            "anulada": 0,
+        }
+
+        for factura in filtered_facturas(
+            include_status=False,
+            include_holded=True,
+        ):
+            counts["all"] += 1
+
+            estado = str(
+                factura.get("estado") or "BORRADOR"
+            ).strip().lower()
+
+            if estado in counts:
+                counts[estado] += 1
+
+        return counts
+
+
+    def facturas_holded_counts():
+        counts = {
+            "all": 0,
+            "pending": 0,
+            "exported": 0,
+        }
+
+        for factura in filtered_facturas(
+            include_status=True,
+            include_holded=False,
+        ):
+            counts["all"] += 1
+
+            if factura.get("exportada_holded"):
+                counts["exported"] += 1
+            else:
+                counts["pending"] += 1
+
+        return counts
+
+
+    def build_facturas_status_filters():
+        status_map = {
+            "borrador": (
+                "Borrador",
+                "#F1F5F9",
+                "#475569",
+                "#CBD5E1",
+            ),
+            "emitida": (
+                "Emitida",
+                "#ECFDF3",
+                "#027A48",
+                "#6CE9A6",
+            ),
+            "exportada": (
+                "Exportada",
+                "#EAF3FF",
+                "#0057B8",
+                "#84CAFF",
+            ),
+            "anulada": (
+                "Anulada",
+                "#FEF3F2",
+                "#B42318",
+                "#FDA29B",
+            ),
+        }
+
+        return counter_chips(
+            options=[
+                ("borrador", "Borradores"),
+                ("emitida", "Emitidas"),
+                ("exportada", "Exportadas"),
+                ("anulada", "Anuladas"),
+            ],
+            counts=facturas_status_counts(),
+            active_value=state.get("facturas_status_filter") or "all",
+            on_select=on_facturas_status_select,
+            include_all=True,
+            all_label="Todas",
+            all_value="all",
+            status_map=status_map,
+            bordered_status=True,
+        )
+
+
+    def build_facturas_holded_filters():
+        status_map = {
+            "pending": (
+                "Pendiente Holded",
+                "#FFFAEB",
+                "#B54708",
+                "#FEC84B",
+            ),
+            "exported": (
+                "Exportada a Holded",
+                "#ECFDF3",
+                "#027A48",
+                "#6CE9A6",
+            ),
+        }
+
+        return counter_chips(
+            options=[
+                ("pending", "Pendientes Holded"),
+                ("exported", "En Holded"),
+            ],
+            counts=facturas_holded_counts(),
+            active_value=state.get("facturas_holded_filter") or "all",
+            on_select=on_facturas_holded_select,
+            include_all=True,
+            all_label="Todo Holded",
+            all_value="all",
+            status_map=status_map,
+            bordered_status=True,
+        )
+
+
+    def build_facturas_period_summary():
+        date_from = str(
+            state.get("facturas_date_from") or ""
+        ).strip()
+        date_to = str(
+            state.get("facturas_date_to") or ""
+        ).strip()
+
+        if not date_from and not date_to:
+            return ft.Text(
+                "Sin filtro temporal",
+                size=11,
+                color=Q_MUTED,
+            )
+
+        from_label = (
+            _date_to_display(date_from)
+            if date_from
+            else "Inicio"
+        )
+        to_label = (
+            _date_to_display(date_to)
+            if date_to
+            else "Hoy"
+        )
+
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.DATE_RANGE,
+                        size=14,
+                        color="#0057B8",
+                    ),
+                    ft.Text(
+                        f"{from_label} → {to_label}",
+                        size=11,
+                        weight=ft.FontWeight.BOLD,
+                        color="#0057B8",
+                    ),
+                ],
+                spacing=5,
+                tight=True,
+            ),
+            bgcolor="#EAF3FF",
+            border=ft.border.all(1, "#84CAFF"),
+            border_radius=20,
+            padding=ft.padding.symmetric(
+                horizontal=10,
+                vertical=5,
+            ),
+        )
+
+
+    def go_facturas_page(page_number):
+        state["facturas_page"] = max(1, int(page_number or 1))
+        refresh_facturas_results_only()
+
+
+    def build_facturas_results():
+        facturas = filtered_facturas()
+
+        if not facturas:
+            state["facturas_page"] = 1
+
+            if str(state.get("facturas_search") or "").strip():
+                return empty_state(
+                    "No hay facturas que coincidan con la búsqueda"
+                )
+
+            return empty_state("No hay facturas")
+
+        page_size = max(
+            1,
+            int(state.get("facturas_page_size") or 10),
+        )
+        total_items = len(facturas)
+        total_pages = max(
+            1,
+            (total_items + page_size - 1) // page_size,
+        )
+
+        current_page = max(
+            1,
+            min(
+                int(state.get("facturas_page") or 1),
+                total_pages,
+            ),
+        )
+        state["facturas_page"] = current_page
+
+        start_index = (current_page - 1) * page_size
+        end_index = start_index + page_size
+        visible_facturas = facturas[start_index:end_index]
+
+        cards = [
+            economic_invoice_card(
+                dict(factura),
+                date_display=_date_to_display,
+            )
+            for factura in visible_facturas
+        ]
+
+        toolbar = ft.Row(
+            controls=[
+                ft.Text(
+                    (
+                        f"Resultados: {total_items}"
+                        if str(
+                            state.get("facturas_search") or ""
+                        ).strip()
+                        else f"Facturas registradas: {total_items}"
+                    ),
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                compact_pagination_bar(
+                    page=current_page,
+                    page_size=page_size,
+                    total_items=total_items,
+                    on_page_change=go_facturas_page,
+                    label_prefix="Facturas",
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+        )
+
+        return ft.Column(
+            controls=[
+                toolbar,
+                ft.Container(
+                    height=620,
+                    content=ft.Column(
+                        controls=cards,
+                        spacing=8,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+            ],
+            spacing=8,
+        )
+
+
+    def refresh_facturas_results_only():
+        facturas_results_box.content = build_facturas_results()
+        facturas_status_box.content = build_facturas_status_filters()
+        facturas_holded_box.content = build_facturas_holded_filters()
+        facturas_period_summary_box.content = (
+            build_facturas_period_summary()
+        )
+
+        has_search = bool(
+            str(state.get("facturas_search") or "").strip()
+        )
+        has_period = bool(
+            state.get("facturas_date_from")
+            or state.get("facturas_date_to")
+        )
+        has_status = (
+            str(
+                state.get("facturas_status_filter") or "all"
+            ).strip()
+            not in ("", "all")
+        )
+        has_holded = (
+            str(
+                state.get("facturas_holded_filter") or "all"
+            ).strip()
+            not in ("", "all")
+        )
+
+        has_any_filter = (
+            has_search
+            or has_period
+            or has_status
+            or has_holded
+        )
+
+        facturas_clear_button.disabled = not has_any_filter
+        facturas_clear_button.icon_color = (
+            Q_PRIMARY_DARK
+            if has_any_filter
+            else "#98A2B3"
+        )
+        facturas_clear_button.tooltip = (
+            "Reiniciar todos los filtros"
+            if has_any_filter
+            else "No hay filtros activos"
+        )
+
+        facturas_period_button.icon_color = (
+            "#0057B8"
+            if has_period
+            else Q_PRIMARY_DARK
+        )
+
+        try:
+            facturas_results_box.update()
+            facturas_status_box.update()
+            facturas_holded_box.update()
+            facturas_period_summary_box.update()
+            facturas_clear_button.update()
+            facturas_period_button.update()
+        except Exception:
+            page.update()
+
+
+    def on_facturas_search_change(e=None):
+        state["facturas_search"] = str(
+            facturas_filter.value or ""
+        )
+        state["facturas_page"] = 1
+        refresh_facturas_results_only()
+
+
+    def clear_facturas_filters(e=None):
+        state.update(
+            {
+                "facturas_search": "",
+                "facturas_status_filter": "all",
+                "facturas_holded_filter": "all",
+                "facturas_date_from": "",
+                "facturas_date_to": "",
+                "facturas_page": 1,
+            }
+        )
+
+        facturas_filter.value = ""
+        facturas_date_from_input.value = ""
+        facturas_date_to_input.value = ""
+        facturas_period_error.value = ""
+
+        refresh_facturas_results_only()
+
+        try:
+            facturas_filter.update()
+            facturas_date_from_input.update()
+            facturas_date_to_input.update()
+            facturas_period_error.update()
+        except Exception:
+            page.update()
+
+
+    def on_facturas_status_select(status_value):
+        state["facturas_status_filter"] = str(
+            status_value or "all"
+        )
+        state["facturas_page"] = 1
+        refresh_facturas_results_only()
+
+
+    def on_facturas_holded_select(status_value):
+        state["facturas_holded_filter"] = str(
+            status_value or "all"
+        )
+        state["facturas_page"] = 1
+        refresh_facturas_results_only()
+
+
+    def open_facturas_period_dialog(e=None):
+        facturas_date_from_input.value = (
+            _date_to_display(state.get("facturas_date_from"))
+            if state.get("facturas_date_from")
+            else ""
+        )
+        facturas_date_to_input.value = (
+            _date_to_display(state.get("facturas_date_to"))
+            if state.get("facturas_date_to")
+            else ""
+        )
+
+        facturas_period_error.value = ""
+        facturas_period_dialog.open = True
+        page.update()
+
+
+    def close_facturas_period_dialog(e=None):
+        facturas_period_dialog.open = False
+        page.update()
+
+
+    def apply_facturas_period_filter(e=None):
+        raw_from = str(
+            facturas_date_from_input.value or ""
+        ).strip()
+        raw_to = str(
+            facturas_date_to_input.value or ""
+        ).strip()
+
+        date_from = _date_to_sql(raw_from) if raw_from else ""
+        date_to = _date_to_sql(raw_to) if raw_to else ""
+
+        if raw_from and not date_from:
+            facturas_period_error.value = (
+                "La fecha inicial no es válida. Usa DD/MM/AAAA."
+            )
+            facturas_period_error.update()
+            return
+
+        if raw_to and not date_to:
+            facturas_period_error.value = (
+                "La fecha final no es válida. Usa DD/MM/AAAA."
+            )
+            facturas_period_error.update()
+            return
+
+        if date_from and date_to and date_from > date_to:
+            facturas_period_error.value = (
+                "La fecha inicial no puede ser posterior "
+                "a la fecha final."
+            )
+            facturas_period_error.update()
+            return
+
+        state["facturas_date_from"] = date_from
+        state["facturas_date_to"] = date_to
+        state["facturas_page"] = 1
+
+        facturas_period_dialog.open = False
+        refresh_facturas_results_only()
+        page.update()
+
+
+    def clear_facturas_period_filter(e=None):
+        facturas_date_from_input.value = ""
+        facturas_date_to_input.value = ""
+        facturas_period_error.value = ""
+
+        state["facturas_date_from"] = ""
+        state["facturas_date_to"] = ""
+        state["facturas_page"] = 1
+
+        facturas_period_dialog.open = False
+        refresh_facturas_results_only()
+        page.update()
+
+
+    def build_facturas_section():
+        facturas_filter.value = (
+            state.get("facturas_search") or ""
+        )
+        facturas_results_box.content = build_facturas_results()
+        facturas_status_box.content = build_facturas_status_filters()
+        facturas_holded_box.content = build_facturas_holded_filters()
+        facturas_period_summary_box.content = (
+            build_facturas_period_summary()
+        )
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        facturas_filter,
+                        facturas_period_button,
+                        facturas_clear_button,
+                    ],
+                    spacing=6,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    controls=[
+                        facturas_period_summary_box,
+                        ft.Container(expand=True),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    controls=[
+                        facturas_status_box,
+                        facturas_holded_box,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                facturas_results_box,
+            ],
+            spacing=8,
+        )
+
+
     def build_cobros_results():
         cobros = filtered_cobros()
 
@@ -3913,25 +4574,7 @@ def economic_view(page: ft.Page):
             return build_cobros_section()
 
         if state["section"] == "facturas":
-            rows = []
-            for f in economic_service.list_facturas():
-                cliente = f"{f.get('nombre') or ''} {f.get('primer_apellido') or ''} {f.get('segundo_apellido') or ''}".strip()
-                rows.append([
-                    f.get("numero_factura") or "-",
-                    _date_to_display(f.get("fecha_factura")),
-                    cliente,
-                    f.get("numero_expediente") or "-",
-                    _money(f.get("base_imponible")),
-                    _money(f.get("iva")),
-                    _money(f.get("total")),
-                    economic_badge(f.get("estado")),
-                    "Sí" if f.get("exportada_holded") else "No",
-                ])
-            return app_table(
-                ["Nº factura", "Fecha", "Cliente", "Expediente", "Base", "IVA", "Total", "Estado", "Holded"],
-                rows,
-                height=430,
-            ) if rows else empty_state("No hay facturas")
+            return build_facturas_section()
 
         if state["section"] == "gastos":
             rows = []
@@ -4041,6 +4684,96 @@ def economic_view(page: ft.Page):
         actions_alignment=ft.MainAxisAlignment.END,
     )
     page.overlay.append(cobros_period_dialog)
+
+    facturas_filter = text_input(
+        "Buscar factura, cliente, fecha, importe, expediente...",
+        width=620,
+    )
+    facturas_filter.value = ""
+    facturas_filter.on_change = on_facturas_search_change
+
+    facturas_clear_button = ft.IconButton(
+        icon=ft.Icons.CLOSE,
+        icon_color="#98A2B3",
+        tooltip="No hay filtros activos",
+        disabled=True,
+        on_click=clear_facturas_filters,
+    )
+
+    facturas_period_button = ft.IconButton(
+        icon=ft.Icons.CALENDAR_MONTH,
+        icon_color=Q_PRIMARY_DARK,
+        tooltip="Filtrar facturas por periodo",
+        on_click=open_facturas_period_dialog,
+    )
+
+    facturas_results_box = ft.Container()
+    facturas_status_box = ft.Container()
+    facturas_holded_box = ft.Container()
+    facturas_period_summary_box = ft.Container()
+
+    facturas_date_from_input = text_input(
+        "Desde DD/MM/AAAA",
+        width=210,
+    )
+    facturas_date_to_input = text_input(
+        "Hasta DD/MM/AAAA",
+        width=210,
+    )
+    facturas_period_error = ft.Text(
+        "",
+        size=12,
+        color="#B42318",
+    )
+
+    facturas_period_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Filtrar facturas por periodo",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        ),
+        content=ft.Column(
+            controls=[
+                ft.Text(
+                    (
+                        "Introduce una o ambas fechas. "
+                        "Los límites están incluidos."
+                    ),
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                ft.Row(
+                    controls=[
+                        facturas_date_from_input,
+                        facturas_date_to_input,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                facturas_period_error,
+            ],
+            spacing=12,
+            tight=True,
+        ),
+        actions=[
+            ft.TextButton(
+                "Quitar periodo",
+                on_click=clear_facturas_period_filter,
+            ),
+            ft.TextButton(
+                "Cancelar",
+                on_click=close_facturas_period_dialog,
+            ),
+            ft.TextButton(
+                "Aplicar",
+                on_click=apply_facturas_period_filter,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(facturas_period_dialog)
+
 
     movements_filter = text_input("Filtrar por concepto / motivo / fecha / ID", width=560)
     movements_filter.value = ""
