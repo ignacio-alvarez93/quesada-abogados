@@ -95,10 +95,36 @@ def initialize_expediente_clientes_schema(conn):
         )
 
 
+def _ensure_column(conn, table, column, definition):
+    columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+
+    if column not in columns:
+        conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        )
+
+
 def initialize_economic_schema():
     schema_path = Path(__file__).resolve().parents[2] / "database" / "economic_schema.sql"
     with _connect() as conn:
         conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+        _ensure_column(
+            conn,
+            "eco_cobros",
+            "iva_porcentaje",
+            "REAL NOT NULL DEFAULT 0",
+        )
+        _ensure_column(
+            conn,
+            "eco_cobros",
+            "irpf_porcentaje",
+            "REAL NOT NULL DEFAULT 0",
+        )
+
         initialize_expediente_clientes_schema(conn)
         initialize_economic_consultas_schema(conn)
         conn.commit()
@@ -249,6 +275,45 @@ def renumerar_facturas_por_year(conn, year):
     )
 
 
+def _calculate_invoice_from_total(
+    total,
+    iva_porcentaje=0,
+    irpf_porcentaje=0,
+):
+    total = round(float(total or 0), 2)
+    iva_porcentaje = float(iva_porcentaje or 0)
+    irpf_porcentaje = float(irpf_porcentaje or 0)
+
+    if iva_porcentaje < 0 or irpf_porcentaje < 0:
+        raise ValueError("IVA e IRPF no pueden ser negativos")
+
+    divisor = 1 + (iva_porcentaje / 100) - (irpf_porcentaje / 100)
+
+    if divisor <= 0:
+        raise ValueError(
+            "La combinación de IVA e IRPF no permite calcular la factura"
+        )
+
+    base = round(total / divisor, 2)
+    iva = round(base * iva_porcentaje / 100, 2)
+    irpf = round(base * irpf_porcentaje / 100, 2)
+
+    # El total definitivo debe coincidir con el importe cobrado.
+    diferencia = round(total - (base + iva - irpf), 2)
+
+    if diferencia:
+        base = round(base + diferencia, 2)
+        iva = round(base * iva_porcentaje / 100, 2)
+        irpf = round(base + iva - total, 2)
+
+    return {
+        "base_imponible": base,
+        "iva": iva,
+        "irpf": irpf,
+        "total": total,
+    }
+
+
 def _crear_factura_automatica_por_cobro(conn, cobro_id):
     cobro = _dict(
         conn.execute(
@@ -256,19 +321,68 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
             (int(cobro_id),),
         ).fetchone()
     )
+
     if not cobro:
         raise ValueError("Cobro no encontrado para facturar")
 
     if not int(cobro.get("facturable") or 0):
         return None
 
-    if cobro.get("factura_id"):
-        return int(cobro["factura_id"])
-
     fecha = cobro.get("fecha_cobro") or datetime.today().strftime("%Y-%m-%d")
     year = fecha[:4]
-    numero_factura = next_numero_factura(fecha)
     importe = float(cobro.get("importe") or 0)
+
+    fiscal = _calculate_invoice_from_total(
+        importe,
+        cobro.get("iva_porcentaje"),
+        cobro.get("irpf_porcentaje"),
+    )
+
+    factura_id = cobro.get("factura_id")
+
+    if factura_id:
+        conn.execute(
+            """
+            UPDATE eco_facturas
+            SET fecha_factura = ?,
+                cliente_id = ?,
+                expediente_id = ?,
+                hoja_encargo_id = ?,
+                base_imponible = ?,
+                iva = ?,
+                irpf = ?,
+                total = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND COALESCE(activo, 1) = 1
+            """,
+            (
+                fecha,
+                cobro["cliente_id"],
+                cobro.get("expediente_id"),
+                cobro.get("hoja_encargo_id"),
+                fiscal["base_imponible"],
+                fiscal["iva"],
+                fiscal["irpf"],
+                fiscal["total"],
+                int(factura_id),
+            ),
+        )
+
+        conn.execute(
+            """
+            UPDATE eco_factura_cobros
+            SET importe_asignado = ?
+            WHERE factura_id = ?
+              AND cobro_id = ?
+            """,
+            (importe, int(factura_id), int(cobro_id)),
+        )
+
+        renumerar_facturas_por_year(conn, year)
+        return int(factura_id)
+
+    numero_factura = next_numero_factura(fecha)
 
     cur = conn.execute(
         """
@@ -296,16 +410,20 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
             cobro["cliente_id"],
             cobro.get("expediente_id"),
             cobro.get("hoja_encargo_id"),
-            importe,
-            0,
-            0,
-            importe,
+            fiscal["base_imponible"],
+            fiscal["iva"],
+            fiscal["irpf"],
+            fiscal["total"],
             "EMITIDA",
             0,
             "",
-            f"Factura automática generada desde cobro {cobro.get('numero_cobro') or cobro_id}",
+            (
+                "Factura automática generada desde cobro "
+                f"{cobro.get('numero_cobro') or cobro_id}"
+            ),
         ),
     )
+
     factura_id = cur.lastrowid
 
     conn.execute(
@@ -332,6 +450,7 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
 
     renumerar_facturas_por_year(conn, year)
     return factura_id
+
 
 def next_numero_hoja(fecha_firma):
     return _next_number("eco_hojas_encargo", "numero_hoja", "HE", fecha_firma)
@@ -558,6 +677,16 @@ def create_cobro(data):
     numero = next_numero_cobro(fecha_cobro)
     tipo_cobro = _text(data.get("tipo_cobro") or "PAGO_EXPEDIENTE")
     facturable = int(data.get("facturable", 0))
+    iva_porcentaje = (
+        _float(data.get("iva_porcentaje"))
+        if facturable
+        else 0.0
+    )
+    irpf_porcentaje = (
+        _float(data.get("irpf_porcentaje"))
+        if facturable
+        else 0.0
+    )
     expediente_id = _int_or_none(data.get("expediente_id"))
     hoja_id = _int_or_none(data.get("hoja_encargo_id"))
     cliente_id = int(data.get("cliente_id"))
@@ -582,10 +711,11 @@ def create_cobro(data):
             """
             INSERT INTO eco_cobros (
                 numero_cobro, fecha_cobro, cliente_id, expediente_id, hoja_encargo_id,
-                importe, forma_pago, concepto, tipo_cobro, facturable, estado_conciliacion,
+                importe, forma_pago, concepto, tipo_cobro, facturable,
+                iva_porcentaje, irpf_porcentaje, estado_conciliacion,
                 recibo_ruta, observaciones, activo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 numero,
@@ -598,6 +728,8 @@ def create_cobro(data):
                 _text(data.get("concepto")),
                 tipo_cobro,
                 facturable,
+                iva_porcentaje,
+                irpf_porcentaje,
                 _text(data.get("estado_conciliacion") or "PENDIENTE"),
                 _raw(data.get("recibo_ruta")),
                 _raw(data.get("observaciones")),
@@ -630,6 +762,16 @@ def update_cobro(cobro_id, data):
     year = fecha_cobro[:4] if fecha_cobro else datetime.today().strftime("%Y")
     tipo_cobro = _text(data.get("tipo_cobro") or "PAGO_EXPEDIENTE")
     facturable = int(data.get("facturable", 0))
+    iva_porcentaje = (
+        _float(data.get("iva_porcentaje"))
+        if facturable
+        else 0.0
+    )
+    irpf_porcentaje = (
+        _float(data.get("irpf_porcentaje"))
+        if facturable
+        else 0.0
+    )
     expediente_id = _int_or_none(data.get("expediente_id"))
     hoja_id = _int_or_none(data.get("hoja_encargo_id"))
 
@@ -669,6 +811,8 @@ def update_cobro(cobro_id, data):
                 concepto = ?,
                 tipo_cobro = ?,
                 facturable = ?,
+                iva_porcentaje = ?,
+                irpf_porcentaje = ?,
                 recibo_ruta = ?,
                 observaciones = ?,
                 updated_at = CURRENT_TIMESTAMP
@@ -683,6 +827,8 @@ def update_cobro(cobro_id, data):
                 _text(data.get("concepto")),
                 tipo_cobro,
                 facturable,
+                iva_porcentaje,
+                irpf_porcentaje,
                 _raw(data.get("recibo_ruta")),
                 _raw(data.get("observaciones")),
                 cobro_id,
@@ -697,7 +843,7 @@ def update_cobro(cobro_id, data):
         for y in years:
             renumerar_cobros_por_year(conn, y)
 
-        if facturable and not old.get("factura_id"):
+        if facturable:
             _crear_factura_automatica_por_cobro(conn, cobro_id)
 
         conn.commit()

@@ -4242,7 +4242,24 @@ def economic_view(page: ft.Page):
     cobro_importe = required_text_input("Importe", width=160)
     cobro_forma = select_input("Forma pago", ["EFECTIVO", "TRANSFERENCIA", "TARJETA", "BIZUM", "OTRO"], value="EFECTIVO", width=180)
     cobro_tipo = select_input("Tipo", ["CONSULTA", "PAGO_EXPEDIENTE", "PAGO_PARCIAL", "RESERVA", "DEVOLUCION", "AJUSTE"], value="PAGO_EXPEDIENTE", width=220)
-    cobro_facturable = select_input("Facturable", ["No", "Sí"], value="No", width=120)
+    cobro_facturable = select_input(
+        "Facturable",
+        ["No", "Sí"],
+        value="No",
+        width=120,
+    )
+    cobro_iva_porcentaje = select_input(
+        "IVA",
+        ["0", "4", "10", "21"],
+        value="0",
+        width=140,
+    )
+    cobro_irpf_porcentaje = select_input(
+        "IRPF",
+        ["0", "7", "15"],
+        value="0",
+        width=140,
+    )
     cobro_concepto = text_input("Concepto", width=420)
     cobro_recibo = text_input("Ruta recibo/documento", width=620)
     cobro_obs = multiline_input("Observaciones", width=620)
@@ -4608,6 +4625,10 @@ def economic_view(page: ft.Page):
             pass
 
 
+
+
+
+
     def open_cobro_dialog(e=None):
         refresh_runtime_options()
 
@@ -4622,6 +4643,8 @@ def economic_view(page: ft.Page):
         cobro_forma.value = "EFECTIVO"
         cobro_tipo.value = "PAGO_EXPEDIENTE"
         cobro_facturable.value = "No"
+        cobro_iva_porcentaje.value = "0"
+        cobro_irpf_porcentaje.value = "0"
         cobro_concepto.value = ""
         cobro_recibo.value = ""
         cobro_obs.value = ""
@@ -4679,6 +4702,8 @@ def economic_view(page: ft.Page):
                 "forma_pago": cobro_forma.value,
                 "tipo_cobro": cobro_tipo.value,
                 "facturable": 1 if cobro_facturable.value == "Sí" else 0,
+                "iva_porcentaje": cobro_iva_porcentaje.value,
+                "irpf_porcentaje": cobro_irpf_porcentaje.value,
                 "concepto": concepto_value,
                 "recibo_ruta": cobro_recibo.value,
                 "observaciones": cobro_obs.value,
@@ -4927,8 +4952,10 @@ def economic_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             cobro_facturable,
+                            cobro_iva_porcentaje,
+                            cobro_irpf_porcentaje,
                             ft.Container(
-                                width=600,
+                                width=310,
                                 bgcolor="#FFFAEB",
                                 border=ft.border.all(1, "#FEC84B"),
                                 border_radius=10,
@@ -5016,7 +5043,24 @@ def economic_view(page: ft.Page):
     edit_cobro_importe = required_text_input("Importe", width=160)
     edit_cobro_forma = select_input("Forma pago", ["EFECTIVO", "TRANSFERENCIA", "TARJETA", "BIZUM", "OTRO"], value="EFECTIVO", width=180)
     edit_cobro_tipo = select_input("Tipo", ["CONSULTA", "PAGO_EXPEDIENTE", "PAGO_PARCIAL", "RESERVA", "DEVOLUCION", "AJUSTE"], value="PAGO_EXPEDIENTE", width=220)
-    edit_cobro_facturable = select_input("Facturable", ["No", "Sí"], value="No", width=120)
+    edit_cobro_facturable = select_input(
+        "Facturable",
+        ["No", "Sí"],
+        value="No",
+        width=120,
+    )
+    edit_cobro_iva_porcentaje = select_input(
+        "IVA",
+        ["0", "4", "10", "21"],
+        value="0",
+        width=140,
+    )
+    edit_cobro_irpf_porcentaje = select_input(
+        "IRPF",
+        ["0", "7", "15"],
+        value="0",
+        width=140,
+    )
     edit_cobro_expediente_dd = select_input("Expediente", ["Sin expediente"] + expediente_options, value="Sin expediente", width=420)
     edit_cobro_hoja_dd = select_input("Hoja de encargo", ["Sin hoja"], value="Sin hoja", width=420)
     edit_cobro_concepto = text_input("Concepto", width=420)
@@ -5072,6 +5116,12 @@ def economic_view(page: ft.Page):
         edit_cobro_forma.value = cobro.get("forma_pago") or "EFECTIVO"
         edit_cobro_tipo.value = cobro.get("tipo_cobro") or "PAGO_EXPEDIENTE"
         edit_cobro_facturable.value = "Sí" if cobro.get("facturable") else "No"
+        edit_cobro_iva_porcentaje.value = str(
+            int(float(cobro.get("iva_porcentaje") or 0))
+        )
+        edit_cobro_irpf_porcentaje.value = str(
+            int(float(cobro.get("irpf_porcentaje") or 0))
+        )
         edit_cobro_concepto.value = cobro.get("concepto") or ""
         edit_cobro_recibo.value = cobro.get("recibo_ruta") or ""
         edit_cobro_obs.value = cobro.get("observaciones") or ""
@@ -5096,6 +5146,8 @@ def economic_view(page: ft.Page):
                 "forma_pago": edit_cobro_forma.value,
                 "tipo_cobro": edit_cobro_tipo.value,
                 "facturable": 1 if edit_cobro_facturable.value == "Sí" else 0,
+                "iva_porcentaje": edit_cobro_iva_porcentaje.value,
+                "irpf_porcentaje": edit_cobro_irpf_porcentaje.value,
                 "concepto": edit_cobro_concepto.value,
                 "recibo_ruta": edit_cobro_recibo.value,
                 "observaciones": edit_cobro_obs.value,
@@ -5230,8 +5282,10 @@ def economic_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             edit_cobro_facturable,
+                            edit_cobro_iva_porcentaje,
+                            edit_cobro_irpf_porcentaje,
                             ft.Container(
-                                width=600,
+                                width=310,
                                 bgcolor="#FFFAEB",
                                 border=ft.border.all(1, "#FEC84B"),
                                 border_radius=10,

@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS eco_cobros (
     concepto TEXT,
     tipo_cobro TEXT NOT NULL DEFAULT 'PAGO_EXPEDIENTE',
     facturable INTEGER NOT NULL DEFAULT 0,
+    iva_porcentaje REAL NOT NULL DEFAULT 0,
+    irpf_porcentaje REAL NOT NULL DEFAULT 0,
     factura_id INTEGER,
     estado_conciliacion TEXT NOT NULL DEFAULT 'PENDIENTE',
     recibo_ruta TEXT,
