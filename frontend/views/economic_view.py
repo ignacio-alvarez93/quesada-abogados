@@ -5107,36 +5107,207 @@ def economic_view(page: ft.Page):
             show_message(error_alert(str(exc)))
         refresh()
 
-    edit_cobro_dialog = form_dialog(
-        "Editar cobro",
-        ft.Column(
-            [
-                edit_cobro_expediente_dd,
-                ft.Row(
-                    [
-                        edit_cobro_hoja_dd,
-                        secondary_button("Buscar hojas", refresh_edit_cobro_hojas),
-                    ],
-                    wrap=True,
-                    spacing=10,
+    edit_cobro_dialog_header = ft.Container(
+        bgcolor="#F8FAFC",
+        border=ft.border.all(1, "#D8E2EE"),
+        border_radius=14,
+        padding=14,
+        content=ft.Row(
+            controls=[
+                ft.Container(
+                    width=44,
+                    height=44,
+                    border_radius=12,
+                    bgcolor="#EAF3FF",
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Icon(
+                        ft.Icons.EDIT_NOTE,
+                        size=24,
+                        color="#0057B8",
+                    ),
                 ),
-                ft.Row([edit_cobro_fecha, edit_cobro_importe], wrap=True, spacing=10),
-                ft.Row([edit_cobro_forma, edit_cobro_tipo, edit_cobro_facturable], wrap=True, spacing=10),
-                edit_cobro_concepto,
-                edit_cobro_recibo,
-                edit_cobro_obs,
-                ft.Text(
-                    "Si marcas el cobro como facturable, se generará factura automáticamente si aún no existe.",
-                    size=12,
-                    color=Q_MUTED,
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            "Modificar cobro",
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            "Actualiza los datos económicos, la vinculación y la facturación.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=2,
+                    expand=True,
                 ),
             ],
-            width=760,
-            height=620,
             spacing=12,
-            scroll=ft.ScrollMode.AUTO,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
-        [secondary_button("Cancelar", lambda e: close(edit_cobro_dialog)), primary_button("Guardar cambios", save_edit_cobro)],
+    )
+
+
+    edit_cobro_dialog_content = ft.Column(
+        controls=[
+            edit_cobro_dialog_header,
+
+            _cobro_form_section(
+                "Datos principales",
+                ft.Icons.RECEIPT_LONG_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            edit_cobro_fecha,
+                            edit_cobro_importe,
+                            edit_cobro_forma,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            edit_cobro_tipo,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                subtitle="Fecha, importe, forma de pago y naturaleza del cobro.",
+            ),
+
+            _cobro_form_section(
+                "Vinculación",
+                ft.Icons.LINK_OUTLINED,
+                controls=[
+                    edit_cobro_expediente_dd,
+                    ft.Row(
+                        controls=[
+                            edit_cobro_hoja_dd,
+                            secondary_button(
+                                "Buscar hojas",
+                                refresh_edit_cobro_hojas,
+                            ),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border_radius=10,
+                        padding=10,
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.INFO_OUTLINE,
+                                    size=16,
+                                    color="#0057B8",
+                                ),
+                                ft.Text(
+                                    (
+                                        "Los pagos de expediente deben permanecer vinculados "
+                                        "a una hoja de encargo. Las consultas pueden quedar sin hoja."
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=8,
+                            wrap=True,
+                        ),
+                    ),
+                ],
+                subtitle="Modifica el expediente y la hoja asociados al cobro.",
+            ),
+
+            _cobro_form_section(
+                "Facturación",
+                ft.Icons.DESCRIPTION_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            edit_cobro_facturable,
+                            ft.Container(
+                                width=600,
+                                bgcolor="#FFFAEB",
+                                border=ft.border.all(1, "#FEC84B"),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Text(
+                                    (
+                                        "Si marcas el cobro como facturable, el sistema generará "
+                                        "automáticamente una factura si todavía no existe."
+                                    ),
+                                    size=11,
+                                    color="#B54708",
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                subtitle="Controla si el cobro debe generar factura.",
+                accent="#B54708",
+            ),
+
+            _cobro_form_section(
+                "Información adicional",
+                ft.Icons.NOTES_OUTLINED,
+                controls=[
+                    edit_cobro_concepto,
+                    edit_cobro_recibo,
+                    edit_cobro_obs,
+                ],
+                subtitle="Concepto, justificante y observaciones internas.",
+            ),
+        ],
+        width=820,
+        height=650,
+        spacing=12,
+        scroll=ft.ScrollMode.AUTO,
+    )
+
+
+    edit_cobro_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.EDIT_OUTLINED,
+                    size=22,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    "Editar cobro",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        content=edit_cobro_dialog_content,
+        actions=[
+            secondary_button(
+                "Cancelar",
+                lambda e: close(edit_cobro_dialog),
+            ),
+            primary_button(
+                "Guardar cambios",
+                save_edit_cobro,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+        shape=ft.RoundedRectangleBorder(radius=16),
+        inset_padding=ft.padding.symmetric(
+            horizontal=24,
+            vertical=18,
+        ),
     )
     page.overlay.append(edit_cobro_dialog)
 
