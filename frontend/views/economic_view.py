@@ -813,17 +813,9 @@ def economic_view(page: ft.Page):
             return None
 
         if state["section"] == "facturas":
-            return ft.Container(
-                bgcolor="#FFFFFF",
-                border=ft.border.all(1, Q_BORDER),
-                border_radius=12,
-                padding=12,
-                content=ft.Text(
-                    "Las facturas se generan automáticamente al guardar un cobro marcado como facturable.",
-                    color=Q_MUTED,
-                    size=13,
-                ),
-            )
+            # La sección de facturas ya integra sus acciones,
+            # filtros y controles en la propia vista.
+            return None
 
         mapping = {
             "hojas": ("Nueva hoja de encargo", open_hoja_dialog),
@@ -3991,7 +3983,7 @@ def economic_view(page: ft.Page):
                 "#6CE9A6",
             ),
             "exportada": (
-                "Exportada",
+                "Aprobada",
                 "#EAF3FF",
                 "#0057B8",
                 "#84CAFF",
@@ -4008,7 +4000,7 @@ def economic_view(page: ft.Page):
             options=[
                 ("borrador", "Borradores"),
                 ("emitida", "Emitidas"),
-                ("exportada", "Exportadas"),
+                ("exportada", "Aprobadas"),
                 ("anulada", "Anuladas"),
             ],
             counts=facturas_status_counts(),
@@ -4025,13 +4017,13 @@ def economic_view(page: ft.Page):
     def build_facturas_holded_filters():
         status_map = {
             "pending": (
-                "Pendiente Holded",
+                "Pendiente de aprobación",
                 "#FFFAEB",
                 "#B54708",
                 "#FEC84B",
             ),
             "exported": (
-                "Exportada a Holded",
+                "Aprobada",
                 "#ECFDF3",
                 "#027A48",
                 "#6CE9A6",
@@ -4040,14 +4032,14 @@ def economic_view(page: ft.Page):
 
         return counter_chips(
             options=[
-                ("pending", "Pendientes Holded"),
-                ("exported", "En Holded"),
+                ("pending", "Pendientes de aprobación"),
+                ("exported", "Aprobadas"),
             ],
             counts=facturas_holded_counts(),
             active_value=state.get("facturas_holded_filter") or "all",
             on_select=on_facturas_holded_select,
             include_all=True,
-            all_label="Todo Holded",
+            all_label="Todas por aprobación",
             all_value="all",
             status_map=status_map,
             bordered_status=True,
@@ -4132,7 +4124,7 @@ def economic_view(page: ft.Page):
         if bool(factura.get("exportada_holded")):
             show_message(
                 error_alert(
-                    "La factura está exportada a Holded "
+                    "La factura está aprobada y congelada "
                     "y permanece bloqueada"
                 )
             )
@@ -4402,7 +4394,7 @@ def economic_view(page: ft.Page):
         if bool(factura.get("exportada_holded")):
             show_message(
                 error_alert(
-                    "La factura está exportada a Holded "
+                    "La factura está aprobada y congelada "
                     "y no puede eliminarse"
                 )
             )
@@ -4455,7 +4447,7 @@ def economic_view(page: ft.Page):
         refresh()
 
 
-    def mark_factura_exportada_holded(factura):
+    def approve_factura(factura):
         try:
             factura_id = factura.get("id")
 
@@ -4464,16 +4456,16 @@ def economic_view(page: ft.Page):
 
             if bool(factura.get("exportada_holded")):
                 raise ValueError(
-                    "La factura ya está exportada a Holded"
+                    "La factura ya está aprobada y congelada"
                 )
 
-            economic_service.mark_factura_exportada_holded(
+            economic_service.approve_factura(
                 factura_id
             )
 
             show_message(
                 success_alert(
-                    "Factura marcada como exportada a Holded"
+                    "Factura aprobada y congelada correctamente"
                 )
             )
         except Exception as exc:
@@ -4618,7 +4610,7 @@ def economic_view(page: ft.Page):
                     date_display=_date_to_display,
                     on_edit=open_edit_factura_linked_cobro,
                     on_delete=open_delete_factura_dialog,
-                    on_export_holded=mark_factura_exportada_holded,
+                    on_export_holded=approve_factura,
                     on_rectify=open_rectification_dialog,
                 )
             )
@@ -4638,7 +4630,7 @@ def economic_view(page: ft.Page):
                         ),
                         ft.Text(
                             (
-                                "Holded cerrado hasta "
+                                "Facturas congeladas hasta "
                                 f"{_date_to_display(closure_date)}"
                             ),
                             size=11,
@@ -4663,19 +4655,33 @@ def economic_view(page: ft.Page):
 
         toolbar = ft.Row(
             controls=[
-                ft.Text(
-                    (
-                        f"Resultados: {total_items}"
-                        if str(
-                            state.get("facturas_search") or ""
-                        ).strip()
-                        else f"Facturas registradas: {total_items}"
+                ft.Row(
+                    controls=[
+                        ft.Text(
+                            (
+                                f"Resultados: {total_items}"
+                                if str(
+                                    state.get(
+                                        "facturas_search"
+                                    ) or ""
+                                ).strip()
+                                else (
+                                    f"Facturas registradas: "
+                                    f"{total_items}"
+                                )
+                            ),
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        holded_closure_chip,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
                     ),
-                    size=12,
-                    weight=ft.FontWeight.BOLD,
-                    color=Q_PRIMARY_DARK,
                 ),
-                holded_closure_chip,
                 compact_pagination_bar(
                     page=current_page,
                     page_size=page_size,
@@ -4917,7 +4923,8 @@ def economic_view(page: ft.Page):
                         facturas_filter,
                         facturas_period_button,
                         facturas_clear_button,
-                        facturas_export_holded_button,
+                        # Exportación para asesoría pendiente
+                        # de refactor separado.
                     ],
                     spacing=6,
                     wrap=True,
@@ -6885,7 +6892,7 @@ def economic_view(page: ft.Page):
     fra_iva = text_input("IVA", "0", width=140)
     fra_irpf = text_input("IRPF", "0", width=140)
     fra_total = text_input("Total opcional", width=160)
-    fra_estado = select_input("Estado", ["BORRADOR", "EMITIDA", "EXPORTADA", "ANULADA"], value="BORRADOR", width=180)
+    fra_estado = select_input("Estado", ["BORRADOR", "EMITIDA", "APROBADA", "ANULADA"], value="BORRADOR", width=180)
     fra_ruta = text_input("Ruta factura", width=620)
     fra_obs = multiline_input("Observaciones", width=620)
 
