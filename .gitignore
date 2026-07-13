@@ -38,3 +38,7 @@ storage/document_tools/**/*.tiff
 !storage/document_tools/**/.gitkeep
 
 tmp/
+
+# Holded API secrets
+.env.holded
+*.holded-token

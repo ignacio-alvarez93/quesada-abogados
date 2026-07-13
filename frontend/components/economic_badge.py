@@ -9,6 +9,7 @@ COLORS = {
     "BORRADOR": ("#F1F5F9", "#475569"),
     "EMITIDA": ("#EAF3FF", "#0057B8"),
     "EXPORTADA": ("#ECFDF3", "#027A48"),
+    "APROBADA": ("#ECFDF3", "#027A48"),
     "PENDIENTE FIRMA": ("#FFFAEB", "#B54708"),
     "FIRMADA": ("#ECFDF3", "#027A48"),
 }

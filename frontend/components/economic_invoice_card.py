@@ -16,7 +16,8 @@ Q_DANGER = "#B42318"
 INVOICE_STATUS_MAP = {
     "BORRADOR": ("Borrador", "#F1F5F9", "#475569", "#CBD5E1"),
     "EMITIDA": ("Emitida", "#ECFDF3", "#027A48", "#6CE9A6"),
-    "EXPORTADA": ("Exportada", "#EAF3FF", "#0057B8", "#84CAFF"),
+    "EXPORTADA": ("Aprobada", "#ECFDF3", "#027A48", "#6CE9A6"),
+    "APROBADA": ("Aprobada", "#ECFDF3", "#027A48", "#6CE9A6"),
     "ANULADA": ("Anulada", "#FEF3F2", "#B42318", "#FDA29B"),
 }
 
@@ -39,13 +40,13 @@ FISCAL_TYPE_MAP = {
 
 HOLDED_STATUS_MAP = {
     "HOLDED_PENDING": (
-        "Pendiente Holded",
+        "Pendiente de aprobación",
         "#FFFAEB",
         "#B54708",
         "#FEC84B",
     ),
     "HOLDED_EXPORTED": (
-        "Exportada a Holded",
+        "Aprobada",
         "#ECFDF3",
         "#027A48",
         "#6CE9A6",
@@ -317,11 +318,11 @@ def _action_menu(
                     content=ft.Row(
                         controls=[
                             ft.Icon(
-                                ft.Icons.UPLOAD_FILE_OUTLINED,
+                                ft.Icons.LOCK_OUTLINE,
                                 size=18,
                             ),
                             ft.Text(
-                                "Marcar exportada a Holded",
+                                "Aprobar y congelar",
                                 size=13,
                             ),
                         ],
@@ -565,8 +566,8 @@ def economic_invoice_card(
                         ),
                         ft.Text(
                             (
-                                "Factura congelada: ya fue exportada "
-                                "a Holded."
+                                "Factura aprobada: numeración y "
+                                "contenido congelados."
                             ),
                             size=11,
                             weight=ft.FontWeight.BOLD,

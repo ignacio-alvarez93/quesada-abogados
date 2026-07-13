@@ -300,9 +300,9 @@ def renumerar_cobros_por_year(conn, year):
 
 def renumerar_facturas_por_year(conn, year):
     """
-    Renumera únicamente facturas normales no exportadas.
+    Renumera únicamente facturas normales no aprobadas.
 
-    Las facturas exportadas conservan su número.
+    Las facturas aprobadas conservan su número.
     Las rectificativas nunca participan en la serie FRA.
     """
     year = str(year or "").strip()[:4]
@@ -315,7 +315,7 @@ def renumerar_facturas_por_year(conn, year):
     prefix = f"FRA-{year}-"
 
     # --------------------------------------------------------
-    # Las facturas normales exportadas son inmutables.
+    # Las facturas normales aprobadas son inmutables.
     # --------------------------------------------------------
     exported_rows = conn.execute(
         """
@@ -355,7 +355,7 @@ def renumerar_facturas_por_year(conn, year):
         )
 
     # --------------------------------------------------------
-    # Solo se renumeran las facturas normales pendientes.
+    # Solo se renumeran las facturas normales no aprobadas.
     # --------------------------------------------------------
     pending_rows = conn.execute(
         """
@@ -579,7 +579,9 @@ def is_invoice_date_closed(value):
     if not invoice_date:
         return False
 
-    return invoice_date <= closure_date
+    # El día de la última factura aprobada sigue abierto.
+    # Solo quedan cerradas las fechas anteriores.
+    return invoice_date < closure_date
 
 
 def assert_invoice_date_open(value, action="modificar"):
@@ -590,11 +592,12 @@ def assert_invoice_date_open(value, action="modificar"):
 
     invoice_date = _date(value)
 
-    if invoice_date and invoice_date <= closure_date:
+    if invoice_date and invoice_date < closure_date:
         raise ValueError(
             f"No se puede {action} una factura con fecha "
-            f"{invoice_date}. La facturación está cerrada "
-            f"hasta {closure_date}"
+            f"{invoice_date}. Las fechas anteriores a "
+            f"{closure_date} están cerradas. Se permite "
+            f"seguir facturando el día {closure_date}"
         )
 
 
@@ -727,7 +730,7 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
             existing_invoice.get("exportada_holded") or 0
         ):
             raise ValueError(
-                "La factura está exportada a Holded y permanece bloqueada"
+                "La factura está aprobada y permanece congelada"
             )
 
         existing_invoice_full = _dict(
@@ -1642,7 +1645,7 @@ def create_factura_rectificativa(
             original.get("exportada_holded") or 0
         ):
             raise ValueError(
-                "La factura todavía no está exportada. "
+                "La factura todavía no está aprobada. "
                 "Debes modificarla directamente."
             )
 
@@ -1881,10 +1884,28 @@ def get_factura(factura_id):
         )
 
 
-def mark_factura_exportada_holded(factura_id):
+def approve_factura(factura_id):
+    """
+    Aprueba y congela definitivamente una factura.
+
+    Compatibilidad temporal:
+    - exportada_holded = 1 representa factura aprobada;
+    - fecha_exportacion representa fecha de aprobación.
+
+    Una factura aprobada:
+    - conserva definitivamente su numeración;
+    - no puede editarse ni eliminarse;
+    - solo puede corregirse mediante rectificativa.
+
+    Regla temporal:
+    - se permite aprobar más facturas en la misma fecha;
+    - solo se bloquean fechas estrictamente anteriores.
+    """
     factura_id = int(factura_id)
 
     with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
         factura = _dict(
             conn.execute(
                 """
@@ -1902,50 +1923,132 @@ def mark_factura_exportada_holded(factura_id):
 
         if int(factura.get("exportada_holded") or 0):
             raise ValueError(
-                "La factura ya está exportada a Holded"
+                "La factura ya está aprobada y congelada"
             )
 
-        current_closure = get_invoice_closure_date()
-        factura_date = str(
-            factura.get("fecha_factura") or ""
+        numero = _text(
+            factura.get("numero_factura")
+        )
+        fecha = _text(
+            factura.get("fecha_factura")
+        )
+        cliente_id = factura.get("cliente_id")
+
+        if not numero:
+            raise ValueError(
+                "La factura no tiene numeración"
+            )
+
+        if not fecha:
+            raise ValueError(
+                "La factura no tiene fecha"
+            )
+
+        if not cliente_id:
+            raise ValueError(
+                "La factura no tiene cliente"
+            )
+
+        # Regla centralizada:
+        # la misma fecha permanece abierta y únicamente
+        # quedan bloqueadas las fechas anteriores.
+        assert_invoice_date_open(
+            fecha,
+            action="aprobar",
         )
 
-        if (
-            current_closure
-            and factura_date
-            and factura_date <= current_closure
-        ):
+        duplicate = conn.execute(
+            """
+            SELECT id
+            FROM eco_facturas
+            WHERE numero_factura = ?
+              AND id != ?
+              AND COALESCE(activo, 1) = 1
+            LIMIT 1
+            """,
+            (
+                numero,
+                factura_id,
+            ),
+        ).fetchone()
+
+        if duplicate:
             raise ValueError(
-                "La factura pertenece a un periodo ya cerrado "
-                f"en Holded hasta {current_closure}"
+                "Ya existe otra factura activa "
+                f"con el número {numero}"
             )
 
-        conn.execute(
+        base = round(
+            _float(factura.get("base_imponible")),
+            2,
+        )
+        iva = round(
+            _float(factura.get("iva")),
+            2,
+        )
+        irpf = round(
+            _float(factura.get("irpf")),
+            2,
+        )
+        suplidos = round(
+            _float(factura.get("suplidos")),
+            2,
+        )
+        stored_total = round(
+            _float(factura.get("total")),
+            2,
+        )
+        calculated_total = round(
+            base + iva - irpf + suplidos,
+            2,
+        )
+
+        if abs(stored_total - calculated_total) > 0.01:
+            raise ValueError(
+                "Los importes de la factura no cuadran: "
+                f"total registrado {stored_total:.2f} €, "
+                f"total calculado {calculated_total:.2f} €"
+            )
+
+        cursor = conn.execute(
             """
             UPDATE eco_facturas
             SET exportada_holded = 1,
-                estado = 'EXPORTADA',
+                estado = 'APROBADA',
                 fecha_exportacion = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
+              AND COALESCE(exportada_holded, 0) = 0
+              AND COALESCE(activo, 1) = 1
             """,
             (factura_id,),
         )
+
+        if cursor.rowcount != 1:
+            raise ValueError(
+                "No se pudo aprobar la factura"
+            )
 
         conn.commit()
 
     registrar_evento(
         "eco_facturas",
         factura_id,
-        "EXPORTACION",
-        "FACTURA EXPORTADA A HOLDED",
+        "APROBACION",
+        "FACTURA APROBADA Y CONGELADA",
         (
-            f"{factura.get('numero_factura') or factura_id} "
-            "marcada como exportada a Holded"
+            f"{numero} · numeración y contenido "
+            "congelados"
         ),
     )
 
     return factura_id
+
+def mark_factura_exportada_holded(factura_id):
+    """
+    Alias temporal para compatibilidad con código anterior.
+    """
+    return approve_factura(factura_id)
 
 
 def delete_factura(factura_id):
@@ -1969,7 +2072,7 @@ def delete_factura(factura_id):
 
         if int(factura.get("exportada_holded") or 0):
             raise ValueError(
-                "La factura está exportada a Holded "
+                "La factura está aprobada y congelada "
                 "y no puede eliminarse"
             )
 
@@ -2618,4 +2721,3 @@ def aplicar_cobro_consulta_a_hoja(
     )
 
     return True
-
