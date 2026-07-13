@@ -21,7 +21,10 @@ from frontend.components.economic_badge import economic_badge
 from frontend.components.economic_payment_card import economic_payment_card
 from frontend.components.economic_invoice_card import economic_invoice_card
 from frontend.components.app_autocomplete import AppAutocomplete
-from frontend.components.listing import compact_pagination_bar
+from frontend.components.listing import (
+    card_item,
+    compact_pagination_bar,
+)
 from frontend.components.listing.counter_chips import counter_chips
 from backend.services.economic_reconciliation import (
     list_bank_movements,
@@ -262,7 +265,6 @@ def economic_view(page: ft.Page):
         "obligations_search": "",
         "obligations_page": 1,
         "obligations_page_size": 8,
-        "obligations_expanded_day": "",
         "movements_source": "cashmatic",
         "cobros_page": 1,
         "cobros_page_size": 10,
@@ -1162,69 +1164,418 @@ def economic_view(page: ft.Page):
         )
 
 
-    def _obligation_day_detail(day):
-        movement_cards = []
+    def _obligation_status_config(
+        pending_centimos,
+        invoiced_centimos,
+    ):
+        pending_centimos = int(
+            pending_centimos or 0
+        )
+        invoiced_centimos = int(
+            invoiced_centimos or 0
+        )
 
-        for movement in day["movements"]:
-            movement_cards.append(
+        if pending_centimos <= 0 and invoiced_centimos > 0:
+            return {
+                "status": "FACTURADO",
+                "foreground": "#027A48",
+                "background": "#ECFDF3",
+                "border": "#6CE9A6",
+                "icon": ft.Icons.CHECK_CIRCLE_OUTLINE,
+            }
+
+        if invoiced_centimos > 0:
+            return {
+                "status": "PARCIAL",
+                "foreground": "#B54708",
+                "background": "#FFFAEB",
+                "border": "#FEC84B",
+                "icon": ft.Icons.PIE_CHART_OUTLINE,
+            }
+
+        return {
+            "status": "PENDIENTE",
+            "foreground": "#B54708",
+            "background": "#FFFAEB",
+            "border": "#FEC84B",
+            "icon": ft.Icons.SCHEDULE,
+        }
+
+
+    def _obligation_status_badge(
+        pending_centimos,
+        invoiced_centimos,
+    ):
+        config = _obligation_status_config(
+            pending_centimos,
+            invoiced_centimos,
+        )
+
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        config["icon"],
+                        size=13,
+                        color=config["foreground"],
+                    ),
+                    ft.Text(
+                        config["status"],
+                        size=10,
+                        weight=ft.FontWeight.BOLD,
+                        color=config["foreground"],
+                    ),
+                ],
+                spacing=4,
+                tight=True,
+            ),
+            bgcolor=config["background"],
+            border=ft.border.all(
+                1,
+                config["border"],
+            ),
+            border_radius=999,
+            padding=ft.padding.symmetric(
+                horizontal=9,
+                vertical=4,
+            ),
+        )
+
+
+    def _obligation_day_amounts(day):
+        movements = list(
+            day.get("movements") or []
+        )
+
+        original_centimos = sum(
+            int(
+                getattr(
+                    movement,
+                    "original_amount_centimos",
+                    movement.amount_centimos,
+                )
+                or 0
+            )
+            for movement in movements
+        )
+
+        invoiced_centimos = sum(
+            int(
+                getattr(
+                    movement,
+                    "invoiced_centimos",
+                    0,
+                )
+                or 0
+            )
+            for movement in movements
+        )
+
+        pending_centimos = sum(
+            int(
+                getattr(
+                    movement,
+                    "amount_centimos",
+                    0,
+                )
+                or 0
+            )
+            for movement in movements
+        )
+
+        return {
+            "original_centimos": original_centimos,
+            "invoiced_centimos": invoiced_centimos,
+            "pending_centimos": pending_centimos,
+        }
+
+
+    def _obligation_metric(
+        label,
+        value,
+        *,
+        color=Q_PRIMARY_DARK,
+        width=180,
+    ):
+        return ft.Container(
+            width=width,
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, "#E2E8F0"),
+            border_radius=10,
+            padding=ft.padding.symmetric(
+                horizontal=12,
+                vertical=9,
+            ),
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        label,
+                        size=10,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        value,
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=color,
+                    ),
+                ],
+                spacing=2,
+            ),
+        )
+
+
+    def _obligation_dialog_movement_card(movement):
+        original_centimos = int(
+            getattr(
+                movement,
+                "original_amount_centimos",
+                movement.amount_centimos,
+            )
+            or 0
+        )
+        invoiced_centimos = int(
+            getattr(
+                movement,
+                "invoiced_centimos",
+                0,
+            )
+            or 0
+        )
+        pending_centimos = int(
+            getattr(
+                movement,
+                "amount_centimos",
+                0,
+            )
+            or 0
+        )
+
+        status = str(
+            getattr(
+                movement,
+                "invoicing_status",
+                "PENDIENTE",
+            )
+            or "PENDIENTE"
+        ).strip().upper()
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=10,
+            padding=10,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            _obligation_source_badge(
+                                movement.source_type
+                            ),
+                            ft.Text(
+                                (
+                                    f"Movimiento "
+                                    f"#{movement.source_id}"
+                                ),
+                                size=11,
+                                color=Q_MUTED,
+                                expand=True,
+                            ),
+                            _obligation_status_badge(
+                                pending_centimos,
+                                invoiced_centimos,
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                    ft.Text(
+                        movement.concept or "-",
+                        size=12,
+                        weight=ft.FontWeight.W_500,
+                        color="#344054",
+                        selectable=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                "Original: "
+                                + _money_centimos(
+                                    original_centimos
+                                ),
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                "Facturado: "
+                                + _money_centimos(
+                                    invoiced_centimos
+                                ),
+                                size=11,
+                                color="#027A48",
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            ft.Text(
+                                "Pendiente: "
+                                + _money_centimos(
+                                    pending_centimos
+                                ),
+                                size=11,
+                                color=(
+                                    "#027A48"
+                                    if pending_centimos <= 0
+                                    else "#B54708"
+                                ),
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            ft.Text(
+                                f"Estado: {status}",
+                                size=10,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=14,
+                        wrap=True,
+                    ),
+                ],
+                spacing=7,
+            ),
+        )
+
+
+    def open_obligation_day_dialog(day):
+        obligation_date = str(
+            day.get("obligation_date") or ""
+        )
+        amounts = _obligation_day_amounts(day)
+
+        original_centimos = amounts[
+            "original_centimos"
+        ]
+        invoiced_centimos = amounts[
+            "invoiced_centimos"
+        ]
+        pending_centimos = amounts[
+            "pending_centimos"
+        ]
+
+        source_groups = {}
+
+        for movement in day.get("movements") or []:
+            source = source_groups.setdefault(
+                movement.source_type,
+                {
+                    "source_type": movement.source_type,
+                    "source_label": movement.source_label,
+                    "movements": 0,
+                    "original_centimos": 0,
+                    "invoiced_centimos": 0,
+                    "pending_centimos": 0,
+                },
+            )
+
+            source["movements"] += 1
+            source["original_centimos"] += int(
+                getattr(
+                    movement,
+                    "original_amount_centimos",
+                    movement.amount_centimos,
+                )
+                or 0
+            )
+            source["invoiced_centimos"] += int(
+                getattr(
+                    movement,
+                    "invoiced_centimos",
+                    0,
+                )
+                or 0
+            )
+            source["pending_centimos"] += int(
+                getattr(
+                    movement,
+                    "amount_centimos",
+                    0,
+                )
+                or 0
+            )
+
+        source_cards = []
+
+        for source in sorted(
+            source_groups.values(),
+            key=lambda item: str(
+                item.get("source_label") or ""
+            ),
+        ):
+            movement_label = (
+                "movimiento"
+                if int(source["movements"]) == 1
+                else "movimientos"
+            )
+
+            source_cards.append(
                 ft.Container(
                     bgcolor="#F8FAFC",
-                    border=ft.border.all(1, "#E2E8F0"),
+                    border=ft.border.all(
+                        1,
+                        "#E2E8F0",
+                    ),
                     border_radius=10,
                     padding=10,
                     content=ft.Row(
                         controls=[
                             _obligation_source_badge(
-                                movement.source_type
+                                source["source_type"]
+                            ),
+                            ft.Text(
+                                (
+                                    f"{source['movements']} "
+                                    f"{movement_label}"
+                                ),
+                                size=11,
+                                color=Q_MUTED,
+                                expand=True,
                             ),
                             ft.Column(
                                 controls=[
                                     ft.Text(
-                                        movement.concept or "-",
-                                        size=12,
-                                        weight=ft.FontWeight.W_500,
-                                        color="#344054",
-                                        selectable=True,
-                                    ),
-                                    ft.Text(
-                                        (
-                                            f"Movimiento "
-                                            f"#{movement.source_id}"
+                                        "Facturado: "
+                                        + _money_centimos(
+                                            source[
+                                                "invoiced_centimos"
+                                            ]
                                         ),
                                         size=10,
-                                        color=Q_MUTED,
+                                        color="#027A48",
                                     ),
-                                    (
-                                        ft.Text(
-                                            "Facturado: "
-                                            + _money_centimos(
-                                                movement.invoiced_centimos
+                                    ft.Text(
+                                        "Pendiente: "
+                                        + _money_centimos(
+                                            source[
+                                                "pending_centimos"
+                                            ]
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=(
+                                            "#027A48"
+                                            if int(
+                                                source[
+                                                    "pending_centimos"
+                                                ]
                                             )
-                                            + " · Pendiente: "
-                                            + _money_centimos(
-                                                movement.amount_centimos
-                                            ),
-                                            size=10,
-                                            color="#B54708",
-                                            weight=ft.FontWeight.BOLD,
-                                        )
-                                        if movement.invoiced_centimos > 0
-                                        else ft.Container(
-                                            width=1,
-                                            height=1,
-                                        )
+                                            <= 0
+                                            else "#B54708"
+                                        ),
                                     ),
                                 ],
                                 spacing=2,
-                                expand=True,
-                            ),
-                            ft.Text(
-                                _money_centimos(
-                                    movement.amount_centimos
+                                horizontal_alignment=(
+                                    ft.CrossAxisAlignment.END
                                 ),
-                                size=13,
-                                weight=ft.FontWeight.BOLD,
-                                color=Q_PRIMARY_DARK,
                             ),
                         ],
                         spacing=10,
@@ -1235,21 +1586,166 @@ def economic_view(page: ft.Page):
                 )
             )
 
-        return ft.Column(
-            controls=[
-                ft.Divider(height=8),
-                ft.Text(
-                    "Movimientos incluidos",
-                    size=12,
-                    weight=ft.FontWeight.BOLD,
-                    color=Q_PRIMARY_DARK,
+        movement_cards = [
+            _obligation_dialog_movement_card(
+                movement
+            )
+            for movement in day.get("movements") or []
+        ]
+
+        def close_dialog(e=None):
+            dialog.open = False
+            page.update()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.RECEIPT_LONG_OUTLINED,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Obligación de facturación",
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                _date_to_display(
+                                    obligation_date
+                                ),
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=1,
+                    ),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                width=820,
+                height=620,
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                _obligation_metric(
+                                    "Total detectado",
+                                    _money_centimos(
+                                        original_centimos
+                                    ),
+                                ),
+                                _obligation_metric(
+                                    "Facturado",
+                                    _money_centimos(
+                                        invoiced_centimos
+                                    ),
+                                    color="#027A48",
+                                ),
+                                _obligation_metric(
+                                    "Pendiente",
+                                    _money_centimos(
+                                        pending_centimos
+                                    ),
+                                    color=(
+                                        "#027A48"
+                                        if pending_centimos <= 0
+                                        else "#B54708"
+                                    ),
+                                ),
+                                _obligation_status_badge(
+                                    pending_centimos,
+                                    invoiced_centimos,
+                                ),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.CENTER
+                            ),
+                        ),
+                        ft.Divider(height=16),
+                        ft.Text(
+                            "Desglose por banco",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Column(
+                            controls=source_cards,
+                            spacing=7,
+                        ),
+                        ft.Divider(height=16),
+                        ft.Text(
+                            "Movimientos",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Column(
+                            controls=movement_cards,
+                            spacing=7,
+                        ),
+                    ],
+                    spacing=10,
+                    scroll=ft.ScrollMode.AUTO,
                 ),
-                ft.Column(
-                    controls=movement_cards,
-                    spacing=7,
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=lambda e: close_dialog(),
                 ),
             ],
-            spacing=8,
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(
+                radius=16
+            ),
+            inset_padding=ft.padding.symmetric(
+                horizontal=24,
+                vertical=18,
+            ),
+        )
+
+        try:
+            if dialog not in page.overlay:
+                page.overlay.append(dialog)
+        except Exception:
+            pass
+
+        dialog.open = True
+        page.update()
+
+
+    def _obligation_day_action_menu(day):
+        return ft.PopupMenuButton(
+            icon=ft.Icons.MORE_VERT,
+            tooltip="Acciones",
+            items=[
+                ft.PopupMenuItem(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.VISIBILITY_OUTLINED,
+                                size=17,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                "Ver detalle",
+                                color=Q_PRIMARY_DARK,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    on_click=lambda e, item=day: (
+                        open_obligation_day_dialog(item)
+                    ),
+                ),
+            ],
         )
 
 
@@ -1257,296 +1753,125 @@ def economic_view(page: ft.Page):
         obligation_date = str(
             day.get("obligation_date") or ""
         )
-        expanded = (
-            state.get("obligations_expanded_day")
-            == obligation_date
+        amounts = _obligation_day_amounts(day)
+
+        original_centimos = amounts[
+            "original_centimos"
+        ]
+        invoiced_centimos = amounts[
+            "invoiced_centimos"
+        ]
+        pending_centimos = amounts[
+            "pending_centimos"
+        ]
+
+        movement_count = int(
+            day.get("movement_count") or 0
         )
 
-        obligation_movements = list(
-            day.get("movements") or []
+        source_labels = [
+            str(source.get("source_label") or "").strip()
+            for source in day.get("source_totals") or []
+            if str(
+                source.get("source_label") or ""
+            ).strip()
+        ]
+
+        sources_text = (
+            " · ".join(source_labels)
+            if source_labels
+            else "Sin banco identificado"
         )
 
-        obligation_original_centimos = sum(
-            int(
-                getattr(
-                    movement,
-                    "original_amount_centimos",
-                    movement.amount_centimos,
-                )
-                or 0
-            )
-            for movement in obligation_movements
+        movement_text = (
+            "1 movimiento"
+            if movement_count == 1
+            else f"{movement_count} movimientos"
         )
 
-        obligation_invoiced_centimos = sum(
-            int(
-                getattr(
-                    movement,
-                    "invoiced_centimos",
-                    0,
-                )
-                or 0
-            )
-            for movement in obligation_movements
-        )
-
-        obligation_pending_centimos = sum(
-            int(
-                getattr(
-                    movement,
-                    "amount_centimos",
-                    0,
-                )
-                or 0
-            )
-            for movement in obligation_movements
-        )
-
-        if (
-            obligation_pending_centimos <= 0
-            and obligation_invoiced_centimos > 0
-        ):
-            obligation_day_status = "FACTURADO"
-            obligation_day_color = "#027A48"
-            obligation_day_bgcolor = "#ECFDF3"
-            obligation_day_border = "#6CE9A6"
-        elif obligation_invoiced_centimos > 0:
-            obligation_day_status = "PARCIAL"
-            obligation_day_color = "#B54708"
-            obligation_day_bgcolor = "#FFFAEB"
-            obligation_day_border = "#FEC84B"
-        else:
-            obligation_day_status = "PENDIENTE"
-            obligation_day_color = "#475467"
-            obligation_day_bgcolor = "#F2F4F7"
-            obligation_day_border = "#D0D5DD"
-
-        def toggle_day(e=None):
-            state["obligations_expanded_day"] = (
-                ""
-                if expanded
-                else obligation_date
-            )
-            refresh()
-
-        source_rows = []
-
-        for source in day.get("source_totals") or []:
-            source_rows.append(
-                ft.Row(
-                    controls=[
-                        _obligation_source_badge(
-                            source.get("source_type")
-                        ),
-                        ft.Text(
-                            (
-                                f"{source.get('movements') or 0} "
-                                f"movimiento"
-                                if int(
-                                    source.get("movements") or 0
-                                ) == 1
-                                else
-                                f"{source.get('movements') or 0} "
-                                f"movimientos"
-                            ),
-                            size=11,
-                            color=Q_MUTED,
-                            expand=True,
-                        ),
-                        ft.Text(
-                            _money_centimos(
-                                source.get("amount_centimos")
-                            ),
-                            size=12,
-                            weight=ft.FontWeight.BOLD,
-                            color=Q_PRIMARY_DARK,
-                        ),
-                    ],
-                    spacing=10,
-                )
-            )
-
-        controls = [
+        body = [
             ft.Row(
                 controls=[
-                    ft.Column(
-                        controls=[
-                            ft.Text(
-                                _date_to_display(obligation_date),
-                                size=17,
-                                weight=ft.FontWeight.BOLD,
-                                color=Q_PRIMARY_DARK,
-                            ),
-                            ft.Text(
-                                (
-                                    f"{day.get('movement_count') or 0} "
-                                    f"movimientos detectados"
-                                ),
-                                size=11,
-                                color=Q_MUTED,
-                            ),
-                        ],
-                        spacing=2,
-                        expand=True,
-                    ),
-                    ft.Text(
+                    _obligation_metric(
+                        "Total detectado",
                         _money_centimos(
-                            day.get("total_centimos")
+                            original_centimos
                         ),
-                        size=20,
-                        weight=ft.FontWeight.BOLD,
-                        color="#B54708",
+                        width=190,
                     ),
-                    ft.IconButton(
-                        icon=(
-                            ft.Icons.EXPAND_LESS
-                            if expanded
-                            else ft.Icons.EXPAND_MORE
+                    _obligation_metric(
+                        "Facturado",
+                        _money_centimos(
+                            invoiced_centimos
                         ),
-                        tooltip=(
-                            "Ocultar movimientos"
-                            if expanded
-                            else "Ver movimientos"
+                        color="#027A48",
+                        width=190,
+                    ),
+                    _obligation_metric(
+                        "Pendiente",
+                        _money_centimos(
+                            pending_centimos
                         ),
-                        on_click=toggle_day,
+                        color=(
+                            "#027A48"
+                            if pending_centimos <= 0
+                            else "#B54708"
+                        ),
+                        width=190,
                     ),
                 ],
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=10,
+                wrap=True,
             ),
-            ft.Container(
-                bgcolor="#F8FAFC",
-                border=ft.border.all(1, "#E2E8F0"),
-                border_radius=10,
-                padding=ft.padding.symmetric(
-                    horizontal=12,
-                    vertical=9,
-                ),
-                content=ft.Row(
-                    controls=[
-                        ft.Container(
-                            content=ft.Text(
-                                obligation_day_status,
-                                size=10,
-                                weight=ft.FontWeight.BOLD,
-                                color=obligation_day_color,
-                            ),
-                            bgcolor=obligation_day_bgcolor,
-                            border=ft.border.all(
-                                1,
-                                obligation_day_border,
-                            ),
-                            border_radius=999,
-                            padding=ft.padding.symmetric(
-                                horizontal=8,
-                                vertical=3,
-                            ),
-                        ),
-                        ft.Column(
-                            controls=[
-                                ft.Text(
-                                    "Facturado: "
-                                    + _money_centimos(
-                                        obligation_invoiced_centimos
-                                    ),
-                                    size=11,
-                                    color="#027A48",
-                                    weight=ft.FontWeight.BOLD,
-                                ),
-                                ft.Text(
-                                    "Total detectado: "
-                                    + _money_centimos(
-                                        obligation_original_centimos
-                                    ),
-                                    size=10,
-                                    color=Q_MUTED,
-                                ),
-                            ],
-                            spacing=2,
-                            expand=True,
-                        ),
-                        ft.Column(
-                            controls=[
-                                ft.Text(
-                                    "Pendiente de facturar",
-                                    size=10,
-                                    color=Q_MUTED,
-                                    text_align=ft.TextAlign.RIGHT,
-                                ),
-                                ft.Text(
-                                    _money_centimos(
-                                        obligation_pending_centimos
-                                    ),
-                                    size=16,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=(
-                                        "#027A48"
-                                        if obligation_pending_centimos <= 0
-                                        else "#B54708"
-                                    ),
-                                    text_align=ft.TextAlign.RIGHT,
-                                ),
-                            ],
-                            spacing=2,
-                            horizontal_alignment=(
-                                ft.CrossAxisAlignment.END
-                            ),
-                        ),
-                    ],
-                    spacing=12,
-                    vertical_alignment=(
-                        ft.CrossAxisAlignment.CENTER
+            ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.ACCOUNT_BALANCE_OUTLINED,
+                        size=14,
+                        color=Q_MUTED,
                     ),
-                ),
-            ),
-            ft.Divider(height=10),
-            ft.Column(
-                controls=source_rows,
-                spacing=7,
-            ),
-            ft.Container(
-                bgcolor="#FFFAEB",
-                border=ft.border.all(1, "#FEC84B"),
-                border_radius=10,
-                padding=10,
-                content=ft.Row(
-                    controls=[
-                        ft.Text(
-                            "Pendiente de revisar y facturar",
-                            size=12,
-                            color="#B54708",
-                            weight=ft.FontWeight.BOLD,
-                            expand=True,
-                        ),
-                        ft.Text(
-                            _money_centimos(
-                                day.get("total_centimos")
-                            ),
-                            size=13,
-                            color="#B54708",
-                            weight=ft.FontWeight.BOLD,
-                        ),
-                    ],
-                ),
+                    ft.Text(
+                        sources_text,
+                        size=11,
+                        color=Q_MUTED,
+                        selectable=True,
+                    ),
+                ],
+                spacing=5,
+                wrap=True,
             ),
         ]
 
-        if expanded:
-            controls.append(
-                _obligation_day_detail(day)
-            )
-
-        return ft.Container(
-            bgcolor="#FFFFFF",
-            border=ft.border.all(
-                1.4 if expanded else 1,
-                "#84CAFF" if expanded else Q_BORDER,
+        return card_item(
+            title=_date_to_display(
+                obligation_date
             ),
-            border_radius=16,
-            padding=14,
-            content=ft.Column(
-                controls=controls,
-                spacing=10,
+            subtitle=(
+                f"{movement_text} · "
+                f"Obligación diaria"
             ),
+            badges=[
+                _obligation_status_badge(
+                    pending_centimos,
+                    invoiced_centimos,
+                ),
+            ],
+            actions=[
+                _obligation_day_action_menu(day),
+            ],
+            body=body,
+            highlight=pending_centimos > 0,
+            highlight_color="#FFFCF5",
+            border_color=(
+                "#FEC84B"
+                if pending_centimos > 0
+                else "#6CE9A6"
+            ),
+            border_width=1,
+            on_click=lambda e, item=day: (
+                open_obligation_day_dialog(item)
+            ),
+            padding=10,
         )
 
 
@@ -1697,7 +2022,6 @@ def economic_view(page: ft.Page):
                 1,
                 min(int(target), total_pages),
             )
-            state["obligations_expanded_day"] = ""
             refresh()
 
         return ft.Row(
@@ -4314,7 +4638,6 @@ def economic_view(page: ft.Page):
         ).pop(source, None)
 
         state["obligations_page"] = 1
-        state["obligations_expanded_day"] = ""
 
         refresh_movements_results()
 
@@ -6481,7 +6804,6 @@ def economic_view(page: ft.Page):
 
         state["obligations_month"] = selected_month
         state["obligations_page"] = 1
-        state["obligations_expanded_day"] = ""
 
         obligations_month_autocomplete.set_value(
             _obligation_month_label(selected_month),
@@ -6496,7 +6818,6 @@ def economic_view(page: ft.Page):
             obligations_search_input.value or ""
         )
         state["obligations_page"] = 1
-        state["obligations_expanded_day"] = ""
         refresh()
 
 
@@ -6509,7 +6830,6 @@ def economic_view(page: ft.Page):
         state["obligations_source"] = "ALL"
         state["obligations_search"] = ""
         state["obligations_page"] = 1
-        state["obligations_expanded_day"] = ""
 
         obligations_search_input.value = ""
 
