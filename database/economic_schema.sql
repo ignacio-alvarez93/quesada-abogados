@@ -82,6 +82,9 @@ CREATE TABLE IF NOT EXISTS eco_facturas (
     codigo_causa_rectificacion TEXT,
     causa_rectificacion TEXT,
     estado TEXT NOT NULL DEFAULT 'BORRADOR',
+    -- Compatibilidad temporal:
+    -- exportada_holded=1 significa factura aprobada/congelada.
+    -- fecha_exportacion actúa como fecha de aprobación.
     exportada_holded INTEGER NOT NULL DEFAULT 0,
     fecha_exportacion TEXT,
     documento_ruta TEXT,
@@ -191,3 +194,68 @@ BEGIN
           ) != 'RECTIFICATIVA';
 END;
 
+
+
+-- ============================================================
+-- Integración Holded API
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS eco_holded_contact_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cliente_id INTEGER NOT NULL UNIQUE,
+    holded_contact_id TEXT NOT NULL,
+    vat_number TEXT,
+    contact_name TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (cliente_id)
+        REFERENCES clientes(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_eco_holded_contact_links_remote
+    ON eco_holded_contact_links(holded_contact_id);
+
+CREATE TABLE IF NOT EXISTS eco_holded_invoice_sync (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    factura_id INTEGER NOT NULL UNIQUE,
+    cliente_id INTEGER NOT NULL,
+    holded_contact_id TEXT,
+    holded_document_id TEXT,
+    holded_document_number TEXT,
+    sync_status TEXT NOT NULL DEFAULT 'PENDING',
+    requires_manual_review INTEGER NOT NULL DEFAULT 0,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    payload_json TEXT,
+    response_json TEXT,
+    synced_at TEXT,
+    last_checked_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (factura_id)
+        REFERENCES eco_facturas(id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (cliente_id)
+        REFERENCES clientes(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_eco_holded_invoice_sync_status
+    ON eco_holded_invoice_sync(sync_status);
+
+CREATE INDEX IF NOT EXISTS idx_eco_holded_invoice_sync_remote
+    ON eco_holded_invoice_sync(holded_document_id);
+
+-- BANK MOVEMENT INVOICEABILITY
+-- Migración runtime gestionada por bank_query_service.py.
+-- Campos de bank_movements:
+--   invoiceability_status TEXT NOT NULL DEFAULT 'PENDING'
+--   invoiceability_reason TEXT
+--   invoiceability_updated_at TEXT
+-- Estados soportados:
+--   PENDING
+--   NON_INVOICEABLE
+--   FACTURABLE
+-- Índice:
+--   idx_bank_movements_invoiceability_status

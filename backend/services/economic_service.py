@@ -579,7 +579,9 @@ def is_invoice_date_closed(value):
     if not invoice_date:
         return False
 
-    return invoice_date <= closure_date
+    # El día de la última factura aprobada sigue abierto.
+    # Solo quedan cerradas las fechas anteriores.
+    return invoice_date < closure_date
 
 
 def assert_invoice_date_open(value, action="modificar"):
@@ -590,11 +592,12 @@ def assert_invoice_date_open(value, action="modificar"):
 
     invoice_date = _date(value)
 
-    if invoice_date and invoice_date <= closure_date:
+    if invoice_date and invoice_date < closure_date:
         raise ValueError(
             f"No se puede {action} una factura con fecha "
-            f"{invoice_date}. La facturación está cerrada "
-            f"hasta {closure_date}"
+            f"{invoice_date}. Las fechas anteriores a "
+            f"{closure_date} están cerradas. Se permite "
+            f"seguir facturando el día {closure_date}"
         )
 
 
@@ -1893,6 +1896,10 @@ def approve_factura(factura_id):
     - conserva definitivamente su numeración;
     - no puede editarse ni eliminarse;
     - solo puede corregirse mediante rectificativa.
+
+    Regla temporal:
+    - se permite aprobar más facturas en la misma fecha;
+    - solo se bloquean fechas estrictamente anteriores.
     """
     factura_id = int(factura_id)
 
@@ -1941,6 +1948,14 @@ def approve_factura(factura_id):
             raise ValueError(
                 "La factura no tiene cliente"
             )
+
+        # Regla centralizada:
+        # la misma fecha permanece abierta y únicamente
+        # quedan bloqueadas las fechas anteriores.
+        assert_invoice_date_open(
+            fecha,
+            action="aprobar",
+        )
 
         duplicate = conn.execute(
             """
@@ -1995,18 +2010,6 @@ def approve_factura(factura_id):
                 f"total calculado {calculated_total:.2f} €"
             )
 
-        current_closure = get_invoice_closure_date()
-
-        if (
-            current_closure
-            and fecha
-            and fecha <= current_closure
-        ):
-            raise ValueError(
-                "La factura pertenece a un periodo "
-                f"cerrado hasta {current_closure}"
-            )
-
         cursor = conn.execute(
             """
             UPDATE eco_facturas
@@ -2040,7 +2043,6 @@ def approve_factura(factura_id):
     )
 
     return factura_id
-
 
 def mark_factura_exportada_holded(factura_id):
     """
@@ -2719,4 +2721,3 @@ def aplicar_cobro_consulta_a_hoja(
     )
 
     return True
-

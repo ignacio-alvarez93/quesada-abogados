@@ -398,3 +398,132 @@ def restore_bank_movement(
         )
         conn.commit()
         return cursor.rowcount > 0
+
+def _ensure_bank_invoiceability_columns(conn) -> None:
+    columns = {
+        row["name"] if hasattr(row, "keys") else row[1]
+        for row in conn.execute(
+            'PRAGMA table_info("bank_movements")'
+        ).fetchall()
+    }
+
+    migrations = [
+        (
+            "invoiceability_status",
+            """
+            ALTER TABLE bank_movements
+            ADD COLUMN invoiceability_status
+            TEXT NOT NULL DEFAULT 'PENDING'
+            """,
+        ),
+        (
+            "invoiceability_reason",
+            """
+            ALTER TABLE bank_movements
+            ADD COLUMN invoiceability_reason TEXT
+            """,
+        ),
+        (
+            "invoiceability_updated_at",
+            """
+            ALTER TABLE bank_movements
+            ADD COLUMN invoiceability_updated_at TEXT
+            """,
+        ),
+    ]
+
+    for column, sql in migrations:
+        if column not in columns:
+            conn.execute(sql)
+
+    conn.execute(
+        """
+        UPDATE bank_movements
+        SET invoiceability_status = 'PENDING'
+        WHERE invoiceability_status IS NULL
+           OR TRIM(invoiceability_status) = ''
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_bank_movements_invoiceability_status
+        ON bank_movements(invoiceability_status)
+        """
+    )
+
+
+def mark_bank_movement_non_invoiceable(
+    movement_id: int,
+    reason: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> bool:
+    reason = str(reason or "").strip()
+
+    if not reason:
+        raise ValueError(
+            "Debes indicar el motivo por el que "
+            "el movimiento no es facturable."
+        )
+
+    with connect(db_path) as conn:
+        ensure_bank_schema(conn)
+        _ensure_bank_invoiceability_columns(conn)
+
+        row = conn.execute(
+            """
+            SELECT id, amount_centimos
+            FROM bank_movements
+            WHERE id = ?
+            """,
+            (int(movement_id),),
+        ).fetchone()
+
+        if not row:
+            return False
+
+        if int(row["amount_centimos"] or 0) <= 0:
+            raise ValueError(
+                "Solo los ingresos bancarios positivos pueden "
+                "clasificarse como no facturables."
+            )
+
+        cursor = conn.execute(
+            """
+            UPDATE bank_movements
+            SET invoiceability_status = 'NON_INVOICEABLE',
+                invoiceability_reason = ?,
+                invoiceability_updated_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (reason, int(movement_id)),
+        )
+
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def restore_bank_movement_invoiceability(
+    movement_id: int,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> bool:
+    with connect(db_path) as conn:
+        ensure_bank_schema(conn)
+        _ensure_bank_invoiceability_columns(conn)
+
+        cursor = conn.execute(
+            """
+            UPDATE bank_movements
+            SET invoiceability_status = 'PENDING',
+                invoiceability_reason = NULL,
+                invoiceability_updated_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (int(movement_id),),
+        )
+
+        conn.commit()
+        return cursor.rowcount > 0

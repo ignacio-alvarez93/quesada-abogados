@@ -138,6 +138,71 @@ def _sha256_bank_payload(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _normalize_bank_concept_for_identity(
+    value: object,
+) -> str:
+    """
+    Normalización destinada exclusivamente a identificar
+    movimientos bancarios iguales entre formatos distintos.
+
+    No modifica el concepto visible almacenado.
+    """
+    import re
+    import unicodedata
+
+    raw = str(value or "").strip().lower()
+    raw = raw.replace("\xa0", " ")
+
+    raw = unicodedata.normalize("NFKD", raw)
+    raw = "".join(
+        char
+        for char in raw
+        if not unicodedata.combining(char)
+    )
+
+    raw = re.sub(r"\s+", " ", raw)
+    raw = re.sub(r"[.;,:]+$", "", raw)
+
+    return raw.strip()
+
+
+def build_canonical_bank_movement_hash(
+    *,
+    bank_name: object,
+    operation_date: object,
+    value_date: object,
+    concept: object,
+    amount_centimos: object,
+    balance_centimos: object,
+) -> str:
+    """
+    Crea una identidad bancaria independiente del archivo origen.
+
+    No incluye:
+    - extensión XLS/XLSX;
+    - nombre del parser;
+    - número de fila;
+    - mayúsculas/minúsculas;
+    - espacios repetidos;
+    - número de apunte, porque algunos formatos no lo incluyen.
+
+    El saldo permite distinguir movimientos aparentemente iguales
+    efectuados el mismo día y por el mismo importe.
+    """
+    payload = "|".join(
+        [
+            str(bank_name or "").strip().upper(),
+            str(operation_date or "").strip(),
+            str(value_date or "").strip(),
+            _normalize_bank_concept_for_identity(concept),
+            str(int(amount_centimos or 0)),
+            str(int(balance_centimos or 0)),
+        ]
+    )
+
+    return _sha256_bank_payload(payload)
+
+
 def _first_matching_column(header_map: dict[str, int], candidates: list[str]) -> int | None:
     normalized_candidates = [_normalize_bank_header_flexible(c) for c in candidates]
     for candidate in normalized_candidates:
@@ -190,13 +255,53 @@ def _find_caja_rural_flexible_header(raw_rows: list[tuple]) -> tuple[int, dict[s
 
 def diagnose_caja_rural_bank_file_flexible(path):
     from pathlib import Path
-    from openpyxl import load_workbook
 
     source_file_path = Path(path)
-    workbook = load_workbook(source_file_path, data_only=True)
-    worksheet = workbook.active
+    suffix = source_file_path.suffix.lower()
 
-    raw_rows = list(worksheet.iter_rows(values_only=True))
+    if suffix == ".xls":
+        try:
+            import xlrd
+        except ImportError as exc:
+            raise ValueError(
+                "Para importar archivos .xls de Caja Rural "
+                "es necesario instalar xlrd."
+            ) from exc
+
+        workbook = xlrd.open_workbook(
+            str(source_file_path),
+            on_demand=True,
+        )
+        worksheet = workbook.sheet_by_index(0)
+
+        raw_rows = [
+            tuple(
+                worksheet.cell_value(row_index, column_index)
+                for column_index in range(worksheet.ncols)
+            )
+            for row_index in range(worksheet.nrows)
+        ]
+
+    elif suffix in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(
+            source_file_path,
+            data_only=True,
+            read_only=True,
+        )
+        worksheet = workbook.active
+
+        raw_rows = list(
+            worksheet.iter_rows(values_only=True)
+        )
+
+    else:
+        raise ValueError(
+            "Formato Caja Rural no soportado: "
+            f"{suffix}. Esperado .xls o .xlsx"
+        )
+
     header_info = _find_caja_rural_flexible_header(raw_rows)
 
     if header_info is None:
@@ -253,18 +358,14 @@ def diagnose_caja_rural_bank_file_flexible(path):
             by_type[movement_type] = by_type.get(movement_type, 0) + 1
             by_status[movement_status] = by_status.get(movement_status, 0) + 1
 
-            # Si hay Nro. Apunte, lo usamos como parte fuerte del hash.
-            # Si no hay, usamos saldo para distinguir apuntes repetidos.
-            hash_parts = [
-                "CAJA_RURAL_FLEX",
-                operation_date,
-                value_date,
-                concept.lower(),
-                str(amount_centimos),
-                str(balance_centimos),
-                str(statement_number),
-            ]
-            row_hash = _sha256_bank_payload("|".join(hash_parts))
+            row_hash = build_canonical_bank_movement_hash(
+                bank_name="CAJA_RURAL",
+                operation_date=operation_date,
+                value_date=value_date,
+                concept=concept,
+                amount_centimos=amount_centimos,
+                balance_centimos=balance_centimos,
+            )
 
             parsed_rows.append(
                 CajaRuralBankDiagnosticRow(
@@ -289,7 +390,11 @@ def diagnose_caja_rural_bank_file_flexible(path):
 
     return CajaRuralBankDiagnosticReport(
         source_file=str(source_file_path),
-        detected_format="CAJA_RURAL_FLEXIBLE",
+        detected_format=(
+            "xls_caja_rural_flexible"
+            if source_file_path.suffix.lower() == ".xls"
+            else "xlsx_caja_rural_flexible"
+        ),
         file_sha256=_file_sha256_flexible(source_file_path),
         total_rows=max(len(raw_rows) - header_idx - 1, 0),
         valid_rows=len(parsed_rows),
@@ -389,7 +494,29 @@ def _insert_bank_movement(
     before = conn.total_changes
 
     statement_number = getattr(row, "statement_number", "")
-    account_label = f"apunte:{statement_number}" if statement_number else None
+    account_label = (
+        f"apunte:{statement_number}"
+        if statement_number
+        else None
+    )
+
+    stored_concept = str(
+        row.concept or ""
+    ).strip().upper()
+
+    effective_row_hash = row.row_hash
+
+    if str(bank_name or "").strip().upper() == "CAJA_RURAL":
+        effective_row_hash = (
+            build_canonical_bank_movement_hash(
+                bank_name="CAJA_RURAL",
+                operation_date=row.operation_date,
+                value_date=row.value_date,
+                concept=row.concept,
+                amount_centimos=row.amount_centimos,
+                balance_centimos=row.balance_centimos,
+            )
+        )
 
     conn.execute(
         """
@@ -434,13 +561,13 @@ def _insert_bank_movement(
         (
             batch_id,
             row.row_number,
-            row.row_hash,
+            effective_row_hash,
             bank_name,
             account_label,
             None,
             row.operation_date,
             row.value_date,
-            row.concept,
+            stored_concept,
             row.amount_centimos,
             row.balance_centimos,
             "EUR",
