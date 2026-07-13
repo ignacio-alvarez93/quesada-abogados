@@ -3,7 +3,7 @@ import flet as ft
 from datetime import datetime
 
 from backend.services import economic_service
-from backend.services import holded_invoice_export_service
+from backend.services import advisory_invoice_export_service
 from frontend.components.app_button import primary_button, secondary_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -4474,18 +4474,34 @@ def economic_view(page: ft.Page):
         refresh()
 
 
-    def export_all_pending_invoices_to_holded(e=None):
+    def export_filtered_invoices_to_advisory(e=None):
         try:
+            facturas = filtered_facturas()
+
+            invoice_ids = [
+                int(factura["id"])
+                for factura in facturas
+                if factura.get("id") is not None
+            ]
+
+            if not invoice_ids:
+                raise ValueError(
+                    "No hay facturas para exportar "
+                    "con los filtros actuales"
+                )
+
             result = (
-                holded_invoice_export_service
-                .export_pending_invoices_to_holded()
+                advisory_invoice_export_service
+                .export_invoices_to_advisory(
+                    invoice_ids
+                )
             )
 
             show_message(
                 success_alert(
                     (
-                        f"Exportadas {result['count']} facturas "
-                        f"a {result['filename']}"
+                        f"Exportadas {result['count']} "
+                        "facturas para la asesoría"
                     )
                 )
             )
@@ -4499,46 +4515,21 @@ def economic_view(page: ft.Page):
                 pass
 
         except Exception as exc:
-            show_message(error_alert(str(exc)))
+            show_message(
+                error_alert(str(exc))
+            )
 
         refresh()
 
 
-    facturas_export_holded_button = ft.OutlinedButton(
-        content=ft.Row(
-            controls=[
-                ft.Icon(
-                    ft.Icons.UPLOAD_FILE_OUTLINED,
-                    size=17,
-                    color="#027A48",
-                ),
-                ft.Text(
-                    "Exportar pendientes a Holded",
-                    size=12,
-                    weight=ft.FontWeight.BOLD,
-                    color="#027A48",
-                ),
-            ],
-            spacing=7,
-            tight=True,
-        ),
-        on_click=export_all_pending_invoices_to_holded,
+    facturas_export_advisory_button = ft.IconButton(
+        icon=ft.Icons.FILE_DOWNLOAD_OUTLINED,
+        icon_color="#027A48",
         tooltip=(
-            "Genera el Excel de todas las facturas pendientes "
-            "de exportar a Holded"
+            "Exportar a Excel las facturas "
+            "resultantes de los filtros actuales"
         ),
-        style=ft.ButtonStyle(
-            side=ft.BorderSide(
-                1,
-                "#6CE9A6",
-            ),
-            bgcolor="#ECFDF3",
-            shape=ft.RoundedRectangleBorder(radius=10),
-            padding=ft.padding.symmetric(
-                horizontal=12,
-                vertical=9,
-            ),
-        ),
+        on_click=export_filtered_invoices_to_advisory,
     )
 
 
@@ -4923,8 +4914,7 @@ def economic_view(page: ft.Page):
                         facturas_filter,
                         facturas_period_button,
                         facturas_clear_button,
-                        # Exportación para asesoría pendiente
-                        # de refactor separado.
+                        facturas_export_advisory_button,
                     ],
                     spacing=6,
                     wrap=True,
