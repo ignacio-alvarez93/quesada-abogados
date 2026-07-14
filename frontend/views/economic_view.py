@@ -4,12 +4,19 @@ from datetime import datetime
 
 from backend.services import economic_service
 import backend.services.invoicing_obligations_service as invoicing_obligations_service
+from backend.services.cash_deposit_invoice_service import (
+    add_invoice_allocation,
+    get_cash_deposit_snapshot,
+    list_candidate_invoices,
+    remove_invoice_allocation,
+)
 from backend.services.invoicing_obligations_service import (
     available_obligation_months,
     daily_invoicing_obligations,
     invoicing_obligations_summary,
 )
 from backend.services import advisory_invoice_export_service
+from backend.services import economic_movements_export_service
 from frontend.components.app_button import primary_button, secondary_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -1325,6 +1332,742 @@ def economic_view(page: ft.Page):
         )
 
 
+    def _is_cash_deposit_obligation_movement(
+        movement,
+    ):
+        return (
+            str(
+                getattr(
+                    movement,
+                    "source_type",
+                    "",
+                )
+                or ""
+            ).strip().upper()
+            == "CAJA_RURAL"
+            and str(
+                getattr(
+                    movement,
+                    "concept",
+                    "",
+                )
+                or ""
+            ).strip().upper()
+            == "INGRESO EN EFECTIVO"
+            and int(
+                getattr(
+                    movement,
+                    "original_amount_centimos",
+                    getattr(
+                        movement,
+                        "amount_centimos",
+                        0,
+                    ),
+                )
+                or 0
+            )
+            > 0
+        )
+
+
+    def _cash_deposit_allocation_card(
+        allocation,
+        *,
+        movement_id,
+    ):
+        allocation_id = int(
+            allocation.get("id") or 0
+        )
+
+        def remove_allocation(e=None):
+            try:
+                remove_invoice_allocation(
+                    allocation_id
+                )
+
+                for control in list(page.overlay):
+                    if isinstance(
+                        control,
+                        ft.AlertDialog,
+                    ):
+                        control.open = False
+
+                refresh()
+
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(
+                        "Factura retirada del ingreso en efectivo."
+                    )
+                )
+                page.snack_bar.open = True
+                page.update()
+
+            except Exception as exc:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(
+                        f"No se pudo retirar la factura: {exc}"
+                    )
+                )
+                page.snack_bar.open = True
+                page.update()
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                "#D0D5DD",
+            ),
+            border_radius=10,
+            padding=10,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.RECEIPT_LONG_OUTLINED,
+                                size=17,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        str(
+                                            allocation.get(
+                                                "numero_factura"
+                                            )
+                                            or (
+                                                "Factura #"
+                                                + str(
+                                                    allocation.get(
+                                                        "invoice_id"
+                                                    )
+                                                    or "-"
+                                                )
+                                            )
+                                        ),
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            str(
+                                                allocation.get(
+                                                    "cliente"
+                                                )
+                                                or "Cliente sin identificar"
+                                            )
+                                            + " · "
+                                            + _date_to_display(
+                                                allocation.get(
+                                                    "fecha_factura"
+                                                )
+                                            )
+                                        ),
+                                        size=10,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=1,
+                                expand=True,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                tooltip="Retirar factura del ingreso",
+                                icon_color="#B42318",
+                                on_click=remove_allocation,
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                "Aplicado: "
+                                + _money_centimos(
+                                    allocation.get(
+                                        "amount_centimos"
+                                    )
+                                ),
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color="#027A48",
+                            ),
+                            ft.Text(
+                                "Cobrado en efectivo: "
+                                + (
+                                    _date_to_display(
+                                        allocation.get(
+                                            "cash_collection_date"
+                                        )
+                                    )
+                                    if allocation.get(
+                                        "cash_collection_date"
+                                    )
+                                    else "Sin fecha indicada"
+                                ),
+                                size=10,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=14,
+                        wrap=True,
+                    ),
+                    (
+                        ft.Text(
+                            str(
+                                allocation.get("notes")
+                                or ""
+                            ),
+                            size=10,
+                            color=Q_MUTED,
+                            selectable=True,
+                        )
+                        if str(
+                            allocation.get("notes")
+                            or ""
+                        ).strip()
+                        else ft.Container(
+                            visible=False,
+                            width=0,
+                            height=0,
+                        )
+                    ),
+                ],
+                spacing=6,
+            ),
+        )
+
+
+    def open_cash_deposit_invoice_dialog(
+        movement,
+    ):
+        movement_id = int(
+            getattr(
+                movement,
+                "source_id",
+                0,
+            )
+            or 0
+        )
+
+        try:
+            snapshot = get_cash_deposit_snapshot(
+                movement_id
+            )
+            candidates = list_candidate_invoices(
+                movement_id
+            )
+        except Exception as exc:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    f"No se pudo cargar el ingreso en efectivo: {exc}"
+                )
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        candidate_by_label = {}
+
+        for candidate in candidates:
+            label = (
+                str(
+                    candidate.get("numero_factura")
+                    or f"Factura #{candidate.get('id')}"
+                )
+                + " · "
+                + str(
+                    candidate.get("cliente")
+                    or "Cliente sin identificar"
+                )
+                + " · "
+                + _date_to_display(
+                    candidate.get("fecha_factura")
+                )
+                + " · Disponible "
+                + _money_centimos(
+                    candidate.get(
+                        "available_centimos"
+                    )
+                )
+            )
+
+            candidate_by_label[label] = candidate
+
+        invoice_selector = ft.Dropdown(
+            label="Factura previa",
+            width=650,
+            options=[
+                ft.dropdown.Option(label)
+                for label in candidate_by_label
+            ],
+            disabled=not bool(candidate_by_label),
+        )
+
+        amount_input = ft.TextField(
+            label="Importe aplicado",
+            width=185,
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+
+        amount_input_control = ft.Row(
+            controls=[
+                amount_input,
+                ft.Container(
+                    width=28,
+                    height=40,
+                    content=ft.Row(
+                        controls=[
+                            ft.Text(
+                                "€",
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                        spacing=0,
+                    ),
+                ),
+            ],
+            spacing=3,
+            tight=True,
+            vertical_alignment=(
+                ft.CrossAxisAlignment.CENTER
+            ),
+        )
+
+        cash_date_input = ft.TextField(
+            label="Fecha real del cobro en efectivo",
+            hint_text="AAAA-MM-DD",
+            width=260,
+        )
+
+        notes_input = ft.TextField(
+            label="Notas",
+            multiline=True,
+            min_lines=2,
+            max_lines=3,
+            width=650,
+        )
+
+        confirmation = ft.Checkbox(
+            label=(
+                "Confirmo que esta factura corresponde a "
+                "dinero cobrado en efectivo antes de su "
+                "ingreso en la cuenta bancaria."
+            ),
+            value=False,
+        )
+
+        available_text = ft.Text(
+            "",
+            size=11,
+            color=Q_MUTED,
+        )
+
+        def selected_candidate():
+            return candidate_by_label.get(
+                str(invoice_selector.value or "")
+            )
+
+        def update_selected_invoice(e=None):
+            candidate = selected_candidate()
+
+            if not candidate:
+                available_text.value = ""
+                amount_input.value = ""
+                page.update()
+                return
+
+            available = int(
+                candidate.get(
+                    "available_centimos"
+                )
+                or 0
+            )
+
+            movement_available = int(
+                snapshot.get(
+                    "pending_centimos"
+                )
+                or 0
+            )
+
+            suggested = min(
+                available,
+                movement_available,
+            )
+
+            amount_input.value = (
+                f"{suggested / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            available_text.value = (
+                "Disponible en factura: "
+                + _money_centimos(available)
+                + " · Pendiente en ingreso: "
+                + _money_centimos(
+                    movement_available
+                )
+            )
+
+            if not cash_date_input.value:
+                cash_date_input.value = str(
+                    candidate.get(
+                        "fecha_factura"
+                    )
+                    or ""
+                )
+
+            page.update()
+
+        invoice_selector.on_change = (
+            update_selected_invoice
+        )
+
+        def parse_amount_centimos(value):
+            raw = str(value or "").strip()
+
+            if not raw:
+                return 0
+
+            raw = (
+                raw.replace("€", "")
+                .replace(" ", "")
+            )
+
+            if "," in raw and "." in raw:
+                raw = raw.replace(".", "")
+                raw = raw.replace(",", ".")
+            elif "," in raw:
+                raw = raw.replace(",", ".")
+
+            try:
+                return int(
+                    round(float(raw) * 100)
+                )
+            except Exception:
+                raise ValueError(
+                    "El importe aplicado no es válido."
+                )
+
+        def close_dialog(e=None):
+            dialog.open = False
+            page.update()
+
+        def save_allocation(e=None):
+            candidate = selected_candidate()
+
+            if not candidate:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(
+                        "Selecciona una factura previa."
+                    )
+                )
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            if not bool(confirmation.value):
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(
+                        "Debes confirmar que la factura fue "
+                        "cobrada en efectivo."
+                    )
+                )
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            try:
+                amount_centimos = (
+                    parse_amount_centimos(
+                        amount_input.value
+                    )
+                )
+
+                add_invoice_allocation(
+                    movement_id=movement_id,
+                    invoice_id=int(
+                        candidate["id"]
+                    ),
+                    amount_centimos=amount_centimos,
+                    cash_collection_date=str(
+                        cash_date_input.value
+                        or ""
+                    ).strip(),
+                    notes=str(
+                        notes_input.value
+                        or ""
+                    ).strip(),
+                )
+
+                for control in list(page.overlay):
+                    if isinstance(
+                        control,
+                        ft.AlertDialog,
+                    ):
+                        control.open = False
+
+                refresh()
+
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(
+                        "Factura aplicada al ingreso en efectivo."
+                    )
+                )
+                page.snack_bar.open = True
+                page.update()
+
+            except Exception as exc:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(
+                        f"No se pudo aplicar la factura: {exc}"
+                    )
+                )
+                page.snack_bar.open = True
+                page.update()
+
+        allocation_cards = [
+            _cash_deposit_allocation_card(
+                allocation,
+                movement_id=movement_id,
+            )
+            for allocation in (
+                snapshot.get("allocations")
+                or []
+            )
+        ]
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.POINT_OF_SALE_OUTLINED,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Ingreso en efectivo",
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                (
+                                    f"Movimiento #{movement_id} · "
+                                    + _date_to_display(
+                                        getattr(
+                                            movement,
+                                            "obligation_date",
+                                            "",
+                                        )
+                                    )
+                                ),
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=1,
+                    ),
+                ],
+                spacing=9,
+            ),
+            content=ft.Container(
+                width=760,
+                height=620,
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                _obligation_metric(
+                                    "Importe ingresado",
+                                    _money_centimos(
+                                        snapshot.get(
+                                            "original_centimos"
+                                        )
+                                    ),
+                                    width=170,
+                                ),
+                                _obligation_metric(
+                                    "Mediante cobros",
+                                    _money_centimos(
+                                        snapshot.get(
+                                            "payment_invoiced_centimos"
+                                        )
+                                    ),
+                                    color="#027A48",
+                                    width=170,
+                                ),
+                                _obligation_metric(
+                                    "Facturas previas",
+                                    _money_centimos(
+                                        snapshot.get(
+                                            "direct_invoice_centimos"
+                                        )
+                                    ),
+                                    color="#027A48",
+                                    width=170,
+                                ),
+                                _obligation_metric(
+                                    "Pendiente",
+                                    _money_centimos(
+                                        snapshot.get(
+                                            "pending_centimos"
+                                        )
+                                    ),
+                                    color=(
+                                        "#027A48"
+                                        if int(
+                                            snapshot.get(
+                                                "pending_centimos"
+                                            )
+                                            or 0
+                                        )
+                                        <= 0
+                                        else "#B54708"
+                                    ),
+                                    width=170,
+                                ),
+                            ],
+                            spacing=8,
+                            wrap=True,
+                        ),
+                        ft.Divider(height=16),
+                        ft.Text(
+                            "Facturas ya aplicadas",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        (
+                            ft.Column(
+                                controls=allocation_cards,
+                                spacing=7,
+                            )
+                            if allocation_cards
+                            else ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(
+                                    1,
+                                    "#E2E8F0",
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Text(
+                                    "Todavía no hay facturas previas "
+                                    "aplicadas a este ingreso.",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            )
+                        ),
+                        ft.Divider(height=16),
+                        ft.Text(
+                            "Vincular factura previa",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        (
+                            ft.Column(
+                                controls=[
+                                    invoice_selector,
+                                    available_text,
+                                    ft.Row(
+                                        controls=[
+                                            amount_input_control,
+                                            cash_date_input,
+                                        ],
+                                        spacing=10,
+                                        wrap=True,
+                                        vertical_alignment=(
+                                            ft.CrossAxisAlignment.CENTER
+                                        ),
+                                    ),
+                                    notes_input,
+                                    confirmation,
+                                ],
+                                spacing=9,
+                            )
+                            if candidate_by_label
+                            else ft.Container(
+                                bgcolor="#FFFAEB",
+                                border=ft.border.all(
+                                    1,
+                                    "#FEC84B",
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "No existen facturas previas "
+                                            "compatibles.",
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B54708",
+                                        ),
+                                        ft.Text(
+                                            "Solo se muestran facturas activas, "
+                                            "emitidas o aprobadas, con fecha igual "
+                                            "o anterior al ingreso bancario y con "
+                                            "importe todavía disponible.",
+                                            size=10,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=4,
+                                ),
+                            )
+                        ),
+                    ],
+                    spacing=10,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=close_dialog,
+                ),
+                ft.ElevatedButton(
+                    "Aplicar factura",
+                    icon=ft.Icons.ADD_LINK,
+                    disabled=not bool(candidate_by_label),
+                    on_click=save_allocation,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(
+                radius=16
+            ),
+            inset_padding=ft.padding.symmetric(
+                horizontal=24,
+                vertical=18,
+            ),
+        )
+
+        try:
+            if dialog not in page.overlay:
+                page.overlay.append(dialog)
+        except Exception:
+            pass
+
+        dialog.open = True
+        page.update()
+
+
     def _obligation_dialog_movement_card(movement):
         original_centimos = int(
             getattr(
@@ -1360,86 +2103,234 @@ def economic_view(page: ft.Page):
             or "PENDIENTE"
         ).strip().upper()
 
+        is_cash_deposit = (
+            _is_cash_deposit_obligation_movement(
+                movement
+            )
+        )
+
+        cash_snapshot = None
+
+        if is_cash_deposit:
+            try:
+                cash_snapshot = (
+                    get_cash_deposit_snapshot(
+                        int(movement.source_id)
+                    )
+                )
+            except Exception:
+                cash_snapshot = None
+
+        controls = [
+            ft.Row(
+                controls=[
+                    _obligation_source_badge(
+                        movement.source_type
+                    ),
+                    (
+                        ft.Container(
+                            content=ft.Text(
+                                "INGRESO EN EFECTIVO",
+                                size=9,
+                                weight=ft.FontWeight.BOLD,
+                                color="#175CD3",
+                            ),
+                            bgcolor="#EFF8FF",
+                            border=ft.border.all(
+                                1,
+                                "#84CAFF",
+                            ),
+                            border_radius=999,
+                            padding=ft.padding.symmetric(
+                                horizontal=8,
+                                vertical=3,
+                            ),
+                        )
+                        if is_cash_deposit
+                        else ft.Container(
+                            visible=False,
+                            width=0,
+                            height=0,
+                        )
+                    ),
+                    ft.Text(
+                        (
+                            f"Movimiento "
+                            f"#{movement.source_id}"
+                        ),
+                        size=11,
+                        color=Q_MUTED,
+                        expand=True,
+                    ),
+                    _obligation_status_badge(
+                        pending_centimos,
+                        invoiced_centimos,
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+            ft.Text(
+                movement.concept or "-",
+                size=12,
+                weight=ft.FontWeight.W_500,
+                color="#344054",
+                selectable=True,
+            ),
+            ft.Row(
+                controls=[
+                    ft.Text(
+                        "Original: "
+                        + _money_centimos(
+                            original_centimos
+                        ),
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        "Facturado: "
+                        + _money_centimos(
+                            invoiced_centimos
+                        ),
+                        size=11,
+                        color="#027A48",
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.Text(
+                        "Pendiente: "
+                        + _money_centimos(
+                            pending_centimos
+                        ),
+                        size=11,
+                        color=(
+                            "#027A48"
+                            if pending_centimos <= 0
+                            else "#B54708"
+                        ),
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.Text(
+                        f"Estado: {status}",
+                        size=10,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=14,
+                wrap=True,
+            ),
+        ]
+
+        if is_cash_deposit:
+            direct_invoice_centimos = int(
+                (
+                    cash_snapshot
+                    or {}
+                ).get(
+                    "direct_invoice_centimos",
+                    0,
+                )
+                or 0
+            )
+
+            payment_invoice_centimos = int(
+                (
+                    cash_snapshot
+                    or {}
+                ).get(
+                    "payment_invoiced_centimos",
+                    0,
+                )
+                or 0
+            )
+
+            allocation_count = len(
+                (
+                    cash_snapshot
+                    or {}
+                ).get("allocations")
+                or []
+            )
+
+            controls.extend(
+                [
+                    ft.Divider(height=10),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(
+                            1,
+                            "#E2E8F0",
+                        ),
+                        border_radius=10,
+                        padding=10,
+                        content=ft.Row(
+                            controls=[
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Justificación del efectivo",
+                                            size=11,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            (
+                                                f"{allocation_count} "
+                                                + (
+                                                    "factura previa aplicada"
+                                                    if allocation_count == 1
+                                                    else "facturas previas aplicadas"
+                                                )
+                                                + " · Cobros conciliados: "
+                                                + _money_centimos(
+                                                    payment_invoice_centimos
+                                                )
+                                                + " · Facturas previas: "
+                                                + _money_centimos(
+                                                    direct_invoice_centimos
+                                                )
+                                            ),
+                                            size=10,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                ft.OutlinedButton(
+                                    "Gestionar facturas",
+                                    icon=ft.Icons.RECEIPT_LONG_OUTLINED,
+                                    on_click=lambda e, item=movement: (
+                                        open_cash_deposit_invoice_dialog(
+                                            item
+                                        )
+                                    ),
+                                ),
+                            ],
+                            spacing=10,
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.CENTER
+                            ),
+                        ),
+                    ),
+                ]
+            )
+
         return ft.Container(
             bgcolor="#FFFFFF",
-            border=ft.border.all(1, Q_BORDER),
+            border=ft.border.all(
+                1,
+                (
+                    "#84CAFF"
+                    if is_cash_deposit
+                    else Q_BORDER
+                ),
+            ),
             border_radius=10,
             padding=10,
             content=ft.Column(
-                controls=[
-                    ft.Row(
-                        controls=[
-                            _obligation_source_badge(
-                                movement.source_type
-                            ),
-                            ft.Text(
-                                (
-                                    f"Movimiento "
-                                    f"#{movement.source_id}"
-                                ),
-                                size=11,
-                                color=Q_MUTED,
-                                expand=True,
-                            ),
-                            _obligation_status_badge(
-                                pending_centimos,
-                                invoiced_centimos,
-                            ),
-                        ],
-                        spacing=8,
-                        vertical_alignment=(
-                            ft.CrossAxisAlignment.CENTER
-                        ),
-                    ),
-                    ft.Text(
-                        movement.concept or "-",
-                        size=12,
-                        weight=ft.FontWeight.W_500,
-                        color="#344054",
-                        selectable=True,
-                    ),
-                    ft.Row(
-                        controls=[
-                            ft.Text(
-                                "Original: "
-                                + _money_centimos(
-                                    original_centimos
-                                ),
-                                size=11,
-                                color=Q_MUTED,
-                            ),
-                            ft.Text(
-                                "Facturado: "
-                                + _money_centimos(
-                                    invoiced_centimos
-                                ),
-                                size=11,
-                                color="#027A48",
-                                weight=ft.FontWeight.BOLD,
-                            ),
-                            ft.Text(
-                                "Pendiente: "
-                                + _money_centimos(
-                                    pending_centimos
-                                ),
-                                size=11,
-                                color=(
-                                    "#027A48"
-                                    if pending_centimos <= 0
-                                    else "#B54708"
-                                ),
-                                weight=ft.FontWeight.BOLD,
-                            ),
-                            ft.Text(
-                                f"Estado: {status}",
-                                size=10,
-                                color=Q_MUTED,
-                            ),
-                        ],
-                        spacing=14,
-                        wrap=True,
-                    ),
-                ],
+                controls=controls,
                 spacing=7,
             ),
         )
@@ -1931,6 +2822,457 @@ def economic_view(page: ft.Page):
         )
 
 
+    def open_obligations_month_summary_dialog(
+        e=None,
+    ):
+        selected_month = str(
+            state.get("obligations_month") or ""
+        ).strip()
+
+        selected_source = str(
+            state.get("obligations_source") or "ALL"
+        ).strip().upper()
+
+        if selected_source == "CASHMATIC":
+            selected_source = "ALL"
+
+        search = str(
+            state.get("obligations_search") or ""
+        ).strip()
+
+        days = daily_invoicing_obligations(
+            month=selected_month,
+            source_type=selected_source,
+            search=search,
+        )
+
+        movements = [
+            movement
+            for day in days
+            for movement in (
+                day.get("movements") or []
+            )
+        ]
+
+        original_centimos = sum(
+            int(
+                getattr(
+                    movement,
+                    "original_amount_centimos",
+                    movement.amount_centimos,
+                )
+                or 0
+            )
+            for movement in movements
+        )
+
+        invoiced_centimos = sum(
+            int(
+                getattr(
+                    movement,
+                    "invoiced_centimos",
+                    0,
+                )
+                or 0
+            )
+            for movement in movements
+        )
+
+        pending_centimos = sum(
+            int(
+                getattr(
+                    movement,
+                    "amount_centimos",
+                    0,
+                )
+                or 0
+            )
+            for movement in movements
+        )
+
+        fully_invoiced_count = 0
+        partial_count = 0
+        pending_count = 0
+
+        by_source = {}
+
+        for movement in movements:
+            movement_original = int(
+                getattr(
+                    movement,
+                    "original_amount_centimos",
+                    movement.amount_centimos,
+                )
+                or 0
+            )
+
+            movement_invoiced = int(
+                getattr(
+                    movement,
+                    "invoiced_centimos",
+                    0,
+                )
+                or 0
+            )
+
+            movement_pending = int(
+                getattr(
+                    movement,
+                    "amount_centimos",
+                    0,
+                )
+                or 0
+            )
+
+            if (
+                movement_pending <= 0
+                and movement_invoiced > 0
+            ):
+                fully_invoiced_count += 1
+            elif movement_invoiced > 0:
+                partial_count += 1
+            else:
+                pending_count += 1
+
+            source = by_source.setdefault(
+                str(
+                    movement.source_type or ""
+                ),
+                {
+                    "source_type": str(
+                        movement.source_type or ""
+                    ),
+                    "source_label": str(
+                        movement.source_label
+                        or movement.source_type
+                        or "Sin banco"
+                    ),
+                    "movements": 0,
+                    "original_centimos": 0,
+                    "invoiced_centimos": 0,
+                    "pending_centimos": 0,
+                },
+            )
+
+            source["movements"] += 1
+            source["original_centimos"] += (
+                movement_original
+            )
+            source["invoiced_centimos"] += (
+                movement_invoiced
+            )
+            source["pending_centimos"] += (
+                movement_pending
+            )
+
+        source_cards = []
+
+        for source in sorted(
+            by_source.values(),
+            key=lambda item: str(
+                item.get("source_label") or ""
+            ),
+        ):
+            source_cards.append(
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(
+                        1,
+                        "#E2E8F0",
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            _obligation_source_badge(
+                                source["source_type"]
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        str(
+                                            source[
+                                                "source_label"
+                                            ]
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            f"{source['movements']} "
+                                            + (
+                                                "movimiento"
+                                                if int(
+                                                    source[
+                                                        "movements"
+                                                    ]
+                                                )
+                                                == 1
+                                                else "movimientos"
+                                            )
+                                        ),
+                                        size=10,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=1,
+                                expand=True,
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Total: "
+                                        + _money_centimos(
+                                            source[
+                                                "original_centimos"
+                                            ]
+                                        ),
+                                        size=10,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Facturado: "
+                                        + _money_centimos(
+                                            source[
+                                                "invoiced_centimos"
+                                            ]
+                                        ),
+                                        size=10,
+                                        color="#027A48",
+                                    ),
+                                    ft.Text(
+                                        "Pendiente: "
+                                        + _money_centimos(
+                                            source[
+                                                "pending_centimos"
+                                            ]
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=(
+                                            "#027A48"
+                                            if int(
+                                                source[
+                                                    "pending_centimos"
+                                                ]
+                                            )
+                                            <= 0
+                                            else "#B54708"
+                                        ),
+                                    ),
+                                ],
+                                spacing=1,
+                                horizontal_alignment=(
+                                    ft.CrossAxisAlignment.END
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
+        month_label = (
+            _obligation_month_label(
+                selected_month
+            )
+            if selected_month
+            else "Todos los meses"
+        )
+
+        filters_description = []
+
+        if selected_source not in {
+            "",
+            "ALL",
+            "TODOS",
+        }:
+            filters_description.append(
+                f"Banco: {selected_source}"
+            )
+
+        if search:
+            filters_description.append(
+                f'Búsqueda: "{search}"'
+            )
+
+        filters_text = (
+            " · ".join(filters_description)
+            if filters_description
+            else "Sin filtros adicionales"
+        )
+
+        def close_dialog(e=None):
+            dialog.open = False
+            page.update()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.CALENDAR_MONTH_OUTLINED,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                f"Resumen de {month_label}",
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                filters_text,
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=1,
+                    ),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                width=820,
+                height=570,
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                _obligation_metric(
+                                    "Total detectado",
+                                    _money_centimos(
+                                        original_centimos
+                                    ),
+                                    width=235,
+                                ),
+                                _obligation_metric(
+                                    "Facturado",
+                                    _money_centimos(
+                                        invoiced_centimos
+                                    ),
+                                    color="#027A48",
+                                    width=235,
+                                ),
+                                _obligation_metric(
+                                    "Pendiente",
+                                    _money_centimos(
+                                        pending_centimos
+                                    ),
+                                    color=(
+                                        "#027A48"
+                                        if pending_centimos <= 0
+                                        else "#B54708"
+                                    ),
+                                    width=235,
+                                ),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                        ft.Row(
+                            controls=[
+                                _obligation_metric(
+                                    "Días",
+                                    str(len(days)),
+                                    width=170,
+                                ),
+                                _obligation_metric(
+                                    "Movimientos",
+                                    str(len(movements)),
+                                    width=170,
+                                ),
+                                _obligation_metric(
+                                    "Facturados",
+                                    str(
+                                        fully_invoiced_count
+                                    ),
+                                    color="#027A48",
+                                    width=170,
+                                ),
+                                _obligation_metric(
+                                    "Parciales",
+                                    str(partial_count),
+                                    color="#B54708",
+                                    width=170,
+                                ),
+                                _obligation_metric(
+                                    "Pendientes",
+                                    str(pending_count),
+                                    color="#B42318",
+                                    width=170,
+                                ),
+                            ],
+                            spacing=8,
+                            wrap=True,
+                        ),
+                        ft.Divider(height=16),
+                        ft.Text(
+                            "Desglose por banco",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        (
+                            ft.Column(
+                                controls=source_cards,
+                                spacing=7,
+                            )
+                            if source_cards
+                            else ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(
+                                    1,
+                                    "#E2E8F0",
+                                ),
+                                border_radius=10,
+                                padding=14,
+                                content=ft.Text(
+                                    (
+                                        "No hay movimientos para "
+                                        "los filtros seleccionados."
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            )
+                        ),
+                    ],
+                    spacing=10,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=close_dialog,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(
+                radius=16
+            ),
+            inset_padding=ft.padding.symmetric(
+                horizontal=24,
+                vertical=18,
+            ),
+        )
+
+        try:
+            if dialog not in page.overlay:
+                page.overlay.append(dialog)
+        except Exception:
+            pass
+
+        dialog.open = True
+        page.update()
+
+
     def build_manual_reconciliation_section():
         months = available_obligation_months()
 
@@ -1959,12 +3301,6 @@ def economic_view(page: ft.Page):
             source_type=selected_source,
             search=search,
         )
-        summary = invoicing_obligations_summary(
-            month=selected_month,
-            source_type=selected_source,
-            search=search,
-        )
-
         month_options = [
             _obligation_month_label(month)
             for month in months
@@ -2018,6 +3354,17 @@ def economic_view(page: ft.Page):
                             weight=ft.FontWeight.BOLD,
                             color=Q_PRIMARY_DARK,
                             expand=True,
+                        ),
+                        ft.OutlinedButton(
+                            "Ver mes",
+                            icon=ft.Icons.CALENDAR_MONTH_OUTLINED,
+                            tooltip=(
+                                "Ver el resumen del mes "
+                                "con los filtros actuales"
+                            ),
+                            on_click=(
+                                open_obligations_month_summary_dialog
+                            ),
                         ),
                         ft.IconButton(
                             icon=ft.Icons.REFRESH,
@@ -5252,6 +6599,76 @@ def economic_view(page: ft.Page):
         page.open(dialog)
 
 
+    def export_filtered_movements_to_excel(
+        e=None,
+    ):
+        try:
+            source = movements_cache_key(
+                state.get(
+                    "movements_source"
+                )
+                or "cashmatic"
+            )
+
+            movements = (
+                filtered_movements_for_source(
+                    source
+                )
+            )
+
+            if not movements:
+                raise ValueError(
+                    "No hay movimientos para exportar "
+                    "con los filtros actuales"
+                )
+
+            result = (
+                economic_movements_export_service
+                .export_movements_to_excel(
+                    source,
+                    movements,
+                    search=str(
+                        state.get(
+                            "movements_search"
+                        )
+                        or ""
+                    ).strip(),
+                )
+            )
+
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    (
+                        f"Exportados {result['count']} "
+                        f"movimientos de "
+                        f"{result['source_label']}."
+                    )
+                ),
+                open=True,
+            )
+
+            try:
+                page.run_task(
+                    page.launch_url,
+                    Path(
+                        result["path"]
+                    ).as_uri(),
+                )
+            except Exception:
+                pass
+
+            page.update()
+
+        except Exception as exc:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    f"No se pudo exportar: {exc}"
+                ),
+                open=True,
+            )
+            page.update()
+
+
     async def seleccionar_movimientos_csv_xls(e=None):
         source = state.get("movements_source") or "cashmatic"
 
@@ -5331,6 +6748,18 @@ def economic_view(page: ft.Page):
                         movements_source_button("caja_rural", "Caja Rural"),
                         movements_source_button("ing", "ING"),
                         movements_source_button("santander", "Santander"),
+                        ft.IconButton(
+                            icon=ft.Icons.FILE_DOWNLOAD_OUTLINED,
+                            icon_color="#027A48",
+                            tooltip=(
+                                "Exportar a Excel todos los "
+                                "movimientos resultantes de "
+                                "los filtros actuales"
+                            ),
+                            on_click=(
+                                export_filtered_movements_to_excel
+                            ),
+                        ),
                         ft.IconButton(
                             icon=ft.Icons.UPLOAD_FILE,
                             tooltip="Importar CSV/XLS",
