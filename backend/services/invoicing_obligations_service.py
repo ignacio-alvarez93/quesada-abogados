@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from backend.services.cash_deposit_invoice_service import (
+    direct_invoice_amounts_by_bank_movement,
+    ensure_schema as ensure_cash_deposit_invoice_schema,
+)
+
 
 DEFAULT_DB_PATH = Path("database/quesada.db")
 
@@ -79,6 +84,9 @@ def _connect(
         ON bank_movements(invoiceability_status)
         """
     )
+
+    ensure_cash_deposit_invoice_schema(conn)
+
     conn.commit()
 
     return conn
@@ -256,6 +264,10 @@ def _bank_movements(
         _approved_invoice_amounts_by_bank_movement(conn)
     )
 
+    direct_invoice_by_movement = (
+        direct_invoice_amounts_by_bank_movement(conn)
+    )
+
     source_labels = {
         "CAJA_RURAL": "Caja Rural",
         "SANTANDER": "Santander",
@@ -282,16 +294,29 @@ def _bank_movements(
             0,
         )
 
-        invoiced_amount = min(
-            max(
-                int(
-                    invoiced_by_movement.get(
-                        movement_id,
-                        0,
-                    )
-                ),
-                0,
+        reconciled_invoice_amount = max(
+            int(
+                invoiced_by_movement.get(
+                    movement_id,
+                    0,
+                )
             ),
+            0,
+        )
+
+        direct_invoice_amount = max(
+            int(
+                direct_invoice_by_movement.get(
+                    movement_id,
+                    0,
+                )
+            ),
+            0,
+        )
+
+        invoiced_amount = min(
+            reconciled_invoice_amount
+            + direct_invoice_amount,
             original_amount,
         )
 
@@ -693,6 +718,10 @@ def bank_movement_invoicing_snapshot(
             _approved_invoice_amounts_by_bank_movement(conn)
         )
 
+        direct_invoice_by_movement = (
+            direct_invoice_amounts_by_bank_movement(conn)
+        )
+
     result = {}
 
     for row in rows:
@@ -715,16 +744,29 @@ def bank_movement_invoicing_snapshot(
             pending = 0
             status = "NO_FACTURABLE"
         else:
-            invoiced = min(
-                max(
-                    int(
-                        invoiced_by_movement.get(
-                            movement_id,
-                            0,
-                        )
-                    ),
-                    0,
+            reconciled_invoice_amount = max(
+                int(
+                    invoiced_by_movement.get(
+                        movement_id,
+                        0,
+                    )
                 ),
+                0,
+            )
+
+            direct_invoice_amount = max(
+                int(
+                    direct_invoice_by_movement.get(
+                        movement_id,
+                        0,
+                    )
+                ),
+                0,
+            )
+
+            invoiced = min(
+                reconciled_invoice_amount
+                + direct_invoice_amount,
                 original,
             )
 
