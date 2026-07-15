@@ -26,6 +26,9 @@ from frontend.components.app_empty_state import empty_state
 from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
 from frontend.components.economic_payment_card import economic_payment_card
+from frontend.components.economic_expense_card import economic_expense_card
+from backend.services import expense_service
+from backend.services import supplier_service
 from frontend.components.economic_invoice_card import economic_invoice_card
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.listing import (
@@ -8209,28 +8212,638 @@ def economic_view(page: ft.Page):
             return build_facturas_section()
 
         if state["section"] == "gastos":
-            rows = []
-            for g in economic_service.list_gastos():
-                rows.append([
-                    _date_to_display(g.get("fecha_gasto")),
-                    g.get("proveedor") or "-",
-                    g.get("concepto") or "-",
-                    g.get("categoria") or "-",
-                    _money(g.get("importe")),
-                    g.get("forma_pago") or "-",
-                    "Sí" if g.get("deducible") else "No",
-                    economic_badge(g.get("estado_conciliacion")),
-                ])
-            return app_table(
-                ["Fecha", "Proveedor", "Concepto", "Categoría", "Importe", "Forma", "Deducible", "Conciliación"],
-                rows,
-                height=430,
-            ) if rows else empty_state("No hay gastos")
+            return build_gastos_section()
 
         if state["section"] == "movimientos":
             return build_imported_movements_section()
 
         return empty_state("Selecciona una sección")
+
+    # ========================================================
+    # GASTOS: CARDS, BÚSQUEDA, FILTROS Y PAGINACIÓN
+    # ========================================================
+
+    state.setdefault("gastos_search", "")
+    state.setdefault("gastos_quick_filter", "ALL")
+    state.setdefault("gastos_date_from", None)
+    state.setdefault("gastos_date_to", None)
+    state.setdefault("gastos_page", 1)
+    state.setdefault("gastos_page_size", 10)
+
+    gastos_results_box = ft.Container()
+    gastos_metrics_box = ft.Container()
+    gastos_filters_box = ft.Container()
+    gastos_period_summary_box = ft.Container()
+
+    gastos_filter = text_input(
+        "Buscar proveedor, concepto, factura, categoría o ID...",
+        width=620,
+    )
+    gastos_filter.value = ""
+
+    gasto_date_from_input = text_input(
+        "Desde DD/MM/AAAA",
+        width=210,
+    )
+    gasto_date_to_input = text_input(
+        "Hasta DD/MM/AAAA",
+        width=210,
+    )
+    gasto_period_error = ft.Text(
+        "",
+        size=12,
+        color="#B42318",
+    )
+
+    def _gastos_money_centimos(value):
+        try:
+            amount = int(value or 0) / 100
+        except (TypeError, ValueError):
+            amount = 0
+
+        return (
+            f"{amount:,.2f} €"
+            .replace(",", "X")
+            .replace(".", ",")
+            .replace("X", ".")
+        )
+
+    def _gastos_sql_date(value):
+        value = str(value or "").strip()
+
+        if not value:
+            return None
+
+        return _date_to_sql(value)
+
+    def set_gastos_quick_filter(filter_key):
+        state["gastos_quick_filter"] = filter_key
+        state["gastos_page"] = 1
+        render_gastos_results()
+        page.update()
+
+    def clear_gastos_filters(e=None):
+        gastos_filter.value = ""
+        gasto_date_from_input.value = ""
+        gasto_date_to_input.value = ""
+
+        state["gastos_search"] = ""
+        state["gastos_quick_filter"] = "ALL"
+        state["gastos_date_from"] = None
+        state["gastos_date_to"] = None
+        state["gastos_page"] = 1
+
+        render_gastos_results()
+        page.update()
+
+    def on_gastos_search_change(e=None):
+        state["gastos_search"] = str(
+            gastos_filter.value or ""
+        ).strip()
+        state["gastos_page"] = 1
+        render_gastos_results()
+        page.update()
+
+    gastos_filter.on_change = on_gastos_search_change
+
+    def apply_gastos_period(e=None):
+        try:
+            date_from = _gastos_sql_date(
+                gasto_date_from_input.value
+            )
+            date_to = _gastos_sql_date(
+                gasto_date_to_input.value
+            )
+
+            if date_from and date_to and date_from > date_to:
+                raise ValueError(
+                    "La fecha desde no puede ser posterior a hasta."
+                )
+
+            state["gastos_date_from"] = date_from
+            state["gastos_date_to"] = date_to
+            state["gastos_page"] = 1
+            gasto_period_error.value = ""
+            gastos_period_dialog.open = False
+
+            render_gastos_results()
+            page.update()
+
+        except Exception as exc:
+            gasto_period_error.value = str(exc)
+            page.update()
+
+    def clear_gastos_period(e=None):
+        gasto_date_from_input.value = ""
+        gasto_date_to_input.value = ""
+        state["gastos_date_from"] = None
+        state["gastos_date_to"] = None
+        state["gastos_page"] = 1
+        gasto_period_error.value = ""
+        gastos_period_dialog.open = False
+
+        render_gastos_results()
+        page.update()
+
+    def open_gastos_period_dialog(e=None):
+        gasto_date_from_input.value = (
+            _date_to_display(state["gastos_date_from"])
+            if state.get("gastos_date_from")
+            else ""
+        )
+        gasto_date_to_input.value = (
+            _date_to_display(state["gastos_date_to"])
+            if state.get("gastos_date_to")
+            else ""
+        )
+        gasto_period_error.value = ""
+        gastos_period_dialog.open = True
+        page.update()
+
+    gastos_period_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Filtrar gastos por periodo",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        ),
+        content=ft.Column(
+            controls=[
+                ft.Text(
+                    "Introduce una o ambas fechas. "
+                    "Los límites están incluidos.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                ft.Row(
+                    controls=[
+                        gasto_date_from_input,
+                        gasto_date_to_input,
+                    ],
+                    spacing=10,
+                ),
+                gasto_period_error,
+            ],
+            width=450,
+            height=150,
+            spacing=12,
+        ),
+        actions=[
+            secondary_button(
+                "Limpiar",
+                clear_gastos_period,
+            ),
+            secondary_button(
+                "Cancelar",
+                lambda e: close(gastos_period_dialog),
+            ),
+            primary_button(
+                "Aplicar",
+                apply_gastos_period,
+            ),
+        ],
+    )
+    page.overlay.append(gastos_period_dialog)
+
+    def set_gastos_page(page_number):
+        state["gastos_page"] = max(
+            1,
+            int(page_number),
+        )
+        render_gastos_results()
+        page.update()
+
+    def toggle_gasto_active(expense):
+        try:
+            new_active = not bool(
+                expense.get("activo", 1)
+            )
+            expense_service.set_expense_active(
+                int(expense["id"]),
+                new_active,
+            )
+            show_message(
+                success_alert(
+                    "Gasto restaurado"
+                    if new_active
+                    else "Gasto archivado"
+                )
+            )
+            render_gastos_results()
+            page.update()
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+
+    def _gastos_metric_card(
+        title,
+        value,
+        icon,
+    ):
+        return ft.Container(
+            width=230,
+            bgcolor="#FFFFFF",
+            border=ft.Border.all(
+                1,
+                "#E4E7EC",
+            ),
+            border_radius=12,
+            padding=14,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=38,
+                        height=38,
+                        bgcolor="#EFF8FF",
+                        border_radius=10,
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Icon(
+                            icon,
+                            size=20,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                title,
+                                size=11,
+                                color=Q_MUTED,
+                                weight=ft.FontWeight.W_600,
+                            ),
+                            ft.Text(
+                                value,
+                                size=17,
+                                color=Q_PRIMARY_DARK,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ],
+                        spacing=2,
+                        tight=True,
+                    ),
+                ],
+                spacing=10,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
+    def render_gastos_metrics(metrics):
+        gastos_metrics_box.content = ft.Row(
+            controls=[
+                _gastos_metric_card(
+                    "Gastos",
+                    _gastos_money_centimos(
+                        metrics.get("total_centimos")
+                    ),
+                    ft.Icons.PAYMENTS_OUTLINED,
+                ),
+                _gastos_metric_card(
+                    "Base imponible",
+                    _gastos_money_centimos(
+                        metrics.get("base_centimos")
+                    ),
+                    ft.Icons.RECEIPT_LONG_OUTLINED,
+                ),
+                _gastos_metric_card(
+                    "IVA soportado",
+                    _gastos_money_centimos(
+                        metrics.get("iva_centimos")
+                    ),
+                    ft.Icons.PERCENT,
+                ),
+                _gastos_metric_card(
+                    "Pendiente conciliar",
+                    _gastos_money_centimos(
+                        metrics.get("pending_centimos")
+                    ),
+                    ft.Icons.SYNC_PROBLEM,
+                ),
+            ],
+            spacing=10,
+            wrap=True,
+        )
+
+    def gastos_filter_counts():
+        common = {
+            "search": state.get("gastos_search") or "",
+            "active": True,
+            "date_from": state.get("gastos_date_from"),
+            "date_to": state.get("gastos_date_to"),
+        }
+
+        return {
+            "ALL": expense_service.count_expenses(
+                quick_filter="ALL",
+                **common,
+            ),
+            "PENDING": expense_service.count_expenses(
+                quick_filter="PENDING",
+                **common,
+            ),
+            "WITHOUT_DOCUMENT": expense_service.count_expenses(
+                quick_filter="WITHOUT_DOCUMENT",
+                **common,
+            ),
+            "WITH_INVOICE": expense_service.count_expenses(
+                quick_filter="WITH_INVOICE",
+                **common,
+            ),
+            "RECONCILED": expense_service.count_expenses(
+                quick_filter="RECONCILED",
+                **common,
+            ),
+            "DEDUCTIBLE": expense_service.count_expenses(
+                quick_filter="DEDUCTIBLE",
+                **common,
+            ),
+            "NON_DEDUCTIBLE": expense_service.count_expenses(
+                quick_filter="NON_DEDUCTIBLE",
+                **common,
+            ),
+        }
+
+    def render_gastos_filters():
+        status_map = {
+            "ALL": (
+                "Todos",
+                "#F2F4F7",
+                "#344054",
+                "#D0D5DD",
+            ),
+            "PENDING": (
+                "Pendiente",
+                "#FFF4ED",
+                "#C4320A",
+                "#FDB022",
+            ),
+            "WITHOUT_DOCUMENT": (
+                "Sin justificante",
+                "#FEF3F2",
+                "#B42318",
+                "#FDA29B",
+            ),
+            "WITH_INVOICE": (
+                "Con factura",
+                "#EFF8FF",
+                "#175CD3",
+                "#84CAFF",
+            ),
+            "RECONCILED": (
+                "Conciliado",
+                "#ECFDF3",
+                "#027A48",
+                "#6CE9A6",
+            ),
+            "DEDUCTIBLE": (
+                "Deducible",
+                "#ECFDF3",
+                "#027A48",
+                "#6CE9A6",
+            ),
+            "NON_DEDUCTIBLE": (
+                "No deducible",
+                "#F2F4F7",
+                "#475467",
+                "#D0D5DD",
+            ),
+        }
+
+        gastos_filters_box.content = counter_chips(
+            options=[
+                ("PENDING", "Pendientes"),
+                (
+                    "WITHOUT_DOCUMENT",
+                    "Sin justificante",
+                ),
+                ("WITH_INVOICE", "Con factura"),
+                ("RECONCILED", "Conciliados"),
+                ("DEDUCTIBLE", "Deducibles"),
+                (
+                    "NON_DEDUCTIBLE",
+                    "No deducibles",
+                ),
+            ],
+            counts=gastos_filter_counts(),
+            active_value=(
+                state.get("gastos_quick_filter")
+                or "ALL"
+            ),
+            on_select=set_gastos_quick_filter,
+            include_all=True,
+            all_label="Todos",
+            all_value="ALL",
+            status_map=status_map,
+            bordered_status=True,
+        )
+
+    def render_gastos_period_summary():
+        date_from = state.get("gastos_date_from")
+        date_to = state.get("gastos_date_to")
+
+        if not date_from and not date_to:
+            gastos_period_summary_box.content = None
+            return
+
+        if date_from and date_to:
+            label = (
+                f"Periodo: {_date_to_display(date_from)}"
+                f" – {_date_to_display(date_to)}"
+            )
+        elif date_from:
+            label = (
+                f"Desde {_date_to_display(date_from)}"
+            )
+        else:
+            label = (
+                f"Hasta {_date_to_display(date_to)}"
+            )
+
+        gastos_period_summary_box.content = ft.Container(
+            bgcolor="#EFF8FF",
+            border_radius=8,
+            padding=ft.Padding.symmetric(
+                horizontal=10,
+                vertical=6,
+            ),
+            content=ft.Text(
+                label,
+                size=12,
+                color="#175CD3",
+            ),
+        )
+
+    def render_gastos_results():
+        search = state.get("gastos_search") or ""
+        quick_filter = state.get(
+            "gastos_quick_filter",
+            "ALL",
+        )
+        date_from = state.get("gastos_date_from")
+        date_to = state.get("gastos_date_to")
+        page_number = max(
+            1,
+            int(state.get("gastos_page") or 1),
+        )
+        page_size = max(
+            1,
+            int(state.get("gastos_page_size") or 10),
+        )
+
+        total_items = expense_service.count_expenses(
+            search=search,
+            active=True,
+            quick_filter=quick_filter,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+        max_page = max(
+            1,
+            (total_items + page_size - 1) // page_size,
+        )
+
+        if page_number > max_page:
+            page_number = max_page
+            state["gastos_page"] = page_number
+
+        expenses = expense_service.list_expenses(
+            search=search,
+            active=True,
+            quick_filter=quick_filter,
+            date_from=date_from,
+            date_to=date_to,
+            limit=page_size,
+            offset=(page_number - 1) * page_size,
+        )
+
+        metrics = expense_service.expense_metrics(
+            search=search,
+            active=True,
+            quick_filter=quick_filter,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+        render_gastos_metrics(metrics)
+        render_gastos_filters()
+        render_gastos_period_summary()
+
+        if not expenses:
+            gastos_results_box.content = ft.Container(
+                bgcolor="#FFFFFF",
+                border=ft.Border.all(
+                    1,
+                    "#E4E7EC",
+                ),
+                border_radius=12,
+                padding=24,
+                content=ft.Column(
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.RECEIPT_LONG_OUTLINED,
+                            size=32,
+                            color="#98A2B3",
+                        ),
+                        ft.Text(
+                            "No hay gastos",
+                            size=16,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            "Crea el primer gasto o modifica "
+                            "los filtros aplicados.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=7,
+                    horizontal_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+            )
+            return
+
+        cards = [
+            economic_expense_card(
+                expense,
+                on_edit=open_edit_gasto_dialog,
+                on_toggle_active=toggle_gasto_active,
+            )
+            for expense in expenses
+        ]
+
+        gastos_results_box.content = ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Text(
+                            (
+                                f"{total_items} gastos encontrados"
+                            ),
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                        compact_pagination_bar(
+                            page=page_number,
+                            page_size=page_size,
+                            total_items=total_items,
+                            on_page_change=set_gastos_page,
+                            label_prefix="Gastos",
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+                *cards,
+            ],
+            spacing=10,
+        )
+
+    def build_gastos_section():
+        render_gastos_results()
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        gastos_filter,
+                        ft.IconButton(
+                            icon=ft.Icons.ADD_CIRCLE_OUTLINE,
+                            icon_color=Q_PRIMARY_DARK,
+                            tooltip="Nuevo gasto",
+                            on_click=open_gasto_dialog,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.CALENDAR_MONTH,
+                            icon_color=Q_PRIMARY_DARK,
+                            tooltip="Filtrar por periodo",
+                            on_click=open_gastos_period_dialog,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.CLOSE,
+                            icon_color="#98A2B3",
+                            tooltip="Limpiar filtros",
+                            on_click=clear_gastos_filters,
+                        ),
+                    ],
+                    spacing=4,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+                gastos_period_summary_box,
+                gastos_filters_box,
+                gastos_metrics_box,
+                gastos_results_box,
+            ],
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        )
 
     cobros_filter = text_input(
         "Buscar cobro, cliente, fecha, importe, expediente...",
@@ -10072,60 +10685,1166 @@ def economic_view(page: ft.Page):
     )
     page.overlay.append(factura_dialog)
 
-    # Gasto dialog
-    gasto_fecha = required_text_input("Fecha gasto DD/MM/AAAA", width=220)
-    gasto_proveedor = text_input("Proveedor", width=260)
-    gasto_concepto = required_text_input("Concepto", width=420)
-    gasto_categoria = text_input("Categoría", width=220)
-    gasto_importe = required_text_input("Importe", width=160)
-    gasto_forma = text_input("Forma pago", width=180)
-    gasto_deducible = select_input("Deducible", ["Sí", "No"], value="Sí", width=120)
-    gasto_ruta = text_input("Ruta factura recibida", width=620)
-    gasto_obs = multiline_input("Observaciones", width=620)
+    # ========================================================
+    # GASTOS: DIÁLOGO MODERNO DE ALTA Y EDICIÓN
+    # ========================================================
+
+    gasto_form_state = {
+        "editing_id": None,
+        "supplier_id": None,
+        "calculating": False,
+    }
+
+    supplier_rows = supplier_service.list_suppliers(
+        active=True,
+        limit=2000,
+    )
+
+    gasto_supplier_by_label = {}
+    gasto_supplier_options = []
+
+    for supplier in supplier_rows:
+        label_parts = [
+            str(supplier.get("legal_name") or "").strip(),
+            str(supplier.get("tax_id") or "").strip(),
+        ]
+
+        label = " · ".join(
+            part
+            for part in label_parts
+            if part
+        )
+
+        option = {
+            "id": supplier.get("id"),
+            "label": label,
+            "subtitle": (
+                supplier.get("category")
+                or supplier.get("services_description")
+                or ""
+            ),
+        }
+
+        gasto_supplier_options.append(option)
+        gasto_supplier_by_label[label] = supplier
+
+    gasto_fecha = required_text_input(
+        "Fecha gasto DD/MM/AAAA",
+        width=210,
+    )
+    gasto_fecha_factura = text_input(
+        "Fecha factura DD/MM/AAAA",
+        width=210,
+    )
+    gasto_numero_factura = text_input(
+        "Número de factura",
+        width=230,
+    )
+    gasto_concepto = required_text_input(
+        "Concepto",
+        width=660,
+    )
+    gasto_categoria = text_input(
+        "Categoría",
+        width=310,
+    )
+    gasto_forma = select_input(
+        "Forma de pago",
+        [
+            "DIRECT_DEBIT",
+            "BANK_TRANSFER",
+            "CARD",
+            "CASH",
+            "BIZUM",
+            "OTHER",
+        ],
+        value="DIRECT_DEBIT",
+        width=230,
+    )
+    gasto_tipo_justificante = select_input(
+        "Tipo de justificante",
+        [
+            "INVOICE",
+            "RECEIPT",
+            "BANK_STATEMENT",
+            "TICKET",
+            "OTHER",
+        ],
+        value="INVOICE",
+        width=250,
+    )
+
+    gasto_base = required_text_input(
+        "Base imponible",
+        width=180,
+    )
+    gasto_iva_porcentaje = select_input(
+        "IVA %",
+        ["0", "4", "10", "21"],
+        value="21",
+        width=120,
+    )
+    gasto_iva_importe = text_input(
+        "IVA",
+        width=160,
+    )
+    gasto_irpf_porcentaje = select_input(
+        "IRPF %",
+        ["0", "1", "2", "7", "15", "19"],
+        value="0",
+        width=120,
+    )
+    gasto_irpf_importe = text_input(
+        "IRPF",
+        width=160,
+    )
+    gasto_otros = text_input(
+        "Otros impuestos/ajustes",
+        width=210,
+    )
+    gasto_total = required_text_input(
+        "Total",
+        width=180,
+    )
+
+    gasto_deducible_irpf = select_input(
+        "Deducible IRPF",
+        ["Sí", "No"],
+        value="Sí",
+        width=160,
+    )
+    gasto_iva_deducible = select_input(
+        "IVA deducible",
+        ["Sí", "No"],
+        value="Sí",
+        width=160,
+    )
+    gasto_porcentaje_deducible = text_input(
+        "% deducible",
+        value="100",
+        width=150,
+    )
+    gasto_estado_fiscal = select_input(
+        "Estado fiscal",
+        [
+            "PENDIENTE_REVISION",
+            "DEDUCIBLE",
+            "NO_DEDUCIBLE",
+            "DEDUCIBLE_PARCIAL",
+        ],
+        value="PENDIENTE_REVISION",
+        width=240,
+    )
+    gasto_estado_documental = select_input(
+        "Estado documental",
+        [
+            "SIN_JUSTIFICANTE",
+            "JUSTIFICANTE_ADJUNTO",
+            "FACTURA_RECIBIDA",
+            "DOCUMENTO_REVISADO",
+        ],
+        value="SIN_JUSTIFICANTE",
+        width=250,
+    )
+    gasto_estado_conciliacion = select_input(
+        "Conciliación",
+        [
+            "PENDIENTE",
+            "PARCIAL",
+            "CONCILIADO",
+            "NO_REQUIERE_CONCILIACION",
+        ],
+        value="PENDIENTE",
+        width=260,
+    )
+
+    gasto_ruta = text_input(
+        "Ruta del justificante",
+        width=660,
+    )
+    gasto_periodo_desde = text_input(
+        "Periodo desde DD/MM/AAAA",
+        width=220,
+    )
+    gasto_periodo_hasta = text_input(
+        "Periodo hasta DD/MM/AAAA",
+        width=220,
+    )
+    gasto_vencimiento = text_input(
+        "Vencimiento DD/MM/AAAA",
+        width=220,
+    )
+    gasto_obs = multiline_input(
+        "Observaciones",
+        width=660,
+        height=100,
+    )
+
+    gasto_total_summary = ft.Text(
+        "Total calculado: 0,00 €",
+        size=14,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+    )
+    gasto_calculation_error = ft.Text(
+        "",
+        size=11,
+        color="#B42318",
+    )
+
+    def _expense_decimal(value, default=0.0):
+        raw = str(value or "").strip()
+
+        if not raw:
+            return float(default)
+
+        normalized = raw.replace(" ", "")
+
+        if "," in normalized and "." in normalized:
+            if normalized.rfind(",") > normalized.rfind("."):
+                normalized = (
+                    normalized
+                    .replace(".", "")
+                    .replace(",", ".")
+                )
+            else:
+                normalized = normalized.replace(",", "")
+        else:
+            normalized = normalized.replace(",", ".")
+
+        return round(float(normalized), 4)
+
+    def _expense_centimos(value):
+        return int(
+            round(
+                _expense_decimal(value) * 100
+            )
+        )
+
+    def _expense_input_from_centimos(value):
+        try:
+            amount = int(value or 0) / 100
+        except Exception:
+            amount = 0
+
+        return f"{amount:.2f}".replace(".", ",")
+
+    def _expense_format_rate(value):
+        try:
+            number = float(value or 0)
+        except Exception:
+            number = 0
+
+        if number.is_integer():
+            return str(int(number))
+
+        return (
+            f"{number:.2f}"
+            .rstrip("0")
+            .rstrip(".")
+        )
+
+    def _expense_form_section(
+        title,
+        icon,
+        controls,
+        *,
+        subtitle=None,
+        accent="#0057B8",
+    ):
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, "#D8E2EE"),
+            border_radius=14,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=34,
+                                height=34,
+                                border_radius=10,
+                                bgcolor="#EAF3FF",
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Icon(
+                                    icon,
+                                    size=18,
+                                    color=accent,
+                                ),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        title,
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                subtitle,
+                                                size=11,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if subtitle
+                                        else []
+                                    ),
+                                ],
+                                spacing=1,
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                    ft.Divider(
+                        height=1,
+                        color="#E4E7EC",
+                    ),
+                    *controls,
+                ],
+                spacing=12,
+            ),
+        )
+
+    def update_gasto_calculation(e=None):
+        if gasto_form_state["calculating"]:
+            return
+
+        gasto_form_state["calculating"] = True
+
+        try:
+            base = _expense_decimal(
+                gasto_base.value
+            )
+            iva_rate = _expense_decimal(
+                gasto_iva_porcentaje.value
+            )
+            irpf_rate = _expense_decimal(
+                gasto_irpf_porcentaje.value
+            )
+            otros = _expense_decimal(
+                gasto_otros.value
+            )
+
+            iva = round(
+                base * iva_rate / 100,
+                2,
+            )
+            irpf = round(
+                base * irpf_rate / 100,
+                2,
+            )
+            total = round(
+                base + iva - irpf + otros,
+                2,
+            )
+
+            gasto_iva_importe.value = (
+                f"{iva:.2f}".replace(".", ",")
+            )
+            gasto_irpf_importe.value = (
+                f"{irpf:.2f}".replace(".", ",")
+            )
+            gasto_total.value = (
+                f"{total:.2f}".replace(".", ",")
+            )
+            gasto_total_summary.value = (
+                "Total calculado: "
+                f"{total:.2f} €".replace(".", ",")
+            )
+            gasto_calculation_error.value = ""
+
+        except Exception:
+            gasto_total_summary.value = (
+                "Total calculado: —"
+            )
+            gasto_calculation_error.value = (
+                "Revisa la base y los porcentajes."
+            )
+
+        finally:
+            gasto_form_state["calculating"] = False
+
+        try:
+            gasto_iva_importe.update()
+            gasto_irpf_importe.update()
+            gasto_total.update()
+            gasto_total_summary.update()
+            gasto_calculation_error.update()
+        except Exception:
+            pass
+
+    gasto_base.on_change = update_gasto_calculation
+    gasto_iva_porcentaje.on_change = (
+        update_gasto_calculation
+    )
+    gasto_irpf_porcentaje.on_change = (
+        update_gasto_calculation
+    )
+    gasto_otros.on_change = update_gasto_calculation
+
+    def on_gasto_supplier_selected(value):
+        label = str(value or "").strip()
+        supplier = gasto_supplier_by_label.get(label)
+
+        if supplier is None:
+            gasto_form_state["supplier_id"] = None
+            return
+
+        gasto_form_state["supplier_id"] = (
+            supplier.get("id")
+        )
+
+        gasto_categoria.value = (
+            supplier.get("category") or ""
+        )
+        gasto_forma.value = (
+            supplier.get("usual_payment_method")
+            or "DIRECT_DEBIT"
+        )
+        gasto_iva_porcentaje.value = (
+            _expense_format_rate(
+                supplier.get("usual_vat_rate")
+            )
+        )
+        gasto_irpf_porcentaje.value = (
+            _expense_format_rate(
+                supplier.get("usual_irpf_rate")
+            )
+        )
+        gasto_tipo_justificante.value = (
+            supplier.get("usual_document_type")
+            or "INVOICE"
+        )
+
+        if bool(supplier.get("issues_invoice")):
+            gasto_estado_documental.value = (
+                "FACTURA_RECIBIDA"
+            )
+        else:
+            gasto_estado_documental.value = (
+                "SIN_JUSTIFICANTE"
+            )
+
+        update_gasto_calculation()
+        page.update()
+
+    gasto_supplier_ac = AppAutocomplete(
+        page=page,
+        label="Proveedor opcional",
+        options=gasto_supplier_options,
+        value="",
+        width=660,
+        max_results=7,
+        on_select=on_gasto_supplier_selected,
+        allow_free_text=False,
+        hint_text="Escribe el nombre, NIF o código",
+        empty_text="No se encontró el proveedor",
+    )
+
+    def clear_gasto_form():
+        gasto_form_state["editing_id"] = None
+        gasto_form_state["supplier_id"] = None
+
+        gasto_supplier_ac.set_value(
+            "",
+            update=False,
+        )
+
+        gasto_fecha.value = _today_display()
+        gasto_fecha_factura.value = _today_display()
+        gasto_numero_factura.value = ""
+        gasto_concepto.value = ""
+        gasto_categoria.value = ""
+        gasto_forma.value = "DIRECT_DEBIT"
+        gasto_tipo_justificante.value = "INVOICE"
+
+        gasto_base.value = ""
+        gasto_iva_porcentaje.value = "21"
+        gasto_iva_importe.value = "0,00"
+        gasto_irpf_porcentaje.value = "0"
+        gasto_irpf_importe.value = "0,00"
+        gasto_otros.value = "0,00"
+        gasto_total.value = ""
+
+        gasto_deducible_irpf.value = "Sí"
+        gasto_iva_deducible.value = "Sí"
+        gasto_porcentaje_deducible.value = "100"
+        gasto_estado_fiscal.value = (
+            "PENDIENTE_REVISION"
+        )
+        gasto_estado_documental.value = (
+            "SIN_JUSTIFICANTE"
+        )
+        gasto_estado_conciliacion.value = (
+            "PENDIENTE"
+        )
+
+        gasto_ruta.value = ""
+        gasto_periodo_desde.value = ""
+        gasto_periodo_hasta.value = ""
+        gasto_vencimiento.value = ""
+        gasto_obs.value = ""
+
+        gasto_total_summary.value = (
+            "Total calculado: 0,00 €"
+        )
+        gasto_calculation_error.value = ""
 
     def open_gasto_dialog(e=None):
-        for field in [gasto_proveedor, gasto_concepto, gasto_categoria, gasto_importe, gasto_forma, gasto_ruta, gasto_obs]:
-            field.value = ""
-        gasto_fecha.value = _today_display()
-        gasto_deducible.value = "Sí"
+        clear_gasto_form()
+
+        gasto_dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.ADD_CARD,
+                    size=22,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    "Nuevo gasto",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=(
+                ft.CrossAxisAlignment.CENTER
+            ),
+        )
+
+        gasto_dialog_header_title.value = (
+            "Registrar nuevo gasto"
+        )
+        gasto_dialog_header_subtitle.value = (
+            "Añade el justificante, los importes "
+            "fiscales y el proveedor."
+        )
+        gasto_save_button.text = "Guardar gasto"
+
         gasto_dialog.open = True
         page.update()
 
+    def open_edit_gasto_dialog(expense):
+        expense_id = int(expense.get("id") or 0)
+
+        current = expense_service.get_expense(
+            expense_id
+        )
+
+        if not current:
+            show_message(
+                error_alert(
+                    "No se encontró el gasto."
+                )
+            )
+            refresh()
+            return
+
+        clear_gasto_form()
+
+        gasto_form_state["editing_id"] = expense_id
+        gasto_form_state["supplier_id"] = (
+            current.get("supplier_id")
+        )
+
+        supplier_label = ""
+
+        supplier_id = current.get("supplier_id")
+
+        if supplier_id:
+            for label, supplier in (
+                gasto_supplier_by_label.items()
+            ):
+                if int(supplier.get("id") or 0) == int(
+                    supplier_id
+                ):
+                    supplier_label = label
+                    break
+
+        gasto_supplier_ac.set_value(
+            supplier_label,
+            update=False,
+        )
+
+        gasto_fecha.value = _date_to_display(
+            current.get("fecha_gasto")
+        )
+        gasto_fecha_factura.value = _date_to_display(
+            current.get("fecha_factura")
+            or current.get("fecha_gasto")
+        )
+        gasto_numero_factura.value = (
+            current.get("numero_factura") or ""
+        )
+        gasto_concepto.value = (
+            current.get("concepto") or ""
+        )
+        gasto_categoria.value = (
+            current.get("categoria") or ""
+        )
+        gasto_forma.value = (
+            current.get("forma_pago")
+            or "DIRECT_DEBIT"
+        )
+        gasto_tipo_justificante.value = (
+            current.get("tipo_justificante")
+            or "INVOICE"
+        )
+
+        gasto_base.value = (
+            _expense_input_from_centimos(
+                current.get(
+                    "base_imponible_centimos"
+                )
+            )
+        )
+        gasto_iva_porcentaje.value = (
+            _expense_format_rate(
+                current.get("iva_porcentaje")
+            )
+        )
+        gasto_iva_importe.value = (
+            _expense_input_from_centimos(
+                current.get("iva_centimos")
+            )
+        )
+        gasto_irpf_porcentaje.value = (
+            _expense_format_rate(
+                current.get("irpf_porcentaje")
+            )
+        )
+        gasto_irpf_importe.value = (
+            _expense_input_from_centimos(
+                current.get("irpf_centimos")
+            )
+        )
+        gasto_otros.value = (
+            _expense_input_from_centimos(
+                current.get(
+                    "otros_impuestos_centimos"
+                )
+            )
+        )
+        gasto_total.value = (
+            _expense_input_from_centimos(
+                current.get("total_centimos")
+            )
+        )
+
+        gasto_deducible_irpf.value = (
+            "Sí"
+            if bool(
+                current.get("deducible_irpf")
+            )
+            else "No"
+        )
+        gasto_iva_deducible.value = (
+            "Sí"
+            if bool(
+                current.get("iva_deducible")
+            )
+            else "No"
+        )
+        gasto_porcentaje_deducible.value = (
+            _expense_format_rate(
+                current.get(
+                    "porcentaje_deducible"
+                )
+            )
+        )
+        gasto_estado_fiscal.value = (
+            current.get("estado_fiscal")
+            or "PENDIENTE_REVISION"
+        )
+        gasto_estado_documental.value = (
+            current.get("estado_documental")
+            or "SIN_JUSTIFICANTE"
+        )
+        gasto_estado_conciliacion.value = (
+            current.get("estado_conciliacion")
+            or "PENDIENTE"
+        )
+
+        gasto_ruta.value = (
+            current.get("documento_ruta")
+            or current.get(
+                "factura_recibida_ruta"
+            )
+            or ""
+        )
+        gasto_periodo_desde.value = _date_to_display(
+            current.get("periodo_desde")
+        )
+        gasto_periodo_hasta.value = _date_to_display(
+            current.get("periodo_hasta")
+        )
+        gasto_vencimiento.value = _date_to_display(
+            current.get("fecha_vencimiento")
+        )
+        gasto_obs.value = (
+            current.get("observaciones") or ""
+        )
+
+        total = (
+            int(current.get("total_centimos") or 0)
+            / 100
+        )
+        gasto_total_summary.value = (
+            f"Total registrado: {total:.2f} €"
+            .replace(".", ",")
+        )
+
+        gasto_dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.EDIT_NOTE,
+                    size=22,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    "Editar gasto",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=(
+                ft.CrossAxisAlignment.CENTER
+            ),
+        )
+
+        gasto_dialog_header_title.value = (
+            "Editar gasto registrado"
+        )
+        gasto_dialog_header_subtitle.value = (
+            "Actualiza el justificante, los importes "
+            "o su clasificación fiscal."
+        )
+        gasto_save_button.text = "Guardar cambios"
+
+        gasto_dialog.open = True
+        page.update()
+
+    def _optional_expense_date(control, label):
+        raw = str(control.value or "").strip()
+
+        if not raw:
+            return None
+
+        value = _date_to_sql(raw)
+
+        if not value:
+            raise ValueError(
+                f"{label} no es válida. Usa DD/MM/AAAA."
+            )
+
+        return value
+
     def save_gasto(e=None):
         try:
-            economic_service.create_gasto({
-                "fecha_gasto": _date_to_sql(gasto_fecha.value),
-                "proveedor": gasto_proveedor.value,
+            fecha_gasto = _date_to_sql(
+                gasto_fecha.value
+            )
+
+            if not fecha_gasto:
+                raise ValueError(
+                    "La fecha del gasto no es válida."
+                )
+
+            fecha_factura = _optional_expense_date(
+                gasto_fecha_factura,
+                "La fecha de factura",
+            )
+
+            base_centimos = _expense_centimos(
+                gasto_base.value
+            )
+            iva_centimos = _expense_centimos(
+                gasto_iva_importe.value
+            )
+            irpf_centimos = _expense_centimos(
+                gasto_irpf_importe.value
+            )
+            otros_centimos = _expense_centimos(
+                gasto_otros.value
+            )
+            total_centimos = _expense_centimos(
+                gasto_total.value
+            )
+
+            payload = {
+                "fecha_gasto": fecha_gasto,
+                "fecha_factura": (
+                    fecha_factura or fecha_gasto
+                ),
+                "supplier_id": (
+                    gasto_form_state.get(
+                        "supplier_id"
+                    )
+                ),
                 "concepto": gasto_concepto.value,
                 "categoria": gasto_categoria.value,
-                "importe": gasto_importe.value,
+                "numero_factura": (
+                    gasto_numero_factura.value
+                ),
+                "tipo_justificante": (
+                    gasto_tipo_justificante.value
+                ),
                 "forma_pago": gasto_forma.value,
-                "deducible": 1 if gasto_deducible.value == "Sí" else 0,
-                "factura_recibida_ruta": gasto_ruta.value,
+                "base_imponible_centimos": (
+                    base_centimos
+                ),
+                "iva_centimos": iva_centimos,
+                "irpf_centimos": irpf_centimos,
+                "otros_impuestos_centimos": (
+                    otros_centimos
+                ),
+                "total_centimos": total_centimos,
+                "iva_porcentaje": (
+                    gasto_iva_porcentaje.value
+                ),
+                "irpf_porcentaje": (
+                    gasto_irpf_porcentaje.value
+                ),
+                "deducible_irpf": (
+                    gasto_deducible_irpf.value
+                    == "Sí"
+                ),
+                "iva_deducible": (
+                    gasto_iva_deducible.value
+                    == "Sí"
+                ),
+                "porcentaje_deducible": (
+                    gasto_porcentaje_deducible.value
+                ),
+                "estado_fiscal": (
+                    gasto_estado_fiscal.value
+                ),
+                "estado_documental": (
+                    gasto_estado_documental.value
+                ),
+                "estado_conciliacion": (
+                    gasto_estado_conciliacion.value
+                ),
+                "documento_ruta": gasto_ruta.value,
+                "periodo_desde": (
+                    _optional_expense_date(
+                        gasto_periodo_desde,
+                        "El inicio del periodo",
+                    )
+                ),
+                "periodo_hasta": (
+                    _optional_expense_date(
+                        gasto_periodo_hasta,
+                        "El final del periodo",
+                    )
+                ),
+                "fecha_vencimiento": (
+                    _optional_expense_date(
+                        gasto_vencimiento,
+                        "La fecha de vencimiento",
+                    )
+                ),
                 "observaciones": gasto_obs.value,
-            })
-            gasto_dialog.open = False
-            show_message(success_alert("Gasto creado"))
-        except Exception as exc:
-            show_message(error_alert(str(exc)))
-        refresh()
+            }
 
-    gasto_dialog = form_dialog(
-        "Gasto",
-        ft.Column(
-            [
-                ft.Row([gasto_fecha, gasto_proveedor, gasto_importe], wrap=True, spacing=10),
-                gasto_concepto,
-                ft.Row([gasto_categoria, gasto_forma, gasto_deducible], wrap=True, spacing=10),
-                gasto_ruta,
-                gasto_obs,
+            editing_id = gasto_form_state.get(
+                "editing_id"
+            )
+
+            if editing_id:
+                expense_service.update_expense(
+                    int(editing_id),
+                    payload,
+                )
+                message = "Gasto actualizado"
+            else:
+                expense_service.create_expense(
+                    payload
+                )
+                message = "Gasto creado"
+
+            gasto_dialog.open = False
+            clear_gasto_form()
+
+            show_message(
+                success_alert(message)
+            )
+
+            state["gastos_page"] = 1
+            refresh()
+
+        except Exception as exc:
+            show_message(
+                error_alert(str(exc))
+            )
+            refresh()
+
+    gasto_dialog_header_title = ft.Text(
+        "Registrar nuevo gasto",
+        size=18,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+    )
+    gasto_dialog_header_subtitle = ft.Text(
+        "Añade el justificante, los importes "
+        "fiscales y el proveedor.",
+        size=12,
+        color=Q_MUTED,
+    )
+
+    gasto_dialog_header = ft.Container(
+        bgcolor="#F8FAFC",
+        border=ft.border.all(1, "#D8E2EE"),
+        border_radius=14,
+        padding=14,
+        content=ft.Row(
+            controls=[
+                ft.Container(
+                    width=44,
+                    height=44,
+                    border_radius=12,
+                    bgcolor="#EAF3FF",
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Icon(
+                        ft.Icons.RECEIPT_LONG_OUTLINED,
+                        size=24,
+                        color="#0057B8",
+                    ),
+                ),
+                ft.Column(
+                    controls=[
+                        gasto_dialog_header_title,
+                        gasto_dialog_header_subtitle,
+                    ],
+                    spacing=2,
+                ),
             ],
-            width=760,
-            height=500,
             spacing=12,
-            scroll=ft.ScrollMode.AUTO,
+            vertical_alignment=(
+                ft.CrossAxisAlignment.CENTER
+            ),
         ),
-        [secondary_button("Cancelar", lambda e: close(gasto_dialog)), primary_button("Guardar", save_gasto)],
+    )
+
+    gasto_dialog_content = ft.Column(
+        controls=[
+            gasto_dialog_header,
+
+            _expense_form_section(
+                "Proveedor",
+                ft.Icons.BUSINESS_OUTLINED,
+                controls=[
+                    gasto_supplier_ac.control,
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border_radius=10,
+                        padding=10,
+                        content=ft.Text(
+                            (
+                                "El proveedor es opcional. "
+                                "Las comisiones bancarias y otros "
+                                "gastos pueden registrarse sin proveedor."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ),
+                ],
+                subtitle=(
+                    "Al seleccionarlo se cargan sus "
+                    "condiciones habituales."
+                ),
+            ),
+
+            _expense_form_section(
+                "Datos principales",
+                ft.Icons.DESCRIPTION_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            gasto_fecha,
+                            gasto_fecha_factura,
+                            gasto_numero_factura,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    gasto_concepto,
+                    ft.Row(
+                        controls=[
+                            gasto_categoria,
+                            gasto_forma,
+                            gasto_tipo_justificante,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                subtitle=(
+                    "Fecha, factura, concepto y "
+                    "clasificación del gasto."
+                ),
+            ),
+
+            _expense_form_section(
+                "Importes",
+                ft.Icons.CALCULATE_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            gasto_base,
+                            gasto_iva_porcentaje,
+                            gasto_iva_importe,
+                            gasto_irpf_porcentaje,
+                            gasto_irpf_importe,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            gasto_otros,
+                            gasto_total,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Container(
+                        bgcolor="#EFF8FF",
+                        border=ft.border.all(
+                            1,
+                            "#84CAFF",
+                        ),
+                        border_radius=10,
+                        padding=10,
+                        content=ft.Column(
+                            controls=[
+                                gasto_total_summary,
+                                gasto_calculation_error,
+                                ft.Text(
+                                    (
+                                        "Total = Base + IVA "
+                                        "− IRPF + otros ajustes"
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=3,
+                        ),
+                    ),
+                ],
+                subtitle=(
+                    "Los importes fiscales se calculan "
+                    "a partir de la base."
+                ),
+            ),
+
+            _expense_form_section(
+                "Fiscalidad y estados",
+                ft.Icons.ACCOUNT_BALANCE_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            gasto_deducible_irpf,
+                            gasto_iva_deducible,
+                            gasto_porcentaje_deducible,
+                            gasto_estado_fiscal,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            gasto_estado_documental,
+                            gasto_estado_conciliacion,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                subtitle=(
+                    "Configura la deducibilidad y el "
+                    "estado del justificante."
+                ),
+            ),
+
+            _expense_form_section(
+                "Documentación y periodo",
+                ft.Icons.FOLDER_OUTLINED,
+                controls=[
+                    gasto_ruta,
+                    ft.Row(
+                        controls=[
+                            gasto_periodo_desde,
+                            gasto_periodo_hasta,
+                            gasto_vencimiento,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    gasto_obs,
+                ],
+                subtitle=(
+                    "Documento recibido, periodo facturado "
+                    "y observaciones internas."
+                ),
+            ),
+        ],
+        width=840,
+        height=650,
+        spacing=12,
+        scroll=ft.ScrollMode.AUTO,
+    )
+
+    gasto_save_button = primary_button(
+        "Guardar gasto",
+        save_gasto,
+    )
+
+    gasto_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.ADD_CARD,
+                    size=22,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    "Nuevo gasto",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=(
+                ft.CrossAxisAlignment.CENTER
+            ),
+        ),
+        content=gasto_dialog_content,
+        actions=[
+            secondary_button(
+                "Cancelar",
+                lambda e: close(gasto_dialog),
+            ),
+            gasto_save_button,
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+        shape=ft.RoundedRectangleBorder(
+            radius=16
+        ),
+        inset_padding=ft.padding.symmetric(
+            horizontal=24,
+            vertical=18,
+        ),
     )
     page.overlay.append(gasto_dialog)
 
