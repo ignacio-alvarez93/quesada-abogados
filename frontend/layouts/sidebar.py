@@ -130,6 +130,7 @@ MENU_GROUPS = [
 KNOWN_ACTIVE_VIEWS = {
     "Clientes",
     "Empresas",
+    "Proveedores",
     "Expedientes",
     "Colas de presentación",
     "Cobros",

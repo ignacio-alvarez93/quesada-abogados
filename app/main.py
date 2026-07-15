@@ -5,6 +5,7 @@ from database.connection import initialize_database
 from frontend.views.login_view import login_view
 from frontend.views.clients_view import clients_view
 from frontend.views.companies_view import companies_view
+from frontend.views.suppliers_view import suppliers_view
 from frontend.views.settings_view import settings_view
 from frontend.views.expedients_view import expedients_view
 from frontend.views.expedient_traceability_view import expedient_traceability_view
@@ -58,6 +59,8 @@ def main(page: ft.Page):
             )
         elif view_name == "Empresas":
             content = companies_view(page)
+        elif view_name == "Proveedores":
+            content = suppliers_view(page)
         elif view_name == "Expedientes":
             open_expediente_id = kwargs.get("open_expediente_id")
             new_for_client_id = kwargs.get("new_for_client_id")
