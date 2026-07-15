@@ -43,9 +43,15 @@ MENU_GROUPS = [
         "open": False,
         "items": [
             ("Cobros", "💶"),
-            ("Ingresos", "📈"),
-            ("Gastos", "📉"),
             ("Conciliación", "🧾"),
+        ],
+    },
+    {
+        "title": "Fiscal",
+        "icon": "🧮",
+        "open": False,
+        "items": [
+            ("Fiscal", "🧮"),
         ],
     },
     {
@@ -134,6 +140,8 @@ KNOWN_ACTIVE_VIEWS = {
     "Expedientes",
     "Colas de presentación",
     "Cobros",
+    "Conciliación",
+    "Fiscal",
     "Documentos / Box",
     "Bandeja documental",
     "Reporting",
