@@ -93,8 +93,50 @@ def main(page: ft.Page):
             )
         elif view_name == "Trazabilidad Expedientes":
             content = expedient_traceability_view(page)
-        elif view_name == "Cobros":
+        elif view_name in ("Cobros", "Conciliación"):
             content = economic_view(page)
+        elif view_name == "Fiscal":
+            content = ft.Container(
+                expand=True,
+                padding=24,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            "Fiscal",
+                            size=30,
+                            weight=ft.FontWeight.BOLD,
+                            color="#003B7A",
+                        ),
+                        ft.Text(
+                            (
+                                "Centro fiscal para modelos, "
+                                "periodos, IVA, IRPF y cierres."
+                            ),
+                            size=14,
+                            color="#64748B",
+                        ),
+                        ft.Container(
+                            margin=ft.margin.only(top=16),
+                            padding=20,
+                            border=ft.border.all(
+                                1,
+                                "#E4E7EC",
+                            ),
+                            border_radius=14,
+                            bgcolor="#FFFFFF",
+                            content=ft.Text(
+                                (
+                                    "Módulo fiscal pendiente "
+                                    "de desarrollo."
+                                ),
+                                size=14,
+                                color="#475467",
+                            ),
+                        ),
+                    ],
+                    spacing=8,
+                ),
+            )
         elif view_name == "Documentos / Box":
             content = box_watch_view(page)
         elif view_name == "Bandeja documental":

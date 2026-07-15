@@ -17,6 +17,7 @@ from backend.services.invoicing_obligations_service import (
 )
 from backend.services import advisory_invoice_export_service
 from backend.services import economic_movements_export_service
+from backend.services import expense_export_service
 from frontend.components.app_button import primary_button, secondary_button
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
 from frontend.components.app_dropdown import select_input
@@ -28,6 +29,7 @@ from frontend.components.economic_badge import economic_badge
 from frontend.components.economic_payment_card import economic_payment_card
 from frontend.components.economic_expense_card import economic_expense_card
 from backend.services import expense_service
+from backend.services import expense_reconciliation_service
 from backend.services import supplier_service
 from frontend.components.economic_invoice_card import economic_invoice_card
 from frontend.components.app_autocomplete import AppAutocomplete
@@ -4523,6 +4525,719 @@ def economic_view(page: ft.Page):
         actions_alignment=ft.MainAxisAlignment.END,
     )
 
+
+    def _expense_reconciliation_label(expense):
+        supplier = str(
+            expense.get("supplier_display_name")
+            or "Sin proveedor"
+        ).strip()
+        concept = str(
+            expense.get("concepto")
+            or "Sin concepto"
+        ).strip()
+        date_value = _date_to_display(
+            expense.get("fecha_gasto")
+        )
+        pending = _money_centimos(
+            expense.get("pending_centimos")
+            or 0
+        )
+
+        return (
+            f"{expense.get('id')} - "
+            f"{supplier} · {date_value} · "
+            f"{concept} · Pendiente {pending}"
+        )
+
+
+    def open_negative_movement_reconciliation(
+        source,
+        item,
+    ):
+        source = str(source or "").lower().strip()
+
+        if source == "cashmatic":
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    "Los gastos se concilian contra "
+                    "movimientos bancarios negativos."
+                ),
+                open=True,
+            )
+            page.update()
+            return
+
+        movement_id = int(
+            _get_value(item, "id") or 0
+        )
+
+        if movement_id <= 0:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    "No se pudo identificar el movimiento."
+                ),
+                open=True,
+            )
+            page.update()
+            return
+
+        try:
+            summary = (
+                expense_reconciliation_service
+                .get_movement_summary(
+                    movement_id
+                )
+            )
+        except Exception as exc:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(str(exc)),
+                open=True,
+            )
+            page.update()
+            return
+
+        movement = summary["movement"]
+        movement_total = int(
+            summary["total_centimos"] or 0
+        )
+        movement_applied = int(
+            summary["applied_centimos"] or 0
+        )
+        movement_pending = int(
+            summary["pending_centimos"] or 0
+        )
+
+        expenses = (
+            expense_reconciliation_service
+            .list_reconcilable_expenses(
+                limit=2000,
+            )
+        )
+
+        option_map = {}
+        options = []
+
+        for expense in expenses:
+            label = _expense_reconciliation_label(
+                expense
+            )
+            option_map[label] = expense
+
+            options.append(
+                {
+                    "id": expense.get("id"),
+                    "label": label,
+                    "subtitle": (
+                        expense.get("numero_factura")
+                        or expense.get("categoria")
+                        or ""
+                    ),
+                }
+            )
+
+        selected_expense = {
+            "row": None,
+        }
+
+        amount_input = text_input(
+            "Importe a aplicar",
+            width=190,
+        )
+        amount_input.value = (
+            f"{movement_pending / 100:.2f}"
+            .replace(".", ",")
+        )
+
+        notes_input = multiline_input(
+            "Notas de conciliación",
+            width=690,
+            height=90,
+        )
+
+        selection_summary = ft.Container()
+        applications_box = ft.Container()
+        message_box = ft.Container()
+
+        def set_message(message, error=False):
+            message_box.content = ft.Container(
+                bgcolor=(
+                    "#FEF3F2"
+                    if error
+                    else "#F8FAFC"
+                ),
+                border=ft.border.all(
+                    1,
+                    (
+                        "#FDA29B"
+                        if error
+                        else Q_BORDER
+                    ),
+                ),
+                border_radius=10,
+                padding=10,
+                content=ft.Text(
+                    str(message or ""),
+                    size=12,
+                    color=(
+                        "#B42318"
+                        if error
+                        else Q_MUTED
+                    ),
+                ),
+            )
+
+            try:
+                message_box.update()
+            except Exception:
+                pass
+
+        def expense_selected(value):
+            label = str(value or "").strip()
+            expense = option_map.get(label)
+            selected_expense["row"] = expense
+
+            if not expense:
+                selection_summary.content = None
+                return
+
+            expense_pending = int(
+                expense.get("pending_centimos")
+                or 0
+            )
+            applicable = min(
+                movement_pending,
+                expense_pending,
+            )
+
+            amount_input.value = (
+                f"{applicable / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            selection_summary.content = ft.Container(
+                bgcolor="#EFF8FF",
+                border=ft.border.all(
+                    1,
+                    "#84CAFF",
+                ),
+                border_radius=10,
+                padding=12,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            str(
+                                expense.get(
+                                    "supplier_display_name"
+                                )
+                                or "Sin proveedor"
+                            ).upper(),
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            expense.get("concepto")
+                            or "Sin concepto",
+                            size=12,
+                            color="#344054",
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Text(
+                                    "Total: "
+                                    + _money_centimos(
+                                        expense.get(
+                                            "effective_total_centimos"
+                                        )
+                                        or 0
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    "Aplicado: "
+                                    + _money_centimos(
+                                        expense.get(
+                                            "applied_centimos"
+                                        )
+                                        or 0
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    "Pendiente: "
+                                    + _money_centimos(
+                                        expense_pending
+                                    ),
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#B54708",
+                                ),
+                            ],
+                            spacing=14,
+                            wrap=True,
+                        ),
+                    ],
+                    spacing=5,
+                ),
+            )
+
+            try:
+                amount_input.update()
+                selection_summary.update()
+            except Exception:
+                pass
+
+        expense_ac = AppAutocomplete(
+            page=page,
+            label="Gasto pendiente",
+            options=options,
+            width=690,
+            max_results=10,
+            on_select=expense_selected,
+            allow_free_text=False,
+            hint_text=(
+                "Busca por proveedor, concepto, "
+                "factura o ID"
+            ),
+            empty_text=(
+                "No hay gastos pendientes "
+                "que coincidan"
+            ),
+        )
+
+        def parse_amount_centimos():
+            raw = str(
+                amount_input.value or ""
+            ).strip()
+
+            if not raw:
+                raise ValueError(
+                    "Indica el importe a aplicar."
+                )
+
+            normalized = raw.replace(" ", "")
+
+            if (
+                "," in normalized
+                and "." in normalized
+            ):
+                if (
+                    normalized.rfind(",")
+                    > normalized.rfind(".")
+                ):
+                    normalized = (
+                        normalized
+                        .replace(".", "")
+                        .replace(",", ".")
+                    )
+                else:
+                    normalized = (
+                        normalized.replace(",", "")
+                    )
+            else:
+                normalized = normalized.replace(
+                    ",",
+                    ".",
+                )
+
+            amount = int(
+                round(float(normalized) * 100)
+            )
+
+            if amount <= 0:
+                raise ValueError(
+                    "El importe debe ser mayor que cero."
+                )
+
+            return amount
+
+        def reopen_dialog():
+            current_item = dict(item)
+
+            try:
+                state.setdefault(
+                    "movements_cache",
+                    {},
+                ).pop(source, None)
+            except Exception:
+                state["movements_cache"] = {}
+
+            open_negative_movement_reconciliation(
+                source,
+                current_item,
+            )
+
+        def remove_application(
+            application_id,
+        ):
+            def handler(e=None):
+                try:
+                    (
+                        expense_reconciliation_service
+                        .remove_expense_reconciliation(
+                            int(application_id),
+                            reason=(
+                                "Retirada manual desde "
+                                "Económico > Movimientos"
+                            ),
+                        )
+                    )
+
+                    show_message(
+                        success_alert(
+                            "Aplicación retirada"
+                        )
+                    )
+
+                    reopen_dialog()
+
+                except Exception as exc:
+                    set_message(
+                        str(exc),
+                        error=True,
+                    )
+
+            return handler
+
+        application_controls = []
+
+        for application in summary["applications"]:
+            supplier = (
+                application.get(
+                    "supplier_name_snapshot"
+                )
+                or application.get("proveedor")
+                or "Sin proveedor"
+            )
+
+            application_controls.append(
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        str(supplier),
+                                        size=12,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        application.get(
+                                            "concepto"
+                                        )
+                                        or "Sin concepto",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            application.get(
+                                                "amount_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color="#027A48",
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color="#B42318",
+                                tooltip=(
+                                    "Retirar esta aplicación"
+                                ),
+                                on_click=remove_application(
+                                    application.get("id")
+                                ),
+                            ),
+                        ],
+                        alignment=(
+                            ft.MainAxisAlignment
+                            .SPACE_BETWEEN
+                        ),
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
+        if application_controls:
+            applications_box.content = ft.Column(
+                controls=[
+                    ft.Text(
+                        "Aplicaciones registradas",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    *application_controls,
+                ],
+                spacing=8,
+            )
+        else:
+            applications_box.content = ft.Text(
+                "El movimiento todavía no tiene "
+                "gastos aplicados.",
+                size=12,
+                color=Q_MUTED,
+                italic=True,
+            )
+
+        def apply_to_existing_expense(e=None):
+            expense = selected_expense.get(
+                "row"
+            )
+
+            if not expense:
+                set_message(
+                    "Selecciona un gasto pendiente.",
+                    error=True,
+                )
+                return
+
+            try:
+                amount_centimos = (
+                    parse_amount_centimos()
+                )
+
+                (
+                    expense_reconciliation_service
+                    .apply_expense_reconciliation(
+                        movement_id=movement_id,
+                        expense_id=int(
+                            expense.get("id")
+                        ),
+                        amount_centimos=(
+                            amount_centimos
+                        ),
+                        notes=notes_input.value,
+                    )
+                )
+
+                show_message(
+                    success_alert(
+                        "Gasto conciliado con "
+                        "el movimiento"
+                    )
+                )
+
+                reopen_dialog()
+
+            except Exception as exc:
+                set_message(
+                    str(exc),
+                    error=True,
+                )
+
+        def create_expense_from_movement(e=None):
+            if movement_pending <= 0:
+                set_message(
+                    "El movimiento ya está "
+                    "completamente aplicado.",
+                    error=True,
+                )
+                return
+
+            state[
+                "pending_expense_from_movement"
+            ] = {
+                "source": source,
+                "movement_id": movement_id,
+                "date": (
+                    movement.get(
+                        "operation_date"
+                    )
+                    or ""
+                ),
+                "concept": (
+                    movement.get("concept")
+                    or ""
+                ),
+                "amount_centimos": (
+                    movement_pending
+                ),
+                "bank_name": (
+                    movement.get("bank_name")
+                    or ""
+                ),
+            }
+
+            reconciliation_dialog.open = False
+            open_gasto_dialog()
+
+        summary_box = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        (
+                            str(
+                                movement.get(
+                                    "bank_name"
+                                )
+                                or "Banco"
+                            )
+                            + " · "
+                            + _date_to_display(
+                                movement.get(
+                                    "operation_date"
+                                )
+                            )
+                        ),
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        movement.get("concept")
+                        or "Sin concepto",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                "Movimiento: "
+                                + _money_centimos(
+                                    movement_total
+                                ),
+                                size=12,
+                                color="#B42318",
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            ft.Text(
+                                "Aplicado: "
+                                + _money_centimos(
+                                    movement_applied
+                                ),
+                                size=12,
+                                color="#027A48",
+                            ),
+                            ft.Text(
+                                "Pendiente: "
+                                + _money_centimos(
+                                    movement_pending
+                                ),
+                                size=12,
+                                color="#B54708",
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ],
+                        spacing=18,
+                        wrap=True,
+                    ),
+                ],
+                spacing=6,
+            ),
+        )
+
+        content = ft.Column(
+            controls=[
+                summary_box,
+                applications_box,
+                ft.Divider(height=1),
+                ft.Text(
+                    "Aplicar a un gasto existente",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                expense_ac.control,
+                selection_summary,
+                ft.Row(
+                    controls=[
+                        amount_input,
+                        ft.Container(
+                            content=ft.Text(
+                                (
+                                    "El importe no puede superar "
+                                    "el pendiente del movimiento "
+                                    "ni el pendiente del gasto."
+                                ),
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            width=470,
+                        ),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                notes_input,
+                message_box,
+            ],
+            width=730,
+            height=580,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.RECEIPT_LONG_OUTLINED,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Conciliar salida bancaria",
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=8,
+            ),
+            content=content,
+            actions=[
+                secondary_button(
+                    "Cerrar",
+                    lambda e: close(
+                        reconciliation_dialog
+                    ),
+                ),
+                secondary_button(
+                    "Crear gasto desde movimiento",
+                    create_expense_from_movement,
+                ),
+                primary_button(
+                    "Aplicar al gasto",
+                    apply_to_existing_expense,
+                ),
+            ],
+            actions_alignment=(
+                ft.MainAxisAlignment.END
+            ),
+        )
+
+        show_reconciliation_dialog(dialog)
+
+
     def open_movement_reconciliation_action(source, item):
         if not is_movement_reconcilable(source, item):
             page.snack_bar = ft.SnackBar(
@@ -4539,18 +5254,22 @@ def economic_view(page: ft.Page):
         movement_id = int(_get_value(item, "id") or 0)
         amount_centimos = movement_amount_centimos_for_reconciliation(source, item)
 
-        if int(amount_centimos or 0) <= 0:
-            try:
-                page.snack_bar = ft.SnackBar(
-                    content=ft.Text(
-                        "De momento solo se concilian movimientos positivos contra cobros. "
-                        "Los movimientos negativos se vincularán cuando esté activo el módulo de gastos."
-                    ),
-                    open=True,
-                )
-                page.update()
-            except Exception:
-                pass
+        if int(amount_centimos or 0) < 0:
+            open_negative_movement_reconciliation(
+                source,
+                item,
+            )
+            return
+
+        if int(amount_centimos or 0) == 0:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    "No se puede conciliar un "
+                    "movimiento de importe cero."
+                ),
+                open=True,
+            )
+            page.update()
             return
         movement_date = movement_date_for_reconciliation(source, item)
         movement_concept = movement_concept_for_reconciliation(source, item)
@@ -4565,14 +5284,6 @@ def economic_view(page: ft.Page):
 
         if movement_id <= 0:
             page.snack_bar = ft.SnackBar(ft.Text("No se pudo identificar el movimiento."))
-            page.snack_bar.open = True
-            page.update()
-            return
-
-        if amount_centimos < 0:
-            page.snack_bar = ft.SnackBar(
-                ft.Text("Este movimiento es negativo. La conciliación de gastos se desarrollará en la siguiente fase.")
-            )
             page.snack_bar.open = True
             page.update()
             return
@@ -8804,6 +9515,89 @@ def economic_view(page: ft.Page):
             spacing=10,
         )
 
+    def export_filtered_expenses_to_excel(
+        e=None,
+    ):
+        try:
+            expenses = expense_service.list_expenses(
+                search=(
+                    state.get("gastos_search")
+                    or ""
+                ),
+                active=True,
+                quick_filter=(
+                    state.get(
+                        "gastos_quick_filter"
+                    )
+                    or "ALL"
+                ),
+                date_from=state.get(
+                    "gastos_date_from"
+                ),
+                date_to=state.get(
+                    "gastos_date_to"
+                ),
+                limit=1_000_000,
+                offset=0,
+            )
+
+            result = (
+                expense_export_service
+                .export_expenses_to_excel(
+                    expenses,
+                    search=str(
+                        state.get(
+                            "gastos_search"
+                        )
+                        or ""
+                    ).strip(),
+                    quick_filter=str(
+                        state.get(
+                            "gastos_quick_filter"
+                        )
+                        or "ALL"
+                    ),
+                    date_from=state.get(
+                        "gastos_date_from"
+                    ),
+                    date_to=state.get(
+                        "gastos_date_to"
+                    ),
+                )
+            )
+
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    (
+                        f"Exportados "
+                        f"{result['count']} gastos "
+                        "a Excel."
+                    )
+                ),
+                open=True,
+            )
+
+            try:
+                page.run_task(
+                    page.launch_url,
+                    Path(
+                        result["path"]
+                    ).as_uri(),
+                )
+            except Exception:
+                pass
+
+            page.update()
+
+        except Exception as exc:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(
+                    f"No se pudo exportar: {exc}"
+                ),
+                open=True,
+            )
+            page.update()
+
     def build_gastos_section():
         render_gastos_results()
 
@@ -8817,6 +9611,18 @@ def economic_view(page: ft.Page):
                             icon_color=Q_PRIMARY_DARK,
                             tooltip="Nuevo gasto",
                             on_click=open_gasto_dialog,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.FILE_DOWNLOAD_OUTLINED,
+                            icon_color="#027A48",
+                            tooltip=(
+                                "Exportar a Excel todos los "
+                                "gastos resultantes de los "
+                                "filtros actuales"
+                            ),
+                            on_click=(
+                                export_filtered_expenses_to_excel
+                            ),
                         ),
                         ft.IconButton(
                             icon=ft.Icons.CALENDAR_MONTH,
@@ -11199,6 +12005,71 @@ def economic_view(page: ft.Page):
     def open_gasto_dialog(e=None):
         clear_gasto_form()
 
+        linked_movement = (
+            state.get(
+                "pending_expense_from_movement"
+            )
+            or {}
+        )
+
+        if linked_movement:
+            gasto_fecha.value = _date_to_display(
+                linked_movement.get("date")
+            )
+            gasto_fecha_factura.value = (
+                gasto_fecha.value
+            )
+            gasto_concepto.value = str(
+                linked_movement.get("concept")
+                or "Gasto generado desde movimiento bancario"
+            )[:600]
+            gasto_categoria.value = (
+                "Gasto bancario pendiente "
+                "de clasificación"
+            )
+
+            amount_centimos = int(
+                linked_movement.get(
+                    "amount_centimos"
+                )
+                or 0
+            )
+
+            amount_value = (
+                f"{amount_centimos / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            gasto_base.value = amount_value
+            gasto_iva_porcentaje.value = "0"
+            gasto_iva_importe.value = "0,00"
+            gasto_irpf_porcentaje.value = "0"
+            gasto_irpf_importe.value = "0,00"
+            gasto_otros.value = "0,00"
+            gasto_total.value = amount_value
+            gasto_forma.value = "BANK_TRANSFER"
+            gasto_tipo_justificante.value = (
+                "BANK_STATEMENT"
+            )
+            gasto_estado_documental.value = (
+                "SIN_JUSTIFICANTE"
+            )
+            gasto_estado_conciliacion.value = (
+                "PENDIENTE"
+            )
+            gasto_total_summary.value = (
+                "Total procedente del movimiento: "
+                + _money_centimos(
+                    amount_centimos
+                )
+            )
+            gasto_obs.value = (
+                "Gasto generado desde conciliación bancaria.\n"
+                f"Banco: {linked_movement.get('bank_name') or ''}\n"
+                f"Movimiento ID: {linked_movement.get('movement_id') or ''}\n"
+                f"Concepto: {linked_movement.get('concept') or ''}"
+            )
+
         gasto_dialog.title = ft.Row(
             controls=[
                 ft.Icon(
@@ -11558,17 +12429,103 @@ def economic_view(page: ft.Page):
                 "editing_id"
             )
 
+            created_expense = None
+
             if editing_id:
-                expense_service.update_expense(
-                    int(editing_id),
-                    payload,
+                created_expense = (
+                    expense_service.update_expense(
+                        int(editing_id),
+                        payload,
+                    )
                 )
                 message = "Gasto actualizado"
             else:
-                expense_service.create_expense(
-                    payload
+                created_expense = (
+                    expense_service.create_expense(
+                        payload
+                    )
                 )
                 message = "Gasto creado"
+
+            linked_movement = (
+                state.get(
+                    "pending_expense_from_movement"
+                )
+                or {}
+            )
+
+            if (
+                not editing_id
+                and linked_movement
+                and created_expense
+            ):
+                expense_id = int(
+                    created_expense.get("id")
+                    or 0
+                )
+                movement_id = int(
+                    linked_movement.get(
+                        "movement_id"
+                    )
+                    or 0
+                )
+                amount_to_apply = min(
+                    int(
+                        linked_movement.get(
+                            "amount_centimos"
+                        )
+                        or 0
+                    ),
+                    int(
+                        created_expense.get(
+                            "total_centimos"
+                        )
+                        or 0
+                    ),
+                )
+
+                if (
+                    expense_id > 0
+                    and movement_id > 0
+                    and amount_to_apply > 0
+                ):
+                    (
+                        expense_reconciliation_service
+                        .apply_expense_reconciliation(
+                            movement_id=movement_id,
+                            expense_id=expense_id,
+                            amount_centimos=(
+                                amount_to_apply
+                            ),
+                            notes=(
+                                "Gasto creado y conciliado "
+                                "desde Económico > Movimientos"
+                            ),
+                        )
+                    )
+
+                    message = (
+                        "Gasto creado y conciliado "
+                        "con el movimiento"
+                    )
+
+                    try:
+                        state.setdefault(
+                            "movements_cache",
+                            {},
+                        ).pop(
+                            linked_movement.get(
+                                "source"
+                            ),
+                            None,
+                        )
+                    except Exception:
+                        state["movements_cache"] = {}
+
+                state.pop(
+                    "pending_expense_from_movement",
+                    None,
+                )
 
             gasto_dialog.open = False
             clear_gasto_form()
