@@ -30,6 +30,7 @@ from frontend.components.economic_payment_card import economic_payment_card
 from frontend.components.economic_expense_card import economic_expense_card
 from backend.services import expense_service
 from backend.services import expense_reconciliation_service
+from backend.services import expense_classification_service
 from backend.services import supplier_service
 from frontend.components.economic_invoice_card import economic_invoice_card
 from frontend.components.app_autocomplete import AppAutocomplete
@@ -5057,6 +5058,26 @@ def economic_view(page: ft.Page):
                 )
                 return
 
+            movement_bank_name = (
+                movement.get("bank_name")
+                or ""
+            )
+            movement_concept = (
+                movement.get("concept")
+                or ""
+            )
+
+            try:
+                classification_suggestion = (
+                    expense_classification_service
+                    .suggest_for_movement(
+                        bank_name=movement_bank_name,
+                        concept=movement_concept,
+                    )
+                )
+            except Exception:
+                classification_suggestion = None
+
             state[
                 "pending_expense_from_movement"
             ] = {
@@ -5068,16 +5089,13 @@ def economic_view(page: ft.Page):
                     )
                     or ""
                 ),
-                "concept": (
-                    movement.get("concept")
-                    or ""
-                ),
+                "concept": movement_concept,
                 "amount_centimos": (
                     movement_pending
                 ),
-                "bank_name": (
-                    movement.get("bank_name")
-                    or ""
+                "bank_name": movement_bank_name,
+                "classification_suggestion": (
+                    classification_suggestion
                 ),
             }
 
@@ -8941,7 +8959,9 @@ def economic_view(page: ft.Page):
     state.setdefault("gastos_page", 1)
     state.setdefault("gastos_page_size", 10)
 
-    gastos_results_box = ft.Container()
+    gastos_results_box = ft.Container(
+        expand=True,
+    )
     gastos_metrics_box = ft.Container()
     gastos_filters_box = ft.Container()
     gastos_period_summary_box = ft.Container()
@@ -9510,9 +9530,18 @@ def economic_view(page: ft.Page):
                         ft.CrossAxisAlignment.CENTER
                     ),
                 ),
-                *cards,
+                ft.ListView(
+                    controls=cards,
+                    expand=True,
+                    spacing=10,
+                    padding=ft.Padding.only(
+                        right=6,
+                        bottom=8,
+                    ),
+                ),
             ],
             spacing=10,
+            expand=True,
         )
 
     def export_filtered_expenses_to_excel(
@@ -9648,7 +9677,7 @@ def economic_view(page: ft.Page):
                 gastos_results_box,
             ],
             spacing=12,
-            scroll=ft.ScrollMode.AUTO,
+            expand=True,
         )
 
     cobros_filter = text_input(
@@ -11499,6 +11528,13 @@ def economic_view(page: ft.Page):
         "editing_id": None,
         "supplier_id": None,
         "calculating": False,
+        "classification_suggestion": None,
+        "counterparty_id": None,
+        "expense_category_id": None,
+        "expense_subcategory_id": None,
+        "classification_rule_id": None,
+        "classification_confidence": 0.0,
+        "tax_model": "",
     }
 
     supplier_rows = supplier_service.list_suppliers(
@@ -11698,6 +11734,44 @@ def economic_view(page: ft.Page):
         color="#B42318",
     )
 
+    gasto_apply_suggestion = select_input(
+        "Aplicar sugerencia",
+        ["Sí", "No"],
+        value="No",
+        width=190,
+    )
+
+    gasto_classification_title = ft.Text(
+        "Sin sugerencia automática",
+        size=13,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+    )
+
+    gasto_classification_detail = ft.Text(
+        (
+            "El gasto se guardará con clasificación "
+            "manual o pendiente de revisión."
+        ),
+        size=11,
+        color=Q_MUTED,
+    )
+
+    gasto_classification_badge = ft.Container(
+        bgcolor="#F2F4F7",
+        border_radius=999,
+        padding=ft.padding.symmetric(
+            horizontal=10,
+            vertical=5,
+        ),
+        content=ft.Text(
+            "MANUAL",
+            size=10,
+            weight=ft.FontWeight.W_600,
+            color="#475467",
+        ),
+    )
+
     def _expense_decimal(value, default=0.0):
         raw = str(value or "").strip()
 
@@ -11816,6 +11890,124 @@ def economic_view(page: ft.Page):
                 spacing=12,
             ),
         )
+
+    def set_gasto_classification_suggestion(
+        suggestion,
+        *,
+        update=False,
+    ):
+        suggestion = suggestion or None
+
+        gasto_form_state[
+            "classification_suggestion"
+        ] = suggestion
+
+        if suggestion:
+            gasto_form_state["counterparty_id"] = (
+                suggestion.get("counterparty_id")
+            )
+            gasto_form_state["expense_category_id"] = (
+                suggestion.get("category_id")
+            )
+            gasto_form_state[
+                "expense_subcategory_id"
+            ] = suggestion.get("subcategory_id")
+            gasto_form_state[
+                "classification_rule_id"
+            ] = suggestion.get("id")
+            gasto_form_state[
+                "classification_confidence"
+            ] = float(
+                suggestion.get("confidence") or 0
+            )
+            gasto_form_state["tax_model"] = (
+                suggestion.get("tax_model") or ""
+            )
+
+            gasto_apply_suggestion.value = "Sí"
+
+            category = (
+                suggestion.get("category_name")
+                or "Sin categoría"
+            )
+            subcategory = (
+                suggestion.get("subcategory_name")
+                or "Sin subcategoría"
+            )
+            counterparty = (
+                suggestion.get("counterparty_name")
+                or "Sin contraparte"
+            )
+            confidence = int(
+                round(
+                    float(
+                        suggestion.get("confidence")
+                        or 0
+                    )
+                    * 100
+                )
+            )
+
+            gasto_classification_title.value = (
+                f"{category} · {subcategory}"
+            )
+            gasto_classification_detail.value = (
+                f"Contraparte: {counterparty} · "
+                f"Confianza: {confidence}% · "
+                "Pendiente de confirmación"
+            )
+            gasto_classification_badge.bgcolor = (
+                "#EFF8FF"
+            )
+            gasto_classification_badge.content = ft.Text(
+                "SUGERENCIA",
+                size=10,
+                weight=ft.FontWeight.W_600,
+                color="#175CD3",
+            )
+        else:
+            gasto_form_state["counterparty_id"] = None
+            gasto_form_state["expense_category_id"] = None
+            gasto_form_state[
+                "expense_subcategory_id"
+            ] = None
+            gasto_form_state[
+                "classification_rule_id"
+            ] = None
+            gasto_form_state[
+                "classification_confidence"
+            ] = 0.0
+            gasto_form_state["tax_model"] = ""
+
+            gasto_apply_suggestion.value = "No"
+            gasto_classification_title.value = (
+                "Sin sugerencia automática"
+            )
+            gasto_classification_detail.value = (
+                "El gasto se guardará con clasificación "
+                "manual o pendiente de revisión."
+            )
+            gasto_classification_badge.bgcolor = (
+                "#F2F4F7"
+            )
+            gasto_classification_badge.content = ft.Text(
+                "MANUAL",
+                size=10,
+                weight=ft.FontWeight.W_600,
+                color="#475467",
+            )
+
+        if update:
+            for control in [
+                gasto_apply_suggestion,
+                gasto_classification_title,
+                gasto_classification_detail,
+                gasto_classification_badge,
+            ]:
+                try:
+                    control.update()
+                except Exception:
+                    pass
 
     def update_gasto_calculation(e=None):
         if gasto_form_state["calculating"]:
@@ -11957,6 +12149,11 @@ def economic_view(page: ft.Page):
         gasto_form_state["editing_id"] = None
         gasto_form_state["supplier_id"] = None
 
+        set_gasto_classification_suggestion(
+            None,
+            update=False,
+        )
+
         gasto_supplier_ac.set_value(
             "",
             update=False,
@@ -12013,6 +12210,15 @@ def economic_view(page: ft.Page):
         )
 
         if linked_movement:
+            suggestion = linked_movement.get(
+                "classification_suggestion"
+            )
+
+            set_gasto_classification_suggestion(
+                suggestion,
+                update=False,
+            )
+
             gasto_fecha.value = _date_to_display(
                 linked_movement.get("date")
             )
@@ -12023,10 +12229,29 @@ def economic_view(page: ft.Page):
                 linked_movement.get("concept")
                 or "Gasto generado desde movimiento bancario"
             )[:600]
-            gasto_categoria.value = (
-                "Gasto bancario pendiente "
-                "de clasificación"
-            )
+            if suggestion:
+                category_name = str(
+                    suggestion.get("category_name")
+                    or ""
+                ).strip()
+                subcategory_name = str(
+                    suggestion.get("subcategory_name")
+                    or ""
+                ).strip()
+
+                gasto_categoria.value = " · ".join(
+                    value
+                    for value in [
+                        category_name,
+                        subcategory_name,
+                    ]
+                    if value
+                )
+            else:
+                gasto_categoria.value = (
+                    "Gasto bancario pendiente "
+                    "de clasificación"
+                )
 
             amount_centimos = int(
                 linked_movement.get(
@@ -12123,6 +12348,60 @@ def economic_view(page: ft.Page):
         gasto_form_state["supplier_id"] = (
             current.get("supplier_id")
         )
+
+        if current.get("expense_category_id"):
+            existing_classification = {
+                "id": current.get(
+                    "classification_rule_id"
+                ),
+                "counterparty_id": current.get(
+                    "counterparty_id"
+                ),
+                "counterparty_name": (
+                    current.get(
+                        "counterparty_legal_name"
+                    )
+                    or current.get(
+                        "counterparty_name_snapshot"
+                    )
+                    or ""
+                ),
+                "category_id": current.get(
+                    "expense_category_id"
+                ),
+                "category_name": (
+                    current.get(
+                        "expense_category_name"
+                    )
+                    or ""
+                ),
+                "subcategory_id": current.get(
+                    "expense_subcategory_id"
+                ),
+                "subcategory_name": (
+                    current.get(
+                        "expense_subcategory_name"
+                    )
+                    or ""
+                ),
+                "confidence": current.get(
+                    "classification_confidence"
+                ),
+                "tax_model": current.get(
+                    "tax_model"
+                ),
+            }
+
+            set_gasto_classification_suggestion(
+                existing_classification,
+                update=False,
+            )
+            gasto_apply_suggestion.value = "Sí"
+        else:
+            set_gasto_classification_suggestion(
+                None,
+                update=False,
+            )
 
         supplier_label = ""
 
@@ -12349,6 +12628,15 @@ def economic_view(page: ft.Page):
                 gasto_total.value
             )
 
+            apply_classification = (
+                gasto_apply_suggestion.value == "Sí"
+                and bool(
+                    gasto_form_state.get(
+                        "expense_category_id"
+                    )
+                )
+            )
+
             payload = {
                 "fecha_gasto": fecha_gasto,
                 "fecha_factura": (
@@ -12361,6 +12649,58 @@ def economic_view(page: ft.Page):
                 ),
                 "concepto": gasto_concepto.value,
                 "categoria": gasto_categoria.value,
+                "counterparty_id": (
+                    gasto_form_state.get(
+                        "counterparty_id"
+                    )
+                    if apply_classification
+                    else None
+                ),
+                "expense_category_id": (
+                    gasto_form_state.get(
+                        "expense_category_id"
+                    )
+                    if apply_classification
+                    else None
+                ),
+                "expense_subcategory_id": (
+                    gasto_form_state.get(
+                        "expense_subcategory_id"
+                    )
+                    if apply_classification
+                    else None
+                ),
+                "classification_source": (
+                    "RULE"
+                    if (
+                        apply_classification
+                        and gasto_form_state.get(
+                            "classification_rule_id"
+                        )
+                    )
+                    else "MANUAL"
+                ),
+                "classification_rule_id": (
+                    gasto_form_state.get(
+                        "classification_rule_id"
+                    )
+                    if apply_classification
+                    else None
+                ),
+                "classification_confidence": (
+                    gasto_form_state.get(
+                        "classification_confidence"
+                    )
+                    if apply_classification
+                    else 0
+                ),
+                "tax_model": (
+                    gasto_form_state.get(
+                        "tax_model"
+                    )
+                    if apply_classification
+                    else ""
+                ),
                 "numero_factura": (
                     gasto_numero_factura.value
                 ),
@@ -12593,6 +12933,63 @@ def economic_view(page: ft.Page):
     gasto_dialog_content = ft.Column(
         controls=[
             gasto_dialog_header,
+
+            _expense_form_section(
+                "Clasificación económica",
+                ft.Icons.ACCOUNT_TREE_OUTLINED,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Column(
+                                controls=[
+                                    gasto_classification_title,
+                                    gasto_classification_detail,
+                                ],
+                                spacing=3,
+                                expand=True,
+                            ),
+                            gasto_classification_badge,
+                        ],
+                        alignment=(
+                            ft.MainAxisAlignment
+                            .SPACE_BETWEEN
+                        ),
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                    ft.Row(
+                        controls=[
+                            gasto_apply_suggestion,
+                            ft.Container(
+                                width=430,
+                                content=ft.Text(
+                                    (
+                                        "La sugerencia solo se "
+                                        "guardará cuando esté "
+                                        "confirmada. No crea ni "
+                                        "concilia gastos de forma "
+                                        "automática."
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ),
+                        ],
+                        spacing=12,
+                        wrap=True,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                ],
+                subtitle=(
+                    "Contraparte, categoría y "
+                    "subcategoría propuestas desde "
+                    "el concepto bancario."
+                ),
+                accent="#175CD3",
+            ),
 
             _expense_form_section(
                 "Proveedor",
