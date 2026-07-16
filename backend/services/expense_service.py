@@ -33,6 +33,22 @@ _SCHEMA_COLUMNS: dict[str, str] = {
     "bank_movement_id": "INTEGER",
     "client_id": "INTEGER",
     "documento_ruta": "TEXT",
+    "counterparty_id": "INTEGER",
+    "counterparty_type": "TEXT",
+    "counterparty_name_snapshot": "TEXT",
+    "expense_category_id": "INTEGER",
+    "expense_subcategory_id": "INTEGER",
+    "expense_category_code": "TEXT",
+    "expense_subcategory_code": "TEXT",
+    "classification_source": (
+        "TEXT NOT NULL DEFAULT 'MANUAL'"
+    ),
+    "classification_rule_id": "INTEGER",
+    "classification_confidence": (
+        "REAL NOT NULL DEFAULT 0"
+    ),
+    "tax_model": "TEXT",
+    "tax_reference": "TEXT",
 }
 
 
@@ -132,6 +148,30 @@ def ensure_schema() -> None:
             """
         )
 
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_eco_gastos_counterparty
+            ON eco_gastos(counterparty_id)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_eco_gastos_expense_category
+            ON eco_gastos(expense_category_id)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_eco_gastos_expense_subcategory
+            ON eco_gastos(expense_subcategory_id)
+            """
+        )
+
         conn.commit()
 
 
@@ -165,12 +205,34 @@ def list_expenses(
                 OR COALESCE(g.supplier_name_snapshot, '') LIKE ?
                 OR COALESCE(g.concepto, '') LIKE ?
                 OR COALESCE(g.categoria, '') LIKE ?
+                OR COALESCE(g.expense_category_code, '') LIKE ?
+                OR COALESCE(g.expense_subcategory_code, '') LIKE ?
+                OR COALESCE(
+                    g.counterparty_name_snapshot,
+                    ''
+                ) LIKE ?
+                OR COALESCE(g.tax_model, '') LIKE ?
+                OR COALESCE(g.tax_reference, '') LIKE ?
                 OR COALESCE(g.numero_factura, '') LIKE ?
                 OR CAST(g.id AS TEXT) LIKE ?
             )
             """
         )
-        params.extend([like, like, like, like, like, like])
+        params.extend(
+            [
+                like,
+                like,
+                like,
+                like,
+                like,
+                like,
+                like,
+                like,
+                like,
+                like,
+                like,
+            ]
+        )
 
     if date_from:
         conditions.append("g.fecha_gasto >= ?")
@@ -244,6 +306,10 @@ def list_expenses(
             s.supplier_code,
             s.tax_id AS supplier_tax_id,
             e.numero_expediente,
+            cp.code AS counterparty_code,
+            cp.legal_name AS counterparty_legal_name,
+            ec.name AS expense_category_name,
+            esc.name AS expense_subcategory_name,
             CASE
                 WHEN COALESCE(g.total_centimos, 0) <> 0
                     THEN g.total_centimos
@@ -257,6 +323,12 @@ def list_expenses(
           ON s.id = g.supplier_id
         LEFT JOIN expedientes e
           ON e.id = g.expediente_id
+        LEFT JOIN economic_counterparties cp
+          ON cp.id = g.counterparty_id
+        LEFT JOIN economic_expense_categories ec
+          ON ec.id = g.expense_category_id
+        LEFT JOIN economic_expense_subcategories esc
+          ON esc.id = g.expense_subcategory_id
         {where_sql}
         ORDER BY g.fecha_gasto DESC, g.id DESC
         LIMIT ?
@@ -355,12 +427,22 @@ def get_expense(expense_id: int) -> dict[str, Any] | None:
                     'Sin proveedor'
                 ) AS supplier_display_name,
                 s.tax_id AS supplier_tax_id,
-                e.numero_expediente
+                e.numero_expediente,
+                cp.code AS counterparty_code,
+                cp.legal_name AS counterparty_legal_name,
+                ec.name AS expense_category_name,
+                esc.name AS expense_subcategory_name
             FROM eco_gastos g
             LEFT JOIN suppliers s
               ON s.id = g.supplier_id
             LEFT JOIN expedientes e
               ON e.id = g.expediente_id
+            LEFT JOIN economic_counterparties cp
+              ON cp.id = g.counterparty_id
+            LEFT JOIN economic_expense_categories ec
+              ON ec.id = g.expense_category_id
+            LEFT JOIN economic_expense_subcategories esc
+              ON esc.id = g.expense_subcategory_id
             WHERE g.id = ?
             """,
             (int(expense_id),),
@@ -455,6 +537,263 @@ def _supplier_snapshot(
     }
 
 
+def _classification_snapshot(
+    conn: sqlite3.Connection,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    category_id = _optional_int(
+        data.get("expense_category_id")
+    )
+    subcategory_id = _optional_int(
+        data.get("expense_subcategory_id")
+    )
+    counterparty_id = _optional_int(
+        data.get("counterparty_id")
+    )
+    rule_id = _optional_int(
+        data.get("classification_rule_id")
+    )
+
+    category = None
+    subcategory = None
+    counterparty = None
+    rule = None
+
+    if category_id is not None:
+        category = conn.execute(
+            """
+            SELECT id, code, name
+            FROM economic_expense_categories
+            WHERE id = ?
+              AND active = 1
+            """,
+            (category_id,),
+        ).fetchone()
+
+        if category is None:
+            raise ValueError(
+                "La categoría seleccionada no existe "
+                "o está inactiva."
+            )
+
+    if subcategory_id is not None:
+        subcategory = conn.execute(
+            """
+            SELECT
+                s.id,
+                s.category_id,
+                s.code,
+                s.name
+            FROM economic_expense_subcategories s
+            WHERE s.id = ?
+              AND s.active = 1
+            """,
+            (subcategory_id,),
+        ).fetchone()
+
+        if subcategory is None:
+            raise ValueError(
+                "La subcategoría seleccionada no existe "
+                "o está inactiva."
+            )
+
+        if category is None:
+            category = conn.execute(
+                """
+                SELECT id, code, name
+                FROM economic_expense_categories
+                WHERE id = ?
+                  AND active = 1
+                """,
+                (int(subcategory["category_id"]),),
+            ).fetchone()
+
+            category_id = int(
+                subcategory["category_id"]
+            )
+
+        elif int(subcategory["category_id"]) != int(
+            category["id"]
+        ):
+            raise ValueError(
+                "La subcategoría no pertenece a "
+                "la categoría seleccionada."
+            )
+
+    if counterparty_id is not None:
+        counterparty = conn.execute(
+            """
+            SELECT
+                id,
+                code,
+                counterparty_type,
+                legal_name
+            FROM economic_counterparties
+            WHERE id = ?
+              AND active = 1
+            """,
+            (counterparty_id,),
+        ).fetchone()
+
+        if counterparty is None:
+            raise ValueError(
+                "La contraparte seleccionada no existe "
+                "o está inactiva."
+            )
+
+    if rule_id is not None:
+        rule = conn.execute(
+            """
+            SELECT
+                id,
+                counterparty_id,
+                category_id,
+                subcategory_id,
+                tax_model,
+                confidence
+            FROM economic_movement_classification_rules
+            WHERE id = ?
+              AND active = 1
+            """,
+            (rule_id,),
+        ).fetchone()
+
+        if rule is None:
+            raise ValueError(
+                "La regla de clasificación no existe "
+                "o está inactiva."
+            )
+
+        if category_id is None:
+            category_id = int(rule["category_id"])
+            category = conn.execute(
+                """
+                SELECT id, code, name
+                FROM economic_expense_categories
+                WHERE id = ?
+                """,
+                (category_id,),
+            ).fetchone()
+
+        if subcategory_id is None:
+            subcategory_id = int(
+                rule["subcategory_id"]
+            )
+            subcategory = conn.execute(
+                """
+                SELECT
+                    id,
+                    category_id,
+                    code,
+                    name
+                FROM economic_expense_subcategories
+                WHERE id = ?
+                """,
+                (subcategory_id,),
+            ).fetchone()
+
+        if (
+            counterparty_id is None
+            and rule["counterparty_id"] is not None
+        ):
+            counterparty_id = int(
+                rule["counterparty_id"]
+            )
+            counterparty = conn.execute(
+                """
+                SELECT
+                    id,
+                    code,
+                    counterparty_type,
+                    legal_name
+                FROM economic_counterparties
+                WHERE id = ?
+                """,
+                (counterparty_id,),
+            ).fetchone()
+
+    source = _text(
+        data.get("classification_source")
+        or ("RULE" if rule_id else "MANUAL")
+    ).upper()
+
+    if source not in {"MANUAL", "RULE", "IMPORT"}:
+        raise ValueError(
+            "Origen de clasificación no válido."
+        )
+
+    confidence = _float_value(
+        data.get(
+            "classification_confidence",
+            rule["confidence"]
+            if rule is not None
+            else 0,
+        )
+    )
+    confidence = max(0.0, min(1.0, confidence))
+
+    category_name = (
+        _text(category["name"])
+        if category is not None
+        else ""
+    )
+    subcategory_name = (
+        _text(subcategory["name"])
+        if subcategory is not None
+        else ""
+    )
+
+    readable_category = category_name
+
+    if category_name and subcategory_name:
+        readable_category = (
+            f"{category_name} · {subcategory_name}"
+        )
+    elif subcategory_name:
+        readable_category = subcategory_name
+
+    return {
+        "counterparty_id": counterparty_id,
+        "counterparty_type": (
+            _text(counterparty["counterparty_type"])
+            if counterparty is not None
+            else ""
+        ),
+        "counterparty_name_snapshot": (
+            _text(counterparty["legal_name"])
+            if counterparty is not None
+            else ""
+        ),
+        "expense_category_id": category_id,
+        "expense_subcategory_id": subcategory_id,
+        "expense_category_code": (
+            _text(category["code"])
+            if category is not None
+            else ""
+        ),
+        "expense_subcategory_code": (
+            _text(subcategory["code"])
+            if subcategory is not None
+            else ""
+        ),
+        "classification_source": source,
+        "classification_rule_id": rule_id,
+        "classification_confidence": confidence,
+        "tax_model": _text(
+            data.get("tax_model")
+            or (
+                rule["tax_model"]
+                if rule is not None
+                else ""
+            )
+        ),
+        "tax_reference": _text(
+            data.get("tax_reference")
+        ),
+        "readable_category": readable_category,
+    }
+
+
 def _normalize_expense_payload(
     conn: sqlite3.Connection,
     data: dict[str, Any],
@@ -466,6 +805,11 @@ def _normalize_expense_payload(
     supplier = _supplier_snapshot(
         conn,
         supplier_id,
+    )
+
+    classification = _classification_snapshot(
+        conn,
+        data,
     )
 
     fecha_gasto = _text(data.get("fecha_gasto"))
@@ -554,7 +898,52 @@ def _normalize_expense_payload(
         ),
         "proveedor": supplier["supplier_name"],
         "concepto": concepto,
-        "categoria": _text(data.get("categoria")),
+        "categoria": (
+            classification["readable_category"]
+            or _text(data.get("categoria"))
+        ),
+        "counterparty_id": (
+            classification["counterparty_id"]
+        ),
+        "counterparty_type": (
+            classification["counterparty_type"]
+        ),
+        "counterparty_name_snapshot": (
+            classification[
+                "counterparty_name_snapshot"
+            ]
+        ),
+        "expense_category_id": (
+            classification["expense_category_id"]
+        ),
+        "expense_subcategory_id": (
+            classification[
+                "expense_subcategory_id"
+            ]
+        ),
+        "expense_category_code": (
+            classification["expense_category_code"]
+        ),
+        "expense_subcategory_code": (
+            classification[
+                "expense_subcategory_code"
+            ]
+        ),
+        "classification_source": (
+            classification["classification_source"]
+        ),
+        "classification_rule_id": (
+            classification["classification_rule_id"]
+        ),
+        "classification_confidence": (
+            classification[
+                "classification_confidence"
+            ]
+        ),
+        "tax_model": classification["tax_model"],
+        "tax_reference": (
+            classification["tax_reference"]
+        ),
         "numero_factura": _text(
             data.get("numero_factura")
         ),
@@ -652,6 +1041,18 @@ def create_expense(
                 proveedor,
                 concepto,
                 categoria,
+                counterparty_id,
+                counterparty_type,
+                counterparty_name_snapshot,
+                expense_category_id,
+                expense_subcategory_id,
+                expense_category_code,
+                expense_subcategory_code,
+                classification_source,
+                classification_rule_id,
+                classification_confidence,
+                tax_model,
+                tax_reference,
                 numero_factura,
                 tipo_justificante,
                 forma_pago,
@@ -685,7 +1086,8 @@ def create_expense(
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, 1
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, 1
             )
             """,
             tuple(payload[key] for key in [
@@ -697,6 +1099,18 @@ def create_expense(
                 "proveedor",
                 "concepto",
                 "categoria",
+                "counterparty_id",
+                "counterparty_type",
+                "counterparty_name_snapshot",
+                "expense_category_id",
+                "expense_subcategory_id",
+                "expense_category_code",
+                "expense_subcategory_code",
+                "classification_source",
+                "classification_rule_id",
+                "classification_confidence",
+                "tax_model",
+                "tax_reference",
                 "numero_factura",
                 "tipo_justificante",
                 "forma_pago",
@@ -777,6 +1191,18 @@ def update_expense(
                 proveedor = ?,
                 concepto = ?,
                 categoria = ?,
+                counterparty_id = ?,
+                counterparty_type = ?,
+                counterparty_name_snapshot = ?,
+                expense_category_id = ?,
+                expense_subcategory_id = ?,
+                expense_category_code = ?,
+                expense_subcategory_code = ?,
+                classification_source = ?,
+                classification_rule_id = ?,
+                classification_confidence = ?,
+                tax_model = ?,
+                tax_reference = ?,
                 numero_factura = ?,
                 tipo_justificante = ?,
                 forma_pago = ?,
@@ -816,6 +1242,18 @@ def update_expense(
                 "proveedor",
                 "concepto",
                 "categoria",
+                "counterparty_id",
+                "counterparty_type",
+                "counterparty_name_snapshot",
+                "expense_category_id",
+                "expense_subcategory_id",
+                "expense_category_code",
+                "expense_subcategory_code",
+                "classification_source",
+                "classification_rule_id",
+                "classification_confidence",
+                "tax_model",
+                "tax_reference",
                 "numero_factura",
                 "tipo_justificante",
                 "forma_pago",
