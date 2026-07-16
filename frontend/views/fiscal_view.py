@@ -5,9 +5,14 @@ from datetime import datetime
 import flet as ft
 
 from backend.services import fiscal_period_service
-from frontend.components.app_alert import error_alert, warning_alert
-from frontend.components.app_button import primary_button
+from frontend.components.app_alert import (
+    error_alert,
+    success_alert,
+    warning_alert,
+)
+from frontend.components.app_button import primary_button, secondary_button
 from frontend.components.app_dropdown import select_input
+from frontend.components.app_text_field import multiline_input, text_input
 from frontend.components.listing.status_chip import status_chip
 
 
@@ -41,6 +46,38 @@ def _money_centimos(value):
         .replace(",", "X")
         .replace(".", ",")
         .replace("X", ".")
+    )
+
+
+def _decimal(value, default=0.0):
+    raw = str(value or "").strip()
+
+    if not raw:
+        return float(default)
+
+    raw = (
+        raw.replace("€", "")
+        .replace(" ", "")
+        .replace(".", "")
+        .replace(",", ".")
+    )
+
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Importe o porcentaje inválido: {value}"
+        )
+
+
+def _euros_to_centimos(value):
+    return int(round(_decimal(value, 0.0) * 100))
+
+
+def _centimos_to_input(value):
+    return (
+        f"{(_int(value) / 100):.2f}"
+        .replace(".", ",")
     )
 
 
@@ -118,6 +155,7 @@ def _model_card(
     subtitle,
     model,
     settings,
+    on_configure=None,
 ):
     confirmed = model.get("confirmed") or {}
     provisional = model.get("provisional") or {}
@@ -211,6 +249,21 @@ def _model_card(
                             ],
                             spacing=2,
                             expand=True,
+                        ),
+                        ft.OutlinedButton(
+                            content=ft.Text(
+                                "Configurar",
+                                color=Q_PRIMARY,
+                                weight=ft.FontWeight.W_600,
+                            ),
+                            on_click=(
+                                None
+                                if on_configure is None
+                                else lambda e: on_configure(
+                                    model_number
+                                )
+                            ),
+                            height=36,
                         ),
                         status_chip(
                             _period_status(settings),
@@ -329,6 +382,320 @@ def fiscal_view(page: ft.Page):
             )
         )
 
+    def open_period_configuration(model_number):
+        year, quarter = selected_period()
+        model_number = str(model_number)
+
+        current = (
+            fiscal_period_service.get_period_settings(
+                year,
+                quarter,
+                model_number,
+            )
+            or {}
+        )
+
+        status_field = select_input(
+            "Estado del periodo",
+            ["OPEN", "REVIEWED", "CLOSED"],
+            value=str(current.get("status") or "OPEN"),
+            width=250,
+        )
+
+        notes_field = multiline_input(
+            "Notas internas",
+            value=str(current.get("notes") or ""),
+            width=620,
+            height=110,
+        )
+
+        compensation_field = text_input(
+            "Compensación anterior (€)",
+            value=_centimos_to_input(
+                current.get("compensation_previous_centimos")
+            ),
+            width=280,
+        )
+
+        payment_rate_field = text_input(
+            "Porcentaje de pago",
+            value=str(
+                current.get("payment_rate", 20)
+            ).replace(".", ","),
+            width=220,
+        )
+
+        previous_payments_field = text_input(
+            "Pagos positivos anteriores (€)",
+            value=_centimos_to_input(
+                current.get(
+                    "previous_positive_payments_centimos"
+                )
+            ),
+            width=290,
+        )
+
+        difficult_checkbox = ft.Checkbox(
+            label="Aplicar gastos de difícil justificación",
+            value=bool(
+                current.get(
+                    "apply_difficult_to_justify_expenses",
+                    1,
+                )
+            ),
+        )
+
+        difficult_rate_field = text_input(
+            "Porcentaje difícil justificación",
+            value=str(
+                current.get("difficult_expense_rate", 5)
+            ).replace(".", ","),
+            width=270,
+        )
+
+        difficult_limit_field = text_input(
+            "Límite anual (€)",
+            value=_centimos_to_input(
+                current.get(
+                    "difficult_expense_annual_limit_centimos",
+                    200000,
+                )
+            ),
+            width=270,
+        )
+
+        advisory_reduction_field = text_input(
+            "Reducción asesoría (€)",
+            value=_centimos_to_input(
+                current.get("advisory_reduction_centimos")
+            ),
+            width=270,
+        )
+
+        adjustments_field = text_input(
+            "Otros ajustes (€)",
+            value=_centimos_to_input(
+                current.get("other_adjustments_centimos")
+            ),
+            width=250,
+        )
+
+        if model_number == "303":
+            controls = [
+                ft.Text(
+                    f"Modelo 303 · {quarter}T {year}",
+                    size=15,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    (
+                        "Configura el estado del periodo y la "
+                        "compensación pendiente de periodos anteriores."
+                    ),
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                status_field,
+                compensation_field,
+                notes_field,
+            ]
+            dialog_height = 360
+        else:
+            controls = [
+                ft.Text(
+                    f"Modelo 130 · {quarter}T {year}",
+                    size=15,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    (
+                        "El cálculo es acumulado desde el 1 de enero. "
+                        "Los pagos positivos anteriores reducen el "
+                        "resultado del trimestre actual."
+                    ),
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                status_field,
+                ft.Row(
+                    controls=[
+                        payment_rate_field,
+                        previous_payments_field,
+                    ],
+                    spacing=12,
+                    wrap=True,
+                ),
+                difficult_checkbox,
+                ft.Row(
+                    controls=[
+                        difficult_rate_field,
+                        difficult_limit_field,
+                    ],
+                    spacing=12,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        advisory_reduction_field,
+                        adjustments_field,
+                    ],
+                    spacing=12,
+                    wrap=True,
+                ),
+                notes_field,
+            ]
+            dialog_height = 530
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(
+                f"Configurar modelo {model_number}",
+                weight=ft.FontWeight.BOLD,
+                color=Q_PRIMARY_DARK,
+            ),
+            content=ft.Container(
+                width=660,
+                height=dialog_height,
+                content=ft.Column(
+                    controls=controls,
+                    spacing=14,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+        )
+
+        def close_dialog(event=None):
+            dialog.open = False
+            page.update()
+
+        def save_configuration(event=None):
+            try:
+                status = str(
+                    status_field.value or "OPEN"
+                ).upper()
+
+                if status not in {
+                    "OPEN",
+                    "REVIEWED",
+                    "CLOSED",
+                }:
+                    raise ValueError(
+                        "Estado fiscal no válido"
+                    )
+
+                data = {
+                    "status": status,
+                    "compensation_previous_centimos": (
+                        _euros_to_centimos(
+                            compensation_field.value
+                        )
+                        if model_number == "303"
+                        else 0
+                    ),
+                    "payment_rate": (
+                        _decimal(
+                            payment_rate_field.value,
+                            20,
+                        )
+                        if model_number == "130"
+                        else 20
+                    ),
+                    "previous_positive_payments_centimos": (
+                        _euros_to_centimos(
+                            previous_payments_field.value
+                        )
+                        if model_number == "130"
+                        else 0
+                    ),
+                    "apply_difficult_to_justify_expenses": (
+                        bool(difficult_checkbox.value)
+                        if model_number == "130"
+                        else True
+                    ),
+                    "difficult_expense_rate": (
+                        _decimal(
+                            difficult_rate_field.value,
+                            5,
+                        )
+                        if model_number == "130"
+                        else 5
+                    ),
+                    "difficult_expense_annual_limit_centimos": (
+                        _euros_to_centimos(
+                            difficult_limit_field.value
+                        )
+                        if model_number == "130"
+                        else 200000
+                    ),
+                    "advisory_reduction_centimos": (
+                        _euros_to_centimos(
+                            advisory_reduction_field.value
+                        )
+                        if model_number == "130"
+                        else 0
+                    ),
+                    "other_adjustments_centimos": (
+                        _euros_to_centimos(
+                            adjustments_field.value
+                        )
+                        if model_number == "130"
+                        else 0
+                    ),
+                    "notes": str(
+                        notes_field.value or ""
+                    ).strip(),
+                }
+
+                fiscal_period_service.upsert_period_settings(
+                    year,
+                    quarter,
+                    model_number,
+                    data,
+                )
+
+                dialog.open = False
+                load_summary()
+                content_box.content = render_dashboard()
+
+                message_box.controls = [
+                    success_alert(
+                        (
+                            f"Configuración del modelo "
+                            f"{model_number} guardada."
+                        )
+                    )
+                ]
+
+                page.update()
+
+            except Exception as exc:
+                message_box.controls = [
+                    error_alert(
+                        (
+                            "No se pudo guardar la "
+                            f"configuración: {exc}"
+                        )
+                    )
+                ]
+                page.update()
+
+        dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                close_dialog,
+            ),
+            primary_button(
+                "Guardar configuración",
+                save_configuration,
+            ),
+        ]
+
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
     def render_dashboard():
         summary = state.get("summary")
 
@@ -418,6 +785,7 @@ def fiscal_view(page: ft.Page):
                             ),
                             model=model_303,
                             settings=settings.get("303"),
+                            on_configure=open_period_configuration,
                         ),
                         _model_card(
                             model_number="130",
@@ -428,6 +796,7 @@ def fiscal_view(page: ft.Page):
                             ),
                             model=model_130,
                             settings=settings.get("130"),
+                            on_configure=open_period_configuration,
                         ),
                     ],
                     spacing=14,
