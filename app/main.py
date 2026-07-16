@@ -10,6 +10,7 @@ from frontend.views.settings_view import settings_view
 from frontend.views.expedients_view import expedients_view
 from frontend.views.expedient_traceability_view import expedient_traceability_view
 from frontend.views.economic_view import economic_view
+from frontend.views.fiscal_view import fiscal_view
 from frontend.views.box_watch_view import box_watch_view
 from frontend.views.reporting_view import reporting_view
 from frontend.views.presentation_queue_view import presentation_queue_view
@@ -96,47 +97,7 @@ def main(page: ft.Page):
         elif view_name in ("Cobros", "Conciliación"):
             content = economic_view(page)
         elif view_name == "Fiscal":
-            content = ft.Container(
-                expand=True,
-                padding=24,
-                content=ft.Column(
-                    controls=[
-                        ft.Text(
-                            "Fiscal",
-                            size=30,
-                            weight=ft.FontWeight.BOLD,
-                            color="#003B7A",
-                        ),
-                        ft.Text(
-                            (
-                                "Centro fiscal para modelos, "
-                                "periodos, IVA, IRPF y cierres."
-                            ),
-                            size=14,
-                            color="#64748B",
-                        ),
-                        ft.Container(
-                            margin=ft.margin.only(top=16),
-                            padding=20,
-                            border=ft.border.all(
-                                1,
-                                "#E4E7EC",
-                            ),
-                            border_radius=14,
-                            bgcolor="#FFFFFF",
-                            content=ft.Text(
-                                (
-                                    "Módulo fiscal pendiente "
-                                    "de desarrollo."
-                                ),
-                                size=14,
-                                color="#475467",
-                            ),
-                        ),
-                    ],
-                    spacing=8,
-                ),
-            )
+            content = fiscal_view(page)
         elif view_name == "Documentos / Box":
             content = box_watch_view(page)
         elif view_name == "Bandeja documental":
