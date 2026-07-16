@@ -155,7 +155,9 @@ def _model_card(
     subtitle,
     model,
     settings,
+    comparison=None,
     on_configure=None,
+    on_compare=None,
 ):
     confirmed = model.get("confirmed") or {}
     provisional = model.get("provisional") or {}
@@ -217,6 +219,75 @@ def _model_card(
     confirmed_type = confirmed.get("result_type")
     provisional_type = provisional.get("result_type")
 
+    comparison = comparison or {}
+    has_comparison = (
+        comparison.get("advisory_result_centimos")
+        is not None
+    )
+
+    advisory_type = comparison.get(
+        "advisory_result_type"
+    )
+    difference_centimos = comparison.get(
+        "difference_centimos"
+    )
+
+    advisory_controls = []
+
+    if has_comparison:
+        difference_color = Q_PRIMARY_DARK
+
+        if _int(difference_centimos) > 0:
+            difference_color = Q_DANGER
+        elif _int(difference_centimos) < 0:
+            difference_color = Q_SUCCESS
+
+        advisory_controls = [
+            ft.Divider(height=1, color=Q_BORDER),
+            ft.Text(
+                "CONTRASTE CON ASESORÍA",
+                size=11,
+                weight=ft.FontWeight.BOLD,
+                color=Q_MUTED,
+            ),
+            ft.Row(
+                controls=[
+                    _metric_block(
+                        (
+                            "Asesoría · "
+                            f"{_result_label(advisory_type)}"
+                        ),
+                        _money_centimos(
+                            comparison.get(
+                                "advisory_result_centimos"
+                            )
+                        ),
+                        color=_result_color(advisory_type),
+                    ),
+                    _metric_block(
+                        "Diferencia asesoría - CRM",
+                        _money_centimos(
+                            difference_centimos
+                        ),
+                        color=difference_color,
+                        background="#F8FAFC",
+                    ),
+                ],
+                spacing=10,
+                wrap=True,
+            ),
+            ft.Text(
+                (
+                    f"Revisado por: "
+                    f"{comparison.get('reviewed_by') or '-'}"
+                    f" · Fecha: "
+                    f"{comparison.get('compared_at') or '-'}"
+                ),
+                size=11,
+                color=Q_MUTED,
+            ),
+        ]
+
     return ft.Container(
         width=650,
         bgcolor="#FFFFFF",
@@ -250,20 +321,41 @@ def _model_card(
                             spacing=2,
                             expand=True,
                         ),
-                        ft.OutlinedButton(
-                            content=ft.Text(
-                                "Configurar",
-                                color=Q_PRIMARY,
-                                weight=ft.FontWeight.W_600,
-                            ),
-                            on_click=(
-                                None
-                                if on_configure is None
-                                else lambda e: on_configure(
-                                    model_number
-                                )
-                            ),
-                            height=36,
+                        ft.Row(
+                            controls=[
+                                ft.OutlinedButton(
+                                    content=ft.Text(
+                                        "Asesoría",
+                                        color=Q_PRIMARY,
+                                        weight=ft.FontWeight.W_600,
+                                    ),
+                                    on_click=(
+                                        None
+                                        if on_compare is None
+                                        else lambda e: on_compare(
+                                            model_number
+                                        )
+                                    ),
+                                    height=36,
+                                ),
+                                ft.OutlinedButton(
+                                    content=ft.Text(
+                                        "Configurar",
+                                        color=Q_PRIMARY,
+                                        weight=ft.FontWeight.W_600,
+                                    ),
+                                    on_click=(
+                                        None
+                                        if on_configure is None
+                                        else lambda e: on_configure(
+                                            model_number
+                                        )
+                                    ),
+                                    height=36,
+                                ),
+                            ],
+                            spacing=8,
+                            wrap=True,
                         ),
                         status_chip(
                             _period_status(settings),
@@ -309,6 +401,7 @@ def _model_card(
                     wrap=True,
                 ),
                 ft.Text(count_text, size=11, color=Q_MUTED),
+                *advisory_controls,
             ],
             spacing=13,
         ),
@@ -381,6 +474,287 @@ def fiscal_view(page: ft.Page):
                 quarter,
             )
         )
+
+    def open_advisory_comparison(model_number):
+        year, quarter = selected_period()
+        model_number = str(model_number)
+
+        summary = state.get("summary") or {}
+        model_result = (
+            summary.get(f"model_{model_number}")
+            or {}
+        )
+        confirmed = model_result.get("confirmed") or {}
+        provisional = model_result.get("provisional") or {}
+
+        current = (
+            fiscal_period_service.get_advisory_comparison(
+                year,
+                quarter,
+                model_number,
+            )
+            or {}
+        )
+
+        result_type_field = select_input(
+            "Resultado comunicado",
+            [
+                "A_PAGAR",
+                "A_COMPENSAR",
+                "A_DEVOLVER",
+                "CERO",
+                "OTRO",
+            ],
+            value=str(
+                current.get("advisory_result_type")
+                or confirmed.get("result_type")
+                or "CERO"
+            ),
+            width=260,
+        )
+
+        advisory_amount_field = text_input(
+            "Importe comunicado por asesoría (€)",
+            value=(
+                _centimos_to_input(
+                    current.get("advisory_result_centimos")
+                )
+                if current.get("advisory_result_centimos")
+                is not None
+                else ""
+            ),
+            width=310,
+        )
+
+        reviewed_by_field = text_input(
+            "Revisado por",
+            value=str(current.get("reviewed_by") or ""),
+            width=300,
+        )
+
+        explanation_field = multiline_input(
+            "Explicación de la diferencia",
+            value=str(current.get("explanation") or ""),
+            width=650,
+            height=110,
+        )
+
+        notes_field = multiline_input(
+            "Notas de asesoría",
+            value=str(current.get("advisory_notes") or ""),
+            width=650,
+            height=100,
+        )
+
+        document_name_field = text_input(
+            "Nombre del documento",
+            value=str(current.get("document_name") or ""),
+            width=310,
+        )
+
+        document_path_field = text_input(
+            "Ruta del documento",
+            value=str(current.get("document_path") or ""),
+            width=650,
+        )
+
+        crm_confirmed = confirmed.get("result_centimos")
+        crm_provisional = provisional.get("result_centimos")
+
+        preview_box = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=14,
+            content=ft.Row(
+                controls=[
+                    _metric_block(
+                        "CRM confirmado",
+                        _money_centimos(crm_confirmed),
+                        width=190,
+                    ),
+                    _metric_block(
+                        "CRM provisional",
+                        _money_centimos(crm_provisional),
+                        width=190,
+                        background="#FFFDF5",
+                        border_color="#FEC84B",
+                    ),
+                ],
+                spacing=10,
+                wrap=True,
+            ),
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(
+                f"Contrastar modelo {model_number} con asesoría",
+                weight=ft.FontWeight.BOLD,
+                color=Q_PRIMARY_DARK,
+            ),
+            content=ft.Container(
+                width=700,
+                height=590,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            f"{quarter}T {year}",
+                            size=14,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY,
+                        ),
+                        ft.Text(
+                            (
+                                "Al guardar se congelarán los resultados "
+                                "actuales del CRM para poder comparar "
+                                "posteriormente aunque cambien facturas "
+                                "o gastos."
+                            ),
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                        preview_box,
+                        ft.Row(
+                            controls=[
+                                result_type_field,
+                                advisory_amount_field,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        reviewed_by_field,
+                        explanation_field,
+                        notes_field,
+                        ft.Row(
+                            controls=[
+                                document_name_field,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        document_path_field,
+                    ],
+                    spacing=14,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+        )
+
+        def close_dialog(event=None):
+            dialog.open = False
+            page.update()
+
+        def save_comparison(event=None):
+            try:
+                raw_amount = str(
+                    advisory_amount_field.value or ""
+                ).strip()
+
+                if not raw_amount:
+                    raise ValueError(
+                        "Indica el importe comunicado por la asesoría"
+                    )
+
+                result_type = str(
+                    result_type_field.value or ""
+                ).upper()
+
+                if result_type not in {
+                    "A_PAGAR",
+                    "A_COMPENSAR",
+                    "A_DEVOLVER",
+                    "CERO",
+                    "OTRO",
+                }:
+                    raise ValueError(
+                        "Tipo de resultado de asesoría no válido"
+                    )
+
+                advisory_data = {
+                    "advisory_result_centimos":
+                        _euros_to_centimos(raw_amount),
+
+                    "advisory_result_type":
+                        result_type,
+
+                    "explanation":
+                        str(
+                            explanation_field.value or ""
+                        ).strip(),
+
+                    "advisory_notes":
+                        str(
+                            notes_field.value or ""
+                        ).strip(),
+
+                    "document_name":
+                        str(
+                            document_name_field.value or ""
+                        ).strip(),
+
+                    "document_path":
+                        str(
+                            document_path_field.value or ""
+                        ).strip(),
+
+                    "reviewed_by":
+                        str(
+                            reviewed_by_field.value or ""
+                        ).strip(),
+                }
+
+                saved = (
+                    fiscal_period_service
+                    .snapshot_advisory_comparison_from_current_estimate(
+                        year,
+                        quarter,
+                        model_number,
+                        advisory_data,
+                    )
+                )
+
+                dialog.open = False
+                load_summary()
+                content_box.content = render_dashboard()
+
+                message_box.controls = [
+                    success_alert(
+                        (
+                            f"Contraste del modelo {model_number} "
+                            "guardado. Diferencia: "
+                            f"{_money_centimos(saved.get('difference_centimos'))}"
+                        )
+                    )
+                ]
+
+                page.update()
+
+            except Exception as exc:
+                message_box.controls = [
+                    error_alert(
+                        (
+                            "No se pudo guardar el contraste "
+                            f"con asesoría: {exc}"
+                        )
+                    )
+                ]
+                page.update()
+
+        dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                close_dialog,
+            ),
+            primary_button(
+                "Guardar contraste",
+                save_comparison,
+            ),
+        ]
+
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
 
     def open_period_configuration(model_number):
         year, quarter = selected_period()
@@ -709,6 +1083,7 @@ def fiscal_view(page: ft.Page):
         model_130 = summary.get("model_130") or {}
         combined = summary.get("combined") or {}
         settings = summary.get("settings") or {}
+        comparisons = summary.get("comparisons") or {}
 
         warnings = _warning_controls(summary)
 
@@ -785,7 +1160,9 @@ def fiscal_view(page: ft.Page):
                             ),
                             model=model_303,
                             settings=settings.get("303"),
+                            comparison=comparisons.get("303"),
                             on_configure=open_period_configuration,
+                            on_compare=open_advisory_comparison,
                         ),
                         _model_card(
                             model_number="130",
@@ -796,7 +1173,9 @@ def fiscal_view(page: ft.Page):
                             ),
                             model=model_130,
                             settings=settings.get("130"),
+                            comparison=comparisons.get("130"),
                             on_configure=open_period_configuration,
+                            on_compare=open_advisory_comparison,
                         ),
                     ],
                     spacing=14,
