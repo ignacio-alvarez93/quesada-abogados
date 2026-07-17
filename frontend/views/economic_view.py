@@ -3463,7 +3463,7 @@ def economic_view(page: ft.Page):
                     if cards
                     else ft.Container(
                         expand=True,
-                        alignment=ft.alignment.center,
+                        alignment=ft.Alignment(0, 0),
                         content=empty_state(
                             "No hay obligaciones para los filtros seleccionados"
                         ),
