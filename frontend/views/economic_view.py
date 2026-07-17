@@ -28,6 +28,9 @@ from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
 from frontend.components.economic_payment_card import economic_payment_card
 from frontend.components.economic_expense_card import economic_expense_card
+from frontend.components.economic_engagement_letter_card import (
+    economic_engagement_letter_card,
+)
 from backend.services import expense_service
 from backend.services import expense_reconciliation_service
 from backend.services import expense_classification_service
@@ -292,6 +295,10 @@ def economic_view(page: ft.Page):
         "facturas_holded_filter": "all",
         "facturas_date_from": "",
         "facturas_date_to": "",
+        "hojas_page": 1,
+        "hojas_page_size": 10,
+        "hojas_search": "",
+        "hojas_status_filter": "all",
     }
 
     content_area = ft.Container(expand=True)
@@ -842,13 +849,12 @@ def economic_view(page: ft.Page):
         if state["section"] == "cobros":
             return None
 
-        if state["section"] == "facturas":
-            # La sección de facturas ya integra sus acciones,
-            # filtros y controles en la propia vista.
+        if state["section"] in ("facturas", "hojas"):
+            # Estas secciones integran sus acciones y filtros
+            # dentro de su propia cabecera.
             return None
 
         mapping = {
-            "hojas": ("Nueva hoja de encargo", open_hoja_dialog),
             "gastos": ("Nuevo gasto", open_gasto_dialog),
         }
 
@@ -8910,29 +8916,367 @@ def economic_view(page: ft.Page):
     )
 
 
+    # ========================================================
+    # HOJAS DE ENCARGO: BÚSQUEDA, ESTADOS Y PAGINACIÓN
+    # ========================================================
+
+    hojas_filter = text_input(
+        "Buscar cliente, hoja, expediente o procedimiento...",
+        width=620,
+    )
+    hojas_filter.value = ""
+
+
+    def _hoja_search_blob(hoja):
+        values = [
+            hoja.get("id"),
+            hoja.get("numero_hoja"),
+            hoja.get("cliente_nombre_completo"),
+            hoja.get("cliente_id"),
+            hoja.get("numero_expediente"),
+            hoja.get("expediente_id"),
+            hoja.get("procedimiento"),
+            hoja.get("estado"),
+            hoja.get("fecha_firma"),
+            hoja.get("fecha_maxima_pago"),
+            hoja.get("forma_pago_pactada"),
+            hoja.get("importe_bruto"),
+            hoja.get("importe_neto"),
+            hoja.get("total_cobrado"),
+            hoja.get("importe_pendiente"),
+            hoja.get("observaciones"),
+        ]
+
+        return " ".join(
+            str(value or "")
+            for value in values
+        ).lower()
+
+
+    def hoja_matches_search(hoja):
+        query = str(
+            state.get("hojas_search") or ""
+        ).strip().lower()
+
+        if not query:
+            return True
+
+        tokens = [
+            token
+            for token in query.split()
+            if token
+        ]
+
+        blob = _hoja_search_blob(hoja)
+
+        return all(
+            token in blob
+            for token in tokens
+        )
+
+
+    def hoja_matches_status(hoja):
+        active = str(
+            state.get("hojas_status_filter") or "all"
+        ).strip().upper()
+
+        if active in ("", "ALL"):
+            return True
+
+        status = str(
+            hoja.get("estado") or "PENDIENTE FIRMA"
+        ).strip().upper()
+
+        return status == active
+
+
+    def filtered_hojas(include_status=True):
+        rows = [
+            hoja
+            for hoja in economic_service.list_hojas_encargo()
+            if hoja_matches_search(hoja)
+        ]
+
+        if include_status:
+            rows = [
+                hoja
+                for hoja in rows
+                if hoja_matches_status(hoja)
+            ]
+
+        return rows
+
+
+    def hojas_status_counts():
+        rows = filtered_hojas(include_status=False)
+
+        counts = {
+            "all": len(rows),
+            "PENDIENTE FIRMA": 0,
+            "FIRMADA": 0,
+            "CANCELADA": 0,
+            "ARCHIVADA": 0,
+        }
+
+        for hoja in rows:
+            status = str(
+                hoja.get("estado")
+                or "PENDIENTE FIRMA"
+            ).strip().upper()
+
+            counts[status] = counts.get(status, 0) + 1
+
+        return counts
+
+
+    def on_hojas_search_change(e=None):
+        state["hojas_search"] = str(
+            hojas_filter.value or ""
+        )
+        state["hojas_page"] = 1
+        refresh()
+
+
+    def on_hojas_status_select(value):
+        state["hojas_status_filter"] = str(
+            value or "all"
+        )
+        state["hojas_page"] = 1
+        refresh()
+
+
+    def clear_hojas_filters(e=None):
+        hojas_filter.value = ""
+        state["hojas_search"] = ""
+        state["hojas_status_filter"] = "all"
+        state["hojas_page"] = 1
+        refresh()
+
+
+    def go_hojas_page(page_number):
+        try:
+            requested = int(page_number)
+        except (TypeError, ValueError):
+            requested = 1
+
+        rows = filtered_hojas()
+        page_size = max(
+            1,
+            int(state.get("hojas_page_size") or 10),
+        )
+        total_pages = max(
+            1,
+            (len(rows) + page_size - 1) // page_size,
+        )
+
+        state["hojas_page"] = max(
+            1,
+            min(requested, total_pages),
+        )
+        refresh()
+
+
+    hojas_filter.on_change = on_hojas_search_change
+    hojas_filter.on_submit = on_hojas_search_change
+
+
+    def build_hojas_status_filters():
+        status_map = {
+            "all": (
+                "Todas",
+                "#F8FAFC",
+                "#475569",
+                "#CBD5E1",
+            ),
+            "PENDIENTE FIRMA": (
+                "Pendientes",
+                "#FFFAEB",
+                "#B54708",
+                "#FEC84B",
+            ),
+            "FIRMADA": (
+                "Firmadas",
+                "#ECFDF3",
+                "#027A48",
+                "#6CE9A6",
+            ),
+            "CANCELADA": (
+                "Canceladas",
+                "#FEF3F2",
+                "#B42318",
+                "#FDA29B",
+            ),
+            "ARCHIVADA": (
+                "Archivadas",
+                "#F2F4F7",
+                "#475467",
+                "#D0D5DD",
+            ),
+        }
+
+        return counter_chips(
+            options=[
+                ("PENDIENTE FIRMA", "Pendientes"),
+                ("FIRMADA", "Firmadas"),
+                ("CANCELADA", "Canceladas"),
+                ("ARCHIVADA", "Archivadas"),
+            ],
+            counts=hojas_status_counts(),
+            active_value=(
+                state.get("hojas_status_filter")
+                or "all"
+            ),
+            on_select=on_hojas_status_select,
+            include_all=True,
+            all_label="Todas",
+            all_value="all",
+            status_map=status_map,
+            bordered_status=True,
+        )
+
+
+    def build_hojas_results():
+        hojas = filtered_hojas()
+
+        if not hojas:
+            state["hojas_page"] = 1
+
+            if str(
+                state.get("hojas_search") or ""
+            ).strip():
+                return empty_state(
+                    "No hay hojas que coincidan con la búsqueda"
+                )
+
+            return empty_state(
+                "No hay hojas de encargo para este estado"
+            )
+
+        page_size = max(
+            1,
+            int(state.get("hojas_page_size") or 10),
+        )
+        total_items = len(hojas)
+        total_pages = max(
+            1,
+            (total_items + page_size - 1) // page_size,
+        )
+
+        current_page = max(
+            1,
+            min(
+                int(state.get("hojas_page") or 1),
+                total_pages,
+            ),
+        )
+        state["hojas_page"] = current_page
+
+        start_index = (current_page - 1) * page_size
+        visible_rows = hojas[
+            start_index:start_index + page_size
+        ]
+
+        cards = [
+            economic_engagement_letter_card(
+                dict(hoja),
+                date_display=_date_to_display,
+            )
+            for hoja in visible_rows
+        ]
+
+        toolbar = ft.Row(
+            controls=[
+                ft.Text(
+                    f"Hojas registradas: {total_items}",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                compact_pagination_bar(
+                    page=current_page,
+                    page_size=page_size,
+                    total_items=total_items,
+                    on_page_change=go_hojas_page,
+                    label_prefix="Hojas",
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+        )
+
+        return ft.Column(
+            controls=[
+                toolbar,
+                ft.Container(
+                    height=620,
+                    content=ft.Column(
+                        controls=cards,
+                        spacing=8,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+            ],
+            spacing=8,
+        )
+
+
+    def build_hojas_section():
+        has_filters = bool(
+            str(
+                state.get("hojas_search") or ""
+            ).strip()
+            or str(
+                state.get("hojas_status_filter")
+                or "all"
+            ).strip()
+            not in ("", "all")
+        )
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        hojas_filter,
+                        ft.IconButton(
+                            icon=ft.Icons.ADD_CIRCLE_OUTLINE,
+                            icon_color=Q_PRIMARY_DARK,
+                            tooltip="Nueva hoja de encargo",
+                            on_click=open_hoja_dialog,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.CLOSE,
+                            icon_color=(
+                                Q_PRIMARY_DARK
+                                if has_filters
+                                else "#98A2B3"
+                            ),
+                            tooltip=(
+                                "Reiniciar filtros"
+                                if has_filters
+                                else "No hay filtros activos"
+                            ),
+                            disabled=not has_filters,
+                            on_click=clear_hojas_filters,
+                        ),
+                    ],
+                    spacing=6,
+                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                build_hojas_status_filters(),
+                build_hojas_results(),
+            ],
+            spacing=8,
+        )
+
+
     def build_table():
         if state["section"] == "conciliacion_manual":
             return build_manual_reconciliation_section()
 
         if state["section"] == "hojas":
-            rows = []
-            for h in economic_service.list_hojas_encargo():
-                cliente = f"{h.get('nombre') or ''} {h.get('primer_apellido') or ''} {h.get('segundo_apellido') or ''}".strip()
-                rows.append([
-                    h.get("numero_hoja") or "-",
-                    _date_to_display(h.get("fecha_firma")),
-                    cliente,
-                    h.get("numero_expediente") or "-",
-                    h.get("procedimiento") or "-",
-                    _money(h.get("importe_bruto")),
-                    _money(h.get("importe_neto")),
-                    reconciliation_badge(h.get("estado")),
-                ])
-            return app_table(
-                ["Nº hoja", "Fecha", "Cliente", "Expediente", "Procedimiento", "Bruto", "Neto", "Estado"],
-                rows,
-                height=430,
-            ) if rows else empty_state("No hay hojas de encargo")
+            return build_hojas_section()
 
         if state["section"] == "cobros":
             return build_cobros_section()

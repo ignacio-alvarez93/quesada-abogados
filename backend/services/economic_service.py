@@ -1142,17 +1142,106 @@ def create_hoja_encargo(data):
 
 
 def list_hojas_encargo(active_only=True):
-    sql = """
-        SELECT h.*, c.nombre, c.primer_apellido, c.segundo_apellido, e.numero_expediente
-        FROM eco_hojas_encargo h
-        JOIN clientes c ON c.id = h.cliente_id
-        LEFT JOIN expedientes e ON e.id = h.expediente_id
     """
+    Devuelve las hojas de encargo con contexto económico agregado.
+
+    Los LEFT JOIN preservan hojas históricas aunque el cliente o el
+    expediente original ya no estén disponibles.
+    """
+    sql = """
+        SELECT
+            h.*,
+            c.nombre,
+            c.primer_apellido,
+            c.segundo_apellido,
+            e.numero_expediente,
+
+            (
+                SELECT COUNT(*)
+                FROM eco_cobros cob
+                WHERE cob.hoja_encargo_id = h.id
+                  AND COALESCE(cob.activo, 1) = 1
+            ) AS cobros_count,
+
+            (
+                SELECT COUNT(*)
+                FROM eco_facturas fac
+                WHERE fac.hoja_encargo_id = h.id
+                  AND COALESCE(fac.activo, 1) = 1
+            ) AS facturas_count,
+
+            COALESCE(
+                (
+                    SELECT SUM(cob.importe)
+                    FROM eco_cobros cob
+                    WHERE cob.hoja_encargo_id = h.id
+                      AND COALESCE(cob.activo, 1) = 1
+                ),
+                0
+            ) AS total_cobrado
+
+        FROM eco_hojas_encargo h
+
+        LEFT JOIN clientes c
+          ON c.id = h.cliente_id
+
+        LEFT JOIN expedientes e
+          ON e.id = h.expediente_id
+    """
+
     if active_only:
-        sql += " WHERE h.activo = 1"
+        sql += " WHERE COALESCE(h.activo, 1) = 1"
+
     sql += " ORDER BY h.created_at DESC, h.id DESC"
+
     with _connect() as conn:
-        return [_dict(r) for r in conn.execute(sql).fetchall()]
+        rows = conn.execute(sql).fetchall()
+
+    result = []
+
+    for row in rows:
+        item = _dict(row)
+
+        client_name = " ".join(
+            part
+            for part in [
+                str(item.get("nombre") or "").strip(),
+                str(item.get("primer_apellido") or "").strip(),
+                str(item.get("segundo_apellido") or "").strip(),
+            ]
+            if part
+        )
+
+        if not client_name:
+            client_name = (
+                f"Cliente no disponible "
+                f"(ID {item.get('cliente_id') or '-'})"
+            )
+
+        try:
+            importe_neto = float(
+                item.get("importe_neto") or 0
+            )
+        except (TypeError, ValueError):
+            importe_neto = 0.0
+
+        try:
+            total_cobrado = float(
+                item.get("total_cobrado") or 0
+            )
+        except (TypeError, ValueError):
+            total_cobrado = 0.0
+
+        item["cliente_nombre_completo"] = client_name
+        item["total_cobrado"] = round(total_cobrado, 2)
+        item["importe_pendiente"] = round(
+            importe_neto - total_cobrado,
+            2,
+        )
+
+        result.append(item)
+
+    return result
 
 
 def create_cobro(data):
