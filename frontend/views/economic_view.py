@@ -28,6 +28,9 @@ from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
 from frontend.components.economic_payment_card import economic_payment_card
 from frontend.components.economic_expense_card import economic_expense_card
+from frontend.components.economic_engagement_letter_card import (
+    economic_engagement_letter_card,
+)
 from backend.services import expense_service
 from backend.services import expense_reconciliation_service
 from backend.services import expense_classification_service
@@ -292,6 +295,10 @@ def economic_view(page: ft.Page):
         "facturas_holded_filter": "all",
         "facturas_date_from": "",
         "facturas_date_to": "",
+        "hojas_page": 1,
+        "hojas_page_size": 10,
+        "hojas_search": "",
+        "hojas_status_filter": "all",
     }
 
     content_area = ft.Container(expand=True)
@@ -842,13 +849,12 @@ def economic_view(page: ft.Page):
         if state["section"] == "cobros":
             return None
 
-        if state["section"] == "facturas":
-            # La sección de facturas ya integra sus acciones,
-            # filtros y controles en la propia vista.
+        if state["section"] in ("facturas", "hojas"):
+            # Estas secciones integran sus acciones y filtros
+            # dentro de su propia cabecera.
             return None
 
         mapping = {
-            "hojas": ("Nueva hoja de encargo", open_hoja_dialog),
             "gastos": ("Nuevo gasto", open_gasto_dialog),
         }
 
@@ -3457,7 +3463,7 @@ def economic_view(page: ft.Page):
                     if cards
                     else ft.Container(
                         expand=True,
-                        alignment=ft.alignment.center,
+                        alignment=ft.Alignment(0, 0),
                         content=empty_state(
                             "No hay obligaciones para los filtros seleccionados"
                         ),
@@ -8910,29 +8916,414 @@ def economic_view(page: ft.Page):
     )
 
 
+    # ========================================================
+    # HOJAS DE ENCARGO: BÚSQUEDA, ESTADOS Y PAGINACIÓN
+    # ========================================================
+
+    hojas_filter = text_input(
+        "Buscar cliente, hoja, expediente o procedimiento...",
+        width=620,
+    )
+    hojas_filter.value = ""
+
+    hojas_results_box = ft.Container(expand=True)
+    hojas_status_box = ft.Container()
+
+    hojas_clear_button = ft.IconButton(
+        icon=ft.Icons.CLOSE,
+        icon_color="#98A2B3",
+        tooltip="No hay filtros activos",
+        disabled=True,
+    )
+
+
+    def _hoja_search_blob(hoja):
+        values = [
+            hoja.get("id"),
+            hoja.get("numero_hoja"),
+            hoja.get("cliente_nombre_completo"),
+            hoja.get("cliente_id"),
+            hoja.get("numero_expediente"),
+            hoja.get("expediente_id"),
+            hoja.get("procedimiento"),
+            hoja.get("estado"),
+            hoja.get("fecha_firma"),
+            hoja.get("fecha_maxima_pago"),
+            hoja.get("forma_pago_pactada"),
+            hoja.get("importe_bruto"),
+            hoja.get("importe_neto"),
+            hoja.get("total_cobrado"),
+            hoja.get("importe_pendiente"),
+            hoja.get("observaciones"),
+        ]
+
+        return " ".join(
+            str(value or "")
+            for value in values
+        ).lower()
+
+
+    def hoja_matches_search(hoja):
+        query = str(
+            state.get("hojas_search") or ""
+        ).strip().lower()
+
+        if not query:
+            return True
+
+        tokens = [
+            token
+            for token in query.split()
+            if token
+        ]
+
+        blob = _hoja_search_blob(hoja)
+
+        return all(
+            token in blob
+            for token in tokens
+        )
+
+
+    def hoja_matches_status(hoja):
+        active = str(
+            state.get("hojas_status_filter") or "all"
+        ).strip().upper()
+
+        if active in ("", "ALL"):
+            return True
+
+        status = str(
+            hoja.get("estado") or "PENDIENTE FIRMA"
+        ).strip().upper()
+
+        return status == active
+
+
+    def filtered_hojas(include_status=True):
+        rows = [
+            hoja
+            for hoja in economic_service.list_hojas_encargo()
+            if hoja_matches_search(hoja)
+        ]
+
+        if include_status:
+            rows = [
+                hoja
+                for hoja in rows
+                if hoja_matches_status(hoja)
+            ]
+
+        return rows
+
+
+    def hojas_status_counts():
+        rows = filtered_hojas(include_status=False)
+
+        counts = {
+            "all": len(rows),
+            "PENDIENTE FIRMA": 0,
+            "FIRMADA": 0,
+            "CANCELADA": 0,
+            "ARCHIVADA": 0,
+        }
+
+        for hoja in rows:
+            status = str(
+                hoja.get("estado")
+                or "PENDIENTE FIRMA"
+            ).strip().upper()
+
+            counts[status] = counts.get(status, 0) + 1
+
+        return counts
+
+
+    def refresh_hojas_results_only():
+        hojas_results_box.content = build_hojas_results()
+        hojas_status_box.content = build_hojas_status_filters()
+
+        has_filters = bool(
+            str(state.get("hojas_search") or "").strip()
+            or str(
+                state.get("hojas_status_filter") or "all"
+            ).strip() not in ("", "all")
+        )
+
+        hojas_clear_button.disabled = not has_filters
+        hojas_clear_button.icon_color = (
+            Q_PRIMARY_DARK if has_filters else "#98A2B3"
+        )
+        hojas_clear_button.tooltip = (
+            "Reiniciar filtros"
+            if has_filters
+            else "No hay filtros activos"
+        )
+
+        try:
+            hojas_results_box.update()
+            hojas_status_box.update()
+            hojas_clear_button.update()
+        except Exception:
+            page.update()
+
+
+    def on_hojas_search_change(e=None):
+        state["hojas_search"] = str(
+            hojas_filter.value or ""
+        )
+        state["hojas_page"] = 1
+        refresh_hojas_results_only()
+
+
+    def on_hojas_status_select(value):
+        state["hojas_status_filter"] = str(
+            value or "all"
+        )
+        state["hojas_page"] = 1
+        refresh_hojas_results_only()
+
+
+    def clear_hojas_filters(e=None):
+        hojas_filter.value = ""
+        state["hojas_search"] = ""
+        state["hojas_status_filter"] = "all"
+        state["hojas_page"] = 1
+        refresh_hojas_results_only()
+
+        try:
+            hojas_filter.update()
+        except Exception:
+            page.update()
+
+
+    def go_hojas_page(page_number):
+        try:
+            requested = int(page_number)
+        except (TypeError, ValueError):
+            requested = 1
+
+        rows = filtered_hojas()
+        page_size = max(
+            1,
+            int(state.get("hojas_page_size") or 10),
+        )
+        total_pages = max(
+            1,
+            (len(rows) + page_size - 1) // page_size,
+        )
+
+        state["hojas_page"] = max(
+            1,
+            min(requested, total_pages),
+        )
+        refresh_hojas_results_only()
+
+
+    hojas_filter.on_change = on_hojas_search_change
+    hojas_filter.on_submit = on_hojas_search_change
+
+
+    def build_hojas_status_filters():
+        status_map = {
+            "all": (
+                "Todas",
+                "#F8FAFC",
+                "#475569",
+                "#CBD5E1",
+            ),
+            "PENDIENTE FIRMA": (
+                "Pendientes",
+                "#FFFAEB",
+                "#B54708",
+                "#FEC84B",
+            ),
+            "FIRMADA": (
+                "Firmadas",
+                "#ECFDF3",
+                "#027A48",
+                "#6CE9A6",
+            ),
+            "CANCELADA": (
+                "Canceladas",
+                "#FEF3F2",
+                "#B42318",
+                "#FDA29B",
+            ),
+            "ARCHIVADA": (
+                "Archivadas",
+                "#F2F4F7",
+                "#475467",
+                "#D0D5DD",
+            ),
+        }
+
+        return counter_chips(
+            options=[
+                ("PENDIENTE FIRMA", "Pendientes"),
+                ("FIRMADA", "Firmadas"),
+                ("CANCELADA", "Canceladas"),
+                ("ARCHIVADA", "Archivadas"),
+            ],
+            counts=hojas_status_counts(),
+            active_value=(
+                state.get("hojas_status_filter")
+                or "all"
+            ),
+            on_select=on_hojas_status_select,
+            include_all=True,
+            all_label="Todas",
+            all_value="all",
+            status_map=status_map,
+            bordered_status=True,
+        )
+
+
+    def build_hojas_results():
+        hojas = filtered_hojas()
+
+        if not hojas:
+            state["hojas_page"] = 1
+
+            if str(
+                state.get("hojas_search") or ""
+            ).strip():
+                return empty_state(
+                    "No hay hojas que coincidan con la búsqueda"
+                )
+
+            return empty_state(
+                "No hay hojas de encargo para este estado"
+            )
+
+        page_size = max(
+            1,
+            int(state.get("hojas_page_size") or 10),
+        )
+        total_items = len(hojas)
+        total_pages = max(
+            1,
+            (total_items + page_size - 1) // page_size,
+        )
+
+        current_page = max(
+            1,
+            min(
+                int(state.get("hojas_page") or 1),
+                total_pages,
+            ),
+        )
+        state["hojas_page"] = current_page
+
+        start_index = (current_page - 1) * page_size
+        visible_rows = hojas[
+            start_index:start_index + page_size
+        ]
+
+        cards = [
+            economic_engagement_letter_card(
+                dict(hoja),
+                date_display=_date_to_display,
+                on_edit=lambda item: (
+                    open_edit_hoja_dialog(
+                        dict(item)
+                    )
+                ),
+            )
+            for hoja in visible_rows
+        ]
+
+        toolbar = ft.Row(
+            controls=[
+                ft.Text(
+                    f"Hojas registradas: {total_items}",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                compact_pagination_bar(
+                    page=current_page,
+                    page_size=page_size,
+                    total_items=total_items,
+                    on_page_change=go_hojas_page,
+                    label_prefix="Hojas",
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+        )
+
+        return ft.Column(
+            controls=[
+                toolbar,
+                ft.Container(
+                    height=620,
+                    content=ft.Column(
+                        controls=cards,
+                        spacing=8,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+            ],
+            spacing=8,
+        )
+
+
+    def build_hojas_section():
+        hojas_results_box.content = build_hojas_results()
+        hojas_status_box.content = build_hojas_status_filters()
+
+        has_filters = bool(
+            str(state.get("hojas_search") or "").strip()
+            or str(
+                state.get("hojas_status_filter") or "all"
+            ).strip() not in ("", "all")
+        )
+
+        hojas_clear_button.disabled = not has_filters
+        hojas_clear_button.icon_color = (
+            Q_PRIMARY_DARK if has_filters else "#98A2B3"
+        )
+        hojas_clear_button.tooltip = (
+            "Reiniciar filtros"
+            if has_filters
+            else "No hay filtros activos"
+        )
+        hojas_clear_button.on_click = clear_hojas_filters
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        hojas_filter,
+                        ft.IconButton(
+                            icon=ft.Icons.ADD_CIRCLE_OUTLINE,
+                            icon_color=Q_PRIMARY_DARK,
+                            tooltip="Nueva hoja de encargo",
+                            on_click=open_hoja_dialog,
+                        ),
+                        hojas_clear_button,
+                    ],
+                    spacing=6,
+                    wrap=True,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+                hojas_status_box,
+                hojas_results_box,
+            ],
+            spacing=8,
+        )
+
+
     def build_table():
         if state["section"] == "conciliacion_manual":
             return build_manual_reconciliation_section()
 
         if state["section"] == "hojas":
-            rows = []
-            for h in economic_service.list_hojas_encargo():
-                cliente = f"{h.get('nombre') or ''} {h.get('primer_apellido') or ''} {h.get('segundo_apellido') or ''}".strip()
-                rows.append([
-                    h.get("numero_hoja") or "-",
-                    _date_to_display(h.get("fecha_firma")),
-                    cliente,
-                    h.get("numero_expediente") or "-",
-                    h.get("procedimiento") or "-",
-                    _money(h.get("importe_bruto")),
-                    _money(h.get("importe_neto")),
-                    reconciliation_badge(h.get("estado")),
-                ])
-            return app_table(
-                ["Nº hoja", "Fecha", "Cliente", "Expediente", "Procedimiento", "Bruto", "Neto", "Estado"],
-                rows,
-                height=430,
-            ) if rows else empty_state("No hay hojas de encargo")
+            return build_hojas_section()
 
         if state["section"] == "cobros":
             return build_cobros_section()
@@ -10132,9 +10523,29 @@ def economic_view(page: ft.Page):
         _set_dropdown_options(factura_hoja_dd, hoja_options, "Sin hoja")
 
     def refresh_hoja_expedientes_for_cliente(value=None):
-        cliente_id = _id(hoja_cliente_ac.get_value())
-        options = [e["display"] for e in economic_service.get_expedientes_for_select(cliente_id=cliente_id)] if cliente_id else expediente_options
-        _set_dropdown_options(hoja_expediente_dd, options, "Sin expediente")
+        cliente_id = _id(
+            hoja_cliente_ac.get_value()
+        )
+
+        options = [
+            e["display"]
+            for e in economic_service
+            .get_expedientes_for_select(
+                cliente_id=cliente_id
+            )
+        ] if cliente_id else expediente_options
+
+        _set_dropdown_options(
+            hoja_expediente_dd,
+            options,
+            "Sin expediente",
+        )
+
+        refresh_hoja_consultas_for_cliente(
+            cliente_id,
+            update=False,
+        )
+
         page.update()
 
     def refresh_cobro_dependencies(value=None):
@@ -10212,7 +10623,21 @@ def economic_view(page: ft.Page):
     hoja_proc = text_input("Procedimiento", width=360)
     hoja_bruto = required_text_input("Importe bruto", width=180)
     hoja_desc_manual = text_input("Descuento manual", "0", width=180)
-    hoja_desc_consulta = text_input("Descuento consultas", "0", width=180)
+    hoja_consulta_state = {
+        "cobro_id": None,
+    }
+
+    hoja_consulta_ac = AppAutocomplete(
+        page,
+        "Aplicar consulta previa",
+        options=[],
+        width=560,
+        max_results=6,
+        allow_free_text=False,
+        hint_text="Selecciona un cobro de consulta disponible",
+        empty_text="No hay consultas disponibles",
+    )
+
     hoja_forma = text_input("Forma pago pactada", width=260)
     hoja_plazos = text_input("Nº plazos", "1", width=120)
     hoja_fecha_max = text_input("Fecha máxima pago DD/MM/AAAA", width=240)
@@ -10220,69 +10645,558 @@ def economic_view(page: ft.Page):
     hoja_estado = select_input("Estado", ["PENDIENTE FIRMA", "FIRMADA", "CANCELADA", "ARCHIVADA"], value="PENDIENTE FIRMA", width=220)
     hoja_obs = multiline_input("Observaciones", width=620)
 
+    hoja_neto_text = ft.Text(
+        "0,00 €",
+        size=18,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+    )
+
+    hoja_economic_summary = ft.Container(
+        bgcolor="#F8FAFC",
+        border=ft.border.all(1, Q_BORDER),
+        border_radius=10,
+        padding=12,
+        content=ft.Row(
+            controls=[
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            "IMPORTE NETO",
+                            size=10,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_MUTED,
+                        ),
+                        hoja_neto_text,
+                    ],
+                    spacing=2,
+                    tight=True,
+                ),
+                ft.Container(expand=True),
+                ft.Text(
+                    "Bruto - descuentos",
+                    size=11,
+                    color=Q_MUTED,
+                ),
+            ],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
+    def _hoja_float(value):
+        raw = str(value or "").strip()
+        raw = raw.replace("€", "").replace(" ", "")
+
+        if "," in raw and "." in raw:
+            raw = raw.replace(".", "").replace(",", ".")
+        elif "," in raw:
+            raw = raw.replace(",", ".")
+
+        try:
+            return float(raw or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def refresh_hoja_neto(e=None):
+        neto = max(
+            0.0,
+            _hoja_float(hoja_bruto.value)
+            - _hoja_float(hoja_desc_manual.value),
+        )
+
+        hoja_neto_text.value = (
+            f"{neto:,.2f} €"
+            .replace(",", "X")
+            .replace(".", ",")
+            .replace("X", ".")
+        )
+
+        try:
+            hoja_neto_text.update()
+        except Exception:
+            pass
+
+    def _hoja_consulta_options(cliente_id):
+        options = []
+
+        cobros = (
+            economic_service
+            .list_consulta_cobros_disponibles()
+        )
+
+        for cobro in cobros:
+            importe = float(
+                cobro.get("importe") or 0
+            )
+
+            numero = str(
+                cobro.get("numero_cobro")
+                or f"Consulta #{cobro.get('id')}"
+            )
+
+            cliente_nombre = " ".join(
+                part
+                for part in [
+                    str(cobro.get("nombre") or "").strip(),
+                    str(cobro.get("primer_apellido") or "").strip(),
+                    str(cobro.get("segundo_apellido") or "").strip(),
+                ]
+                if part
+            ) or f"Cliente #{cobro.get('cliente_id') or '-'}"
+
+            fecha = _date_to_display(
+                cobro.get("fecha_cobro")
+            )
+
+            importe_text = (
+                f"{importe:,.2f} €"
+                .replace(",", "X")
+                .replace(".", ",")
+                .replace("X", ".")
+            )
+
+            options.append({
+                "id": int(cobro["id"]),
+                "label": cliente_nombre,
+                "subtitle": (
+                    f"{numero} · {fecha} · "
+                    f"{importe_text}"
+                ),
+                "importe": importe,
+                "expediente_id": (
+                    cobro.get("expediente_id")
+                ),
+            })
+
+        return options
+
+
+    def refresh_hoja_consultas_for_cliente(
+        cliente_id=None,
+        update=False,
+    ):
+        if cliente_id is None:
+            cliente_id = _id(
+                hoja_cliente_ac.get_value()
+            )
+
+        options = _hoja_consulta_options(
+            cliente_id
+        )
+
+        hoja_consulta_ac.set_options(
+            options,
+            clear_value=True,
+        )
+
+        refresh_hoja_neto()
+
+        if update:
+            page.update()
+
+
+    def on_hoja_consulta_selected(value=None):
+        selected = hoja_consulta_ac.get_selected()
+
+        if isinstance(selected, dict):
+            hoja_consulta_state["cobro_id"] = int(
+                selected.get("id") or 0
+            ) or None
+        else:
+            hoja_consulta_state["cobro_id"] = None
+
+        refresh_hoja_neto()
+        page.update()
+
+
+    hoja_consulta_ac.on_select = (
+        on_hoja_consulta_selected
+    )
+
+
+    hoja_bruto.on_change = refresh_hoja_neto
+    hoja_desc_manual.on_change = refresh_hoja_neto
+
+    hoja_form_state = {
+        "id": None,
+    }
+
+    hoja_save_button = primary_button(
+        "Crear hoja",
+        lambda e: save_hoja(e),
+    )
+
     def open_hoja_dialog(e=None):
+        hoja_form_state["id"] = None
+        hoja_consulta_state["cobro_id"] = None
         refresh_runtime_options()
+
+        hoja_dialog.title.value = "Nueva hoja de encargo"
+        hoja_save_button.content.value = "Crear hoja"
+
         hoja_cliente_ac.set_value("", update=False)
+        hoja_consulta_ac.set_disabled(
+            False,
+            update=False,
+        )
+        hoja_consulta_ac.set_options(
+            _hoja_consulta_options(None),
+            clear_value=True,
+        )
         hoja_expediente_dd.value = "Sin expediente"
         for field in [hoja_numero, hoja_fecha, hoja_proc, hoja_bruto, hoja_ruta, hoja_obs]:
             field.value = ""
         hoja_desc_manual.value = "0"
-        hoja_desc_consulta.value = "0"
         hoja_forma.value = ""
         hoja_plazos.value = "1"
         hoja_fecha_max.value = ""
         hoja_estado.value = "PENDIENTE FIRMA"
+        refresh_hoja_neto()
         hoja_dialog.open = True
         page.update()
 
+    def open_edit_hoja_dialog(hoja):
+        hoja = dict(hoja or {})
+        hoja_id = int(hoja.get("id") or 0)
+
+        if hoja_id <= 0:
+            show_message(
+                error_alert("No se pudo identificar la hoja")
+            )
+            refresh()
+            return
+
+        loaded = economic_service.get_hoja_encargo(
+            hoja_id
+        )
+
+        if not loaded:
+            show_message(
+                error_alert("Hoja de encargo no encontrada")
+            )
+            refresh()
+            return
+
+        hoja_form_state["id"] = hoja_id
+        hoja_consulta_state["cobro_id"] = None
+        refresh_runtime_options()
+
+        hoja_dialog.title.value = (
+            "Editar hoja de encargo"
+        )
+        hoja_save_button.content.value = (
+            "Guardar cambios"
+        )
+
+        client_value = _option_by_id(
+            cliente_options,
+            loaded.get("cliente_id"),
+            "",
+        )
+
+        hoja_cliente_ac.set_value(
+            client_value,
+            update=False,
+        )
+
+        cliente_id = loaded.get("cliente_id")
+
+        expedientes_cliente = (
+            economic_service
+            .get_expedientes_for_select(
+                cliente_id=cliente_id
+            )
+            if cliente_id
+            else []
+        )
+
+        expediente_values = [
+            item["display"]
+            for item in expedientes_cliente
+        ]
+
+        _set_dropdown_options(
+            hoja_expediente_dd,
+            expediente_values,
+            "Sin expediente",
+        )
+
+        hoja_expediente_dd.value = _option_by_id(
+            expediente_values,
+            loaded.get("expediente_id"),
+            "Sin expediente",
+        )
+
+        hoja_numero.value = str(
+            loaded.get("numero_hoja") or ""
+        )
+        hoja_fecha.value = _date_to_display(
+            loaded.get("fecha_firma")
+        )
+        hoja_proc.value = str(
+            loaded.get("procedimiento") or ""
+        )
+        hoja_bruto.value = str(
+            loaded.get("importe_bruto") or 0
+        )
+        hoja_desc_manual.value = str(
+            loaded.get("descuento_manual") or 0
+        )
+        hoja_consulta_ac.set_disabled(
+            False,
+            update=False,
+        )
+        hoja_consulta_ac.set_options(
+            _hoja_consulta_options(None),
+            clear_value=True,
+        )
+
+        hoja_forma.value = str(
+            loaded.get("forma_pago_pactada") or ""
+        )
+        hoja_plazos.value = str(
+            loaded.get("numero_plazos") or 1
+        )
+        hoja_fecha_max.value = _date_to_display(
+            loaded.get("fecha_maxima_pago")
+        )
+        hoja_ruta.value = str(
+            loaded.get("documento_ruta") or ""
+        )
+        hoja_estado.value = str(
+            loaded.get("estado")
+            or "PENDIENTE FIRMA"
+        )
+        hoja_obs.value = str(
+            loaded.get("observaciones") or ""
+        )
+
+        refresh_hoja_neto()
+
+        hoja_dialog.open = True
+        page.update()
+
+
     def save_hoja(e=None):
         try:
-            cliente_id = _id(hoja_cliente_ac.get_value())
-            if not cliente_id:
-                raise ValueError("Selecciona un cliente válido")
+            cliente_id = _id(
+                hoja_cliente_ac.get_value()
+            )
 
-            economic_service.create_hoja_encargo({
+            if not cliente_id:
+                raise ValueError(
+                    "Selecciona un cliente válido"
+                )
+
+            expediente_id = (
+                None
+                if hoja_expediente_dd.value
+                == "Sin expediente"
+                else _id(
+                    hoja_expediente_dd.value
+                )
+            )
+
+            hoja_id = hoja_form_state.get("id")
+            consulta_selected = (
+                hoja_consulta_ac.get_selected()
+            )
+
+            consulta_cobro_id = (
+                hoja_consulta_state.get("cobro_id")
+            )
+
+            if (
+                not consulta_cobro_id
+                and isinstance(consulta_selected, dict)
+            ):
+                consulta_cobro_id = int(
+                    consulta_selected.get("id") or 0
+                ) or None
+
+            data = {
                 "cliente_id": cliente_id,
-                "expediente_id": None if hoja_expediente_dd.value == "Sin expediente" else _id(hoja_expediente_dd.value),
+                "expediente_id": expediente_id,
                 "numero_hoja": hoja_numero.value,
-                "fecha_firma": _date_to_sql(hoja_fecha.value),
+                "fecha_firma": _date_to_sql(
+                    hoja_fecha.value
+                ),
                 "procedimiento": hoja_proc.value,
                 "importe_bruto": hoja_bruto.value,
-                "descuento_manual": hoja_desc_manual.value,
-                "descuento_consultas_previas": hoja_desc_consulta.value,
+                "descuento_manual": (
+                    hoja_desc_manual.value
+                ),
+                "descuento_consultas_previas": "0",
                 "forma_pago_pactada": hoja_forma.value,
                 "numero_plazos": hoja_plazos.value,
-                "fecha_maxima_pago": _date_to_sql(hoja_fecha_max.value),
+                "fecha_maxima_pago": _date_to_sql(
+                    hoja_fecha_max.value
+                ),
                 "documento_ruta": hoja_ruta.value,
                 "estado": hoja_estado.value,
                 "observaciones": hoja_obs.value,
-            })
+            }
+
+            is_edit = bool(hoja_id)
+
+            if is_edit:
+                economic_service.update_hoja_encargo(
+                    hoja_id,
+                    data,
+                )
+                message = (
+                    "Hoja de encargo actualizada"
+                )
+            else:
+                hoja_id = (
+                    economic_service
+                    .create_hoja_encargo(data)
+                )
+                message = (
+                    "Hoja de encargo creada"
+                )
+
+            if consulta_cobro_id:
+                economic_service.aplicar_cobro_consulta_a_hoja(
+                    cobro_id=int(consulta_cobro_id),
+                    expediente_id=expediente_id,
+                    hoja_encargo_id=hoja_id,
+                    importe_aplicado=None,
+                    observaciones=(
+                        "Aplicada al editar la hoja"
+                        if is_edit
+                        else "Aplicada al crear la hoja"
+                    ),
+                )
+
+                message += (
+                    " y consulta previa aplicada"
+                )
+
             hoja_dialog.open = False
+            hoja_form_state["id"] = None
+            hoja_consulta_state["cobro_id"] = None
+
             refresh_runtime_options()
-            show_message(success_alert("Hoja de encargo creada"))
+            show_message(
+                success_alert(message)
+            )
+
         except Exception as exc:
-            show_message(error_alert(str(exc)))
+            show_message(
+                error_alert(str(exc))
+            )
+
         refresh()
 
+
+    def _hoja_form_section(title, subtitle, controls):
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        title,
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        subtitle,
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                    ft.Divider(height=10, color="#EAECF0"),
+                    *controls,
+                ],
+                spacing=10,
+            ),
+        )
+
+
     hoja_dialog = form_dialog(
-        "Hoja de encargo",
+        "Nueva hoja de encargo",
         ft.Column(
-            [
-                hoja_cliente_ac.control,
-                hoja_expediente_dd,
-                ft.Row([hoja_numero, hoja_fecha, hoja_estado], wrap=True, spacing=10),
-                hoja_proc,
-                ft.Row([hoja_bruto, hoja_desc_manual, hoja_desc_consulta], wrap=True, spacing=10),
-                ft.Row([hoja_forma, hoja_plazos, hoja_fecha_max], wrap=True, spacing=10),
-                hoja_ruta,
-                hoja_obs,
+            controls=[
+                _hoja_form_section(
+                    "Cliente y expediente",
+                    "Selecciona el titular y, cuando proceda, el expediente relacionado.",
+                    [
+                        hoja_cliente_ac.control,
+                        hoja_expediente_dd,
+                    ],
+                ),
+                _hoja_form_section(
+                    "Datos del encargo",
+                    "Identificación, fecha, procedimiento y estado de la hoja.",
+                    [
+                        ft.Row(
+                            controls=[
+                                hoja_numero,
+                                hoja_fecha,
+                                hoja_estado,
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                        hoja_proc,
+                    ],
+                ),
+                _hoja_form_section(
+                    "Condiciones económicas",
+                    "Importe pactado y descuentos que reducen el importe neto.",
+                    [
+                        ft.Row(
+                            controls=[
+                                hoja_bruto,
+                                hoja_desc_manual,
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                        hoja_consulta_ac.control,
+                        hoja_economic_summary,
+                    ],
+                ),
+                _hoja_form_section(
+                    "Forma y plazo de pago",
+                    "Define la modalidad, número de plazos y fecha máxima.",
+                    [
+                        ft.Row(
+                            controls=[
+                                hoja_forma,
+                                hoja_plazos,
+                                hoja_fecha_max,
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                    ],
+                ),
+                _hoja_form_section(
+                    "Documento y observaciones",
+                    "Ruta del documento contractual e información interna adicional.",
+                    [
+                        hoja_ruta,
+                        hoja_obs,
+                    ],
+                ),
             ],
-            width=760,
-            height=600,
+            width=820,
+            height=650,
             spacing=12,
             scroll=ft.ScrollMode.AUTO,
         ),
-        [secondary_button("Cancelar", lambda e: close(hoja_dialog)), primary_button("Guardar", save_hoja)],
+        [
+            secondary_button(
+                "Cancelar",
+                lambda e: close(hoja_dialog),
+            ),
+            hoja_save_button,
+        ],
     )
     page.overlay.append(hoja_dialog)
 
