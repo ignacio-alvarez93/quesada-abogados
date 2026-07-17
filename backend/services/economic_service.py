@@ -1099,8 +1099,11 @@ def create_hoja_encargo(data):
     numero_hoja = _text(data.get("numero_hoja")) or next_numero_hoja(data.get("fecha_firma"))
     importe_bruto = _float(data.get("importe_bruto"))
     descuento_manual = _float(data.get("descuento_manual"))
-    descuento_consultas = _float(data.get("descuento_consultas_previas"))
-    importe_neto = max(0, importe_bruto - descuento_manual - descuento_consultas)
+    descuento_consultas = 0.0
+    importe_neto = max(
+        0,
+        importe_bruto - descuento_manual,
+    )
     expediente_id = _int_or_none(data.get("expediente_id"))
     cliente_id = int(data.get("cliente_id"))
 
@@ -1113,7 +1116,7 @@ def create_hoja_encargo(data):
                 forma_pago_pactada, numero_plazos, fecha_maxima_pago, documento_ruta,
                 estado, observaciones, activo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 expediente_id,
@@ -1139,6 +1142,135 @@ def create_hoja_encargo(data):
 
     registrar_evento("eco_hojas_encargo", hoja_id, "CREACION", "HOJA DE ENCARGO CREADA", f"Neto: {importe_neto:.2f}")
     return hoja_id
+
+
+def get_hoja_encargo(hoja_id):
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM eco_hojas_encargo
+            WHERE id = ?
+              AND COALESCE(activo, 1) = 1
+            """,
+            (int(hoja_id),),
+        ).fetchone()
+
+    return _dict(row) if row else None
+
+
+def update_hoja_encargo(hoja_id, data):
+    hoja_id = int(hoja_id)
+
+    with _connect() as conn:
+        current = conn.execute(
+            """
+            SELECT *
+            FROM eco_hojas_encargo
+            WHERE id = ?
+              AND COALESCE(activo, 1) = 1
+            """,
+            (hoja_id,),
+        ).fetchone()
+
+        if not current:
+            raise ValueError("Hoja de encargo no encontrada")
+
+        current = _dict(current)
+
+        cliente_id = int(
+            data.get("cliente_id")
+            or current.get("cliente_id")
+        )
+
+        expediente_id = _int_or_none(
+            data.get("expediente_id")
+        )
+
+        importe_bruto = _float(
+            data.get("importe_bruto")
+        )
+        descuento_manual = _float(
+            data.get("descuento_manual")
+        )
+        descuento_consultas = 0.0
+
+        importe_neto = max(
+            0.0,
+            importe_bruto
+            - descuento_manual,
+        )
+
+        numero_hoja = (
+            _text(data.get("numero_hoja"))
+            or current.get("numero_hoja")
+            or next_numero_hoja(data.get("fecha_firma"))
+        )
+
+        conn.execute(
+            """
+            UPDATE eco_hojas_encargo
+            SET
+                expediente_id = ?,
+                cliente_id = ?,
+                numero_hoja = ?,
+                fecha_firma = ?,
+                procedimiento = ?,
+                importe_bruto = ?,
+                descuento_manual = ?,
+                descuento_consultas_previas = ?,
+                importe_neto = ?,
+                forma_pago_pactada = ?,
+                numero_plazos = ?,
+                fecha_maxima_pago = ?,
+                documento_ruta = ?,
+                estado = ?,
+                observaciones = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                expediente_id,
+                cliente_id,
+                numero_hoja,
+                _date(data.get("fecha_firma")),
+                _text(data.get("procedimiento")),
+                importe_bruto,
+                descuento_manual,
+                descuento_consultas,
+                importe_neto,
+                _text(data.get("forma_pago_pactada")),
+                int(data.get("numero_plazos") or 1),
+                _date(data.get("fecha_maxima_pago")),
+                _raw(data.get("documento_ruta")),
+                _text(
+                    data.get("estado")
+                    or "PENDIENTE FIRMA"
+                ),
+                _raw(data.get("observaciones")),
+                hoja_id,
+            ),
+        )
+
+        ensure_expediente_cliente(
+            conn,
+            expediente_id,
+            cliente_id,
+            rol="PAGADOR",
+            es_principal=0,
+        )
+
+        conn.commit()
+
+    registrar_evento(
+        "eco_hojas_encargo",
+        hoja_id,
+        "ACTUALIZACION",
+        "HOJA DE ENCARGO ACTUALIZADA",
+        f"Neto: {importe_neto:.2f}",
+    )
+
+    return True
 
 
 def list_hojas_encargo(active_only=True):
@@ -2661,23 +2793,38 @@ def get_clientes_expediente_for_select(expediente_id):
     return result
 
 
-def list_consulta_cobros_disponibles(cliente_id):
+def list_consulta_cobros_disponibles(cliente_id=None):
+    params = []
+    cliente_filter = ""
+
+    if cliente_id not in (None, ""):
+        cliente_filter = " AND cob.cliente_id = ?"
+        params.append(int(cliente_id))
+
     with _connect() as conn:
         initialize_economic_consultas_schema(conn)
+
         rows = conn.execute(
-            """
-            SELECT cob.*
+            f"""
+            SELECT
+                cob.*,
+                cli.nombre,
+                cli.primer_apellido,
+                cli.segundo_apellido
             FROM eco_cobros cob
+            LEFT JOIN clientes cli
+              ON cli.id = cob.cliente_id
             LEFT JOIN eco_consultas_aplicadas app
               ON app.cobro_id = cob.id
              AND app.activo = 1
-            WHERE cob.cliente_id = ?
-              AND cob.tipo_cobro = 'CONSULTA'
+            WHERE cob.tipo_cobro = 'CONSULTA'
               AND cob.activo = 1
               AND app.id IS NULL
+              AND cob.hoja_encargo_id IS NULL
+              {cliente_filter}
             ORDER BY cob.fecha_cobro DESC, cob.id DESC
             """,
-            (int(cliente_id),),
+            tuple(params),
         ).fetchall()
 
     return [_dict(row) for row in rows]
@@ -2730,12 +2877,45 @@ def aplicar_cobro_consulta_a_hoja(
         if not hoja:
             raise ValueError("Hoja de encargo no encontrada")
 
-        expediente_id = _int_or_none(expediente_id) or hoja.get("expediente_id")
+        hoja_expediente_id = _int_or_none(
+            hoja.get("expediente_id")
+        )
+        expediente_solicitado = _int_or_none(
+            expediente_id
+        )
+
+        if (
+            hoja_expediente_id
+            and expediente_solicitado
+            and hoja_expediente_id != expediente_solicitado
+        ):
+            raise ValueError(
+                "El expediente indicado no coincide con el de la hoja"
+            )
+
+        expediente_id = (
+            hoja_expediente_id
+            or expediente_solicitado
+        )
+
+        importe_cobro = _float(
+            cobro.get("importe")
+        )
         importe = _float(
             importe_aplicado
             if importe_aplicado not in (None, "")
-            else cobro.get("importe")
+            else importe_cobro
         )
+
+        if importe <= 0:
+            raise ValueError(
+                "El importe de la consulta debe ser mayor que cero"
+            )
+
+        if importe > importe_cobro:
+            raise ValueError(
+                "No se puede aplicar un importe superior al cobro"
+            )
 
         conn.execute(
             """
@@ -2757,29 +2937,6 @@ def aplicar_cobro_consulta_a_hoja(
                 int(hoja_encargo_id),
                 importe,
                 _raw(observaciones),
-            ),
-        )
-
-        nuevo_descuento = float(hoja.get("descuento_consultas_previas") or 0) + importe
-        nuevo_neto = max(
-            0.0,
-            float(hoja.get("importe_bruto") or 0)
-            - float(hoja.get("descuento_manual") or 0)
-            - nuevo_descuento,
-        )
-
-        conn.execute(
-            """
-            UPDATE eco_hojas_encargo
-            SET descuento_consultas_previas = ?,
-                importe_neto = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (
-                nuevo_descuento,
-                nuevo_neto,
-                int(hoja_encargo_id),
             ),
         )
 

@@ -104,6 +104,7 @@ def economic_engagement_letter_card(
     engagement: dict[str, Any],
     *,
     date_display: Callable[[Any], str] | None = None,
+    on_edit: Callable[[dict[str, Any]], None] | None = None,
     on_view_document: Callable[[dict[str, Any]], None] | None = None,
 ) -> ft.Control:
     engagement = dict(engagement or {})
@@ -140,22 +141,64 @@ def economic_engagement_letter_card(
         )
     )
 
-    actions = []
+    menu_items = []
+
+    if on_edit is not None:
+        menu_items.append(
+            ft.PopupMenuItem(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.EDIT_OUTLINED,
+                            size=16,
+                            color=Q_PRIMARY,
+                        ),
+                        ft.Text("Editar hoja"),
+                    ],
+                    spacing=8,
+                ),
+                on_click=lambda e: on_edit(
+                    engagement
+                ),
+            )
+        )
+
     document_path = _text(
         engagement.get("documento_ruta"),
         "",
     )
 
     if document_path and on_view_document is not None:
-        actions.append(
-            ft.IconButton(
-                icon=ft.Icons.DESCRIPTION_OUTLINED,
-                tooltip="Abrir documento",
+        menu_items.append(
+            ft.PopupMenuItem(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.DESCRIPTION_OUTLINED,
+                            size=16,
+                            color=Q_PRIMARY,
+                        ),
+                        ft.Text("Abrir documento"),
+                    ],
+                    spacing=8,
+                ),
                 on_click=lambda e: on_view_document(
                     engagement
                 ),
             )
         )
+
+    actions = []
+
+    if menu_items:
+        actions.append(
+            ft.PopupMenuButton(
+                icon=ft.Icons.MORE_VERT,
+                tooltip="Acciones de la hoja",
+                items=menu_items,
+            )
+        )
+
 
     badges = [
         status_chip(
