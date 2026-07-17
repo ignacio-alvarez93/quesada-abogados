@@ -25,6 +25,7 @@ MENU_GROUPS = [
             ("Clientes", "👥"),
             ("Empresas", "🏢"),
             ("Proveedores", "🚚"),
+            ("Trabajadores", "🧑‍💼"),
         ],
     },
     {
@@ -137,6 +138,7 @@ KNOWN_ACTIVE_VIEWS = {
     "Clientes",
     "Empresas",
     "Proveedores",
+    "Trabajadores",
     "Expedientes",
     "Colas de presentación",
     "Cobros",
