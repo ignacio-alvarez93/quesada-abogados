@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from datetime import datetime
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,36 @@ def _normalize_identifier(value: Any) -> str:
     )
 
 
+def _normalize_date(
+    value: Any,
+    *,
+    label: str,
+) -> str:
+    raw = _text(value)
+
+    if not raw:
+        return ""
+
+    for fmt in (
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+    ):
+        try:
+            parsed = datetime.strptime(
+                raw,
+                fmt,
+            )
+            return parsed.strftime(
+                "%Y-%m-%d"
+            )
+        except ValueError:
+            pass
+
+    raise ValueError(
+        f"{label} debe tener formato DD/MM/YYYY"
+    )
+
+
 def _normalize_iban(value: Any) -> str:
     return re.sub(
         r"[^A-Z0-9]",
@@ -173,6 +204,21 @@ def _normalize_data(
         raise ValueError(
             "El nombre del trabajador es obligatorio"
         )
+
+    normalized["birth_date"] = _normalize_date(
+        normalized.get("birth_date"),
+        label="La fecha de nacimiento",
+    )
+
+    normalized["hire_date"] = _normalize_date(
+        normalized.get("hire_date"),
+        label="La fecha de alta",
+    )
+
+    normalized["termination_date"] = _normalize_date(
+        normalized.get("termination_date"),
+        label="La fecha de baja",
+    )
 
     normalized["document_type"] = (
         _text(
