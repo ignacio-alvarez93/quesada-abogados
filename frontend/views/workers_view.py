@@ -15,6 +15,9 @@ from frontend.components.listing import (
     compact_pagination_bar,
 )
 from frontend.components.worker_card import worker_card
+from frontend.views.worker_detail_view import (
+    worker_detail_view,
+)
 
 
 Q_PRIMARY = "#0057B8"
@@ -139,6 +142,7 @@ def workers_view(page: ft.Page):
         "status": "ACTIVE",
         "department": "ALL",
         "editing_id": None,
+        "detail_worker_id": None,
     }
 
     root = ft.Container(
@@ -490,9 +494,27 @@ def workers_view(page: ft.Page):
                 worker_service.create_worker(data)
                 message = "Trabajador creado"
 
+            detail_worker_id = state.get(
+                "detail_worker_id"
+            )
+
             close_worker_dialog()
             state["page"] = 1
-            load_workers()
+
+            if detail_worker_id:
+                updated_worker = (
+                    worker_service.get_worker(
+                        detail_worker_id
+                    )
+                )
+
+                if updated_worker:
+                    show_detail(updated_worker)
+                else:
+                    show_list()
+            else:
+                load_workers()
+
             _snack(page, message)
 
         except Exception as exc:
@@ -734,7 +756,16 @@ def workers_view(page: ft.Page):
         render_results()
 
     def show_detail(worker):
-        pass
+        worker_id = int(worker["id"])
+        state["detail_worker_id"] = worker_id
+
+        root.content = worker_detail_view(
+            page,
+            worker_id,
+            on_back=show_list,
+            on_edit=open_edit_dialog,
+        )
+        page.update()
 
     def open_edit(worker):
         open_edit_dialog(worker)
@@ -902,60 +933,67 @@ def workers_view(page: ft.Page):
         on_department_selected
     )
 
-    root.content = ft.Column(
-        controls=[
-            ft.Row(
-                controls=[
-                    ft.Column(
-                        controls=[
-                            ft.Text(
-                                "Trabajadores",
-                                size=28,
-                                weight=ft.FontWeight.BOLD,
-                                color=Q_PRIMARY_DARK,
-                            ),
-                            ft.Text(
-                                (
-                                    "Directorio laboral, "
-                                    "contratos y futura "
-                                    "gestión de nóminas"
-                                ),
-                                size=12,
-                                color=Q_MUTED,
-                            ),
-                        ],
-                        spacing=2,
-                        expand=True,
-                    ),
-                    primary_button(
-                        "Nuevo trabajador",
-                        open_new_dialog,
-                    ),
-                ],
-                vertical_alignment=(
-                    ft.CrossAxisAlignment.CENTER
-                ),
-            ),
-            metrics_box,
-            ft.Row(
-                controls=[
-                    search_input,
-                    status_ac.control,
-                    department_ac.control,
-                ],
-                spacing=10,
-                wrap=True,
-            ),
-            ft.Divider(
-                height=1,
-                color=Q_BORDER,
-            ),
-            results_box,
-        ],
-        spacing=14,
-        expand=True,
-    )
+    def show_list(e=None):
+        state["detail_worker_id"] = None
+        load_workers()
 
-    load_workers()
+        root.content = ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Trabajadores",
+                                    size=28,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    (
+                                        "Directorio laboral, "
+                                        "contratos y futura "
+                                        "gestión de nóminas"
+                                    ),
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                        primary_button(
+                            "Nuevo trabajador",
+                            open_new_dialog,
+                        ),
+                    ],
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+                metrics_box,
+                ft.Row(
+                    controls=[
+                        search_input,
+                        status_ac.control,
+                        department_ac.control,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Divider(
+                    height=1,
+                    color=Q_BORDER,
+                ),
+                results_box,
+            ],
+            spacing=14,
+            expand=True,
+        )
+
+
+        page.update()
+
+    show_list()
 
     return root
