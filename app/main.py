@@ -6,11 +6,13 @@ from frontend.views.login_view import login_view
 from frontend.views.clients_view import clients_view
 from frontend.views.companies_view import companies_view
 from frontend.views.suppliers_view import suppliers_view
+from frontend.views.workers_view import workers_view
 from frontend.views.settings_view import settings_view
 from frontend.views.expedients_view import expedients_view
 from frontend.views.expedient_traceability_view import expedient_traceability_view
 from frontend.views.economic_view import economic_view
 from frontend.views.fiscal_view import fiscal_view
+from frontend.views.payrolls_view import payrolls_view
 from frontend.views.box_watch_view import box_watch_view
 from frontend.views.reporting_view import reporting_view
 from frontend.views.presentation_queue_view import presentation_queue_view
@@ -62,6 +64,8 @@ def main(page: ft.Page):
             content = companies_view(page)
         elif view_name == "Proveedores":
             content = suppliers_view(page)
+        elif view_name == "Trabajadores":
+            content = workers_view(page)
         elif view_name == "Expedientes":
             open_expediente_id = kwargs.get("open_expediente_id")
             new_for_client_id = kwargs.get("new_for_client_id")
@@ -98,6 +102,8 @@ def main(page: ft.Page):
             content = economic_view(page)
         elif view_name == "Fiscal":
             content = fiscal_view(page)
+        elif view_name == "Nóminas":
+            content = payrolls_view(page)
         elif view_name == "Documentos / Box":
             content = box_watch_view(page)
         elif view_name == "Bandeja documental":

@@ -25,6 +25,7 @@ MENU_GROUPS = [
             ("Clientes", "👥"),
             ("Empresas", "🏢"),
             ("Proveedores", "🚚"),
+            ("Trabajadores", "🧑‍💼"),
         ],
     },
     {
@@ -52,6 +53,14 @@ MENU_GROUPS = [
         "open": False,
         "items": [
             ("Fiscal", "🧮"),
+        ],
+    },
+    {
+        "title": "Nóminas",
+        "icon": "🧾",
+        "open": False,
+        "items": [
+            ("Nóminas", "🧾"),
         ],
     },
     {
@@ -137,11 +146,13 @@ KNOWN_ACTIVE_VIEWS = {
     "Clientes",
     "Empresas",
     "Proveedores",
+    "Trabajadores",
     "Expedientes",
     "Colas de presentación",
     "Cobros",
     "Conciliación",
     "Fiscal",
+    "Nóminas",
     "Documentos / Box",
     "Bandeja documental",
     "Reporting",
