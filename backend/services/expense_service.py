@@ -52,8 +52,13 @@ _SCHEMA_COLUMNS: dict[str, str] = {
 }
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+def _connect(
+    db_path: str | Path = DB_PATH,
+) -> sqlite3.Connection:
+    conn = sqlite3.connect(
+        str(db_path),
+        timeout=30,
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 30000")
@@ -64,8 +69,10 @@ def _dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
-def ensure_schema() -> None:
-    with _connect() as conn:
+def ensure_schema(
+    db_path: str | Path = DB_PATH,
+) -> None:
+    with _connect(db_path) as conn:
         table = conn.execute(
             """
             SELECT 1
@@ -412,10 +419,14 @@ def expense_metrics(
     }
 
 
-def get_expense(expense_id: int) -> dict[str, Any] | None:
-    ensure_schema()
+def get_expense(
+    expense_id: int,
+    *,
+    db_path: str | Path = DB_PATH,
+) -> dict[str, Any] | None:
+    ensure_schema(db_path)
 
-    with _connect() as conn:
+    with _connect(db_path) as conn:
         row = conn.execute(
             """
             SELECT
@@ -1021,10 +1032,12 @@ def _normalize_expense_payload(
 
 def create_expense(
     data: dict[str, Any],
+    *,
+    db_path: str | Path = DB_PATH,
 ) -> dict[str, Any]:
-    ensure_schema()
+    ensure_schema(db_path)
 
-    with _connect() as conn:
+    with _connect(db_path) as conn:
         payload = _normalize_expense_payload(
             conn,
             data,
@@ -1144,7 +1157,10 @@ def create_expense(
         expense_id = int(cursor.lastrowid)
         conn.commit()
 
-    result = get_expense(expense_id)
+    result = get_expense(
+        expense_id,
+        db_path=db_path,
+    )
 
     if result is None:
         raise RuntimeError(
@@ -1157,10 +1173,12 @@ def create_expense(
 def update_expense(
     expense_id: int,
     data: dict[str, Any],
+    *,
+    db_path: str | Path = DB_PATH,
 ) -> dict[str, Any]:
-    ensure_schema()
+    ensure_schema(db_path)
 
-    with _connect() as conn:
+    with _connect(db_path) as conn:
         exists = conn.execute(
             """
             SELECT id
@@ -1286,7 +1304,10 @@ def update_expense(
 
         conn.commit()
 
-    result = get_expense(int(expense_id))
+    result = get_expense(
+        int(expense_id),
+        db_path=db_path,
+    )
 
     if result is None:
         raise RuntimeError(
