@@ -909,6 +909,91 @@ def worker_detail_view(
         visible=False,
     )
 
+    payroll_total_deductions.read_only = True
+    payroll_net.read_only = True
+    payroll_total_cost.read_only = True
+
+    def _payroll_input_centimos(control):
+        try:
+            return _centimos_from_input(
+                control.value
+            )
+        except Exception:
+            return 0
+
+    def _payroll_centimos_to_input(value):
+        return (
+            f"{int(value or 0) / 100:.2f}"
+            .replace(".", ",")
+        )
+
+    def recalculate_payroll_totals(e=None):
+        gross = _payroll_input_centimos(
+            payroll_gross
+        )
+        employee_ss = _payroll_input_centimos(
+            payroll_employee_ss
+        )
+        irpf = _payroll_input_centimos(
+            payroll_irpf
+        )
+        other_deductions = (
+            _payroll_input_centimos(
+                payroll_other_deductions
+            )
+        )
+        employer_ss = _payroll_input_centimos(
+            payroll_employer_ss
+        )
+
+        deductions = (
+            employee_ss
+            + irpf
+            + other_deductions
+        )
+        net = gross - deductions
+        employer_cost = gross + employer_ss
+
+        payroll_total_deductions.value = (
+            _payroll_centimos_to_input(
+                deductions
+            )
+        )
+        payroll_net.value = (
+            _payroll_centimos_to_input(
+                max(0, net)
+            )
+        )
+        payroll_total_cost.value = (
+            _payroll_centimos_to_input(
+                employer_cost
+            )
+        )
+
+        if e is not None:
+            try:
+                payroll_total_deductions.update()
+                payroll_net.update()
+                payroll_total_cost.update()
+            except Exception:
+                pass
+
+    payroll_gross.on_change = (
+        recalculate_payroll_totals
+    )
+    payroll_employee_ss.on_change = (
+        recalculate_payroll_totals
+    )
+    payroll_irpf.on_change = (
+        recalculate_payroll_totals
+    )
+    payroll_other_deductions.on_change = (
+        recalculate_payroll_totals
+    )
+    payroll_employer_ss.on_change = (
+        recalculate_payroll_totals
+    )
+
     def clear_payroll_form():
         payroll_state["editing_id"] = None
 
@@ -961,6 +1046,149 @@ def worker_detail_view(
 
         payroll_message.controls.clear()
         payroll_message.visible = False
+
+        recalculate_payroll_totals()
+
+    def load_payroll_form(payroll):
+        payroll_state["editing_id"] = int(
+            payroll["id"]
+        )
+
+        payroll_year.value = str(
+            payroll.get("period_year") or ""
+        )
+
+        month = int(
+            payroll.get("period_month") or 0
+        )
+        payroll_month.value = next(
+            (
+                option.key
+                for option in payroll_month.options
+                if str(option.key or "").startswith(
+                    f"{month:02d}"
+                )
+            ),
+            "",
+        )
+
+        payroll_accrual_date.value = (
+            _display_date(
+                payroll.get("accrual_date")
+            )
+        )
+        payroll_payment_due_date.value = (
+            _display_date(
+                payroll.get("payment_due_date")
+            )
+        )
+        payroll_liquidation_start.value = (
+            _display_date(
+                payroll.get(
+                    "liquidation_start_date"
+                )
+            )
+        )
+        payroll_liquidation_end.value = (
+            _display_date(
+                payroll.get(
+                    "liquidation_end_date"
+                )
+            )
+        )
+        payroll_liquidation_days.value = str(
+            payroll.get("liquidation_days") or ""
+        )
+
+        money_fields = [
+            (
+                payroll_gross,
+                "gross_salary_centimos",
+            ),
+            (
+                payroll_employee_ss,
+                "employee_social_security_centimos",
+            ),
+            (
+                payroll_irpf,
+                "irpf_centimos",
+            ),
+            (
+                payroll_other_deductions,
+                "other_deductions_centimos",
+            ),
+            (
+                payroll_total_deductions,
+                "total_deductions_centimos",
+            ),
+            (
+                payroll_net,
+                "net_salary_centimos",
+            ),
+            (
+                payroll_employer_ss,
+                "employer_social_security_centimos",
+            ),
+            (
+                payroll_total_cost,
+                "total_employer_cost_centimos",
+            ),
+            (
+                payroll_common_base,
+                "contribution_common_base_centimos",
+            ),
+            (
+                payroll_accident_base,
+                "contribution_accident_base_centimos",
+            ),
+            (
+                payroll_irpf_base,
+                "irpf_base_centimos",
+            ),
+        ]
+
+        for control, field in money_fields:
+            control.value = (
+                _payroll_centimos_to_input(
+                    payroll.get(field)
+                )
+            )
+
+        payroll_irpf_rate.value = (
+            f"{int(payroll.get('irpf_rate_basis_points') or 0) / 100:.2f}"
+            .replace(".", ",")
+        )
+
+        payroll_contract_code.value = (
+            payroll.get(
+                "contract_code_snapshot"
+            )
+            or ""
+        )
+        payroll_contribution_group.value = (
+            payroll.get(
+                "contribution_group_snapshot"
+            )
+            or ""
+        )
+        payroll_professional_group.value = (
+            payroll.get(
+                "professional_group_snapshot"
+            )
+            or ""
+        )
+
+        payroll_document_path.value = (
+            payroll.get("document_path") or ""
+        )
+        payroll_notes.value = (
+            payroll.get("notes") or ""
+        )
+
+        payroll_message.controls.clear()
+        payroll_message.visible = False
+
+        recalculate_payroll_totals()
 
     def _payroll_payload():
         month_raw = str(
@@ -1132,6 +1360,18 @@ def worker_detail_view(
 
         payroll_dialog.title = ft.Text(
             "Nueva nómina",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        )
+
+        payroll_dialog.open = True
+        page.update()
+
+    def open_edit_payroll_dialog(payroll):
+        load_payroll_form(payroll)
+
+        payroll_dialog.title = ft.Text(
+            "Editar nómina",
             weight=ft.FontWeight.BOLD,
             color=Q_PRIMARY_DARK,
         )
@@ -1696,17 +1936,12 @@ def worker_detail_view(
         )
 
     def build_payrolls_section():
-        payrolls = [
-            payroll
-            for payroll in (
-                worker_payroll_service
-                .list_payrolls()
+        payrolls = (
+            worker_payroll_service
+            .list_worker_payrolls(
+                worker_id
             )
-            if int(
-                payroll.get("worker_id")
-                or 0
-            ) == int(worker_id)
-        ]
+        )
 
         gross_total = sum(
             int(
@@ -1869,16 +2104,39 @@ def worker_detail_view(
                                     spacing=2,
                                     expand=True,
                                 ),
-                                status_badge(
-                                    (
-                                        "Gasto generado"
-                                        if expense_created
-                                        else "Pendiente de gasto"
+                                ft.Container(
+                                    padding=ft.padding.symmetric(
+                                        horizontal=10,
+                                        vertical=5,
                                     ),
-                                    (
-                                        "success"
+                                    border_radius=20,
+                                    bgcolor=(
+                                        "#DCFCE7"
                                         if expense_created
-                                        else "warning"
+                                        else "#FEF3C7"
+                                    ),
+                                    content=ft.Text(
+                                        (
+                                            "Gasto generado"
+                                            if expense_created
+                                            else "Pendiente de gasto"
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=(
+                                            "#15803D"
+                                            if expense_created
+                                            else "#B45309"
+                                        ),
+                                    ),
+                                ),
+                                ft.IconButton(
+                                    icon=ft.Icons.EDIT_OUTLINED,
+                                    tooltip="Editar nómina",
+                                    on_click=lambda e: (
+                                        open_edit_payroll_dialog(
+                                            payroll
+                                        )
                                     ),
                                 ),
                             ],
