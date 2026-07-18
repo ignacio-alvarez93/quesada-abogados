@@ -4,12 +4,22 @@ from datetime import datetime
 
 import flet as ft
 
-from backend.services import worker_service
+from backend.services import (
+    worker_contract_service,
+    worker_service,
+)
 from frontend.components import (
     detail_section,
     empty_state,
+    multiline_input,
+    primary_button,
     secondary_button,
+    select_input,
     status_badge,
+    text_input,
+)
+from frontend.components.app_autocomplete import (
+    AppAutocomplete,
 )
 
 
@@ -92,6 +102,70 @@ def _photo_placeholder(worker):
     )
 
 
+
+def _money_from_centimos(value):
+    try:
+        amount = int(value or 0) / 100
+    except (TypeError, ValueError):
+        amount = 0
+
+    return (
+        f"{amount:,.2f} €"
+        .replace(",", "X")
+        .replace(".", ",")
+        .replace("X", ".")
+    )
+
+
+def _centimos_from_input(value):
+    raw = str(value or "").strip()
+
+    if not raw:
+        return 0
+
+    raw = (
+        raw.replace("€", "")
+        .replace(" ", "")
+    )
+
+    if "," in raw:
+        raw = (
+            raw.replace(".", "")
+            .replace(",", ".")
+        )
+
+    try:
+        return int(
+            round(float(raw) * 100)
+        )
+    except ValueError:
+        raise ValueError(
+            "El salario debe ser "
+            "un importe válido"
+        )
+
+
+CONTRACT_TYPE_LABELS = {
+    "INDEFINITE": "Indefinido",
+    "TEMPORARY": "Temporal",
+    "TRAINING": "Formativo",
+    "INTERNSHIP": "Prácticas",
+    "OTHER": "Otro",
+}
+
+
+WORKDAY_LABELS = {
+    "FULL_TIME": "Jornada completa",
+    "PART_TIME": "Jornada parcial",
+}
+
+
+SALARY_PERIOD_LABELS = {
+    "ANNUAL": "Anual",
+    "MONTHLY": "Mensual",
+}
+
+
 def worker_detail_view(
     page: ft.Page,
     worker_id: int,
@@ -113,6 +187,580 @@ def worker_detail_view(
     content_container = ft.Container(
         expand=True,
     )
+
+    contract_state = {
+        "editing_id": None,
+    }
+
+    cno_options = (
+        worker_contract_service
+        .load_cno_autocomplete_options()
+    )
+
+    contract_code = text_input(
+        "Código de contrato",
+        width=210,
+    )
+
+    contract_type = select_input(
+        "Tipo de contrato",
+        list(CONTRACT_TYPE_LABELS.values()),
+        value="Indefinido",
+        width=240,
+    )
+
+    contract_start_date = text_input(
+        "Fecha inicio DD/MM/AAAA",
+        width=220,
+    )
+
+    contract_end_date = text_input(
+        "Fecha fin DD/MM/AAAA",
+        width=220,
+    )
+
+    trial_period_end_date = text_input(
+        "Fin periodo de prueba",
+        width=220,
+    )
+
+    contract_position = text_input(
+        "Puesto",
+        width=330,
+    )
+
+    contract_cno = AppAutocomplete(
+        page=page,
+        label="Ocupación CNO / SEPE",
+        options=cno_options,
+        width=720,
+        max_results=10,
+        allow_free_text=False,
+    )
+
+    workday_type = select_input(
+        "Jornada",
+        list(WORKDAY_LABELS.values()),
+        value="Jornada completa",
+        width=240,
+    )
+
+    weekly_hours = text_input(
+        "Horas semanales",
+        width=180,
+    )
+
+    gross_salary = text_input(
+        "Salario bruto",
+        width=190,
+    )
+
+    salary_periodicity = select_input(
+        "Periodicidad",
+        list(SALARY_PERIOD_LABELS.values()),
+        value="Anual",
+        width=190,
+    )
+
+    payments_per_year = text_input(
+        "Número de pagas",
+        width=170,
+    )
+
+    professional_category = text_input(
+        "Categoría profesional",
+        width=310,
+    )
+
+    contribution_group = text_input(
+        "Grupo de cotización",
+        width=230,
+    )
+
+    collective_agreement = text_input(
+        "Convenio colectivo",
+        width=420,
+    )
+
+    document_path = text_input(
+        "Ruta del documento",
+        width=720,
+    )
+
+    contract_notes = multiline_input(
+        "Observaciones",
+        width=720,
+    )
+
+    contract_message = ft.Column(
+        controls=[],
+        visible=False,
+    )
+
+    def _value_key(labels, value, default):
+        selected = str(value or "").strip()
+
+        for key, label in labels.items():
+            if selected == label:
+                return key
+
+        return default
+
+
+    def _cno_option_for_contract(contract):
+        catalog_id = str(
+            contract.get(
+                "contract_cno_catalog_id"
+            )
+            or ""
+        ).strip()
+
+        code = str(
+            contract.get("contract_cno_code")
+            or ""
+        ).strip()
+
+        description = str(
+            contract.get(
+                "contract_cno_description"
+            )
+            or ""
+        ).strip()
+
+        for option in cno_options:
+            resolved = (
+                worker_contract_service
+                .resolve_cno_value(option)
+            )
+
+            if (
+                catalog_id
+                and resolved.get("catalog_id")
+                == catalog_id
+            ):
+                return option
+
+            if (
+                code
+                and resolved.get("code") == code
+                and (
+                    not description
+                    or resolved.get("description")
+                    == description
+                )
+            ):
+                return option
+
+        return None
+
+
+    def clear_contract_form():
+        contract_state["editing_id"] = None
+
+        contract_code.value = ""
+        contract_type.value = "Indefinido"
+        contract_start_date.value = ""
+        contract_end_date.value = ""
+        trial_period_end_date.value = ""
+        contract_position.value = ""
+        contract_cno.set_value(
+            "",
+            update=False,
+        )
+        workday_type.value = "Jornada completa"
+        weekly_hours.value = "40"
+        gross_salary.value = ""
+        salary_periodicity.value = "Anual"
+        payments_per_year.value = "14"
+        professional_category.value = ""
+        contribution_group.value = ""
+        collective_agreement.value = ""
+        document_path.value = ""
+        contract_notes.value = ""
+
+        contract_message.controls.clear()
+        contract_message.visible = False
+
+
+    def load_contract_form(contract):
+        contract_state["editing_id"] = int(
+            contract["id"]
+        )
+
+        contract_code.value = (
+            contract.get("contract_code") or ""
+        )
+
+        contract_type.value = (
+            CONTRACT_TYPE_LABELS.get(
+                contract.get("contract_type"),
+                "Otro",
+            )
+        )
+
+        contract_start_date.value = _display_date(
+            contract.get("start_date")
+        )
+        contract_end_date.value = _display_date(
+            contract.get("end_date")
+        )
+        trial_period_end_date.value = _display_date(
+            contract.get(
+                "trial_period_end_date"
+            )
+        )
+
+        contract_position.value = (
+            contract.get("contract_position") or ""
+        )
+
+        selected_cno = _cno_option_for_contract(
+            contract
+        )
+
+        if selected_cno:
+            contract_cno.set_value(
+                selected_cno,
+                update=False,
+            )
+        else:
+            cno_code = str(
+                contract.get("contract_cno_code")
+                or ""
+            ).strip()
+            cno_description = str(
+                contract.get(
+                    "contract_cno_description"
+                )
+                or ""
+            ).strip()
+
+            cno_label = " · ".join(
+                part
+                for part in [
+                    cno_code,
+                    cno_description,
+                ]
+                if part
+            )
+
+            contract_cno.set_value(
+                cno_label,
+                update=False,
+            )
+
+        workday_type.value = (
+            WORKDAY_LABELS.get(
+                contract.get("workday_type"),
+                "Jornada completa",
+            )
+        )
+
+        weekly_hours.value = str(
+            contract.get("weekly_hours") or ""
+        )
+
+        gross_salary.value = (
+            f"{int(contract.get('gross_salary_centimos') or 0) / 100:.2f}"
+            .replace(".", ",")
+        )
+
+        salary_periodicity.value = (
+            SALARY_PERIOD_LABELS.get(
+                contract.get(
+                    "salary_periodicity"
+                ),
+                "Anual",
+            )
+        )
+
+        payments_per_year.value = str(
+            contract.get("payments_per_year")
+            or ""
+        )
+
+        professional_category.value = (
+            contract.get(
+                "professional_category"
+            )
+            or ""
+        )
+        contribution_group.value = (
+            contract.get("contribution_group")
+            or ""
+        )
+        collective_agreement.value = (
+            contract.get(
+                "collective_agreement"
+            )
+            or ""
+        )
+        document_path.value = (
+            contract.get("document_path") or ""
+        )
+        contract_notes.value = (
+            contract.get("notes") or ""
+        )
+
+        contract_message.controls.clear()
+        contract_message.visible = False
+
+
+    def close_contract_dialog(e=None):
+        contract_dialog.open = False
+        page.update()
+
+
+    def _contract_payload():
+        selected_cno = contract_cno.get_value()
+
+        if not selected_cno:
+            raise ValueError(
+                "Debe seleccionar una ocupación "
+                "del catálogo CNO / SEPE"
+            )
+
+        cno_data = (
+            worker_contract_service
+            .resolve_cno_value(selected_cno)
+        )
+
+        if not cno_data.get("catalog_id"):
+            raise ValueError(
+                "Debe seleccionar una ocupación "
+                "válida del catálogo CNO / SEPE"
+            )
+
+        return {
+            "contract_code": contract_code.value or "",
+            "contract_type": _value_key(
+                CONTRACT_TYPE_LABELS,
+                contract_type.value,
+                "INDEFINITE",
+            ),
+            "start_date": (
+                contract_start_date.value or ""
+            ),
+            "end_date": (
+                contract_end_date.value or ""
+            ),
+            "trial_period_end_date": (
+                trial_period_end_date.value or ""
+            ),
+            "workday_type": _value_key(
+                WORKDAY_LABELS,
+                workday_type.value,
+                "FULL_TIME",
+            ),
+            "weekly_hours": (
+                weekly_hours.value or "40"
+            ),
+            "gross_salary_centimos": (
+                _centimos_from_input(
+                    gross_salary.value
+                )
+            ),
+            "salary_periodicity": _value_key(
+                SALARY_PERIOD_LABELS,
+                salary_periodicity.value,
+                "ANNUAL",
+            ),
+            "payments_per_year": (
+                payments_per_year.value or "14"
+            ),
+            "contribution_group": (
+                contribution_group.value or ""
+            ),
+            "professional_category": (
+                professional_category.value or ""
+            ),
+            "collective_agreement": (
+                collective_agreement.value or ""
+            ),
+            "contract_position": (
+                contract_position.value or ""
+            ),
+            "contract_cno_code": (
+                cno_data.get("code") or ""
+            ),
+            "contract_cno_description": (
+                cno_data.get("description") or ""
+            ),
+            "contract_cno_catalog_id": (
+                cno_data.get("catalog_id") or ""
+            ),
+            "document_path": (
+                document_path.value or ""
+            ),
+            "active": 1,
+            "notes": contract_notes.value or "",
+        }
+
+
+    def refresh_contracts_section():
+        if state.get("section") == "contracts":
+            content_container.content = (
+                build_contracts_section()
+            )
+            page.update()
+
+
+    def save_contract(e=None):
+        try:
+            payload = _contract_payload()
+            editing_id = contract_state.get(
+                "editing_id"
+            )
+
+            if editing_id:
+                worker_contract_service.update_contract(
+                    editing_id,
+                    payload,
+                )
+            else:
+                worker_contract_service.create_contract(
+                    worker_id,
+                    payload,
+                )
+
+            contract_dialog.open = False
+            refresh_contracts_section()
+
+        except Exception as exc:
+            contract_message.controls = [
+                ft.Text(
+                    str(exc),
+                    color="#B42318",
+                    size=12,
+                )
+            ]
+            contract_message.visible = True
+            page.update()
+
+
+    def open_new_contract_dialog(e=None):
+        clear_contract_form()
+
+        contract_dialog.title = ft.Text(
+            "Nuevo contrato",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        )
+
+        contract_dialog.open = True
+        page.update()
+
+
+    def open_edit_contract_dialog(contract):
+        load_contract_form(contract)
+
+        contract_dialog.title = ft.Text(
+            "Editar contrato",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        )
+
+        contract_dialog.open = True
+        page.update()
+
+
+    contract_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Nuevo contrato",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        ),
+        content=ft.Container(
+            width=900,
+            height=680,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Datos contractuales",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Row(
+                        controls=[
+                            contract_type,
+                            contract_code,
+                            contract_start_date,
+                            contract_end_date,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            trial_period_end_date,
+                            contract_position,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    contract_cno.control,
+                    ft.Divider(),
+                    ft.Text(
+                        "Jornada y salario",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Row(
+                        controls=[
+                            workday_type,
+                            weekly_hours,
+                            gross_salary,
+                            salary_periodicity,
+                            payments_per_year,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Divider(),
+                    ft.Text(
+                        "Clasificación laboral",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Row(
+                        controls=[
+                            professional_category,
+                            contribution_group,
+                            collective_agreement,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Divider(),
+                    document_path,
+                    contract_notes,
+                    contract_message,
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        ),
+        actions=[
+            ft.TextButton(
+                "Cancelar",
+                on_click=close_contract_dialog,
+            ),
+            primary_button(
+                "Guardar",
+                save_contract,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+        shape=ft.RoundedRectangleBorder(
+            radius=16,
+        ),
+    )
+
+    page.overlay.append(contract_dialog)
 
     sidebar_actions = []
 
@@ -358,13 +1006,199 @@ def worker_detail_view(
         )
 
     def build_contracts_section():
-        return placeholder_section(
-            "Contratos",
-            "Histórico contractual",
-            (
-                "Aquí se registrarán contratos, "
-                "jornada, salario y modificaciones."
-            ),
+        contracts = (
+            worker_contract_service
+            .list_worker_contracts(worker_id)
+        )
+
+        cards = []
+
+        for contract in contracts:
+            active = bool(
+                contract.get("active")
+            )
+
+            contract_type_label = (
+                CONTRACT_TYPE_LABELS.get(
+                    contract.get("contract_type"),
+                    contract.get("contract_type")
+                    or "Contrato laboral",
+                )
+            )
+
+            title = (
+                contract.get("contract_position")
+                or contract_type_label
+            )
+
+            cno_text = " · ".join(
+                part
+                for part in [
+                    contract.get(
+                        "contract_cno_code"
+                    ),
+                    contract.get(
+                        "contract_cno_description"
+                    ),
+                ]
+                if part
+            )
+
+            cards.append(
+                ft.Container(
+                    bgcolor=Q_WHITE,
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=12,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                title,
+                                                size=16,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color=(
+                                                    Q_PRIMARY_DARK
+                                                ),
+                                            ),
+                                            ft.Text(
+                                                (
+                                                    "Activo"
+                                                    if active
+                                                    else "Finalizado"
+                                                ),
+                                                size=12,
+                                                color=(
+                                                    "#067647"
+                                                    if active
+                                                    else Q_MUTED
+                                                ),
+                                            ),
+                                        ],
+                                        spacing=2,
+                                        expand=True,
+                                    ),
+                                    ft.IconButton(
+                                        icon=(
+                                            ft.Icons
+                                            .EDIT_OUTLINED
+                                        ),
+                                        tooltip=(
+                                            "Editar contrato"
+                                        ),
+                                        on_click=(
+                                            lambda e,
+                                            item=contract:
+                                            open_edit_contract_dialog(
+                                                item
+                                            )
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            ft.Divider(height=1),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        (
+                                            "Inicio: "
+                                            f"{_display_date(contract.get('start_date'))}"
+                                        ),
+                                        size=12,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Fin: "
+                                            f"{_display_date(contract.get('end_date'))}"
+                                        ),
+                                        size=12,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            WORKDAY_LABELS.get(
+                                                contract.get(
+                                                    "workday_type"
+                                                ),
+                                                contract.get(
+                                                    "workday_type"
+                                                )
+                                                or "-",
+                                            )
+                                        ),
+                                        size=12,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            f"{contract.get('weekly_hours') or 0} h/semana"
+                                        ),
+                                        size=12,
+                                    ),
+                                ],
+                                spacing=18,
+                                wrap=True,
+                            ),
+                            ft.Text(
+                                cno_text or "Sin ocupación CNO",
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                (
+                                    f"Salario bruto: "
+                                    f"{_money_from_centimos(contract.get('gross_salary_centimos'))} "
+                                    f"· "
+                                    f"{SALARY_PERIOD_LABELS.get(contract.get('salary_periodicity'), contract.get('salary_periodicity') or '-')}"
+                                ),
+                                size=12,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                )
+            )
+
+        body = (
+            ft.Column(
+                controls=cards,
+                spacing=10,
+            )
+            if cards
+            else empty_state(
+                "No hay contratos registrados"
+            )
+        )
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Text(
+                            "Contratos",
+                            size=20,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Container(expand=True),
+                        primary_button(
+                            "Nuevo contrato",
+                            open_new_contract_dialog,
+                        ),
+                    ],
+                ),
+                body,
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
         )
 
     def build_payrolls_section():
