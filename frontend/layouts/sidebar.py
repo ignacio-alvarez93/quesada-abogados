@@ -56,6 +56,14 @@ MENU_GROUPS = [
         ],
     },
     {
+        "title": "Nóminas",
+        "icon": "🧾",
+        "open": False,
+        "items": [
+            ("Nóminas", "🧾"),
+        ],
+    },
+    {
         "title": "Documentos / Box",
         "icon": "☁️",
         "open": False,
@@ -144,6 +152,7 @@ KNOWN_ACTIVE_VIEWS = {
     "Cobros",
     "Conciliación",
     "Fiscal",
+    "Nóminas",
     "Documentos / Box",
     "Bandeja documental",
     "Reporting",

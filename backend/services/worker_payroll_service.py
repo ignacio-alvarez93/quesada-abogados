@@ -700,3 +700,60 @@ def sync_salary_expense(
             conn.commit()
 
     return expense
+
+
+def list_payrolls(
+    *,
+    year: int | None = None,
+    month: int | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    conditions = [
+        "p.active = 1",
+    ]
+    params: list[Any] = []
+
+    if year is not None:
+        conditions.append(
+            "p.period_year = ?"
+        )
+        params.append(int(year))
+
+    if month is not None:
+        conditions.append(
+            "p.period_month = ?"
+        )
+        params.append(int(month))
+
+    where_sql = " AND ".join(conditions)
+
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                p.*,
+                w.worker_code,
+                w.first_name,
+                w.last_name_1,
+                w.last_name_2,
+                w.tax_id,
+                w.position
+            FROM worker_payrolls p
+            JOIN workers w
+              ON w.id = p.worker_id
+            WHERE {where_sql}
+            ORDER BY
+                p.period_year DESC,
+                p.period_month DESC,
+                w.last_name_1,
+                w.last_name_2,
+                w.first_name,
+                p.id DESC
+            """,
+            params,
+        ).fetchall()
+
+    return [
+        dict(row)
+        for row in rows
+    ]

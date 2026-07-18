@@ -6,6 +6,7 @@ import flet as ft
 
 from backend.services import (
     worker_contract_service,
+    worker_payroll_service,
     worker_service,
 )
 from frontend.components import (
@@ -142,6 +143,27 @@ def _centimos_from_input(value):
         raise ValueError(
             "El salario debe ser "
             "un importe válido"
+        )
+
+
+def _basis_points_from_input(value):
+    raw = str(value or "").strip()
+
+    if not raw:
+        return 0
+
+    raw = (
+        raw.replace("%", "")
+        .replace(" ", "")
+        .replace(",", ".")
+    )
+
+    try:
+        return int(round(float(raw) * 100))
+    except ValueError:
+        raise ValueError(
+            "El tipo de IRPF debe ser "
+            "un porcentaje válido"
         )
 
 
@@ -762,6 +784,478 @@ def worker_detail_view(
 
     page.overlay.append(contract_dialog)
 
+    payroll_state = {
+        "editing_id": None,
+    }
+
+    payroll_year = text_input(
+        "Ejercicio",
+        width=150,
+    )
+    payroll_month = select_input(
+        "Mes",
+        [
+            "01 - Enero",
+            "02 - Febrero",
+            "03 - Marzo",
+            "04 - Abril",
+            "05 - Mayo",
+            "06 - Junio",
+            "07 - Julio",
+            "08 - Agosto",
+            "09 - Septiembre",
+            "10 - Octubre",
+            "11 - Noviembre",
+            "12 - Diciembre",
+        ],
+        width=190,
+    )
+    payroll_accrual_date = text_input(
+        "Fecha de devengo",
+        width=200,
+    )
+    payroll_payment_due_date = text_input(
+        "Fecha prevista de pago",
+        width=210,
+    )
+    payroll_liquidation_start = text_input(
+        "Inicio liquidación",
+        width=200,
+    )
+    payroll_liquidation_end = text_input(
+        "Fin liquidación",
+        width=200,
+    )
+    payroll_liquidation_days = text_input(
+        "Días liquidados",
+        width=170,
+    )
+
+    payroll_gross = text_input(
+        "Total devengado",
+        width=190,
+    )
+    payroll_employee_ss = text_input(
+        "SS trabajador",
+        width=190,
+    )
+    payroll_irpf = text_input(
+        "IRPF retenido",
+        width=190,
+    )
+    payroll_other_deductions = text_input(
+        "Otras deducciones",
+        width=190,
+    )
+    payroll_total_deductions = text_input(
+        "Total deducciones",
+        width=190,
+    )
+    payroll_net = text_input(
+        "Líquido",
+        width=190,
+    )
+
+    payroll_employer_ss = text_input(
+        "SS empresa",
+        width=190,
+    )
+    payroll_total_cost = text_input(
+        "Coste total empresa",
+        width=210,
+    )
+
+    payroll_common_base = text_input(
+        "Base contingencias comunes",
+        width=240,
+    )
+    payroll_accident_base = text_input(
+        "Base accidentes",
+        width=210,
+    )
+    payroll_irpf_base = text_input(
+        "Base IRPF",
+        width=190,
+    )
+    payroll_irpf_rate = text_input(
+        "Tipo IRPF %",
+        width=160,
+    )
+
+    payroll_contract_code = text_input(
+        "Código contrato",
+        width=200,
+    )
+    payroll_contribution_group = text_input(
+        "Grupo cotización",
+        width=220,
+    )
+    payroll_professional_group = text_input(
+        "Grupo profesional",
+        width=260,
+    )
+
+    payroll_document_path = text_input(
+        "Ruta del documento",
+        width=720,
+    )
+    payroll_notes = multiline_input(
+        "Observaciones",
+        width=720,
+    )
+
+    payroll_message = ft.Column(
+        controls=[],
+        visible=False,
+    )
+
+    def clear_payroll_form():
+        payroll_state["editing_id"] = None
+
+        now = datetime.now()
+        month_label = next(
+            (
+                value
+                for value in payroll_month.options
+                if str(value.key or "").startswith(
+                    f"{now.month:02d}"
+                )
+            ),
+            None,
+        )
+
+        payroll_year.value = str(now.year)
+        payroll_month.value = (
+            month_label.key
+            if month_label
+            else f"{now.month:02d} -"
+        )
+
+        payroll_accrual_date.value = ""
+        payroll_payment_due_date.value = ""
+        payroll_liquidation_start.value = ""
+        payroll_liquidation_end.value = ""
+        payroll_liquidation_days.value = ""
+
+        payroll_gross.value = ""
+        payroll_employee_ss.value = ""
+        payroll_irpf.value = ""
+        payroll_other_deductions.value = ""
+        payroll_total_deductions.value = ""
+        payroll_net.value = ""
+
+        payroll_employer_ss.value = ""
+        payroll_total_cost.value = ""
+
+        payroll_common_base.value = ""
+        payroll_accident_base.value = ""
+        payroll_irpf_base.value = ""
+        payroll_irpf_rate.value = ""
+
+        payroll_contract_code.value = ""
+        payroll_contribution_group.value = ""
+        payroll_professional_group.value = ""
+
+        payroll_document_path.value = ""
+        payroll_notes.value = ""
+
+        payroll_message.controls.clear()
+        payroll_message.visible = False
+
+    def _payroll_payload():
+        month_raw = str(
+            payroll_month.value or ""
+        ).strip()
+
+        if not month_raw:
+            raise ValueError(
+                "Debe seleccionar el mes"
+            )
+
+        month_number = int(
+            month_raw.split(
+                " ",
+                1,
+            )[0]
+        )
+
+        return {
+            "period_year": int(
+                payroll_year.value or 0
+            ),
+            "period_month": month_number,
+            "accrual_date": (
+                payroll_accrual_date.value or ""
+            ),
+            "payment_due_date": (
+                payroll_payment_due_date.value or ""
+            ),
+            "liquidation_start_date": (
+                payroll_liquidation_start.value or ""
+            ),
+            "liquidation_end_date": (
+                payroll_liquidation_end.value or ""
+            ),
+            "liquidation_days": int(
+                payroll_liquidation_days.value or 0
+            ),
+            "gross_salary_centimos": (
+                _centimos_from_input(
+                    payroll_gross.value
+                )
+            ),
+            "employee_social_security_centimos": (
+                _centimos_from_input(
+                    payroll_employee_ss.value
+                )
+            ),
+            "irpf_centimos": (
+                _centimos_from_input(
+                    payroll_irpf.value
+                )
+            ),
+            "other_deductions_centimos": (
+                _centimos_from_input(
+                    payroll_other_deductions.value
+                )
+            ),
+            "total_deductions_centimos": (
+                _centimos_from_input(
+                    payroll_total_deductions.value
+                )
+            ),
+            "net_salary_centimos": (
+                _centimos_from_input(
+                    payroll_net.value
+                )
+            ),
+            "employer_social_security_centimos": (
+                _centimos_from_input(
+                    payroll_employer_ss.value
+                )
+            ),
+            "total_employer_cost_centimos": (
+                _centimos_from_input(
+                    payroll_total_cost.value
+                )
+            ),
+            "contribution_common_base_centimos": (
+                _centimos_from_input(
+                    payroll_common_base.value
+                )
+            ),
+            "contribution_accident_base_centimos": (
+                _centimos_from_input(
+                    payroll_accident_base.value
+                )
+            ),
+            "irpf_base_centimos": (
+                _centimos_from_input(
+                    payroll_irpf_base.value
+                )
+            ),
+            "irpf_rate_basis_points": (
+                _basis_points_from_input(
+                    payroll_irpf_rate.value
+                )
+            ),
+            "contract_code_snapshot": (
+                payroll_contract_code.value or ""
+            ),
+            "contribution_group_snapshot": (
+                payroll_contribution_group.value or ""
+            ),
+            "professional_group_snapshot": (
+                payroll_professional_group.value or ""
+            ),
+            "document_path": (
+                payroll_document_path.value or ""
+            ),
+            "status": "PENDING",
+            "notes": payroll_notes.value or "",
+            "active": 1,
+        }
+
+    def close_payroll_dialog(e=None):
+        payroll_dialog.open = False
+        page.update()
+
+    def refresh_payrolls_section():
+        if state.get("section") == "payrolls":
+            content_container.content = (
+                build_payrolls_section()
+            )
+            page.update()
+
+    def save_payroll(e=None):
+        try:
+            payload = _payroll_payload()
+            editing_id = payroll_state.get(
+                "editing_id"
+            )
+
+            if editing_id:
+                worker_payroll_service.update_payroll(
+                    editing_id,
+                    payload,
+                )
+                payroll_id = int(editing_id)
+            else:
+                payroll_id = (
+                    worker_payroll_service
+                    .create_payroll(
+                        worker_id,
+                        payload,
+                    )
+                )
+
+            worker_payroll_service.sync_salary_expense(
+                payroll_id
+            )
+
+            payroll_dialog.open = False
+            refresh_payrolls_section()
+
+        except Exception as exc:
+            payroll_message.controls = [
+                ft.Text(
+                    str(exc),
+                    color="#B42318",
+                    size=12,
+                )
+            ]
+            payroll_message.visible = True
+            page.update()
+
+    def open_new_payroll_dialog(e=None):
+        clear_payroll_form()
+
+        payroll_dialog.title = ft.Text(
+            "Nueva nómina",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        )
+
+        payroll_dialog.open = True
+        page.update()
+
+    payroll_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Nueva nómina",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        ),
+        content=ft.Container(
+            width=920,
+            height=690,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Periodo y liquidación",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Row(
+                        controls=[
+                            payroll_year,
+                            payroll_month,
+                            payroll_accrual_date,
+                            payroll_payment_due_date,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            payroll_liquidation_start,
+                            payroll_liquidation_end,
+                            payroll_liquidation_days,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Divider(),
+                    ft.Text(
+                        "Devengos y deducciones",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Row(
+                        controls=[
+                            payroll_gross,
+                            payroll_employee_ss,
+                            payroll_irpf,
+                            payroll_other_deductions,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            payroll_total_deductions,
+                            payroll_net,
+                            payroll_employer_ss,
+                            payroll_total_cost,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Divider(),
+                    ft.Text(
+                        "Bases y clasificación",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Row(
+                        controls=[
+                            payroll_common_base,
+                            payroll_accident_base,
+                            payroll_irpf_base,
+                            payroll_irpf_rate,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            payroll_contract_code,
+                            payroll_contribution_group,
+                            payroll_professional_group,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Divider(),
+                    payroll_document_path,
+                    payroll_notes,
+                    payroll_message,
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        ),
+        actions=[
+            ft.TextButton(
+                "Cancelar",
+                on_click=close_payroll_dialog,
+            ),
+            primary_button(
+                "Guardar nómina",
+                save_payroll,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+        shape=ft.RoundedRectangleBorder(
+            radius=16,
+        ),
+    )
+
+    page.overlay.append(payroll_dialog)
+
     sidebar_actions = []
 
     if on_back:
@@ -1202,13 +1696,353 @@ def worker_detail_view(
         )
 
     def build_payrolls_section():
-        return placeholder_section(
-            "Nóminas",
-            "Nóminas del trabajador",
-            (
-                "Aquí se mostrarán las nóminas, "
-                "gastos salariales y pagos conciliados."
-            ),
+        payrolls = [
+            payroll
+            for payroll in (
+                worker_payroll_service
+                .list_payrolls()
+            )
+            if int(
+                payroll.get("worker_id")
+                or 0
+            ) == int(worker_id)
+        ]
+
+        gross_total = sum(
+            int(
+                payroll.get(
+                    "gross_salary_centimos"
+                )
+                or 0
+            )
+            for payroll in payrolls
+        )
+        net_total = sum(
+            int(
+                payroll.get(
+                    "net_salary_centimos"
+                )
+                or 0
+            )
+            for payroll in payrolls
+        )
+        employer_ss_total = sum(
+            int(
+                payroll.get(
+                    "employer_social_security_centimos"
+                )
+                or 0
+            )
+            for payroll in payrolls
+        )
+        employer_cost_total = sum(
+            int(
+                payroll.get(
+                    "total_employer_cost_centimos"
+                )
+                or 0
+            )
+            for payroll in payrolls
+        )
+
+        def summary_item(label, value):
+            return ft.Container(
+                expand=True,
+                padding=12,
+                bgcolor="#F8FAFC",
+                border=ft.border.all(
+                    1,
+                    Q_BORDER,
+                ),
+                border_radius=12,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            label,
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                        ft.Text(
+                            value,
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                    ],
+                    spacing=2,
+                ),
+            )
+
+        def amount_item(
+            label,
+            value,
+            *,
+            highlight=False,
+        ):
+            return ft.Column(
+                controls=[
+                    ft.Text(
+                        label,
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        _money_from_centimos(
+                            value
+                        ),
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=(
+                            Q_PRIMARY
+                            if highlight
+                            else Q_PRIMARY_DARK
+                        ),
+                    ),
+                ],
+                spacing=2,
+                expand=True,
+            )
+
+        def payroll_card(payroll):
+            month = int(
+                payroll.get("period_month")
+                or 0
+            )
+            year = int(
+                payroll.get("period_year")
+                or 0
+            )
+
+            month_names = {
+                1: "Enero",
+                2: "Febrero",
+                3: "Marzo",
+                4: "Abril",
+                5: "Mayo",
+                6: "Junio",
+                7: "Julio",
+                8: "Agosto",
+                9: "Septiembre",
+                10: "Octubre",
+                11: "Noviembre",
+                12: "Diciembre",
+            }
+
+            expense_created = bool(
+                payroll.get(
+                    "salary_expense_id"
+                )
+            )
+
+            return ft.Container(
+                padding=14,
+                bgcolor=Q_WHITE,
+                border=ft.border.all(
+                    1,
+                    Q_BORDER,
+                ),
+                border_radius=12,
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            (
+                                                f"{month_names.get(month, month)} "
+                                                f"{year}"
+                                            ),
+                                            size=16,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            (
+                                                "Devengo: "
+                                                f"{_display_date(payroll.get('accrual_date'))}"
+                                            ),
+                                            size=11,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                status_badge(
+                                    (
+                                        "Gasto generado"
+                                        if expense_created
+                                        else "Pendiente de gasto"
+                                    ),
+                                    (
+                                        "success"
+                                        if expense_created
+                                        else "warning"
+                                    ),
+                                ),
+                            ],
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.CENTER
+                            ),
+                        ),
+                        ft.Divider(height=10),
+                        ft.Row(
+                            controls=[
+                                amount_item(
+                                    "Bruto",
+                                    payroll.get(
+                                        "gross_salary_centimos"
+                                    ),
+                                ),
+                                amount_item(
+                                    "Deducciones",
+                                    payroll.get(
+                                        "total_deductions_centimos"
+                                    ),
+                                ),
+                                amount_item(
+                                    "Líquido",
+                                    payroll.get(
+                                        "net_salary_centimos"
+                                    ),
+                                    highlight=True,
+                                ),
+                                amount_item(
+                                    "SS empresa",
+                                    payroll.get(
+                                        "employer_social_security_centimos"
+                                    ),
+                                ),
+                                amount_item(
+                                    "Coste empresa",
+                                    payroll.get(
+                                        "total_employer_cost_centimos"
+                                    ),
+                                ),
+                            ],
+                            spacing=12,
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Text(
+                                    (
+                                        "IRPF: "
+                                        f"{_money_from_centimos(payroll.get('irpf_centimos'))}"
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    (
+                                        "SS trabajador: "
+                                        f"{_money_from_centimos(payroll.get('employee_social_security_centimos'))}"
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    (
+                                        "Días liquidados: "
+                                        f"{payroll.get('liquidation_days') or '-'}"
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=18,
+                            wrap=True,
+                        ),
+                    ],
+                    spacing=8,
+                ),
+            )
+
+        if payrolls:
+            body = ft.Column(
+                controls=[
+                    payroll_card(payroll)
+                    for payroll in payrolls
+                ],
+                spacing=10,
+            )
+        else:
+            body = empty_state(
+                "Este trabajador todavía "
+                "no tiene nóminas registradas"
+            )
+
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Nóminas",
+                                    size=20,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    (
+                                        "Histórico salarial, "
+                                        "deducciones y costes."
+                                    ),
+                                    size=12,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                        primary_button(
+                            "Nueva nómina",
+                            open_new_payroll_dialog,
+                        ),
+                    ],
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+                ft.Row(
+                    controls=[
+                        summary_item(
+                            "Nóminas",
+                            str(len(payrolls)),
+                        ),
+                        summary_item(
+                            "Bruto acumulado",
+                            _money_from_centimos(
+                                gross_total
+                            ),
+                        ),
+                        summary_item(
+                            "Líquido acumulado",
+                            _money_from_centimos(
+                                net_total
+                            ),
+                        ),
+                        summary_item(
+                            "SS empresa",
+                            _money_from_centimos(
+                                employer_ss_total
+                            ),
+                        ),
+                        summary_item(
+                            "Coste total",
+                            _money_from_centimos(
+                                employer_cost_total
+                            ),
+                        ),
+                    ],
+                    spacing=10,
+                ),
+                body,
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
         )
 
     def build_social_security_section():
