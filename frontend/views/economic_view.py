@@ -33,6 +33,7 @@ from frontend.components.economic_engagement_letter_card import (
 )
 from backend.services import expense_service
 from backend.services import expense_reconciliation_service
+from backend.services import labor_reconciliation_service
 from backend.services import expense_classification_service
 from backend.services import supplier_service
 from frontend.components.economic_invoice_card import economic_invoice_card
@@ -4557,6 +4558,61 @@ def economic_view(page: ft.Page):
         )
 
 
+    def _payroll_reconciliation_label(payroll):
+        worker_name = " ".join(
+            part
+            for part in [
+                str(
+                    payroll.get("first_name")
+                    or ""
+                ).strip(),
+                str(
+                    payroll.get("last_name_1")
+                    or ""
+                ).strip(),
+                str(
+                    payroll.get("last_name_2")
+                    or ""
+                ).strip(),
+            ]
+            if part
+        ) or "Trabajador sin nombre"
+
+        period = (
+            f"{int(payroll.get('period_month') or 0):02d}/"
+            f"{int(payroll.get('period_year') or 0):04d}"
+        )
+
+        pending = _money_centimos(
+            payroll.get("pending_centimos")
+            or 0
+        )
+
+        return (
+            f"{payroll.get('id')} - "
+            f"{worker_name} · Nómina {period} · "
+            f"Pendiente {pending}"
+        )
+
+
+    def _social_security_reconciliation_label(period):
+        period_label = (
+            f"{int(period.get('period_month') or 0):02d}/"
+            f"{int(period.get('period_year') or 0):04d}"
+        )
+
+        pending = _money_centimos(
+            period.get("pending_centimos")
+            or 0
+        )
+
+        return (
+            f"{period.get('id')} - "
+            f"TGSS {period_label} · "
+            f"Pendiente {pending}"
+        )
+
+
     def open_negative_movement_reconciliation(
         source,
         item,
@@ -4589,7 +4645,13 @@ def economic_view(page: ft.Page):
             return
 
         try:
-            summary = (
+            movement_snapshot = (
+                labor_reconciliation_service
+                .get_movement_snapshot(
+                    movement_id
+                )
+            )
+            expense_summary = (
                 expense_reconciliation_service
                 .get_movement_summary(
                     movement_id
@@ -4603,15 +4665,18 @@ def economic_view(page: ft.Page):
             page.update()
             return
 
-        movement = summary["movement"]
+        movement = movement_snapshot["movement"]
         movement_total = int(
-            summary["total_centimos"] or 0
+            movement_snapshot["total_centimos"]
+            or 0
         )
         movement_applied = int(
-            summary["applied_centimos"] or 0
+            movement_snapshot["applied_centimos"]
+            or 0
         )
         movement_pending = int(
-            summary["pending_centimos"] or 0
+            movement_snapshot["pending_centimos"]
+            or 0
         )
 
         expenses = (
@@ -4814,6 +4879,328 @@ def economic_view(page: ft.Page):
             ),
         )
 
+        payrolls = (
+            labor_reconciliation_service
+            .list_payroll_candidates(
+                limit=2000,
+            )
+        )
+
+        payroll_option_map = {}
+        payroll_options = []
+
+        for payroll in payrolls:
+            label = _payroll_reconciliation_label(
+                payroll
+            )
+            payroll_option_map[label] = payroll
+            payroll_options.append(
+                {
+                    "id": payroll.get("id"),
+                    "label": label,
+                    "subtitle": (
+                        payroll.get("tax_id")
+                        or payroll.get("worker_code")
+                        or ""
+                    ),
+                }
+            )
+
+        social_security_periods = (
+            labor_reconciliation_service
+            .list_social_security_candidates(
+                limit=2000,
+            )
+        )
+
+        social_security_option_map = {}
+        social_security_options = []
+
+        for period in social_security_periods:
+            label = (
+                _social_security_reconciliation_label(
+                    period
+                )
+            )
+            social_security_option_map[label] = period
+            social_security_options.append(
+                {
+                    "id": period.get("id"),
+                    "label": label,
+                    "subtitle": (
+                        period.get("status")
+                        or ""
+                    ),
+                }
+            )
+
+        selected_payroll = {
+            "row": None,
+        }
+        selected_social_security = {
+            "row": None,
+        }
+
+        payroll_selection_summary = ft.Container()
+        social_security_selection_summary = (
+            ft.Container()
+        )
+
+        def payroll_selected(value):
+            label = str(value or "").strip()
+            payroll = payroll_option_map.get(label)
+            selected_payroll["row"] = payroll
+
+            if not payroll:
+                payroll_selection_summary.content = None
+                return
+
+            payroll_pending = int(
+                payroll.get("pending_centimos")
+                or 0
+            )
+            applicable = min(
+                movement_pending,
+                payroll_pending,
+            )
+
+            amount_input.value = (
+                f"{applicable / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            worker_name = " ".join(
+                part
+                for part in [
+                    str(
+                        payroll.get("first_name")
+                        or ""
+                    ).strip(),
+                    str(
+                        payroll.get("last_name_1")
+                        or ""
+                    ).strip(),
+                    str(
+                        payroll.get("last_name_2")
+                        or ""
+                    ).strip(),
+                ]
+                if part
+            ) or "Trabajador sin nombre"
+
+            period_label = (
+                f"{int(payroll.get('period_month') or 0):02d}/"
+                f"{int(payroll.get('period_year') or 0):04d}"
+            )
+
+            payroll_selection_summary.content = (
+                ft.Container(
+                    bgcolor="#F4F3FF",
+                    border=ft.border.all(
+                        1,
+                        "#BDB4FE",
+                    ),
+                    border_radius=10,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                worker_name.upper(),
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                f"Nómina {period_label}",
+                                size=12,
+                                color="#344054",
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "Líquido: "
+                                        + _money_centimos(
+                                            payroll.get(
+                                                "net_salary_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            payroll.get(
+                                                "applied_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Pendiente: "
+                                        + _money_centimos(
+                                            payroll_pending
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#B54708",
+                                    ),
+                                ],
+                                spacing=14,
+                                wrap=True,
+                            ),
+                        ],
+                        spacing=5,
+                    ),
+                )
+            )
+
+            try:
+                amount_input.update()
+                payroll_selection_summary.update()
+            except Exception:
+                pass
+
+        payroll_ac = AppAutocomplete(
+            page=page,
+            label="Nómina pendiente",
+            options=payroll_options,
+            width=690,
+            max_results=10,
+            on_select=payroll_selected,
+            allow_free_text=False,
+            hint_text=(
+                "Busca por trabajador, periodo, "
+                "documento o código"
+            ),
+            empty_text=(
+                "No hay nóminas pendientes "
+                "que coincidan"
+            ),
+        )
+
+        def social_security_selected(value):
+            label = str(value or "").strip()
+            period = (
+                social_security_option_map.get(label)
+            )
+            selected_social_security["row"] = period
+
+            if not period:
+                (
+                    social_security_selection_summary
+                    .content
+                ) = None
+                return
+
+            period_pending = int(
+                period.get("pending_centimos")
+                or 0
+            )
+            applicable = min(
+                movement_pending,
+                period_pending,
+            )
+
+            amount_input.value = (
+                f"{applicable / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            period_label = (
+                f"{int(period.get('period_month') or 0):02d}/"
+                f"{int(period.get('period_year') or 0):04d}"
+            )
+
+            social_security_selection_summary.content = (
+                ft.Container(
+                    bgcolor="#ECFDF3",
+                    border=ft.border.all(
+                        1,
+                        "#6CE9A6",
+                    ),
+                    border_radius=10,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                f"SEGURIDAD SOCIAL {period_label}",
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "Total TGSS: "
+                                        + _money_centimos(
+                                            period.get(
+                                                "total_payable_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            period.get(
+                                                "applied_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Pendiente: "
+                                        + _money_centimos(
+                                            period_pending
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#B54708",
+                                    ),
+                                ],
+                                spacing=14,
+                                wrap=True,
+                            ),
+                        ],
+                        spacing=5,
+                    ),
+                )
+            )
+
+            try:
+                amount_input.update()
+                (
+                    social_security_selection_summary
+                    .update()
+                )
+            except Exception:
+                pass
+
+        social_security_ac = AppAutocomplete(
+            page=page,
+            label="Periodo TGSS pendiente",
+            options=social_security_options,
+            width=690,
+            max_results=10,
+            on_select=social_security_selected,
+            allow_free_text=False,
+            hint_text=(
+                "Busca por periodo o notas"
+            ),
+            empty_text=(
+                "No hay periodos TGSS pendientes "
+                "que coincidan"
+            ),
+        )
+
         def parse_amount_centimos():
             raw = str(
                 amount_input.value or ""
@@ -4910,7 +5297,7 @@ def economic_view(page: ft.Page):
 
         application_controls = []
 
-        for application in summary["applications"]:
+        for application in expense_summary["applications"]:
             supplier = (
                 application.get(
                     "supplier_name_snapshot"
@@ -5055,6 +5442,89 @@ def economic_view(page: ft.Page):
                     error=True,
                 )
 
+        def apply_to_payroll(e=None):
+            payroll = selected_payroll.get("row")
+
+            if not payroll:
+                set_message(
+                    "Selecciona una nómina pendiente.",
+                    error=True,
+                )
+                return
+
+            try:
+                amount_centimos = parse_amount_centimos()
+
+                (
+                    labor_reconciliation_service
+                    .apply_payroll_reconciliation(
+                        movement_id=movement_id,
+                        payroll_id=int(
+                            payroll.get("id")
+                        ),
+                        amount_centimos=amount_centimos,
+                        notes=notes_input.value,
+                    )
+                )
+
+                show_message(
+                    success_alert(
+                        "Nómina conciliada con "
+                        "el movimiento"
+                    )
+                )
+
+                reopen_dialog()
+
+            except Exception as exc:
+                set_message(
+                    str(exc),
+                    error=True,
+                )
+
+        def apply_to_social_security(e=None):
+            period = selected_social_security.get(
+                "row"
+            )
+
+            if not period:
+                set_message(
+                    "Selecciona un periodo TGSS "
+                    "pendiente.",
+                    error=True,
+                )
+                return
+
+            try:
+                amount_centimos = parse_amount_centimos()
+
+                (
+                    labor_reconciliation_service
+                    .apply_social_security_reconciliation(
+                        movement_id=movement_id,
+                        social_security_period_id=int(
+                            period.get("id")
+                        ),
+                        amount_centimos=amount_centimos,
+                        notes=notes_input.value,
+                    )
+                )
+
+                show_message(
+                    success_alert(
+                        "Seguridad Social conciliada "
+                        "con el movimiento"
+                    )
+                )
+
+                reopen_dialog()
+
+            except Exception as exc:
+                set_message(
+                    str(exc),
+                    error=True,
+                )
+
         def create_expense_from_movement(e=None):
             if movement_pending <= 0:
                 set_message(
@@ -5180,11 +5650,39 @@ def economic_view(page: ft.Page):
             ),
         )
 
-        content = ft.Column(
+        destination_state = {
+            "value": "Gasto",
+        }
+
+        destination_options = [
+            {
+                "id": "expense",
+                "label": "Gasto",
+                "subtitle": (
+                    "Aplicar el movimiento a un "
+                    "gasto registrado"
+                ),
+            },
+            {
+                "id": "payroll",
+                "label": "Nómina",
+                "subtitle": (
+                    "Aplicar el movimiento al "
+                    "líquido de una nómina"
+                ),
+            },
+            {
+                "id": "social_security",
+                "label": "Seguridad Social / TGSS",
+                "subtitle": (
+                    "Aplicar el movimiento a la "
+                    "obligación mensual TGSS"
+                ),
+            },
+        ]
+
+        expense_panel = ft.Column(
             controls=[
-                summary_box,
-                applications_box,
-                ft.Divider(height=1),
                 ft.Text(
                     "Aplicar a un gasto existente",
                     size=14,
@@ -5193,19 +5691,171 @@ def economic_view(page: ft.Page):
                 ),
                 expense_ac.control,
                 selection_summary,
+            ],
+            spacing=10,
+            visible=True,
+        )
+
+        payroll_panel = ft.Column(
+            controls=[
+                ft.Text(
+                    "Aplicar a una nómina",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                payroll_ac.control,
+                payroll_selection_summary,
+            ],
+            spacing=10,
+            visible=False,
+        )
+
+        social_security_panel = ft.Column(
+            controls=[
+                ft.Text(
+                    "Aplicar a Seguridad Social / TGSS",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                social_security_ac.control,
+                social_security_selection_summary,
+            ],
+            spacing=10,
+            visible=False,
+        )
+
+        create_expense_button = secondary_button(
+            "Crear gasto desde movimiento",
+            create_expense_from_movement,
+        )
+        apply_expense_button = primary_button(
+            "Aplicar al gasto",
+            apply_to_existing_expense,
+        )
+        apply_payroll_button = primary_button(
+            "Aplicar a nómina",
+            apply_to_payroll,
+        )
+        apply_social_security_button = primary_button(
+            "Aplicar a TGSS",
+            apply_to_social_security,
+        )
+
+        apply_payroll_button.visible = False
+        apply_social_security_button.visible = False
+
+        destination_help = ft.Text(
+            (
+                "El importe no puede superar el "
+                "pendiente del movimiento ni el "
+                "pendiente del destino."
+            ),
+            size=11,
+            color=Q_MUTED,
+        )
+
+        def on_destination_change(value):
+            destination = str(
+                value or "Gasto"
+            ).strip()
+
+            destination_state["value"] = destination
+
+            is_expense = destination == "Gasto"
+            is_payroll = destination == "Nómina"
+            is_social_security = (
+                destination
+                == "Seguridad Social / TGSS"
+            )
+
+            expense_panel.visible = is_expense
+            payroll_panel.visible = is_payroll
+            social_security_panel.visible = (
+                is_social_security
+            )
+
+            create_expense_button.visible = is_expense
+            apply_expense_button.visible = is_expense
+            apply_payroll_button.visible = is_payroll
+            apply_social_security_button.visible = (
+                is_social_security
+            )
+
+            selected_expense["row"] = None
+            selected_payroll["row"] = None
+            selected_social_security["row"] = None
+
+            selection_summary.content = None
+            payroll_selection_summary.content = None
+            social_security_selection_summary.content = None
+
+            amount_input.value = (
+                f"{movement_pending / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            set_message(
+                "Selecciona el destino pendiente "
+                "al que deseas aplicar el movimiento."
+            )
+
+            try:
+                expense_panel.update()
+                payroll_panel.update()
+                social_security_panel.update()
+                create_expense_button.update()
+                apply_expense_button.update()
+                apply_payroll_button.update()
+                apply_social_security_button.update()
+                amount_input.update()
+            except Exception:
+                page.update()
+
+        destination_ac = AppAutocomplete(
+            page=page,
+            label="Destino de la conciliación",
+            options=destination_options,
+            width=360,
+            max_results=3,
+            on_select=on_destination_change,
+            allow_free_text=False,
+            hint_text=(
+                "Selecciona gasto, nómina o TGSS"
+            ),
+            empty_text=(
+                "No hay destinos disponibles"
+            ),
+        )
+
+        content = ft.Column(
+            controls=[
+                summary_box,
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Aplicaciones a gastos",
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            applications_box,
+                        ],
+                        spacing=7,
+                    ),
+                ),
+                ft.Divider(height=1),
+                destination_ac.control,
+                expense_panel,
+                payroll_panel,
+                social_security_panel,
                 ft.Row(
                     controls=[
                         amount_input,
                         ft.Container(
-                            content=ft.Text(
-                                (
-                                    "El importe no puede superar "
-                                    "el pendiente del movimiento "
-                                    "ni el pendiente del gasto."
-                                ),
-                                size=11,
-                                color=Q_MUTED,
-                            ),
+                            content=destination_help,
                             width=470,
                         ),
                     ],
@@ -5216,7 +5866,7 @@ def economic_view(page: ft.Page):
                 message_box,
             ],
             width=730,
-            height=580,
+            height=620,
             spacing=12,
             scroll=ft.ScrollMode.AUTO,
         )
@@ -5245,14 +5895,10 @@ def economic_view(page: ft.Page):
                         reconciliation_dialog
                     ),
                 ),
-                secondary_button(
-                    "Crear gasto desde movimiento",
-                    create_expense_from_movement,
-                ),
-                primary_button(
-                    "Aplicar al gasto",
-                    apply_to_existing_expense,
-                ),
+                create_expense_button,
+                apply_expense_button,
+                apply_payroll_button,
+                apply_social_security_button,
             ],
             actions_alignment=(
                 ft.MainAxisAlignment.END
