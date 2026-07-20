@@ -4657,6 +4657,12 @@ def economic_view(page: ft.Page):
                     movement_id
                 )
             )
+            labor_applications = (
+                labor_reconciliation_service
+                .list_movement_labor_applications(
+                    movement_id
+                )
+            )
         except Exception as exc:
             page.snack_bar = ft.SnackBar(
                 content=ft.Text(str(exc)),
@@ -5295,6 +5301,70 @@ def economic_view(page: ft.Page):
 
             return handler
 
+        def remove_payroll_application(
+            application_id,
+        ):
+            def handler(e=None):
+                try:
+                    (
+                        labor_reconciliation_service
+                        .remove_payroll_reconciliation(
+                            int(application_id),
+                            reason=(
+                                "Retirada manual desde "
+                                "Económico > Movimientos"
+                            ),
+                        )
+                    )
+
+                    show_message(
+                        success_alert(
+                            "Aplicación de nómina retirada"
+                        )
+                    )
+
+                    reopen_dialog()
+
+                except Exception as exc:
+                    set_message(
+                        str(exc),
+                        error=True,
+                    )
+
+            return handler
+
+        def remove_social_security_application(
+            application_id,
+        ):
+            def handler(e=None):
+                try:
+                    (
+                        labor_reconciliation_service
+                        .remove_social_security_reconciliation(
+                            int(application_id),
+                            reason=(
+                                "Retirada manual desde "
+                                "Económico > Movimientos"
+                            ),
+                        )
+                    )
+
+                    show_message(
+                        success_alert(
+                            "Aplicación TGSS retirada"
+                        )
+                    )
+
+                    reopen_dialog()
+
+                except Exception as exc:
+                    set_message(
+                        str(exc),
+                        error=True,
+                    )
+
+            return handler
+
         application_controls = []
 
         for application in expense_summary["applications"]:
@@ -5374,6 +5444,169 @@ def economic_view(page: ft.Page):
                 )
             )
 
+        for application in labor_applications["payrolls"]:
+            worker_name = " ".join(
+                part
+                for part in [
+                    str(
+                        application.get("first_name")
+                        or ""
+                    ).strip(),
+                    str(
+                        application.get("last_name_1")
+                        or ""
+                    ).strip(),
+                    str(
+                        application.get("last_name_2")
+                        or ""
+                    ).strip(),
+                ]
+                if part
+            ) or "Trabajador sin nombre"
+
+            period_label = (
+                f"{int(application.get('period_month') or 0):02d}/"
+                f"{int(application.get('period_year') or 0):04d}"
+            )
+
+            application_controls.append(
+                ft.Container(
+                    bgcolor="#F4F3FF",
+                    border=ft.border.all(
+                        1,
+                        "#BDB4FE",
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "NÓMINA · "
+                                        + worker_name.upper(),
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        f"Periodo {period_label}",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            application.get(
+                                                "amount_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#027A48",
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color="#B42318",
+                                tooltip=(
+                                    "Retirar aplicación de nómina"
+                                ),
+                                on_click=(
+                                    remove_payroll_application(
+                                        application.get("id")
+                                    )
+                                ),
+                            ),
+                        ],
+                        alignment=(
+                            ft.MainAxisAlignment
+                            .SPACE_BETWEEN
+                        ),
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
+        for application in (
+            labor_applications["social_security"]
+        ):
+            period_label = (
+                f"{int(application.get('period_month') or 0):02d}/"
+                f"{int(application.get('period_year') or 0):04d}"
+            )
+
+            application_controls.append(
+                ft.Container(
+                    bgcolor="#ECFDF3",
+                    border=ft.border.all(
+                        1,
+                        "#6CE9A6",
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        (
+                                            "SEGURIDAD SOCIAL / TGSS · "
+                                            + period_label
+                                        ),
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        "Obligación mensual agregada",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            application.get(
+                                                "amount_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#027A48",
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color="#B42318",
+                                tooltip=(
+                                    "Retirar aplicación TGSS"
+                                ),
+                                on_click=(
+                                    remove_social_security_application(
+                                        application.get("id")
+                                    )
+                                ),
+                            ),
+                        ],
+                        alignment=(
+                            ft.MainAxisAlignment
+                            .SPACE_BETWEEN
+                        ),
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
         if application_controls:
             applications_box.content = ft.Column(
                 controls=[
@@ -5390,7 +5623,7 @@ def economic_view(page: ft.Page):
         else:
             applications_box.content = ft.Text(
                 "El movimiento todavía no tiene "
-                "gastos aplicados.",
+                "aplicaciones registradas.",
                 size=12,
                 color=Q_MUTED,
                 italic=True,
@@ -5836,7 +6069,7 @@ def economic_view(page: ft.Page):
                     content=ft.Column(
                         controls=[
                             ft.Text(
-                                "Aplicaciones a gastos",
+                                "Aplicaciones registradas",
                                 size=13,
                                 weight=ft.FontWeight.BOLD,
                                 color=Q_PRIMARY_DARK,

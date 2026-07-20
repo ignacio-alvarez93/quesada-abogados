@@ -1352,3 +1352,107 @@ def remove_social_security_reconciliation(
             )
         ),
     }
+
+
+def list_movement_labor_applications(
+    movement_id: int,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, list[dict[str, Any]]]:
+    movement_id = int(movement_id)
+
+    with _connect(db_path) as conn:
+        movement = conn.execute(
+            """
+            SELECT id
+            FROM bank_movements
+            WHERE id = ?
+            """,
+            (movement_id,),
+        ).fetchone()
+
+        if not movement:
+            raise ValueError(
+                "No existe el movimiento bancario."
+            )
+
+        payroll_applications = conn.execute(
+            """
+            SELECT
+                a.id,
+                a.source_type,
+                a.source_movement_id,
+                a.payroll_id,
+                a.amount_centimos,
+                a.notes,
+                a.created_at,
+                a.updated_at,
+                p.period_year,
+                p.period_month,
+                p.net_salary_centimos,
+                w.id AS worker_id,
+                w.worker_code,
+                w.first_name,
+                w.last_name_1,
+                w.last_name_2,
+                w.tax_id
+            FROM
+                labor_payroll_reconciliation_applications a
+            JOIN worker_payrolls p
+              ON p.id = a.payroll_id
+            JOIN workers w
+              ON w.id = p.worker_id
+            WHERE LOWER(
+                COALESCE(a.source_type, '')
+            ) = 'bank'
+              AND a.source_movement_id = ?
+            ORDER BY
+                a.created_at,
+                a.id
+            """,
+            (movement_id,),
+        ).fetchall()
+
+        social_security_applications = conn.execute(
+            """
+            SELECT
+                a.id,
+                a.source_type,
+                a.source_movement_id,
+                a.social_security_period_id,
+                a.amount_centimos,
+                a.notes,
+                a.created_at,
+                a.updated_at,
+                p.period_year,
+                p.period_month,
+                p.employee_amount_centimos,
+                p.employer_amount_centimos,
+                p.other_amount_centimos,
+                p.total_payable_centimos,
+                p.status AS period_status
+            FROM
+                labor_social_security_reconciliation_applications a
+            JOIN labor_social_security_periods p
+              ON p.id = a.social_security_period_id
+            WHERE LOWER(
+                COALESCE(a.source_type, '')
+            ) = 'bank'
+              AND a.source_movement_id = ?
+            ORDER BY
+                a.created_at,
+                a.id
+            """,
+            (movement_id,),
+        ).fetchall()
+
+    return {
+        "payrolls": [
+            dict(row)
+            for row in payroll_applications
+        ],
+        "social_security": [
+            dict(row)
+            for row in social_security_applications
+        ],
+    }
