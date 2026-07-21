@@ -48,6 +48,14 @@ MENU_GROUPS = [
         ],
     },
     {
+        "title": "Contabilidad",
+        "icon": "📒",
+        "open": False,
+        "items": [
+            ("Pérdidas y ganancias", "📈"),
+        ],
+    },
+    {
         "title": "Fiscal",
         "icon": "🧮",
         "open": False,
@@ -151,6 +159,7 @@ KNOWN_ACTIVE_VIEWS = {
     "Colas de presentación",
     "Cobros",
     "Conciliación",
+    "Pérdidas y ganancias",
     "Fiscal",
     "Nóminas",
     "Documentos / Box",
