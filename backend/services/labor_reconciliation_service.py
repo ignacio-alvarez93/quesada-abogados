@@ -98,6 +98,7 @@ def _modern_movement_consumption(
         "expenses_centimos": 0,
         "payrolls_centimos": 0,
         "social_security_centimos": 0,
+        "suplidos_centimos": 0,
     }
 
     result["payments_centimos"] = (
@@ -162,6 +163,16 @@ def _modern_movement_consumption(
             table_name=(
                 "labor_social_security_"
                 "reconciliation_applications"
+            ),
+            movement_id=movement_id,
+        )
+    )
+
+    result["suplidos_centimos"] = (
+        _sum_source_applications(
+            conn,
+            table_name=(
+                "economic_suplido_payment_applications"
             ),
             movement_id=movement_id,
         )

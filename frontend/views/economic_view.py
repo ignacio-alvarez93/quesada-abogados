@@ -34,6 +34,7 @@ from frontend.components.economic_engagement_letter_card import (
 from backend.services import expense_service
 from backend.services import expense_reconciliation_service
 from backend.services import labor_reconciliation_service
+from backend.services import suplido_service
 from backend.services import expense_classification_service
 from backend.services import supplier_service
 from frontend.components.economic_invoice_card import economic_invoice_card
@@ -4663,6 +4664,12 @@ def economic_view(page: ft.Page):
                     movement_id
                 )
             )
+            suplido_snapshot = (
+                suplido_service
+                .get_movement_payment_snapshot(
+                    movement_id
+                )
+            )
         except Exception as exc:
             page.snack_bar = ft.SnackBar(
                 content=ft.Text(str(exc)),
@@ -4940,10 +4947,73 @@ def economic_view(page: ft.Page):
                 }
             )
 
+        suplidos = (
+            suplido_service
+            .list_reconcilable_suplidos(
+                limit=2000,
+            )
+        )
+
+        suplido_option_map = {}
+        suplido_options = []
+
+        for suplido in suplidos:
+            client_name = " ".join(
+                part
+                for part in [
+                    str(
+                        suplido.get("nombre")
+                        or ""
+                    ).strip(),
+                    str(
+                        suplido.get("primer_apellido")
+                        or ""
+                    ).strip(),
+                    str(
+                        suplido.get("segundo_apellido")
+                        or ""
+                    ).strip(),
+                ]
+                if part
+            ) or "Cliente sin identificar"
+
+            pending = _money_centimos(
+                suplido.get(
+                    "pending_payment_centimos"
+                )
+                or 0
+            )
+
+            label = (
+                f"{suplido.get('id')} - "
+                f"{client_name} · "
+                f"{suplido.get('concept') or 'Sin concepto'} · "
+                f"Pendiente {pending}"
+            )
+
+            suplido_option_map[label] = suplido
+
+            suplido_options.append(
+                {
+                    "id": suplido.get("id"),
+                    "label": label,
+                    "subtitle": (
+                        suplido.get("provider_name")
+                        or suplido.get(
+                            "numero_expediente"
+                        )
+                        or ""
+                    ),
+                }
+            )
+
         selected_payroll = {
             "row": None,
         }
         selected_social_security = {
+            "row": None,
+        }
+        selected_suplido = {
             "row": None,
         }
 
@@ -5190,6 +5260,152 @@ def economic_view(page: ft.Page):
             except Exception:
                 pass
 
+        suplido_selection_summary = ft.Container()
+
+        def suplido_selected(value):
+            label = str(value or "").strip()
+            suplido = suplido_option_map.get(label)
+            selected_suplido["row"] = suplido
+
+            if not suplido:
+                suplido_selection_summary.content = None
+                return
+
+            pending = int(
+                suplido.get(
+                    "pending_payment_centimos"
+                )
+                or 0
+            )
+
+            applicable = min(
+                movement_pending,
+                pending,
+            )
+
+            amount_input.value = (
+                f"{applicable / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            client_name = " ".join(
+                part
+                for part in [
+                    str(
+                        suplido.get("nombre")
+                        or ""
+                    ).strip(),
+                    str(
+                        suplido.get("primer_apellido")
+                        or ""
+                    ).strip(),
+                    str(
+                        suplido.get("segundo_apellido")
+                        or ""
+                    ).strip(),
+                ]
+                if part
+            ) or "Cliente sin identificar"
+
+            suplido_selection_summary.content = (
+                ft.Container(
+                    bgcolor="#FFF6ED",
+                    border=ft.border.all(
+                        1,
+                        "#FDB022",
+                    ),
+                    border_radius=10,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                (
+                                    "SUPLIDO · "
+                                    + client_name.upper()
+                                ),
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                suplido.get("concept")
+                                or "Sin concepto",
+                                size=12,
+                                color="#344054",
+                            ),
+                            ft.Text(
+                                suplido.get("provider_name")
+                                or "Sin proveedor",
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "Total: "
+                                        + _money_centimos(
+                                            suplido.get(
+                                                "amount_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Pagado: "
+                                        + _money_centimos(
+                                            suplido.get(
+                                                "paid_application_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Pendiente: "
+                                        + _money_centimos(
+                                            pending
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#B54708",
+                                    ),
+                                ],
+                                spacing=14,
+                                wrap=True,
+                            ),
+                        ],
+                        spacing=5,
+                    ),
+                )
+            )
+
+            try:
+                amount_input.update()
+                suplido_selection_summary.update()
+            except Exception:
+                pass
+
+        suplido_ac = AppAutocomplete(
+            page=page,
+            label="Suplido pendiente de pago",
+            options=suplido_options,
+            width=690,
+            max_results=10,
+            on_select=suplido_selected,
+            allow_free_text=False,
+            hint_text=(
+                "Busca por cliente, concepto, "
+                "proveedor, expediente o ID"
+            ),
+            empty_text=(
+                "No hay suplidos pendientes "
+                "que coincidan"
+            ),
+        )
+
         social_security_ac = AppAutocomplete(
             page=page,
             label="Periodo TGSS pendiente",
@@ -5352,6 +5568,38 @@ def economic_view(page: ft.Page):
                     show_message(
                         success_alert(
                             "Aplicación TGSS retirada"
+                        )
+                    )
+
+                    reopen_dialog()
+
+                except Exception as exc:
+                    set_message(
+                        str(exc),
+                        error=True,
+                    )
+
+            return handler
+
+        def remove_suplido_application(
+            application_id,
+        ):
+            def handler(e=None):
+                try:
+                    (
+                        suplido_service
+                        .remove_suplido_payment(
+                            int(application_id),
+                            reason=(
+                                "Retirada manual desde "
+                                "Económico > Movimientos"
+                            ),
+                        )
+                    )
+
+                    show_message(
+                        success_alert(
+                            "Aplicación de suplido retirada"
                         )
                     )
 
@@ -5607,6 +5855,110 @@ def economic_view(page: ft.Page):
                 )
             )
 
+        for application in (
+            suplido_snapshot[
+                "suplido_applications"
+            ]
+        ):
+            client_name = " ".join(
+                part
+                for part in [
+                    str(
+                        application.get("nombre")
+                        or ""
+                    ).strip(),
+                    str(
+                        application.get(
+                            "primer_apellido"
+                        )
+                        or ""
+                    ).strip(),
+                    str(
+                        application.get(
+                            "segundo_apellido"
+                        )
+                        or ""
+                    ).strip(),
+                ]
+                if part
+            ) or "Cliente sin identificar"
+
+            application_controls.append(
+                ft.Container(
+                    bgcolor="#FFF6ED",
+                    border=ft.border.all(
+                        1,
+                        "#FDB022",
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        (
+                                            "SUPLIDO · "
+                                            + client_name.upper()
+                                        ),
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        application.get("concept")
+                                        or "Sin concepto",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        application.get(
+                                            "provider_name"
+                                        )
+                                        or "Sin proveedor",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            application.get(
+                                                "amount_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#027A48",
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color="#B42318",
+                                tooltip=(
+                                    "Retirar aplicación "
+                                    "de suplido"
+                                ),
+                                on_click=(
+                                    remove_suplido_application(
+                                        application.get("id")
+                                    )
+                                ),
+                            ),
+                        ],
+                        alignment=(
+                            ft.MainAxisAlignment
+                            .SPACE_BETWEEN
+                        ),
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
         if application_controls:
             applications_box.content = ft.Column(
                 controls=[
@@ -5746,6 +6098,124 @@ def economic_view(page: ft.Page):
                 show_message(
                     success_alert(
                         "Seguridad Social conciliada "
+                        "con el movimiento"
+                    )
+                )
+
+                reopen_dialog()
+
+            except Exception as exc:
+                set_message(
+                    str(exc),
+                    error=True,
+                )
+
+        def apply_to_suplido(e=None):
+            suplido = selected_suplido.get("row")
+
+            if not suplido:
+                set_message(
+                    "Selecciona un suplido pendiente.",
+                    error=True,
+                )
+                return
+
+            try:
+                amount_centimos = (
+                    parse_amount_centimos()
+                )
+
+                (
+                    suplido_service
+                    .apply_suplido_payment(
+                        movement_id=movement_id,
+                        suplido_id=int(
+                            suplido.get("id")
+                        ),
+                        amount_centimos=amount_centimos,
+                        notes=notes_input.value,
+                    )
+                )
+
+                show_message(
+                    success_alert(
+                        "Suplido conciliado con "
+                        "el movimiento"
+                    )
+                )
+
+                reopen_dialog()
+
+            except Exception as exc:
+                set_message(
+                    str(exc),
+                    error=True,
+                )
+
+        def create_suplido_from_movement(e=None):
+            client_id = (
+                selected_autocomplete_id(
+                    new_suplido_client_ac
+                )
+                or new_suplido_client_id.get("value")
+            )
+
+            if not client_id:
+                set_message(
+                    "Selecciona el cliente por cuya "
+                    "cuenta se realizó el pago.",
+                    error=True,
+                )
+                return
+
+            concept = str(
+                new_suplido_concept_input.value or ""
+            ).strip()
+
+            if not concept:
+                set_message(
+                    "Indica el concepto del suplido.",
+                    error=True,
+                )
+                return
+
+            try:
+                amount_centimos = (
+                    parse_amount_centimos()
+                )
+
+                expedient_id = (
+                    selected_autocomplete_id(
+                        new_suplido_expedient_ac
+                    )
+                    or new_suplido_expedient_id.get(
+                        "value"
+                    )
+                )
+
+                (
+                    suplido_service
+                    .create_suplido_from_movement(
+                        movement_id=movement_id,
+                        client_id=int(client_id),
+                        expedient_id=(
+                            int(expedient_id)
+                            if expedient_id
+                            else None
+                        ),
+                        concept=concept,
+                        provider_name=str(
+                            new_suplido_provider_input.value
+                            or ""
+                        ).strip(),
+                        amount_centimos=amount_centimos,
+                        notes=notes_input.value,
+                    )
+                )
+
+                show_message(
+                    success_alert(
+                        "Suplido creado y conciliado "
                         "con el movimiento"
                     )
                 )
@@ -5912,6 +6382,15 @@ def economic_view(page: ft.Page):
                     "obligación mensual TGSS"
                 ),
             },
+            {
+                "id": "suplido",
+                "label": "Suplido",
+                "subtitle": (
+                    "Aplicar el movimiento a un "
+                    "pago realizado por cuenta "
+                    "de un cliente"
+                ),
+            },
         ]
 
         expense_panel = ft.Column(
@@ -5959,6 +6438,168 @@ def economic_view(page: ft.Page):
             visible=False,
         )
 
+        new_suplido_client_id = {
+            "value": None,
+        }
+        new_suplido_expedient_id = {
+            "value": None,
+        }
+
+        new_suplido_concept_input = text_input(
+            "Concepto del suplido",
+            width=690,
+        )
+        new_suplido_concept_input.value = str(
+            movement.get("concept")
+            or "Pago realizado por cuenta del cliente"
+        ).strip()
+
+        new_suplido_provider_input = text_input(
+            "Proveedor u organismo",
+            width=690,
+        )
+        # El banco es el medio de pago, no el proveedor
+        # u organismo destinatario del suplido.
+        new_suplido_provider_input.value = ""
+
+        def new_suplido_expedient_selected(value):
+            new_suplido_expedient_id["value"] = (
+                option_id_from_label(value)
+            )
+
+        new_suplido_expedient_ac = AppAutocomplete(
+            page=page,
+            label="Expediente",
+            options=[],
+            width=690,
+            max_results=10,
+            on_select=(
+                new_suplido_expedient_selected
+            ),
+            allow_free_text=False,
+            hint_text=(
+                "Selecciona primero un cliente"
+            ),
+            empty_text=(
+                "El cliente no tiene expedientes"
+            ),
+        )
+
+        def new_suplido_client_selected(value):
+            client_id = option_id_from_label(
+                value
+            )
+
+            new_suplido_client_id["value"] = (
+                client_id
+            )
+            new_suplido_expedient_id["value"] = (
+                None
+            )
+
+            if not client_id:
+                new_suplido_expedient_ac.set_options(
+                    [],
+                    clear_value=True,
+                )
+                return
+
+            try:
+                expedients = (
+                    economic_service
+                    .get_expedientes_for_select(
+                        cliente_id=int(client_id)
+                    )
+                )
+
+                expedient_labels = [
+                    row["display"]
+                    for row in expedients
+                ]
+
+                new_suplido_expedient_ac.set_options(
+                    expedient_labels,
+                    clear_value=True,
+                )
+
+            except Exception as exc:
+                new_suplido_expedient_ac.set_options(
+                    [],
+                    clear_value=True,
+                )
+                set_message(
+                    (
+                        "No se pudieron cargar los "
+                        f"expedientes: {exc}"
+                    ),
+                    error=True,
+                )
+
+        new_suplido_client_ac = AppAutocomplete(
+            page=page,
+            label="Cliente *",
+            options=cliente_options,
+            width=690,
+            max_results=12,
+            on_select=new_suplido_client_selected,
+            allow_free_text=False,
+            hint_text=(
+                "Busca por nombre, apellidos, "
+                "documento o ID"
+            ),
+            empty_text=(
+                "No hay clientes que coincidan"
+            ),
+        )
+
+        create_suplido_button = primary_button(
+            "Crear y aplicar suplido",
+            create_suplido_from_movement,
+        )
+
+        suplido_panel = ft.Column(
+            controls=[
+                ft.Text(
+                    "Aplicar a un suplido existente",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                suplido_ac.control,
+                suplido_selection_summary,
+                ft.Divider(height=16),
+                ft.Text(
+                    "Crear suplido desde este movimiento",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    (
+                        "Utiliza esta opción cuando el "
+                        "despacho haya pagado directamente "
+                        "por cuenta del cliente."
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                new_suplido_client_ac.control,
+                new_suplido_expedient_ac.control,
+                new_suplido_concept_input,
+                new_suplido_provider_input,
+                ft.Row(
+                    controls=[
+                        create_suplido_button,
+                    ],
+                    alignment=(
+                        ft.MainAxisAlignment.END
+                    ),
+                ),
+            ],
+            spacing=10,
+            visible=False,
+        )
+
         create_expense_button = secondary_button(
             "Crear gasto desde movimiento",
             create_expense_from_movement,
@@ -5975,9 +6616,14 @@ def economic_view(page: ft.Page):
             "Aplicar a TGSS",
             apply_to_social_security,
         )
+        apply_suplido_button = primary_button(
+            "Aplicar a suplido",
+            apply_to_suplido,
+        )
 
         apply_payroll_button.visible = False
         apply_social_security_button.visible = False
+        apply_suplido_button.visible = False
 
         destination_help = ft.Text(
             (
@@ -6002,12 +6648,14 @@ def economic_view(page: ft.Page):
                 destination
                 == "Seguridad Social / TGSS"
             )
+            is_suplido = destination == "Suplido"
 
             expense_panel.visible = is_expense
             payroll_panel.visible = is_payroll
             social_security_panel.visible = (
                 is_social_security
             )
+            suplido_panel.visible = is_suplido
 
             create_expense_button.visible = is_expense
             apply_expense_button.visible = is_expense
@@ -6015,14 +6663,17 @@ def economic_view(page: ft.Page):
             apply_social_security_button.visible = (
                 is_social_security
             )
+            apply_suplido_button.visible = is_suplido
 
             selected_expense["row"] = None
             selected_payroll["row"] = None
             selected_social_security["row"] = None
+            selected_suplido["row"] = None
 
             selection_summary.content = None
             payroll_selection_summary.content = None
             social_security_selection_summary.content = None
+            suplido_selection_summary.content = None
 
             amount_input.value = (
                 f"{movement_pending / 100:.2f}"
@@ -6038,10 +6689,12 @@ def economic_view(page: ft.Page):
                 expense_panel.update()
                 payroll_panel.update()
                 social_security_panel.update()
+                suplido_panel.update()
                 create_expense_button.update()
                 apply_expense_button.update()
                 apply_payroll_button.update()
                 apply_social_security_button.update()
+                apply_suplido_button.update()
                 amount_input.update()
             except Exception:
                 page.update()
@@ -6051,11 +6704,11 @@ def economic_view(page: ft.Page):
             label="Destino de la conciliación",
             options=destination_options,
             width=360,
-            max_results=3,
+            max_results=4,
             on_select=on_destination_change,
             allow_free_text=False,
             hint_text=(
-                "Selecciona gasto, nómina o TGSS"
+                "Selecciona gasto, nómina, TGSS o suplido"
             ),
             empty_text=(
                 "No hay destinos disponibles"
@@ -6084,6 +6737,7 @@ def economic_view(page: ft.Page):
                 expense_panel,
                 payroll_panel,
                 social_security_panel,
+                suplido_panel,
                 ft.Row(
                     controls=[
                         amount_input,
@@ -6132,6 +6786,7 @@ def economic_view(page: ft.Page):
                 apply_expense_button,
                 apply_payroll_button,
                 apply_social_security_button,
+                apply_suplido_button,
             ],
             actions_alignment=(
                 ft.MainAxisAlignment.END
