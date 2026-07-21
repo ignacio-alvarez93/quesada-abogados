@@ -72,6 +72,7 @@ def accounting_view(page: ft.Page):
     state = {
         "section": "profit_and_loss",
         "year": None,
+        "display_mode": "summary",
     }
 
     content_box = ft.Container()
@@ -108,6 +109,71 @@ def accounting_view(page: ft.Page):
             on_click=lambda e, y=year: set_year(y),
         )
 
+    def set_display_mode(mode: str):
+        state["display_mode"] = str(mode)
+        refresh()
+
+
+    def display_mode_chip(
+        key: str,
+        label: str,
+        icon,
+    ):
+        selected = state.get(
+            "display_mode"
+        ) == key
+
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        icon,
+                        size=16,
+                        color=(
+                            Q_WHITE
+                            if selected
+                            else Q_PRIMARY
+                        ),
+                    ),
+                    ft.Text(
+                        label,
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=(
+                            Q_WHITE
+                            if selected
+                            else Q_PRIMARY_DARK
+                        ),
+                    ),
+                ],
+                spacing=6,
+                tight=True,
+            ),
+            bgcolor=(
+                Q_PRIMARY
+                if selected
+                else "#EAF3FF"
+            ),
+            border=ft.border.all(
+                1,
+                (
+                    Q_PRIMARY
+                    if selected
+                    else "#B2DDFF"
+                ),
+            ),
+            border_radius=20,
+            padding=ft.padding.symmetric(
+                horizontal=14,
+                vertical=8,
+            ),
+            ink=True,
+            on_click=lambda e, value=key: (
+                set_display_mode(value)
+            ),
+        )
+
+
     def build_content():
         try:
             years = (
@@ -132,6 +198,13 @@ def accounting_view(page: ft.Page):
                 )
             )
 
+            monthly = (
+                profit_and_loss_service
+                .monthly_profit_and_loss(
+                    year=selected_year,
+                )
+            )
+
         except Exception as exc:
             return ft.Container(
                 bgcolor="#FEF3F2",
@@ -153,6 +226,105 @@ def accounting_view(page: ft.Page):
             summary["result_centimos"] or 0
         )
         positive = result_centimos >= 0
+
+        active_months = [
+            row
+            for row in monthly
+            if (
+                int(row["income_centimos"] or 0)
+                or int(
+                    row["total_expenses_centimos"]
+                    or 0
+                )
+            )
+        ]
+
+        monthly_controls = []
+
+        for row in active_months:
+            row_result = int(
+                row["result_centimos"] or 0
+            )
+
+            monthly_controls.append(
+                ft.Container(
+                    padding=ft.padding.symmetric(
+                        vertical=9,
+                        horizontal=8,
+                    ),
+                    border=ft.border.only(
+                        bottom=ft.BorderSide(
+                            1,
+                            "#EEF2F7",
+                        )
+                    ),
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=90,
+                                content=ft.Text(
+                                    row["period_label"],
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=ft.Text(
+                                    _money(
+                                        row[
+                                            "income_centimos"
+                                        ]
+                                    ),
+                                    size=12,
+                                    color="#027A48",
+                                    text_align=ft.TextAlign.RIGHT,
+                                ),
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=ft.Text(
+                                    _money(
+                                        row[
+                                            "total_expenses_centimos"
+                                        ]
+                                    ),
+                                    size=12,
+                                    color="#B42318",
+                                    text_align=ft.TextAlign.RIGHT,
+                                ),
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=ft.Text(
+                                    _money(row_result),
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=(
+                                        "#027A48"
+                                        if row_result >= 0
+                                        else "#B42318"
+                                    ),
+                                    text_align=ft.TextAlign.RIGHT,
+                                ),
+                            ),
+                            ft.Container(
+                                width=90,
+                                content=ft.Text(
+                                    (
+                                        f"{float(row['margin_percentage']):.2f}%"
+                                    ),
+                                    size=12,
+                                    color=Q_MUTED,
+                                    text_align=ft.TextAlign.RIGHT,
+                                ),
+                            ),
+                        ],
+                        spacing=12,
+                    ),
+                )
+            )
 
         return ft.Column(
             controls=[
@@ -192,7 +364,26 @@ def accounting_view(page: ft.Page):
                     ],
                     spacing=12,
                 ),
+                ft.Row(
+                    controls=[
+                        display_mode_chip(
+                            "summary",
+                            "Resumen",
+                            ft.Icons.DASHBOARD_OUTLINED,
+                        ),
+                        display_mode_chip(
+                            "monthly",
+                            "Evolución mensual",
+                            ft.Icons.CALENDAR_MONTH_OUTLINED,
+                        ),
+                    ],
+                    spacing=8,
+                ),
                 ft.Container(
+                    visible=(
+                        state.get("display_mode")
+                        == "summary"
+                    ),
                     bgcolor="#FFFAEB",
                     border=ft.border.all(1, "#FEC84B"),
                     border_radius=12,
@@ -220,6 +411,10 @@ def accounting_view(page: ft.Page):
                     ),
                 ),
                 ft.Row(
+                    visible=(
+                        state.get("display_mode")
+                        == "summary"
+                    ),
                     controls=[
                         _metric_card(
                             "Ingresos computables",
@@ -263,7 +458,127 @@ def accounting_view(page: ft.Page):
                     ],
                     spacing=12,
                 ),
+                ft.Container(
+                    visible=(
+                        state.get("display_mode")
+                        == "summary"
+                    ),
+                    bgcolor=Q_WHITE,
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=14,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Composición de los ingresos",
+                                size=16,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                (
+                                    "Diferencia entre tesorería "
+                                    "cobrada e ingreso reconocido."
+                                ),
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    _metric_card(
+                                        "Cobros brutos",
+                                        income[
+                                            "collected_total_centimos"
+                                        ],
+                                        (
+                                            f"{income['collection_count']} "
+                                            "cobros activos"
+                                        ),
+                                        foreground=Q_PRIMARY_DARK,
+                                        background="#F8FAFC",
+                                        border=Q_BORDER,
+                                    ),
+                                    _metric_card(
+                                        "Cobros sin suplidos",
+                                        (
+                                            income[
+                                                "collected_total_centimos"
+                                            ]
+                                            - income[
+                                                "suplidos_centimos"
+                                            ]
+                                        ),
+                                        (
+                                            "Total cobrado antes de "
+                                            "descontar IVA e IRPF"
+                                        ),
+                                        foreground="#175CD3",
+                                        background="#EFF8FF",
+                                        border="#84CAFF",
+                                    ),
+                                    _metric_card(
+                                        "IVA repercutido",
+                                        income[
+                                            "output_vat_centimos"
+                                        ],
+                                        "Excluido del ingreso",
+                                        foreground="#B54708",
+                                        background="#FFFAEB",
+                                        border="#FEC84B",
+                                    ),
+                                    _metric_card(
+                                        "Ingresos provisionales",
+                                        income[
+                                            "provisional_centimos"
+                                        ],
+                                        "Cobros todavía sin factura",
+                                        foreground="#175CD3",
+                                        background="#EFF8FF",
+                                        border="#84CAFF",
+                                    ),
+                                    _metric_card(
+                                        "Ingresos facturados",
+                                        income[
+                                            "invoiced_centimos"
+                                        ],
+                                        "Base definitiva facturada",
+                                        foreground="#027A48",
+                                        background="#ECFDF3",
+                                        border="#6CE9A6",
+                                    ),
+                                ],
+                                spacing=10,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        (
+                                            "Suplidos excluidos: "
+                                            f"{_money(income['suplidos_centimos'])}"
+                                        ),
+                                        size=12,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "IRPF retenido: "
+                                            f"{_money(income['withholding_centimos'])}"
+                                        ),
+                                        size=12,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=20,
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+                ),
                 ft.Row(
+                    visible=(
+                        state.get("display_mode")
+                        == "summary"
+                    ),
                     controls=[
                         _metric_card(
                             "Gastos operativos",
@@ -293,6 +608,109 @@ def accounting_view(page: ft.Page):
                         ),
                     ],
                     spacing=12,
+                ),
+                ft.Container(
+                    visible=(
+                        state.get("display_mode")
+                        == "monthly"
+                    ),
+                    bgcolor=Q_WHITE,
+                    border=ft.border.all(1, Q_BORDER),
+                    border_radius=14,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Evolución mensual",
+                                size=16,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                (
+                                    "Ingresos, gastos y resultado "
+                                    "por mes con actividad."
+                                ),
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border_radius=10,
+                                padding=8,
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Container(
+                                            width=90,
+                                            content=ft.Text(
+                                                "Periodo",
+                                                size=11,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=Q_PRIMARY_DARK,
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            expand=True,
+                                            content=ft.Text(
+                                                "Ingresos",
+                                                size=11,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=Q_PRIMARY_DARK,
+                                                text_align=ft.TextAlign.RIGHT,
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            expand=True,
+                                            content=ft.Text(
+                                                "Gastos",
+                                                size=11,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=Q_PRIMARY_DARK,
+                                                text_align=ft.TextAlign.RIGHT,
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            expand=True,
+                                            content=ft.Text(
+                                                "Resultado",
+                                                size=11,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=Q_PRIMARY_DARK,
+                                                text_align=ft.TextAlign.RIGHT,
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            width=90,
+                                            content=ft.Text(
+                                                "Margen",
+                                                size=11,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=Q_PRIMARY_DARK,
+                                                text_align=ft.TextAlign.RIGHT,
+                                            ),
+                                        ),
+                                    ],
+                                    spacing=12,
+                                ),
+                            ),
+                            *(
+                                monthly_controls
+                                if monthly_controls
+                                else [
+                                    ft.Text(
+                                        (
+                                            "No existen ingresos ni "
+                                            "gastos en este ejercicio."
+                                        ),
+                                        size=12,
+                                        color=Q_MUTED,
+                                        italic=True,
+                                    )
+                                ]
+                            ),
+                        ],
+                        spacing=6,
+                    ),
                 ),
             ],
             spacing=14,
