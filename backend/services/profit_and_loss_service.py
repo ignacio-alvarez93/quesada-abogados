@@ -102,23 +102,144 @@ def _date_conditions(
 def _income_row(
     row: sqlite3.Row,
 ) -> dict[str, Any]:
+    data = dict(row)
+
     amount_centimos = _centimos_from_euros(
-        row["importe"]
+        data.get("importe")
     )
     fiscal_type = str(
-        row["tipo_fiscal"] or "PROVISION"
+        data.get("tipo_fiscal")
+        or "PROVISION"
     ).strip().upper()
 
     is_suplido = fiscal_type == "SUPLIDO"
 
+    invoice_base_centimos = (
+        _centimos_from_euros(
+            data.get("invoice_base_imponible")
+        )
+    )
+    invoice_vat_centimos = (
+        _centimos_from_euros(
+            data.get("invoice_iva")
+        )
+    )
+    invoice_withholding_centimos = (
+        _centimos_from_euros(
+            data.get("invoice_irpf")
+        )
+    )
+    invoice_total_centimos = (
+        _centimos_from_euros(
+            data.get("invoice_total")
+        )
+    )
+
+    invoice_active = bool(
+        int(
+            data.get("invoice_active")
+            or 0
+        )
+    )
+
+    invoice_matches_collection = (
+        invoice_active
+        and invoice_total_centimos > 0
+        and abs(
+            invoice_total_centimos
+            - amount_centimos
+        ) <= 1
+    )
+
+    if is_suplido:
+        computable_centimos = 0
+        output_vat_centimos = 0
+        withholding_centimos = 0
+        recognition_status = "SUPLIDO"
+
+    elif invoice_matches_collection:
+        computable_centimos = (
+            invoice_base_centimos
+        )
+        output_vat_centimos = (
+            invoice_vat_centimos
+        )
+        withholding_centimos = (
+            invoice_withholding_centimos
+        )
+        recognition_status = "FACTURADO"
+
+    else:
+        try:
+            vat_percentage = float(
+                data.get("iva_porcentaje")
+                or 0
+            )
+        except (TypeError, ValueError):
+            vat_percentage = 0.0
+
+        try:
+            withholding_percentage = float(
+                data.get("irpf_porcentaje")
+                or 0
+            )
+        except (TypeError, ValueError):
+            withholding_percentage = 0.0
+
+        divisor = (
+            1
+            + vat_percentage / 100
+            - withholding_percentage / 100
+        )
+
+        if divisor <= 0:
+            raise ValueError(
+                "La fiscalidad del cobro "
+                f"#{data.get('id')} no permite "
+                "calcular su base imponible."
+            )
+
+        computable_centimos = int(
+            round(
+                amount_centimos
+                / divisor
+            )
+        )
+
+        output_vat_centimos = int(
+            round(
+                computable_centimos
+                * vat_percentage
+                / 100
+            )
+        )
+
+        withholding_centimos = (
+            computable_centimos
+            + output_vat_centimos
+            - amount_centimos
+        )
+
+        recognition_status = "PROVISIONAL"
+
     return {
-        **dict(row),
+        **data,
         "amount_centimos": amount_centimos,
         "is_suplido": is_suplido,
+        "invoice_matches_collection": (
+            invoice_matches_collection
+        ),
+        "recognition_status": (
+            recognition_status
+        ),
+        "output_vat_centimos": (
+            output_vat_centimos
+        ),
+        "withholding_centimos": (
+            withholding_centimos
+        ),
         "computable_centimos": (
-            0
-            if is_suplido
-            else amount_centimos
+            computable_centimos
         ),
     }
 
@@ -342,7 +463,19 @@ def list_income_detail(
                 cl.primer_apellido,
                 cl.segundo_apellido,
                 e.numero_expediente,
-                f.numero_factura
+                f.numero_factura,
+                f.base_imponible
+                    AS invoice_base_imponible,
+                f.iva
+                    AS invoice_iva,
+                f.irpf
+                    AS invoice_irpf,
+                f.total
+                    AS invoice_total,
+                COALESCE(f.activo, 0)
+                    AS invoice_active,
+                f.estado
+                    AS invoice_status
             FROM eco_cobros c
             LEFT JOIN clientes cl
               ON cl.id = c.cliente_id
@@ -486,6 +619,26 @@ def profit_and_loss_summary(
         int(row["computable_centimos"])
         for row in income_rows
     )
+    output_vat_total = sum(
+        int(row["output_vat_centimos"])
+        for row in income_rows
+    )
+    withholding_total = sum(
+        int(row["withholding_centimos"])
+        for row in income_rows
+    )
+    provisional_income = sum(
+        int(row["computable_centimos"])
+        for row in income_rows
+        if row["recognition_status"]
+        == "PROVISIONAL"
+    )
+    invoiced_income = sum(
+        int(row["computable_centimos"])
+        for row in income_rows
+        if row["recognition_status"]
+        == "FACTURADO"
+    )
 
     expense_groups = defaultdict(int)
     expense_categories = defaultdict(int)
@@ -549,6 +702,18 @@ def profit_and_loss_summary(
             ),
             "suplidos_centimos": (
                 suplidos_total
+            ),
+            "output_vat_centimos": (
+                output_vat_total
+            ),
+            "withholding_centimos": (
+                withholding_total
+            ),
+            "provisional_centimos": (
+                provisional_income
+            ),
+            "invoiced_centimos": (
+                invoiced_income
             ),
             "computable_centimos": (
                 computable_income
