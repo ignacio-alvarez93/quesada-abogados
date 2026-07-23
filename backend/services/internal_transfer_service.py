@@ -101,9 +101,27 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 def _normalize_source(source: str) -> str:
     source = str(source or "").strip().lower()
-    if source not in SOURCES:
-        raise ValueError("El origen del movimiento no es válido.")
-    return source
+
+    aliases = {
+        "bank": "bank",
+        "bank_movement": "bank",
+        "bank_movements": "bank",
+        "banco": "bank",
+        "caja_rural": "bank",
+        "ing": "bank",
+        "santander": "bank",
+        "cashmatic": "cashmatic",
+        "cashmatic_movement": "cashmatic",
+        "cashmatic_movements": "cashmatic",
+    }
+
+    normalized = aliases.get(source)
+    if normalized not in SOURCES:
+        raise ValueError(
+            f"El origen del movimiento no es válido: {source or 'vacío'}."
+        )
+
+    return normalized
 
 
 def _movement(
