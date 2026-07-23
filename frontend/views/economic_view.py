@@ -36,7 +36,7 @@ from backend.services import expense_reconciliation_service
 from backend.services import labor_reconciliation_service
 from backend.services import suplido_service
 from backend.services import internal_transfer_service
-from backend.services import suplido_reconciliation_service
+from backend.services import payment_reconciliation_service
 from backend.services import expense_classification_service
 from backend.services import supplier_service
 from frontend.components.economic_invoice_card import economic_invoice_card
@@ -3903,6 +3903,7 @@ def economic_view(page: ft.Page):
             "linked_at",
             "manual_link_id",
             "reconciliation_group_id",
+            "internal_transfer_id",
         ]
 
         movement_amount = (
@@ -3917,6 +3918,11 @@ def economic_view(page: ft.Page):
             _get_value(item, "linked_amount_centimos")
             or _get_value(item, "matched_amount_centimos")
             or _get_value(item, "reconciled_amount_centimos")
+            or (
+                movement_amount
+                if _get_value(item, "internal_transfer_id")
+                else 0
+            )
             or 0
         )
 
@@ -4022,6 +4028,11 @@ def economic_view(page: ft.Page):
             _get_value(item, "linked_amount_centimos")
             or _get_value(item, "matched_amount_centimos")
             or _get_value(item, "reconciled_amount_centimos")
+            or (
+                movement_amount
+                if _get_value(item, "internal_transfer_id")
+                else 0
+            )
             or 0
         )
 
@@ -4377,6 +4388,10 @@ def economic_view(page: ft.Page):
         Desde que un movimiento puede aplicarse a varios cobros, linked_payment_id
         ya no puede ser la fuente principal, porque solo representa un resumen legacy.
         """
+        return payment_reconciliation_service.sync_payment_status(
+            int(cobro_id)
+        )
+
         import sqlite3
 
         try:
@@ -4501,11 +4516,6 @@ def economic_view(page: ft.Page):
             conn.commit()
         finally:
             conn.close()
-
-        suplido_reconciliation_service.sync_for_cobro(
-            cobro_id
-        )
-
 
     def show_reconciliation_dialog(dialog):
         """
@@ -4695,6 +4705,77 @@ def economic_view(page: ft.Page):
         movement_pending = int(
             movement_snapshot["pending_centimos"]
             or 0
+        )
+
+        transfer_candidates = (
+            internal_transfer_service
+            .list_transfer_candidates(
+                source_type=source,
+                source_movement_id=movement_id,
+            )
+        )
+        transfer_option_map = {}
+        transfer_options = []
+        for candidate in transfer_candidates:
+            candidate_label = (
+                f"{candidate.get('source')}:{candidate.get('id')} - "
+                f"{candidate.get('account_label_normalized')} · "
+                f"{_date_to_display(candidate.get('movement_date_normalized'))} · "
+                f"{_money_centimos(candidate.get('amount_centimos_normalized'))} · "
+                f"{candidate.get('concept_normalized') or 'Sin concepto'}"
+            )
+            transfer_option_map[candidate_label] = candidate
+            transfer_options.append(
+                {
+                    "id": candidate.get("id"),
+                    "label": candidate_label,
+                    "subtitle": (
+                        "Fecha próxima: "
+                        f"{candidate.get('date_distance_days')} días"
+                    ),
+                }
+            )
+        selected_transfer_candidate = {"row": None}
+        transfer_selection_summary = ft.Container()
+
+        def transfer_candidate_selected(value):
+            candidate = transfer_option_map.get(
+                str(value or "").strip()
+            )
+            selected_transfer_candidate["row"] = candidate
+            if not candidate:
+                transfer_selection_summary.content = None
+                return
+            transfer_selection_summary.content = ft.Container(
+                bgcolor="#EFF8FF",
+                border=ft.border.all(1, "#84CAFF"),
+                border_radius=10,
+                padding=12,
+                content=ft.Text(
+                    (
+                        f"Entrada en {candidate.get('account_label_normalized')} · "
+                        f"{_money_centimos(candidate.get('amount_centimos_normalized'))} · "
+                        f"{_date_to_display(candidate.get('movement_date_normalized'))}"
+                    ),
+                    size=12,
+                    color=Q_PRIMARY_DARK,
+                ),
+            )
+            try:
+                transfer_selection_summary.update()
+            except Exception:
+                pass
+
+        transfer_candidate_ac = AppAutocomplete(
+            page=page,
+            label="Movimiento positivo contraparte",
+            options=transfer_options,
+            width=690,
+            max_results=12,
+            on_select=transfer_candidate_selected,
+            allow_free_text=False,
+            hint_text="Busca la entrada correspondiente en otra cuenta",
+            empty_text="No hay movimientos positivos compatibles",
         )
 
         expenses = (
@@ -6395,6 +6476,14 @@ def economic_view(page: ft.Page):
                     "adelantado por cuenta de un cliente"
                 ),
             },
+            {
+                "id": "internal_transfer",
+                "label": "Traspaso interno",
+                "subtitle": (
+                    "Vincular esta salida con una entrada "
+                    "ya importada en otra cuenta"
+                ),
+            },
         ]
 
         expense_panel = ft.Column(
@@ -6617,6 +6706,60 @@ def economic_view(page: ft.Page):
             visible=False,
         )
 
+        transfer_panel = ft.Column(
+            controls=[
+                ft.Text(
+                    "Vincular con un movimiento positivo existente",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    (
+                        "Solo se muestran entradas del mismo importe, "
+                        "en otra cuenta y todavía no vinculadas."
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                transfer_candidate_ac.control,
+                transfer_selection_summary,
+            ],
+            spacing=10,
+            visible=False,
+        )
+
+        def apply_internal_transfer(e=None):
+            candidate = selected_transfer_candidate.get("row")
+            if not candidate:
+                set_message(
+                    "Selecciona el movimiento positivo contraparte.",
+                    error=True,
+                )
+                return
+            try:
+                transfer = (
+                    internal_transfer_service
+                    .link_existing_movements(
+                        source_type=source,
+                        source_movement_id=movement_id,
+                        destination_type=candidate.get("source"),
+                        destination_movement_id=int(candidate.get("id")),
+                        notes=notes_input.value or "",
+                    )
+                )
+                reconciliation_dialog.open = False
+                state.setdefault("movements_cache", {}).clear()
+                show_message(
+                    success_alert(
+                        "Traspaso interno conciliado "
+                        f"(#{transfer['id']})"
+                    )
+                )
+                refresh()
+            except Exception as exc:
+                set_message(str(exc), error=True)
+
         create_expense_button = secondary_button(
             "Crear gasto desde movimiento",
             create_expense_from_movement,
@@ -6637,10 +6780,15 @@ def economic_view(page: ft.Page):
             "Vincular a suplido existente",
             apply_to_suplido,
         )
+        apply_transfer_button = primary_button(
+            "Vincular traspaso",
+            apply_internal_transfer,
+        )
 
         apply_payroll_button.visible = False
         apply_social_security_button.visible = False
         apply_suplido_button.visible = False
+        apply_transfer_button.visible = False
 
         destination_help = ft.Text(
             (
@@ -6668,6 +6816,9 @@ def economic_view(page: ft.Page):
             is_suplido = (
                 destination == "Suplido adelantado"
             )
+            is_transfer = (
+                destination == "Traspaso interno"
+            )
 
             expense_panel.visible = is_expense
             payroll_panel.visible = is_payroll
@@ -6675,6 +6826,7 @@ def economic_view(page: ft.Page):
                 is_social_security
             )
             suplido_panel.visible = is_suplido
+            transfer_panel.visible = is_transfer
 
             create_expense_button.visible = is_expense
             apply_expense_button.visible = is_expense
@@ -6683,16 +6835,19 @@ def economic_view(page: ft.Page):
                 is_social_security
             )
             apply_suplido_button.visible = is_suplido
+            apply_transfer_button.visible = is_transfer
 
             selected_expense["row"] = None
             selected_payroll["row"] = None
             selected_social_security["row"] = None
             selected_suplido["row"] = None
+            selected_transfer_candidate["row"] = None
 
             selection_summary.content = None
             payroll_selection_summary.content = None
             social_security_selection_summary.content = None
             suplido_selection_summary.content = None
+            transfer_selection_summary.content = None
 
             amount_input.value = (
                 f"{movement_pending / 100:.2f}"
@@ -6709,11 +6864,13 @@ def economic_view(page: ft.Page):
                 payroll_panel.update()
                 social_security_panel.update()
                 suplido_panel.update()
+                transfer_panel.update()
                 create_expense_button.update()
                 apply_expense_button.update()
                 apply_payroll_button.update()
                 apply_social_security_button.update()
                 apply_suplido_button.update()
+                apply_transfer_button.update()
                 amount_input.update()
             except Exception:
                 page.update()
@@ -6757,6 +6914,7 @@ def economic_view(page: ft.Page):
                 payroll_panel,
                 social_security_panel,
                 suplido_panel,
+                transfer_panel,
                 ft.Row(
                     controls=[
                         amount_input,
@@ -6806,6 +6964,7 @@ def economic_view(page: ft.Page):
                 apply_payroll_button,
                 apply_social_security_button,
                 apply_suplido_button,
+                apply_transfer_button,
             ],
             actions_alignment=(
                 ft.MainAxisAlignment.END
@@ -9055,12 +9214,6 @@ def economic_view(page: ft.Page):
                             icon=ft.Icons.UPLOAD_FILE,
                             tooltip="Importar CSV/XLS",
                             on_click=seleccionar_movimientos_csv_xls,
-                        ),
-                        ft.IconButton(
-                            icon=ft.Icons.SWAP_HORIZ,
-                            icon_color="#175CD3",
-                            tooltip="Registrar traspaso entre cuentas",
-                            on_click=open_transfer_dialog,
                         ),
                     ],
                     spacing=8,
@@ -16565,119 +16718,6 @@ def economic_view(page: ft.Page):
         ),
     )
     page.overlay.append(gasto_dialog)
-
-    transfer_date = required_text_input(
-        "Fecha DD/MM/AAAA", width=210
-    )
-    transfer_source = required_text_input(
-        "Cuenta de origen", width=280
-    )
-    transfer_destination = required_text_input(
-        "Cuenta de destino", width=280
-    )
-    transfer_amount = required_text_input(
-        "Importe", width=180
-    )
-    transfer_concept = text_input(
-        "Concepto", width=590
-    )
-    transfer_reference = text_input(
-        "Referencia", width=300
-    )
-
-    def open_transfer_dialog(e=None):
-        transfer_date.value = _today_display()
-        transfer_source.value = ""
-        transfer_destination.value = ""
-        transfer_amount.value = ""
-        transfer_concept.value = "Traspaso entre cuentas"
-        transfer_reference.value = ""
-        transfer_dialog.open = True
-        page.update()
-
-    def save_transfer(e=None):
-        try:
-            source_id = (
-                internal_transfer_service
-                .get_or_create_account(
-                    transfer_source.value
-                )
-            )
-            destination_id = (
-                internal_transfer_service
-                .get_or_create_account(
-                    transfer_destination.value
-                )
-            )
-            transfer = (
-                internal_transfer_service
-                .register_internal_transfer(
-                    transfer_date=_date_to_sql(
-                        transfer_date.value
-                    ),
-                    source_account_id=source_id,
-                    destination_account_id=destination_id,
-                    amount=transfer_amount.value,
-                    concept=transfer_concept.value,
-                    reference=transfer_reference.value,
-                )
-            )
-            transfer_dialog.open = False
-            show_message(
-                success_alert(
-                    "Traspaso registrado y conciliado "
-                    f"(#{transfer['id']})"
-                )
-            )
-        except Exception as exc:
-            show_message(error_alert(str(exc)))
-        refresh()
-
-    transfer_dialog = form_dialog(
-        "Traspaso entre cuentas",
-        ft.Column(
-            [
-                ft.Text(
-                    "Genera una salida y una entrada vinculadas. "
-                    "No computa como ingreso ni como gasto.",
-                    size=12,
-                    color=Q_MUTED,
-                ),
-                ft.Row(
-                    [
-                        transfer_date,
-                        transfer_amount,
-                    ],
-                    wrap=True,
-                    spacing=10,
-                ),
-                ft.Row(
-                    [
-                        transfer_source,
-                        transfer_destination,
-                    ],
-                    wrap=True,
-                    spacing=10,
-                ),
-                transfer_concept,
-                transfer_reference,
-            ],
-            width=680,
-            height=330,
-            spacing=12,
-        ),
-        [
-            secondary_button(
-                "Cancelar",
-                lambda e: close(transfer_dialog),
-            ),
-            primary_button(
-                "Registrar traspaso",
-                save_transfer,
-            ),
-        ],
-    )
-    page.overlay.append(transfer_dialog)
 
     # Movimiento dialog
     mov_origen = select_input("Origen", ["BANCO", "CASHMATIC", "STRIPE", "MANUAL"], value="BANCO", width=180)

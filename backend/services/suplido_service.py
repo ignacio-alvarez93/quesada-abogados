@@ -1565,6 +1565,7 @@ def apply_cobro_recovery(
                 id,
                 cliente_id,
                 importe,
+                tipo_cobro,
                 tipo_fiscal,
                 activo
             FROM eco_cobros
@@ -1581,14 +1582,14 @@ def apply_cobro_recovery(
             )
 
         if (
-            str(
-                cobro["tipo_fiscal"] or ""
-            ).strip().upper()
+            str(cobro["tipo_cobro"] or "").strip().upper()
+            != "SUPLIDO_ADELANTADO"
+            and str(cobro["tipo_fiscal"] or "").strip().upper()
             != "SUPLIDO"
         ):
             raise ValueError(
-                "Solo un cobro fiscal de tipo "
-                "SUPLIDO puede recuperar un suplido."
+                "Solo un cobro SUPLIDO_ADELANTADO "
+                "puede recuperar un suplido."
             )
 
         suplido = conn.execute(

@@ -23,16 +23,11 @@ def _effective_recovered(conn: sqlite3.Connection, suplido_id: int) -> int:
     return int(
         conn.execute(
             """
-            SELECT COALESCE(SUM(r.amount_centimos), 0) AS total
-            FROM economic_suplido_recovery_applications r
-            JOIN eco_cobros c
-              ON r.source_type = ?
-             AND c.id = r.source_id
-            WHERE r.suplido_id = ?
-              AND COALESCE(c.activo, 1) = 1
-              AND UPPER(COALESCE(c.estado_conciliacion, '')) = 'CONCILIADO'
+            SELECT COALESCE(SUM(amount_centimos), 0) AS total
+            FROM economic_suplido_recovery_applications
+            WHERE suplido_id = ?
             """,
-            (SOURCE_TYPE, int(suplido_id)),
+            (int(suplido_id),),
         ).fetchone()["total"]
         or 0
     )
@@ -94,7 +89,7 @@ def link_cobro_to_suplido(
         conn.execute("BEGIN IMMEDIATE")
         cobro = conn.execute(
             """
-            SELECT id, cliente_id, importe, tipo_fiscal, activo
+            SELECT id, cliente_id, importe, tipo_cobro, tipo_fiscal, activo
             FROM eco_cobros WHERE id = ?
             """,
             (int(cobro_id),),
@@ -110,8 +105,15 @@ def link_cobro_to_suplido(
             raise ValueError("No existe el cobro o está inactivo.")
         if not suplido or not int(suplido["active"] or 0):
             raise ValueError("No existe el suplido o está inactivo.")
-        if str(cobro["tipo_fiscal"] or "").upper() != "SUPLIDO":
-            raise ValueError("El cobro vinculado debe ser fiscalmente un SUPLIDO.")
+        if (
+            str(cobro["tipo_cobro"] or "").upper()
+            != "SUPLIDO_ADELANTADO"
+            and str(cobro["tipo_fiscal"] or "").upper()
+            != "SUPLIDO"
+        ):
+            raise ValueError(
+                "El cobro debe ser de tipo SUPLIDO_ADELANTADO."
+            )
         if int(cobro["cliente_id"]) != int(suplido["client_id"]):
             raise ValueError("El cobro y el suplido pertenecen a clientes distintos.")
         cobro_total = int(round(float(cobro["importe"] or 0) * 100))

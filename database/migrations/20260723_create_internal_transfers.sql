@@ -28,6 +28,15 @@ CREATE TABLE IF NOT EXISTS economic_internal_transfers (
     reference TEXT,
     outgoing_movement_id INTEGER,
     incoming_movement_id INTEGER,
+    source_type TEXT,
+    destination_type TEXT,
+    source_movement_ref_id INTEGER,
+    destination_movement_ref_id INTEGER,
+    source_account_key TEXT,
+    destination_account_key TEXT,
+    source_previous_review_status TEXT,
+    destination_previous_review_status TEXT,
+    notes TEXT,
     status TEXT NOT NULL DEFAULT 'CONCILIADO',
     created_by TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -54,3 +63,12 @@ WHERE outgoing_movement_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_internal_transfer_incoming
 ON economic_internal_transfers(incoming_movement_id)
 WHERE incoming_movement_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_internal_transfer_source_ref
+ON economic_internal_transfers(source_type, source_movement_ref_id)
+WHERE source_type IS NOT NULL AND source_movement_ref_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_internal_transfer_destination_ref
+ON economic_internal_transfers(destination_type, destination_movement_ref_id)
+WHERE destination_type IS NOT NULL
+  AND destination_movement_ref_id IS NOT NULL;
