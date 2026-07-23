@@ -317,13 +317,25 @@ def renumerar_facturas_por_year(conn, year):
     # --------------------------------------------------------
     # Las facturas normales aprobadas son inmutables.
     # --------------------------------------------------------
-    exported_rows = conn.execute(
+    # --------------------------------------------------------
+    # Números definitivamente reservados.
+    #
+    # Nunca se reutilizan:
+    # - los números de facturas aprobadas;
+    # - los números de facturas inactivas.
+    #
+    # El índice UNIQUE de SQLite también incluye las filas
+    # inactivas, por lo que ignorarlas provoca colisiones.
+    # --------------------------------------------------------
+    reserved_rows = conn.execute(
         """
         SELECT numero_factura
         FROM eco_facturas
-        WHERE COALESCE(activo, 1) = 1
-          AND COALESCE(exportada_holded, 0) = 1
-          AND numero_factura LIKE ?
+        WHERE numero_factura LIKE ?
+          AND (
+              COALESCE(exportada_holded, 0) = 1
+              OR COALESCE(activo, 1) = 0
+          )
           AND factura_rectificada_id IS NULL
           AND UPPER(
                 COALESCE(tipo_factura, 'NORMAL')
@@ -332,13 +344,16 @@ def renumerar_facturas_por_year(conn, year):
         (prefix + "%",),
     ).fetchall()
 
-    max_exported_sequence = 0
+    max_reserved_sequence = 0
     reserved_numbers = set()
 
-    for row in exported_rows:
+    for row in reserved_rows:
         number = str(
             row["numero_factura"] or ""
         ).strip()
+
+        if not number:
+            continue
 
         reserved_numbers.add(number)
 
@@ -349,8 +364,8 @@ def renumerar_facturas_por_year(conn, year):
         except (TypeError, ValueError):
             continue
 
-        max_exported_sequence = max(
-            max_exported_sequence,
+        max_reserved_sequence = max(
+            max_reserved_sequence,
             sequence,
         )
 
@@ -379,7 +394,7 @@ def renumerar_facturas_por_year(conn, year):
     ).fetchall()
 
     assignments = []
-    sequence = max_exported_sequence + 1
+    sequence = max_reserved_sequence + 1
 
     for row in pending_rows:
         candidate = (
@@ -1411,12 +1426,41 @@ def create_cobro(data):
     # los suplidos no soportan IVA.
     if tipo_fiscal == "SUPLIDO":
         iva_porcentaje = 0.0
+    cliente_id = _int_or_none(
+        data.get("cliente_id")
+    )
     expediente_id = _int_or_none(data.get("expediente_id"))
     hoja_id = _int_or_none(data.get("hoja_encargo_id"))
+
+    if not cliente_id:
+        raise ValueError(
+            "El cobro debe tener un cliente válido"
+        )
     cliente_id = int(data.get("cliente_id"))
 
-    if tipo_cobro != "CONSULTA" and not hoja_id:
-        raise ValueError("Los cobros de expediente deben estar asociados a una hoja de encargo")
+    if (
+        tipo_cobro == "TASA"
+        and not expediente_id
+    ):
+        raise ValueError(
+            "Los cobros de tipo TASA deben estar "
+            "asociados a un expediente"
+        )
+
+    if (
+        tipo_cobro not in {
+            "CONSULTA",
+            "SUPLIDO_ADELANTADO",
+            "TASA",
+        }
+        and tipo_fiscal != "SUPLIDO"
+        and not hoja_id
+    ):
+        raise ValueError(
+            "Los cobros ordinarios de expediente "
+            "deben estar asociados a una hoja "
+            "de encargo"
+        )
 
     with _connect() as conn:
         if hoja_id:
@@ -1517,33 +1561,97 @@ def update_cobro(cobro_id, data):
     # los suplidos no soportan IVA.
     if tipo_fiscal == "SUPLIDO":
         iva_porcentaje = 0.0
-    expediente_id = _int_or_none(data.get("expediente_id"))
-    hoja_id = _int_or_none(data.get("hoja_encargo_id"))
 
-    if tipo_cobro != "CONSULTA" and not hoja_id:
-        raise ValueError("Los cobros de expediente deben estar asociados a una hoja de encargo")
+    cliente_id = _int_or_none(
+        data.get("cliente_id")
+    )
+    expediente_id = _int_or_none(
+        data.get("expediente_id")
+    )
+    hoja_id = _int_or_none(
+        data.get("hoja_encargo_id")
+    )
+
+    if not cliente_id:
+        raise ValueError(
+            "El cobro debe tener un cliente válido"
+        )
+
+    if (
+        tipo_cobro == "TASA"
+        and not expediente_id
+    ):
+        raise ValueError(
+            "Los cobros de tipo TASA deben estar "
+            "asociados a un expediente"
+        )
+
+    if (
+        tipo_cobro not in {
+            "CONSULTA",
+            "SUPLIDO_ADELANTADO",
+            "TASA",
+        }
+        and tipo_fiscal != "SUPLIDO"
+        and not hoja_id
+    ):
+        raise ValueError(
+            "Los cobros ordinarios de expediente "
+            "deben estar asociados a una hoja "
+            "de encargo"
+        )
 
     with _connect() as conn:
         locked_invoice = _dict(
             conn.execute(
                 """
-                SELECT f.id, f.numero_factura, f.exportada_holded
+                SELECT
+                    f.id,
+                    f.numero_factura,
+                    f.estado,
+                    f.exportada_holded
                 FROM eco_cobros cob
                 JOIN eco_facturas f
                   ON f.id = cob.factura_id
                 WHERE cob.id = ?
                   AND COALESCE(cob.activo, 1) = 1
                   AND COALESCE(f.activo, 1) = 1
-                  AND COALESCE(f.exportada_holded, 0) = 1
+                  AND (
+                      COALESCE(f.exportada_holded, 0) = 1
+                      OR UPPER(
+                          COALESCE(f.estado, '')
+                      ) IN (
+                          'APROBADA',
+                          'ANULADA'
+                      )
+                  )
                 """,
                 (cobro_id,),
             ).fetchone()
         )
 
         if locked_invoice:
+            estado_factura = _text(
+                locked_invoice.get("estado")
+                or ""
+            ).upper()
+
+            if int(
+                locked_invoice.get(
+                    "exportada_holded"
+                )
+                or 0
+            ) or estado_factura == "APROBADA":
+                raise ValueError(
+                    "El cobro está vinculado a la factura "
+                    f"{locked_invoice.get('numero_factura') or ''}, "
+                    "que ya está aprobada y no puede modificarse"
+                )
+
             raise ValueError(
-                "El cobro está vinculado a una factura exportada "
-                "a Holded y no puede modificarse"
+                "El cobro está vinculado a la factura "
+                f"{locked_invoice.get('numero_factura') or ''}, "
+                "que está anulada y no puede modificarse"
             )
 
         linked_invoice = _dict(
@@ -1601,7 +1709,8 @@ def update_cobro(cobro_id, data):
         conn.execute(
             """
             UPDATE eco_cobros
-            SET fecha_cobro = ?,
+            SET cliente_id = ?,
+                fecha_cobro = ?,
                 expediente_id = ?,
                 hoja_encargo_id = ?,
                 importe = ?,
@@ -1618,6 +1727,7 @@ def update_cobro(cobro_id, data):
             WHERE id = ?
             """,
             (
+                cliente_id,
                 fecha_cobro,
                 expediente_id,
                 hoja_id,
@@ -1635,7 +1745,32 @@ def update_cobro(cobro_id, data):
             ),
         )
 
-        ensure_expediente_cliente(conn, expediente_id, old["cliente_id"], rol="PAGADOR", es_principal=0)
+        ensure_expediente_cliente(
+            conn,
+            expediente_id,
+            cliente_id,
+            rol="PAGADOR",
+            es_principal=0,
+        )
+
+        if linked_invoice:
+            conn.execute(
+                """
+                UPDATE eco_facturas
+                SET cliente_id = ?,
+                    expediente_id = ?,
+                    hoja_encargo_id = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                  AND COALESCE(activo, 1) = 1
+                """,
+                (
+                    cliente_id,
+                    expediente_id,
+                    hoja_id,
+                    linked_invoice["id"],
+                ),
+            )
 
         years = {year}
         if old.get("fecha_cobro"):
@@ -1683,7 +1818,11 @@ def get_cobro(cobro_id):
                e.numero_expediente,
                h.numero_hoja,
                f.numero_factura,
-               COALESCE(f.exportada_holded, 0) AS factura_exportada_holded
+               f.estado AS factura_estado,
+               COALESCE(
+                   f.exportada_holded,
+                   0
+               ) AS factura_exportada_holded
         FROM eco_cobros cob
         JOIN clientes c
           ON c.id = cob.cliente_id
@@ -2264,6 +2403,196 @@ def approve_factura(factura_id):
     )
 
     return factura_id
+
+
+def approve_all_pending_facturas():
+    """
+    Aprueba y congela conjuntamente todas las facturas normales
+    activas que todavía estén pendientes.
+
+    Esta operación sirve para cerrar la serie completa y evita
+    congelaciones parciales. Conserva la numeración existente.
+
+    Se excluyen:
+    - facturas anuladas;
+    - facturas inactivas;
+    - facturas rectificativas;
+    - facturas ya aprobadas.
+    """
+    approved = []
+
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        facturas = [
+            _dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM eco_facturas
+                WHERE COALESCE(activo, 1) = 1
+                  AND COALESCE(exportada_holded, 0) = 0
+                  AND UPPER(
+                        COALESCE(estado, 'EMITIDA')
+                      ) != 'ANULADA'
+                  AND factura_rectificada_id IS NULL
+                  AND UPPER(
+                        COALESCE(tipo_factura, 'NORMAL')
+                      ) != 'RECTIFICATIVA'
+                ORDER BY
+                    fecha_factura ASC,
+                    id ASC
+                """
+            ).fetchall()
+        ]
+
+        if not facturas:
+            raise ValueError(
+                "No hay facturas pendientes de aprobación"
+            )
+
+        seen_numbers = set()
+
+        for factura in facturas:
+            factura_id = int(factura["id"])
+            numero = _text(
+                factura.get("numero_factura")
+            )
+            fecha = _text(
+                factura.get("fecha_factura")
+            )
+            cliente_id = factura.get("cliente_id")
+
+            if not numero:
+                raise ValueError(
+                    f"La factura #{factura_id} no tiene numeración"
+                )
+
+            if numero in seen_numbers:
+                raise ValueError(
+                    "La operación contiene numeración duplicada: "
+                    f"{numero}"
+                )
+
+            seen_numbers.add(numero)
+
+            if not fecha:
+                raise ValueError(
+                    f"La factura {numero} no tiene fecha"
+                )
+
+            if not cliente_id:
+                raise ValueError(
+                    f"La factura {numero} no tiene cliente"
+                )
+
+            base = round(
+                _float(
+                    factura.get("base_imponible")
+                ),
+                2,
+            )
+            iva = round(
+                _float(factura.get("iva")),
+                2,
+            )
+            irpf = round(
+                _float(factura.get("irpf")),
+                2,
+            )
+            suplidos = round(
+                _float(factura.get("suplidos")),
+                2,
+            )
+            stored_total = round(
+                _float(factura.get("total")),
+                2,
+            )
+            calculated_total = round(
+                base + iva - irpf + suplidos,
+                2,
+            )
+
+            if (
+                abs(
+                    stored_total
+                    - calculated_total
+                )
+                > 0.01
+            ):
+                raise ValueError(
+                    f"La factura {numero} no cuadra: "
+                    f"total guardado {stored_total:.2f} €, "
+                    f"total calculado {calculated_total:.2f} €"
+                )
+
+            duplicate = conn.execute(
+                """
+                SELECT id
+                FROM eco_facturas
+                WHERE numero_factura = ?
+                  AND id != ?
+                LIMIT 1
+                """,
+                (
+                    numero,
+                    factura_id,
+                ),
+            ).fetchone()
+
+            if duplicate:
+                raise ValueError(
+                    "Ya existe otra factura con el número "
+                    f"{numero}"
+                )
+
+        for factura in facturas:
+            factura_id = int(factura["id"])
+
+            conn.execute(
+                """
+                UPDATE eco_facturas
+                SET estado = 'APROBADA',
+                    exportada_holded = 1,
+                    fecha_exportacion = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                  AND COALESCE(activo, 1) = 1
+                  AND COALESCE(exportada_holded, 0) = 0
+                """,
+                (factura_id,),
+            )
+
+            approved.append(
+                {
+                    "id": factura_id,
+                    "numero_factura": factura.get(
+                        "numero_factura"
+                    ),
+                    "fecha_factura": factura.get(
+                        "fecha_factura"
+                    ),
+                }
+            )
+
+        conn.commit()
+
+    for factura in approved:
+        registrar_evento(
+            "eco_facturas",
+            factura["id"],
+            "APROBACION",
+            "FACTURA APROBADA",
+            (
+                f"{factura['numero_factura']} · "
+                "aprobación masiva de la serie"
+            ),
+        )
+
+    return {
+        "count": len(approved),
+        "facturas": approved,
+    }
 
 def mark_factura_exportada_holded(factura_id):
     """

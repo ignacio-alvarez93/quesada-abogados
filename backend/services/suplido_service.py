@@ -1217,3 +1217,642 @@ def create_suplido_from_movement(
             conn.commit()
 
         raise
+
+
+# ============================================================
+# RECUPERACIÓN DE SUPLIDOS DESDE COBROS
+# ============================================================
+
+RECOVERY_SOURCE_PAYMENT = "payment"
+
+
+def _sync_suplido_recovery_status(
+    conn: sqlite3.Connection,
+    suplido_id: int,
+) -> dict[str, int | str]:
+    suplido_id = int(suplido_id)
+
+    suplido = conn.execute(
+        """
+        SELECT
+            id,
+            amount_centimos,
+            active
+        FROM economic_suplidos
+        WHERE id = ?
+        """,
+        (suplido_id,),
+    ).fetchone()
+
+    if not suplido:
+        raise ValueError("No existe el suplido.")
+
+    total_centimos = int(
+        suplido["amount_centimos"] or 0
+    )
+
+    recovered_centimos = int(
+        conn.execute(
+            """
+            SELECT COALESCE(
+                SUM(amount_centimos),
+                0
+            ) AS total
+            FROM economic_suplido_recovery_applications
+            WHERE suplido_id = ?
+            """,
+            (suplido_id,),
+        ).fetchone()["total"]
+        or 0
+    )
+
+    if recovered_centimos > total_centimos:
+        raise ValueError(
+            "La recuperación supera el importe "
+            "total del suplido."
+        )
+
+    if not int(suplido["active"] or 0):
+        status = STATUS_CANCELLED
+    elif recovered_centimos <= 0:
+        status = STATUS_PENDING
+    elif recovered_centimos < total_centimos:
+        status = STATUS_PARTIAL
+    else:
+        status = STATUS_RECOVERED
+
+    conn.execute(
+        """
+        UPDATE economic_suplidos
+        SET recovered_amount_centimos = ?,
+            status = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (
+            recovered_centimos,
+            status,
+            suplido_id,
+        ),
+    )
+
+    return {
+        "total_centimos": total_centimos,
+        "recovered_centimos": recovered_centimos,
+        "pending_centimos": max(
+            0,
+            total_centimos - recovered_centimos,
+        ),
+        "status": status,
+    }
+
+
+def _get_cobro_recovery_totals(
+    conn: sqlite3.Connection,
+    cobro_id: int,
+) -> dict[str, int]:
+    cobro_id = int(cobro_id)
+
+    cobro = conn.execute(
+        """
+        SELECT
+            id,
+            importe
+        FROM eco_cobros
+        WHERE id = ?
+          AND COALESCE(activo, 1) = 1
+        """,
+        (cobro_id,),
+    ).fetchone()
+
+    if not cobro:
+        raise ValueError(
+            "No existe el cobro o está inactivo."
+        )
+
+    total_centimos = int(
+        round(
+            float(cobro["importe"] or 0)
+            * 100
+        )
+    )
+
+    applied_centimos = int(
+        conn.execute(
+            """
+            SELECT COALESCE(
+                SUM(amount_centimos),
+                0
+            ) AS total
+            FROM economic_suplido_recovery_applications
+            WHERE source_type = ?
+              AND source_id = ?
+            """,
+            (
+                RECOVERY_SOURCE_PAYMENT,
+                cobro_id,
+            ),
+        ).fetchone()["total"]
+        or 0
+    )
+
+    return {
+        "total_centimos": total_centimos,
+        "applied_centimos": applied_centimos,
+        "pending_centimos": max(
+            0,
+            total_centimos - applied_centimos,
+        ),
+    }
+
+
+def get_cobro_recovery_snapshot(
+    cobro_id: int,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    ensure_schema(db_path)
+
+    cobro_id = int(cobro_id)
+
+    with _connect(db_path) as conn:
+        cobro = conn.execute(
+            """
+            SELECT
+                c.*,
+                cl.nombre,
+                cl.primer_apellido,
+                cl.segundo_apellido,
+                e.numero_expediente,
+                f.numero_factura
+            FROM eco_cobros c
+            LEFT JOIN clientes cl
+              ON cl.id = c.cliente_id
+            LEFT JOIN expedientes e
+              ON e.id = c.expediente_id
+            LEFT JOIN eco_facturas f
+              ON f.id = c.factura_id
+            WHERE c.id = ?
+            """,
+            (cobro_id,),
+        ).fetchone()
+
+        if not cobro:
+            raise ValueError("No existe el cobro.")
+
+        totals = _get_cobro_recovery_totals(
+            conn,
+            cobro_id,
+        )
+
+        applications = conn.execute(
+            """
+            SELECT
+                r.*,
+                s.payment_date,
+                s.amount_centimos
+                    AS suplido_amount_centimos,
+                s.concept,
+                s.provider_name,
+                s.status,
+                s.client_id,
+                s.expedient_id,
+                e.numero_expediente
+            FROM economic_suplido_recovery_applications r
+            JOIN economic_suplidos s
+              ON s.id = r.suplido_id
+            LEFT JOIN expedientes e
+              ON e.id = s.expedient_id
+            WHERE r.source_type = ?
+              AND r.source_id = ?
+            ORDER BY
+                r.created_at ASC,
+                r.id ASC
+            """,
+            (
+                RECOVERY_SOURCE_PAYMENT,
+                cobro_id,
+            ),
+        ).fetchall()
+
+    return {
+        "cobro": dict(cobro),
+        **totals,
+        "recovery_applications": [
+            dict(row)
+            for row in applications
+        ],
+    }
+
+
+def list_recoverable_suplidos(
+    client_id: int,
+    *,
+    limit: int = 2000,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    ensure_schema(db_path)
+
+    client_id = int(client_id)
+    limit = max(
+        1,
+        min(int(limit or 2000), 5000),
+    )
+
+    if client_id <= 0:
+        return []
+
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                s.*,
+                c.nombre,
+                c.primer_apellido,
+                c.segundo_apellido,
+                e.numero_expediente,
+                COALESCE(
+                    (
+                        SELECT SUM(
+                            r.amount_centimos
+                        )
+                        FROM economic_suplido_recovery_applications r
+                        WHERE r.suplido_id = s.id
+                    ),
+                    0
+                ) AS recovered_application_centimos
+            FROM economic_suplidos s
+            LEFT JOIN clientes c
+              ON c.id = s.client_id
+            LEFT JOIN expedientes e
+              ON e.id = s.expedient_id
+            WHERE s.client_id = ?
+              AND COALESCE(s.active, 1) = 1
+              AND UPPER(
+                    COALESCE(s.status, '')
+                  ) <> 'ANULADO'
+            ORDER BY
+                s.payment_date ASC,
+                s.id ASC
+            LIMIT ?
+            """,
+            (
+                client_id,
+                limit,
+            ),
+        ).fetchall()
+
+    result = []
+
+    for row in rows:
+        data = dict(row)
+
+        total_centimos = int(
+            data["amount_centimos"] or 0
+        )
+        recovered_centimos = int(
+            data[
+                "recovered_application_centimos"
+            ]
+            or 0
+        )
+
+        data["pending_recovery_centimos"] = max(
+            0,
+            total_centimos - recovered_centimos,
+        )
+
+        if (
+            data["pending_recovery_centimos"]
+            <= 0
+        ):
+            continue
+
+        result.append(data)
+
+    return result
+
+
+def apply_cobro_recovery(
+    *,
+    cobro_id: int,
+    suplido_id: int,
+    amount_centimos: int,
+    notes: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    ensure_schema(db_path)
+
+    cobro_id = int(cobro_id)
+    suplido_id = int(suplido_id)
+    amount_centimos = int(
+        amount_centimos or 0
+    )
+    notes = str(notes or "").strip()
+
+    if amount_centimos <= 0:
+        raise ValueError(
+            "El importe recuperado debe ser "
+            "mayor que cero."
+        )
+
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        cobro = conn.execute(
+            """
+            SELECT
+                id,
+                cliente_id,
+                importe,
+                tipo_fiscal,
+                activo
+            FROM eco_cobros
+            WHERE id = ?
+            """,
+            (cobro_id,),
+        ).fetchone()
+
+        if not cobro or not int(
+            cobro["activo"] or 0
+        ):
+            raise ValueError(
+                "No existe el cobro o está inactivo."
+            )
+
+        if (
+            str(
+                cobro["tipo_fiscal"] or ""
+            ).strip().upper()
+            != "SUPLIDO"
+        ):
+            raise ValueError(
+                "Solo un cobro fiscal de tipo "
+                "SUPLIDO puede recuperar un suplido."
+            )
+
+        suplido = conn.execute(
+            """
+            SELECT
+                id,
+                client_id,
+                amount_centimos,
+                status,
+                active
+            FROM economic_suplidos
+            WHERE id = ?
+            """,
+            (suplido_id,),
+        ).fetchone()
+
+        if not suplido or not int(
+            suplido["active"] or 0
+        ):
+            raise ValueError(
+                "No existe el suplido o está inactivo."
+            )
+
+        if int(
+            cobro["cliente_id"] or 0
+        ) != int(
+            suplido["client_id"] or 0
+        ):
+            raise ValueError(
+                "El cobro y el suplido pertenecen "
+                "a clientes distintos."
+            )
+
+        cobro_totals = _get_cobro_recovery_totals(
+            conn,
+            cobro_id,
+        )
+
+        if amount_centimos > int(
+            cobro_totals["pending_centimos"]
+        ):
+            raise ValueError(
+                "El importe supera el pendiente "
+                "disponible del cobro."
+            )
+
+        suplido_total = int(
+            suplido["amount_centimos"] or 0
+        )
+
+        suplido_recovered = int(
+            conn.execute(
+                """
+                SELECT COALESCE(
+                    SUM(amount_centimos),
+                    0
+                ) AS total
+                FROM economic_suplido_recovery_applications
+                WHERE suplido_id = ?
+                """,
+                (suplido_id,),
+            ).fetchone()["total"]
+            or 0
+        )
+
+        suplido_pending = max(
+            0,
+            suplido_total - suplido_recovered,
+        )
+
+        if amount_centimos > suplido_pending:
+            raise ValueError(
+                "El importe supera el pendiente "
+                "de recuperación del suplido."
+            )
+
+        existing = conn.execute(
+            """
+            SELECT
+                id,
+                amount_centimos
+            FROM economic_suplido_recovery_applications
+            WHERE source_type = ?
+              AND source_id = ?
+              AND suplido_id = ?
+            """,
+            (
+                RECOVERY_SOURCE_PAYMENT,
+                cobro_id,
+                suplido_id,
+            ),
+        ).fetchone()
+
+        if existing:
+            new_amount = (
+                int(
+                    existing["amount_centimos"]
+                    or 0
+                )
+                + amount_centimos
+            )
+
+            conn.execute(
+                """
+                UPDATE economic_suplido_recovery_applications
+                SET amount_centimos = ?,
+                    notes = CASE
+                        WHEN ? = '' THEN notes
+                        ELSE ?
+                    END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    new_amount,
+                    notes,
+                    notes,
+                    int(existing["id"]),
+                ),
+            )
+
+            application_id = int(
+                existing["id"]
+            )
+
+        else:
+            cursor = conn.execute(
+                """
+                INSERT INTO
+                economic_suplido_recovery_applications (
+                    source_type,
+                    source_id,
+                    suplido_id,
+                    amount_centimos,
+                    notes
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    RECOVERY_SOURCE_PAYMENT,
+                    cobro_id,
+                    suplido_id,
+                    amount_centimos,
+                    notes,
+                ),
+            )
+
+            application_id = int(
+                cursor.lastrowid
+            )
+
+        _sync_suplido_recovery_status(
+            conn,
+            suplido_id,
+        )
+
+        conn.commit()
+
+    return {
+        "application_id": application_id,
+        "cobro": get_cobro_recovery_snapshot(
+            cobro_id,
+            db_path=db_path,
+        ),
+        "suplido": get_suplido(
+            suplido_id,
+            db_path=db_path,
+        ),
+    }
+
+
+def remove_cobro_recovery(
+    application_id: int,
+    *,
+    reason: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    ensure_schema(db_path)
+
+    application_id = int(application_id)
+    reason = str(reason or "").strip()
+
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        application = conn.execute(
+            """
+            SELECT *
+            FROM economic_suplido_recovery_applications
+            WHERE id = ?
+            """,
+            (application_id,),
+        ).fetchone()
+
+        if not application:
+            raise ValueError(
+                "No existe la aplicación de recuperación."
+            )
+
+        if (
+            str(
+                application["source_type"] or ""
+            ).strip().lower()
+            != RECOVERY_SOURCE_PAYMENT
+        ):
+            raise ValueError(
+                "La aplicación no procede de un cobro."
+            )
+
+        cobro_id = int(
+            application["source_id"]
+        )
+        suplido_id = int(
+            application["suplido_id"]
+        )
+
+        conn.execute(
+            """
+            DELETE FROM
+            economic_suplido_recovery_applications
+            WHERE id = ?
+            """,
+            (application_id,),
+        )
+
+        sync = _sync_suplido_recovery_status(
+            conn,
+            suplido_id,
+        )
+
+        if reason:
+            conn.execute(
+                """
+                UPDATE economic_suplidos
+                SET notes = CASE
+                    WHEN TRIM(
+                        COALESCE(notes, '')
+                    ) = ''
+                        THEN ?
+                    ELSE notes
+                      || char(10)
+                      || ?
+                    END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    reason,
+                    reason,
+                    suplido_id,
+                ),
+            )
+
+        conn.commit()
+
+    return {
+        "removed_application_id": application_id,
+        "suplido_sync": sync,
+        "cobro": get_cobro_recovery_snapshot(
+            cobro_id,
+            db_path=db_path,
+        ),
+        "suplido": get_suplido(
+            suplido_id,
+            db_path=db_path,
+        ),
+    }
