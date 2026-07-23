@@ -35,6 +35,8 @@ from backend.services import expense_service
 from backend.services import expense_reconciliation_service
 from backend.services import labor_reconciliation_service
 from backend.services import suplido_service
+from backend.services import internal_transfer_service
+from backend.services import suplido_reconciliation_service
 from backend.services import expense_classification_service
 from backend.services import supplier_service
 from frontend.components.economic_invoice_card import economic_invoice_card
@@ -4500,6 +4502,9 @@ def economic_view(page: ft.Page):
         finally:
             conn.close()
 
+        suplido_reconciliation_service.sync_for_cobro(
+            cobro_id
+        )
 
 
     def show_reconciliation_dialog(dialog):
@@ -9050,6 +9055,12 @@ def economic_view(page: ft.Page):
                             icon=ft.Icons.UPLOAD_FILE,
                             tooltip="Importar CSV/XLS",
                             on_click=seleccionar_movimientos_csv_xls,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.SWAP_HORIZ,
+                            icon_color="#175CD3",
+                            tooltip="Registrar traspaso entre cuentas",
+                            on_click=open_transfer_dialog,
                         ),
                     ],
                     spacing=8,
@@ -16554,6 +16565,119 @@ def economic_view(page: ft.Page):
         ),
     )
     page.overlay.append(gasto_dialog)
+
+    transfer_date = required_text_input(
+        "Fecha DD/MM/AAAA", width=210
+    )
+    transfer_source = required_text_input(
+        "Cuenta de origen", width=280
+    )
+    transfer_destination = required_text_input(
+        "Cuenta de destino", width=280
+    )
+    transfer_amount = required_text_input(
+        "Importe", width=180
+    )
+    transfer_concept = text_input(
+        "Concepto", width=590
+    )
+    transfer_reference = text_input(
+        "Referencia", width=300
+    )
+
+    def open_transfer_dialog(e=None):
+        transfer_date.value = _today_display()
+        transfer_source.value = ""
+        transfer_destination.value = ""
+        transfer_amount.value = ""
+        transfer_concept.value = "Traspaso entre cuentas"
+        transfer_reference.value = ""
+        transfer_dialog.open = True
+        page.update()
+
+    def save_transfer(e=None):
+        try:
+            source_id = (
+                internal_transfer_service
+                .get_or_create_account(
+                    transfer_source.value
+                )
+            )
+            destination_id = (
+                internal_transfer_service
+                .get_or_create_account(
+                    transfer_destination.value
+                )
+            )
+            transfer = (
+                internal_transfer_service
+                .register_internal_transfer(
+                    transfer_date=_date_to_sql(
+                        transfer_date.value
+                    ),
+                    source_account_id=source_id,
+                    destination_account_id=destination_id,
+                    amount=transfer_amount.value,
+                    concept=transfer_concept.value,
+                    reference=transfer_reference.value,
+                )
+            )
+            transfer_dialog.open = False
+            show_message(
+                success_alert(
+                    "Traspaso registrado y conciliado "
+                    f"(#{transfer['id']})"
+                )
+            )
+        except Exception as exc:
+            show_message(error_alert(str(exc)))
+        refresh()
+
+    transfer_dialog = form_dialog(
+        "Traspaso entre cuentas",
+        ft.Column(
+            [
+                ft.Text(
+                    "Genera una salida y una entrada vinculadas. "
+                    "No computa como ingreso ni como gasto.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                ft.Row(
+                    [
+                        transfer_date,
+                        transfer_amount,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+                ft.Row(
+                    [
+                        transfer_source,
+                        transfer_destination,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+                transfer_concept,
+                transfer_reference,
+            ],
+            width=680,
+            height=330,
+            spacing=12,
+        ),
+        [
+            secondary_button(
+                "Cancelar",
+                lambda e: close(transfer_dialog),
+            ),
+            primary_button(
+                "Registrar traspaso",
+                save_transfer,
+            ),
+        ],
+    )
+    page.overlay.append(transfer_dialog)
 
     # Movimiento dialog
     mov_origen = select_input("Origen", ["BANCO", "CASHMATIC", "STRIPE", "MANUAL"], value="BANCO", width=180)
