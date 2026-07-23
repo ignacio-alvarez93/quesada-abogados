@@ -2618,6 +2618,11 @@ def conciliar_movimiento_con_cobro(movimiento_id, cobro_id):
         )
         conn.commit()
 
+    from backend.services.suplido_reconciliation_service import (
+        sync_for_cobro,
+    )
+
+    sync_for_cobro(int(cobro_id), db_path=DB_PATH)
     registrar_evento("eco_cobros", cobro_id, "CONCILIACION", "COBRO CONCILIADO", f"Movimiento {movimiento_id}")
 
 
