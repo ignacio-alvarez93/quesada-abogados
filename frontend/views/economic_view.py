@@ -4707,13 +4707,36 @@ def economic_view(page: ft.Page):
             or 0
         )
 
-        transfer_candidates = (
-            internal_transfer_service
-            .list_transfer_candidates(
-                source_type=source,
-                source_movement_id=movement_id,
-            )
+        existing_internal_transfer_id = int(
+            movement.get("internal_transfer_id")
+            or _get_value(item, "internal_transfer_id")
+            or 0
         )
+
+        transfer_candidates = []
+        transfer_candidates_error = ""
+
+        if not existing_internal_transfer_id:
+            try:
+                transfer_candidates = (
+                    internal_transfer_service
+                    .list_transfer_candidates(
+                        source_type=source,
+                        source_movement_id=movement_id,
+                    )
+                )
+            except ValueError as exc:
+                message = str(exc)
+
+                if "ya está vinculado a un traspaso" in message:
+                    existing_internal_transfer_id = int(
+                        movement.get("internal_transfer_id")
+                        or _get_value(item, "internal_transfer_id")
+                        or 0
+                    )
+                else:
+                    transfer_candidates_error = message
+
         transfer_option_map = {}
         transfer_options = []
         for candidate in transfer_candidates:
@@ -4777,6 +4800,234 @@ def economic_view(page: ft.Page):
             hint_text="Busca la entrada correspondiente en otra cuenta",
             empty_text="No hay movimientos positivos compatibles",
         )
+
+        advanced_clients = (
+            payment_reconciliation_service
+            .list_pending_advanced_payment_clients()
+        )
+        advanced_client_map = {}
+        advanced_client_options = []
+        for client in advanced_clients:
+            client_name = " ".join(
+                part
+                for part in [
+                    str(client.get("nombre") or "").strip(),
+                    str(client.get("primer_apellido") or "").strip(),
+                    str(client.get("segundo_apellido") or "").strip(),
+                ]
+                if part
+            ) or f"Cliente {client.get('id')}"
+            label = f"{client.get('id')} - {client_name}"
+            advanced_client_map[label] = client
+            advanced_client_options.append(
+                {"id": client.get("id"), "label": label}
+            )
+        selected_advanced_payment = {"row": None}
+        advanced_payment_map = {}
+        advanced_payment_summary = ft.Container()
+        advanced_applications_box = ft.Container()
+
+        def advanced_payment_selected(value):
+            payment = advanced_payment_map.get(
+                str(value or "").strip()
+            )
+            selected_advanced_payment["row"] = payment
+            if not payment:
+                advanced_payment_summary.content = None
+                return
+            applicable = min(
+                movement_pending,
+                int(payment.get("pending_centimos") or 0),
+            )
+            amount_input.value = (
+                f"{applicable / 100:.2f}".replace(".", ",")
+            )
+            advanced_payment_summary.content = ft.Container(
+                bgcolor="#EFF8FF",
+                border=ft.border.all(1, "#84CAFF"),
+                border_radius=10,
+                padding=12,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                f"{payment.get('numero_cobro') or payment.get('id')} · "
+                                f"{_date_to_display(payment.get('fecha_cobro'))}"
+                            ),
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            payment.get("concepto") or "Sin concepto",
+                            size=12,
+                            color="#344054",
+                        ),
+                        ft.Text(
+                            (
+                                f"Total {_money_centimos(payment.get('total_centimos'))} · "
+                                f"Aplicado {_money_centimos(payment.get('applied_centimos'))} · "
+                                f"Pendiente {_money_centimos(payment.get('pending_centimos'))}"
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=5,
+                ),
+            )
+            try:
+                amount_input.update()
+                advanced_payment_summary.update()
+            except Exception:
+                pass
+
+        advanced_payment_ac = AppAutocomplete(
+            page=page,
+            label="Cobro SUPLIDO_ADELANTADO pendiente",
+            options=[],
+            width=690,
+            max_results=12,
+            on_select=advanced_payment_selected,
+            allow_free_text=False,
+            hint_text="Selecciona primero un cliente",
+            empty_text="El cliente no tiene cobros pendientes",
+        )
+
+        def advanced_client_selected(value):
+            client = advanced_client_map.get(
+                str(value or "").strip()
+            )
+            selected_advanced_payment["row"] = None
+            advanced_payment_map.clear()
+            options = []
+            if client:
+                payments = (
+                    payment_reconciliation_service
+                    .list_pending_advanced_payments(
+                        int(client.get("id"))
+                    )
+                )
+                for payment in payments:
+                    label = (
+                        f"{payment.get('id')} - "
+                        f"{payment.get('numero_cobro') or 'Sin número'} · "
+                        f"{_date_to_display(payment.get('fecha_cobro'))} · "
+                        f"{payment.get('concepto') or 'Sin concepto'} · "
+                        f"Total {_money_centimos(payment.get('total_centimos'))} · "
+                        f"Aplicado {_money_centimos(payment.get('applied_centimos'))} · "
+                        f"Pendiente {_money_centimos(payment.get('pending_centimos'))}"
+                    )
+                    advanced_payment_map[label] = payment
+                    options.append(
+                        {"id": payment.get("id"), "label": label}
+                    )
+            advanced_payment_ac.set_options(
+                options,
+                clear_value=True,
+            )
+            advanced_payment_summary.content = None
+
+        advanced_client_ac = AppAutocomplete(
+            page=page,
+            label="Cliente con suplidos adelantados pendientes",
+            options=advanced_client_options,
+            width=690,
+            max_results=12,
+            on_select=advanced_client_selected,
+            allow_free_text=False,
+            hint_text="Busca por cliente",
+            empty_text="No hay clientes con cobros pendientes",
+        )
+
+        def refresh_advanced_applications():
+            summary = (
+                payment_reconciliation_service
+                .bank_movement_summary(movement_id)
+            )
+            rows = summary.get("applications") or []
+            if not rows:
+                advanced_applications_box.content = ft.Text(
+                    "Sin aplicaciones a cobros.",
+                    size=11,
+                    color=Q_MUTED,
+                )
+                return
+            controls = []
+            for application in rows:
+                controls.append(
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                (
+                                    f"{application.get('numero_cobro') or application.get('payment_id')} · "
+                                    f"{_money_centimos(application.get('amount_centimos'))}"
+                                ),
+                                size=11,
+                                color=Q_PRIMARY_DARK,
+                                expand=True,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.LINK_OFF,
+                                tooltip="Retirar vínculo",
+                                on_click=lambda e, app_id=int(
+                                    application.get("id")
+                                ): remove_advanced_application(app_id),
+                            ),
+                        ],
+                    )
+                )
+            advanced_applications_box.content = ft.Column(
+                controls=controls,
+                spacing=4,
+            )
+
+        def remove_advanced_application(application_id):
+            try:
+                payment_reconciliation_service.remove_negative_bank_payment_application(
+                    application_id
+                )
+                state.setdefault("movements_cache", {}).clear()
+                refresh_advanced_applications()
+                advanced_applications_box.update()
+                refresh()
+            except Exception as exc:
+                set_message(str(exc), error=True)
+
+        def apply_to_advanced_payment(e=None):
+            payment = selected_advanced_payment.get("row")
+            if not payment:
+                set_message(
+                    "Selecciona un cobro SUPLIDO_ADELANTADO.",
+                    error=True,
+                )
+                return
+            try:
+                amount = int(
+                    round(
+                        float(
+                            str(amount_input.value or "0")
+                            .replace(".", "")
+                            .replace(",", ".")
+                        )
+                        * 100
+                    )
+                )
+                payment_reconciliation_service.apply_negative_bank_movement_to_advanced_payment(
+                    movement_id=movement_id,
+                    payment_id=int(payment.get("id")),
+                    amount_centimos=amount,
+                    notes=notes_input.value or "",
+                )
+                state.setdefault("movements_cache", {}).clear()
+                reconciliation_dialog.open = False
+                show_message(
+                    success_alert(
+                        "Movimiento aplicado al cobro de suplido adelantado"
+                    )
+                )
+                refresh()
+            except Exception as exc:
+                set_message(str(exc), error=True)
 
         expenses = (
             expense_reconciliation_service
@@ -5033,12 +5284,9 @@ def economic_view(page: ft.Page):
                 }
             )
 
-        suplidos = (
-            suplido_service
-            .list_reconcilable_suplidos(
-                limit=2000,
-            )
-        )
+        # La conciliación bancaria de SUPLIDO_ADELANTADO usa eco_cobros.
+        # economic_suplidos pertenece al flujo posterior de recuperación.
+        suplidos = []
 
         suplido_option_map = {}
         suplido_options = []
@@ -6706,6 +6954,32 @@ def economic_view(page: ft.Page):
             visible=False,
         )
 
+        suplido_panel = ft.Column(
+            controls=[
+                ft.Text(
+                    "Aplicar a un cobro SUPLIDO_ADELANTADO",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    (
+                        "Esta operación concilia el movimiento bancario "
+                        "con el cobro. No crea ni recupera economic_suplidos."
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                advanced_applications_box,
+                advanced_client_ac.control,
+                advanced_payment_ac.control,
+                advanced_payment_summary,
+            ],
+            spacing=10,
+            visible=False,
+        )
+        refresh_advanced_applications()
+
         transfer_panel = ft.Column(
             controls=[
                 ft.Text(
@@ -6777,8 +7051,8 @@ def economic_view(page: ft.Page):
             apply_to_social_security,
         )
         apply_suplido_button = secondary_button(
-            "Vincular a suplido existente",
-            apply_to_suplido,
+            "Aplicar al cobro",
+            apply_to_advanced_payment,
         )
         apply_transfer_button = primary_button(
             "Vincular traspaso",

@@ -26,6 +26,7 @@ CREATE TABLE eco_cobros (
     id INTEGER PRIMARY KEY, cliente_id INTEGER NOT NULL,
     importe REAL NOT NULL, tipo_cobro TEXT NOT NULL,
     tipo_fiscal TEXT NOT NULL, fecha_cobro TEXT,
+    numero_cobro TEXT, concepto TEXT,
     expediente_id INTEGER, factura_id INTEGER,
     iva_porcentaje REAL DEFAULT 0, irpf_porcentaje REAL DEFAULT 0,
     estado_conciliacion TEXT NOT NULL DEFAULT 'PENDIENTE',
@@ -62,7 +63,10 @@ CREATE TABLE bank_movements (
     account_label TEXT, account_iban TEXT,
     review_status TEXT NOT NULL DEFAULT 'PENDING_MANUAL_REVIEW',
     movement_status TEXT NOT NULL DEFAULT 'READY',
-    linked_payment_id INTEGER, linked_amount_centimos INTEGER DEFAULT 0,
+    linked_payment_id INTEGER, linked_client_id INTEGER,
+    linked_expedient_id INTEGER,
+    linked_amount_centimos INTEGER DEFAULT 0,
+    linked_target_type TEXT, linked_at TEXT,
     ignored_at TEXT, updated_at TEXT
 );
 CREATE TABLE eco_eventos (
@@ -83,15 +87,32 @@ class EconomicIntegrationTest(unittest.TestCase):
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.executescript(BASE_SCHEMA)
             conn.execute("INSERT INTO clientes(id, nombre) VALUES (1, 'Cliente')")
+            conn.execute("INSERT INTO clientes(id, nombre) VALUES (2, 'Otro')")
             conn.execute(
                 """
                 INSERT INTO eco_cobros(
                     id, cliente_id, importe, tipo_cobro, tipo_fiscal,
-                    fecha_cobro, estado_conciliacion, activo
+                    fecha_cobro, numero_cobro, concepto,
+                    estado_conciliacion, activo
                 )
                 VALUES (
                     10, 1, 100, 'SUPLIDO_ADELANTADO', 'SUPLIDO',
-                    '2026-07-23', 'PENDIENTE', 1
+                    '2026-07-23', 'COB-10', 'Provisión de tasa',
+                    'PENDIENTE', 1
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO eco_cobros(
+                    id, cliente_id, importe, tipo_cobro, tipo_fiscal,
+                    fecha_cobro, numero_cobro, concepto,
+                    estado_conciliacion, activo
+                )
+                VALUES (
+                    11, 2, 80, 'SUPLIDO_ADELANTADO', 'SUPLIDO',
+                    '2026-07-22', 'COB-11', 'Otro cliente',
+                    'PENDIENTE', 1
                 )
                 """
             )
@@ -109,6 +130,7 @@ class EconomicIntegrationTest(unittest.TestCase):
                     (3, 12550, "2026-07-21", "Misma", "Santander", "Operativa", "ES01"),
                     (4, 12000, "2026-07-21", "Descuadre", "ING", "Ahorro", "ES02"),
                     (5, -12550, "2026-07-22", "Otra salida", "Santander", "Otra", "ES03"),
+                    (6, -10000, "2026-07-23", "Suplido total", "Santander", "Operativa", "ES01"),
                 ],
             )
             conn.commit()
@@ -256,6 +278,109 @@ class EconomicIntegrationTest(unittest.TestCase):
         internal_transfer_service.link_existing_movements(
             source_type="bank", source_movement_id=1,
             destination_type="bank", destination_movement_id=2,
+            db_path=self.db_path,
+        )
+        after = profit_and_loss_service.profit_and_loss_summary(
+            db_path=self.db_path
+        )
+        self.assertEqual(before["income"], after["income"])
+        self.assertEqual(before["expenses"], after["expenses"])
+        self.assertEqual(before["result_centimos"], after["result_centimos"])
+
+    def test_lists_only_clients_with_pending_advanced_payments(self) -> None:
+        clients = (
+            payment_reconciliation_service
+            .list_pending_advanced_payment_clients(
+                db_path=self.db_path
+            )
+        )
+        self.assertEqual({row["id"] for row in clients}, {1, 2})
+        payment_reconciliation_service.set_application(
+            source_type="bank", source_movement_id=90,
+            payment_id=11, amount_centimos=8000,
+            db_path=self.db_path,
+        )
+        clients = (
+            payment_reconciliation_service
+            .list_pending_advanced_payment_clients(
+                db_path=self.db_path
+            )
+        )
+        self.assertEqual({row["id"] for row in clients}, {1})
+
+    def test_negative_bank_movement_total_link(self) -> None:
+        result = payment_reconciliation_service.apply_negative_bank_movement_to_advanced_payment(
+            movement_id=6, payment_id=10, amount_centimos=10000,
+            db_path=self.db_path,
+        )
+        self.assertEqual(result["payment"]["status"], "CONCILIADO")
+        movement = self._movement(6)
+        self.assertEqual(movement["linked_payment_id"], 10)
+        self.assertEqual(movement["linked_client_id"], 1)
+        self.assertEqual(movement["linked_amount_centimos"], 10000)
+        self.assertEqual(movement["linked_target_type"], "COBRO")
+        self.assertEqual(result["movement"]["pending_centimos"], 0)
+
+    def test_negative_bank_movement_partial_link(self) -> None:
+        result = payment_reconciliation_service.apply_negative_bank_movement_to_advanced_payment(
+            movement_id=1, payment_id=10, amount_centimos=4000,
+            db_path=self.db_path,
+        )
+        self.assertEqual(result["payment"]["status"], "PARCIAL")
+        self.assertEqual(result["movement"]["applied_centimos"], 4000)
+        self.assertEqual(result["movement"]["pending_centimos"], 8550)
+
+    def test_negative_bank_link_reversal(self) -> None:
+        result = payment_reconciliation_service.apply_negative_bank_movement_to_advanced_payment(
+            movement_id=1, payment_id=10, amount_centimos=10000,
+            db_path=self.db_path,
+        )
+        reversed_result = payment_reconciliation_service.remove_negative_bank_payment_application(
+            result["application_id"], db_path=self.db_path
+        )
+        self.assertEqual(reversed_result["payment"]["status"], "PENDIENTE")
+        self.assertEqual(reversed_result["movement"]["applied_centimos"], 0)
+        movement = self._movement(1)
+        self.assertIsNone(movement["linked_payment_id"])
+        self.assertEqual(movement["linked_amount_centimos"], 0)
+
+    def test_negative_bank_link_rejects_excess(self) -> None:
+        with self.assertRaisesRegex(ValueError, "pendiente del cobro"):
+            payment_reconciliation_service.apply_negative_bank_movement_to_advanced_payment(
+                movement_id=1, payment_id=10, amount_centimos=11000,
+                db_path=self.db_path,
+            )
+
+    def test_other_client_payment_not_returned_for_selected_client(self) -> None:
+        payments = (
+            payment_reconciliation_service
+            .list_pending_advanced_payments(
+                1, db_path=self.db_path
+            )
+        )
+        self.assertEqual({row["id"] for row in payments}, {10})
+
+    def test_negative_bank_link_does_not_create_economic_suplidos(self) -> None:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            before = conn.execute(
+                "SELECT COUNT(*) FROM economic_suplidos"
+            ).fetchone()[0]
+        payment_reconciliation_service.apply_negative_bank_movement_to_advanced_payment(
+            movement_id=1, payment_id=10, amount_centimos=5000,
+            db_path=self.db_path,
+        )
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            after = conn.execute(
+                "SELECT COUNT(*) FROM economic_suplidos"
+            ).fetchone()[0]
+        self.assertEqual(before, after)
+
+    def test_negative_bank_link_does_not_change_profit_and_loss(self) -> None:
+        before = profit_and_loss_service.profit_and_loss_summary(
+            db_path=self.db_path
+        )
+        payment_reconciliation_service.apply_negative_bank_movement_to_advanced_payment(
+            movement_id=1, payment_id=10, amount_centimos=5000,
             db_path=self.db_path,
         )
         after = profit_and_loss_service.profit_and_loss_summary(
