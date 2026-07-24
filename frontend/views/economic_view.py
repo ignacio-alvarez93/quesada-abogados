@@ -33,6 +33,10 @@ from frontend.components.economic_engagement_letter_card import (
 )
 from backend.services import expense_service
 from backend.services import expense_reconciliation_service
+from backend.services import labor_reconciliation_service
+from backend.services import suplido_service
+from backend.services import internal_transfer_service
+from backend.services import payment_reconciliation_service
 from backend.services import expense_classification_service
 from backend.services import supplier_service
 from frontend.components.economic_invoice_card import economic_invoice_card
@@ -3899,6 +3903,7 @@ def economic_view(page: ft.Page):
             "linked_at",
             "manual_link_id",
             "reconciliation_group_id",
+            "internal_transfer_id",
         ]
 
         movement_amount = (
@@ -3913,6 +3918,11 @@ def economic_view(page: ft.Page):
             _get_value(item, "linked_amount_centimos")
             or _get_value(item, "matched_amount_centimos")
             or _get_value(item, "reconciled_amount_centimos")
+            or (
+                movement_amount
+                if _get_value(item, "internal_transfer_id")
+                else 0
+            )
             or 0
         )
 
@@ -4018,6 +4028,11 @@ def economic_view(page: ft.Page):
             _get_value(item, "linked_amount_centimos")
             or _get_value(item, "matched_amount_centimos")
             or _get_value(item, "reconciled_amount_centimos")
+            or (
+                movement_amount
+                if _get_value(item, "internal_transfer_id")
+                else 0
+            )
             or 0
         )
 
@@ -4373,6 +4388,10 @@ def economic_view(page: ft.Page):
         Desde que un movimiento puede aplicarse a varios cobros, linked_payment_id
         ya no puede ser la fuente principal, porque solo representa un resumen legacy.
         """
+        return payment_reconciliation_service.sync_payment_status(
+            int(cobro_id)
+        )
+
         import sqlite3
 
         try:
@@ -4498,8 +4517,6 @@ def economic_view(page: ft.Page):
         finally:
             conn.close()
 
-
-
     def show_reconciliation_dialog(dialog):
         """
         La vista económica abre sus dialogs como variables persistentes:
@@ -4557,6 +4574,61 @@ def economic_view(page: ft.Page):
         )
 
 
+    def _payroll_reconciliation_label(payroll):
+        worker_name = " ".join(
+            part
+            for part in [
+                str(
+                    payroll.get("first_name")
+                    or ""
+                ).strip(),
+                str(
+                    payroll.get("last_name_1")
+                    or ""
+                ).strip(),
+                str(
+                    payroll.get("last_name_2")
+                    or ""
+                ).strip(),
+            ]
+            if part
+        ) or "Trabajador sin nombre"
+
+        period = (
+            f"{int(payroll.get('period_month') or 0):02d}/"
+            f"{int(payroll.get('period_year') or 0):04d}"
+        )
+
+        pending = _money_centimos(
+            payroll.get("pending_centimos")
+            or 0
+        )
+
+        return (
+            f"{payroll.get('id')} - "
+            f"{worker_name} · Nómina {period} · "
+            f"Pendiente {pending}"
+        )
+
+
+    def _social_security_reconciliation_label(period):
+        period_label = (
+            f"{int(period.get('period_month') or 0):02d}/"
+            f"{int(period.get('period_year') or 0):04d}"
+        )
+
+        pending = _money_centimos(
+            period.get("pending_centimos")
+            or 0
+        )
+
+        return (
+            f"{period.get('id')} - "
+            f"TGSS {period_label} · "
+            f"Pendiente {pending}"
+        )
+
+
     def open_negative_movement_reconciliation(
         source,
         item,
@@ -4589,9 +4661,27 @@ def economic_view(page: ft.Page):
             return
 
         try:
-            summary = (
+            movement_snapshot = (
+                labor_reconciliation_service
+                .get_movement_snapshot(
+                    movement_id
+                )
+            )
+            expense_summary = (
                 expense_reconciliation_service
                 .get_movement_summary(
+                    movement_id
+                )
+            )
+            labor_applications = (
+                labor_reconciliation_service
+                .list_movement_labor_applications(
+                    movement_id
+                )
+            )
+            suplido_snapshot = (
+                suplido_service
+                .get_movement_payment_snapshot(
                     movement_id
                 )
             )
@@ -4603,16 +4693,341 @@ def economic_view(page: ft.Page):
             page.update()
             return
 
-        movement = summary["movement"]
+        movement = movement_snapshot["movement"]
         movement_total = int(
-            summary["total_centimos"] or 0
+            movement_snapshot["total_centimos"]
+            or 0
         )
         movement_applied = int(
-            summary["applied_centimos"] or 0
+            movement_snapshot["applied_centimos"]
+            or 0
         )
         movement_pending = int(
-            summary["pending_centimos"] or 0
+            movement_snapshot["pending_centimos"]
+            or 0
         )
+
+        existing_internal_transfer_id = int(
+            movement.get("internal_transfer_id")
+            or _get_value(item, "internal_transfer_id")
+            or 0
+        )
+
+        transfer_candidates = []
+        transfer_candidates_error = ""
+
+        if not existing_internal_transfer_id:
+            try:
+                transfer_candidates = (
+                    internal_transfer_service
+                    .list_transfer_candidates(
+                        source_type=source,
+                        source_movement_id=movement_id,
+                    )
+                )
+            except ValueError as exc:
+                message = str(exc)
+
+                if "ya está vinculado a un traspaso" in message:
+                    existing_internal_transfer_id = int(
+                        movement.get("internal_transfer_id")
+                        or _get_value(item, "internal_transfer_id")
+                        or 0
+                    )
+                else:
+                    transfer_candidates_error = message
+
+        transfer_option_map = {}
+        transfer_options = []
+        for candidate in transfer_candidates:
+            candidate_label = (
+                f"{candidate.get('source')}:{candidate.get('id')} - "
+                f"{candidate.get('account_label_normalized')} · "
+                f"{_date_to_display(candidate.get('movement_date_normalized'))} · "
+                f"{_money_centimos(candidate.get('amount_centimos_normalized'))} · "
+                f"{candidate.get('concept_normalized') or 'Sin concepto'}"
+            )
+            transfer_option_map[candidate_label] = candidate
+            transfer_options.append(
+                {
+                    "id": candidate.get("id"),
+                    "label": candidate_label,
+                    "subtitle": (
+                        "Fecha próxima: "
+                        f"{candidate.get('date_distance_days')} días"
+                    ),
+                }
+            )
+        selected_transfer_candidate = {"row": None}
+        transfer_selection_summary = ft.Container()
+
+        def transfer_candidate_selected(value):
+            candidate = transfer_option_map.get(
+                str(value or "").strip()
+            )
+            selected_transfer_candidate["row"] = candidate
+            if not candidate:
+                transfer_selection_summary.content = None
+                return
+            transfer_selection_summary.content = ft.Container(
+                bgcolor="#EFF8FF",
+                border=ft.border.all(1, "#84CAFF"),
+                border_radius=10,
+                padding=12,
+                content=ft.Text(
+                    (
+                        f"Entrada en {candidate.get('account_label_normalized')} · "
+                        f"{_money_centimos(candidate.get('amount_centimos_normalized'))} · "
+                        f"{_date_to_display(candidate.get('movement_date_normalized'))}"
+                    ),
+                    size=12,
+                    color=Q_PRIMARY_DARK,
+                ),
+            )
+            try:
+                transfer_selection_summary.update()
+            except Exception:
+                pass
+
+        transfer_candidate_ac = AppAutocomplete(
+            page=page,
+            label="Movimiento positivo contraparte",
+            options=transfer_options,
+            width=690,
+            max_results=12,
+            on_select=transfer_candidate_selected,
+            allow_free_text=False,
+            hint_text="Busca la entrada correspondiente en otra cuenta",
+            empty_text="No hay movimientos positivos compatibles",
+        )
+
+        advanced_clients = (
+            payment_reconciliation_service
+            .list_pending_advanced_payment_clients()
+        )
+        advanced_client_map = {}
+        advanced_client_options = []
+        for client in advanced_clients:
+            client_name = " ".join(
+                part
+                for part in [
+                    str(client.get("nombre") or "").strip(),
+                    str(client.get("primer_apellido") or "").strip(),
+                    str(client.get("segundo_apellido") or "").strip(),
+                ]
+                if part
+            ) or f"Cliente {client.get('id')}"
+            label = f"{client.get('id')} - {client_name}"
+            advanced_client_map[label] = client
+            advanced_client_options.append(
+                {"id": client.get("id"), "label": label}
+            )
+        selected_advanced_payment = {"row": None}
+        advanced_payment_map = {}
+        advanced_payment_summary = ft.Container()
+        advanced_applications_box = ft.Container()
+
+        def advanced_payment_selected(value):
+            payment = advanced_payment_map.get(
+                str(value or "").strip()
+            )
+            selected_advanced_payment["row"] = payment
+            if not payment:
+                advanced_payment_summary.content = None
+                return
+            applicable = min(
+                movement_pending,
+                int(payment.get("pending_centimos") or 0),
+            )
+            amount_input.value = (
+                f"{applicable / 100:.2f}".replace(".", ",")
+            )
+            advanced_payment_summary.content = ft.Container(
+                bgcolor="#EFF8FF",
+                border=ft.border.all(1, "#84CAFF"),
+                border_radius=10,
+                padding=12,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                f"{payment.get('numero_cobro') or payment.get('id')} · "
+                                f"{_date_to_display(payment.get('fecha_cobro'))}"
+                            ),
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            payment.get("concepto") or "Sin concepto",
+                            size=12,
+                            color="#344054",
+                        ),
+                        ft.Text(
+                            (
+                                f"Total {_money_centimos(payment.get('total_centimos'))} · "
+                                f"Aplicado {_money_centimos(payment.get('applied_centimos'))} · "
+                                f"Pendiente {_money_centimos(payment.get('pending_centimos'))}"
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=5,
+                ),
+            )
+            try:
+                amount_input.update()
+                advanced_payment_summary.update()
+            except Exception:
+                pass
+
+        advanced_payment_ac = AppAutocomplete(
+            page=page,
+            label="Cobro SUPLIDO_ADELANTADO pendiente",
+            options=[],
+            width=690,
+            max_results=12,
+            on_select=advanced_payment_selected,
+            allow_free_text=False,
+            hint_text="Selecciona primero un cliente",
+            empty_text="El cliente no tiene cobros pendientes",
+        )
+
+        def advanced_client_selected(value):
+            client = advanced_client_map.get(
+                str(value or "").strip()
+            )
+            selected_advanced_payment["row"] = None
+            advanced_payment_map.clear()
+            options = []
+            if client:
+                payments = (
+                    payment_reconciliation_service
+                    .list_pending_advanced_payments(
+                        int(client.get("id"))
+                    )
+                )
+                for payment in payments:
+                    label = (
+                        f"{payment.get('id')} - "
+                        f"{payment.get('numero_cobro') or 'Sin número'} · "
+                        f"{_date_to_display(payment.get('fecha_cobro'))} · "
+                        f"{payment.get('concepto') or 'Sin concepto'} · "
+                        f"Total {_money_centimos(payment.get('total_centimos'))} · "
+                        f"Aplicado {_money_centimos(payment.get('applied_centimos'))} · "
+                        f"Pendiente {_money_centimos(payment.get('pending_centimos'))}"
+                    )
+                    advanced_payment_map[label] = payment
+                    options.append(
+                        {"id": payment.get("id"), "label": label}
+                    )
+            advanced_payment_ac.set_options(
+                options,
+                clear_value=True,
+            )
+            advanced_payment_summary.content = None
+
+        advanced_client_ac = AppAutocomplete(
+            page=page,
+            label="Cliente con suplidos adelantados pendientes",
+            options=advanced_client_options,
+            width=690,
+            max_results=12,
+            on_select=advanced_client_selected,
+            allow_free_text=False,
+            hint_text="Busca por cliente",
+            empty_text="No hay clientes con cobros pendientes",
+        )
+
+        def refresh_advanced_applications():
+            summary = (
+                payment_reconciliation_service
+                .bank_movement_summary(movement_id)
+            )
+            rows = summary.get("applications") or []
+            if not rows:
+                advanced_applications_box.content = ft.Text(
+                    "Sin aplicaciones a cobros.",
+                    size=11,
+                    color=Q_MUTED,
+                )
+                return
+            controls = []
+            for application in rows:
+                controls.append(
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                (
+                                    f"{application.get('numero_cobro') or application.get('payment_id')} · "
+                                    f"{_money_centimos(application.get('amount_centimos'))}"
+                                ),
+                                size=11,
+                                color=Q_PRIMARY_DARK,
+                                expand=True,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.LINK_OFF,
+                                tooltip="Retirar vínculo",
+                                on_click=lambda e, app_id=int(
+                                    application.get("id")
+                                ): remove_advanced_application(app_id),
+                            ),
+                        ],
+                    )
+                )
+            advanced_applications_box.content = ft.Column(
+                controls=controls,
+                spacing=4,
+            )
+
+        def remove_advanced_application(application_id):
+            try:
+                payment_reconciliation_service.remove_negative_bank_payment_application(
+                    application_id
+                )
+                state.setdefault("movements_cache", {}).clear()
+                refresh_advanced_applications()
+                advanced_applications_box.update()
+                refresh()
+            except Exception as exc:
+                set_message(str(exc), error=True)
+
+        def apply_to_advanced_payment(e=None):
+            payment = selected_advanced_payment.get("row")
+            if not payment:
+                set_message(
+                    "Selecciona un cobro SUPLIDO_ADELANTADO.",
+                    error=True,
+                )
+                return
+            try:
+                amount = int(
+                    round(
+                        float(
+                            str(amount_input.value or "0")
+                            .replace(".", "")
+                            .replace(",", ".")
+                        )
+                        * 100
+                    )
+                )
+                payment_reconciliation_service.apply_negative_bank_movement_to_advanced_payment(
+                    movement_id=movement_id,
+                    payment_id=int(payment.get("id")),
+                    amount_centimos=amount,
+                    notes=notes_input.value or "",
+                )
+                state.setdefault("movements_cache", {}).clear()
+                reconciliation_dialog.open = False
+                show_message(
+                    success_alert(
+                        "Movimiento aplicado al cobro de suplido adelantado"
+                    )
+                )
+                refresh()
+            except Exception as exc:
+                set_message(str(exc), error=True)
 
         expenses = (
             expense_reconciliation_service
@@ -4814,6 +5229,534 @@ def economic_view(page: ft.Page):
             ),
         )
 
+        payrolls = (
+            labor_reconciliation_service
+            .list_payroll_candidates(
+                limit=2000,
+            )
+        )
+
+        payroll_option_map = {}
+        payroll_options = []
+
+        for payroll in payrolls:
+            label = _payroll_reconciliation_label(
+                payroll
+            )
+            payroll_option_map[label] = payroll
+            payroll_options.append(
+                {
+                    "id": payroll.get("id"),
+                    "label": label,
+                    "subtitle": (
+                        payroll.get("tax_id")
+                        or payroll.get("worker_code")
+                        or ""
+                    ),
+                }
+            )
+
+        social_security_periods = (
+            labor_reconciliation_service
+            .list_social_security_candidates(
+                limit=2000,
+            )
+        )
+
+        social_security_option_map = {}
+        social_security_options = []
+
+        for period in social_security_periods:
+            label = (
+                _social_security_reconciliation_label(
+                    period
+                )
+            )
+            social_security_option_map[label] = period
+            social_security_options.append(
+                {
+                    "id": period.get("id"),
+                    "label": label,
+                    "subtitle": (
+                        period.get("status")
+                        or ""
+                    ),
+                }
+            )
+
+        # La conciliación bancaria de SUPLIDO_ADELANTADO usa eco_cobros.
+        # economic_suplidos pertenece al flujo posterior de recuperación.
+        suplidos = []
+
+        suplido_option_map = {}
+        suplido_options = []
+
+        for suplido in suplidos:
+            client_name = " ".join(
+                part
+                for part in [
+                    str(
+                        suplido.get("nombre")
+                        or ""
+                    ).strip(),
+                    str(
+                        suplido.get("primer_apellido")
+                        or ""
+                    ).strip(),
+                    str(
+                        suplido.get("segundo_apellido")
+                        or ""
+                    ).strip(),
+                ]
+                if part
+            ) or "Cliente sin identificar"
+
+            pending = _money_centimos(
+                suplido.get(
+                    "pending_payment_centimos"
+                )
+                or 0
+            )
+
+            label = (
+                f"{suplido.get('id')} - "
+                f"{client_name} · "
+                f"{suplido.get('concept') or 'Sin concepto'} · "
+                f"Pendiente {pending}"
+            )
+
+            suplido_option_map[label] = suplido
+
+            suplido_options.append(
+                {
+                    "id": suplido.get("id"),
+                    "label": label,
+                    "subtitle": (
+                        suplido.get("provider_name")
+                        or suplido.get(
+                            "numero_expediente"
+                        )
+                        or ""
+                    ),
+                }
+            )
+
+        selected_payroll = {
+            "row": None,
+        }
+        selected_social_security = {
+            "row": None,
+        }
+        selected_suplido = {
+            "row": None,
+        }
+
+        payroll_selection_summary = ft.Container()
+        social_security_selection_summary = (
+            ft.Container()
+        )
+
+        def payroll_selected(value):
+            label = str(value or "").strip()
+            payroll = payroll_option_map.get(label)
+            selected_payroll["row"] = payroll
+
+            if not payroll:
+                payroll_selection_summary.content = None
+                return
+
+            payroll_pending = int(
+                payroll.get("pending_centimos")
+                or 0
+            )
+            applicable = min(
+                movement_pending,
+                payroll_pending,
+            )
+
+            amount_input.value = (
+                f"{applicable / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            worker_name = " ".join(
+                part
+                for part in [
+                    str(
+                        payroll.get("first_name")
+                        or ""
+                    ).strip(),
+                    str(
+                        payroll.get("last_name_1")
+                        or ""
+                    ).strip(),
+                    str(
+                        payroll.get("last_name_2")
+                        or ""
+                    ).strip(),
+                ]
+                if part
+            ) or "Trabajador sin nombre"
+
+            period_label = (
+                f"{int(payroll.get('period_month') or 0):02d}/"
+                f"{int(payroll.get('period_year') or 0):04d}"
+            )
+
+            payroll_selection_summary.content = (
+                ft.Container(
+                    bgcolor="#F4F3FF",
+                    border=ft.border.all(
+                        1,
+                        "#BDB4FE",
+                    ),
+                    border_radius=10,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                worker_name.upper(),
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                f"Nómina {period_label}",
+                                size=12,
+                                color="#344054",
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "Líquido: "
+                                        + _money_centimos(
+                                            payroll.get(
+                                                "net_salary_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            payroll.get(
+                                                "applied_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Pendiente: "
+                                        + _money_centimos(
+                                            payroll_pending
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#B54708",
+                                    ),
+                                ],
+                                spacing=14,
+                                wrap=True,
+                            ),
+                        ],
+                        spacing=5,
+                    ),
+                )
+            )
+
+            try:
+                amount_input.update()
+                payroll_selection_summary.update()
+            except Exception:
+                pass
+
+        payroll_ac = AppAutocomplete(
+            page=page,
+            label="Nómina pendiente",
+            options=payroll_options,
+            width=690,
+            max_results=10,
+            on_select=payroll_selected,
+            allow_free_text=False,
+            hint_text=(
+                "Busca por trabajador, periodo, "
+                "documento o código"
+            ),
+            empty_text=(
+                "No hay nóminas pendientes "
+                "que coincidan"
+            ),
+        )
+
+        def social_security_selected(value):
+            label = str(value or "").strip()
+            period = (
+                social_security_option_map.get(label)
+            )
+            selected_social_security["row"] = period
+
+            if not period:
+                (
+                    social_security_selection_summary
+                    .content
+                ) = None
+                return
+
+            period_pending = int(
+                period.get("pending_centimos")
+                or 0
+            )
+            applicable = min(
+                movement_pending,
+                period_pending,
+            )
+
+            amount_input.value = (
+                f"{applicable / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            period_label = (
+                f"{int(period.get('period_month') or 0):02d}/"
+                f"{int(period.get('period_year') or 0):04d}"
+            )
+
+            social_security_selection_summary.content = (
+                ft.Container(
+                    bgcolor="#ECFDF3",
+                    border=ft.border.all(
+                        1,
+                        "#6CE9A6",
+                    ),
+                    border_radius=10,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                f"SEGURIDAD SOCIAL {period_label}",
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "Total TGSS: "
+                                        + _money_centimos(
+                                            period.get(
+                                                "total_payable_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            period.get(
+                                                "applied_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Pendiente: "
+                                        + _money_centimos(
+                                            period_pending
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#B54708",
+                                    ),
+                                ],
+                                spacing=14,
+                                wrap=True,
+                            ),
+                        ],
+                        spacing=5,
+                    ),
+                )
+            )
+
+            try:
+                amount_input.update()
+                (
+                    social_security_selection_summary
+                    .update()
+                )
+            except Exception:
+                pass
+
+        suplido_selection_summary = ft.Container()
+
+        def suplido_selected(value):
+            label = str(value or "").strip()
+            suplido = suplido_option_map.get(label)
+            selected_suplido["row"] = suplido
+
+            if not suplido:
+                suplido_selection_summary.content = None
+                return
+
+            pending = int(
+                suplido.get(
+                    "pending_payment_centimos"
+                )
+                or 0
+            )
+
+            applicable = min(
+                movement_pending,
+                pending,
+            )
+
+            amount_input.value = (
+                f"{applicable / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            client_name = " ".join(
+                part
+                for part in [
+                    str(
+                        suplido.get("nombre")
+                        or ""
+                    ).strip(),
+                    str(
+                        suplido.get("primer_apellido")
+                        or ""
+                    ).strip(),
+                    str(
+                        suplido.get("segundo_apellido")
+                        or ""
+                    ).strip(),
+                ]
+                if part
+            ) or "Cliente sin identificar"
+
+            suplido_selection_summary.content = (
+                ft.Container(
+                    bgcolor="#FFF6ED",
+                    border=ft.border.all(
+                        1,
+                        "#FDB022",
+                    ),
+                    border_radius=10,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                (
+                                    "SUPLIDO · "
+                                    + client_name.upper()
+                                ),
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                suplido.get("concept")
+                                or "Sin concepto",
+                                size=12,
+                                color="#344054",
+                            ),
+                            ft.Text(
+                                suplido.get("provider_name")
+                                or "Sin proveedor",
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "Total: "
+                                        + _money_centimos(
+                                            suplido.get(
+                                                "amount_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Pagado: "
+                                        + _money_centimos(
+                                            suplido.get(
+                                                "paid_application_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Pendiente: "
+                                        + _money_centimos(
+                                            pending
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#B54708",
+                                    ),
+                                ],
+                                spacing=14,
+                                wrap=True,
+                            ),
+                        ],
+                        spacing=5,
+                    ),
+                )
+            )
+
+            try:
+                amount_input.update()
+                suplido_selection_summary.update()
+            except Exception:
+                pass
+
+        suplido_ac = AppAutocomplete(
+            page=page,
+            label="Buscar suplido adelantado existente",
+            options=suplido_options,
+            width=690,
+            max_results=10,
+            on_select=suplido_selected,
+            allow_free_text=False,
+            hint_text=(
+                "Busca por cliente, concepto, "
+                "proveedor, expediente o ID"
+            ),
+            empty_text=(
+                "No hay suplidos adelantados pendientes "
+                "que coincidan"
+            ),
+        )
+
+        social_security_ac = AppAutocomplete(
+            page=page,
+            label="Periodo TGSS pendiente",
+            options=social_security_options,
+            width=690,
+            max_results=10,
+            on_select=social_security_selected,
+            allow_free_text=False,
+            hint_text=(
+                "Busca por periodo o notas"
+            ),
+            empty_text=(
+                "No hay periodos TGSS pendientes "
+                "que coincidan"
+            ),
+        )
+
         def parse_amount_centimos():
             raw = str(
                 amount_input.value or ""
@@ -4908,9 +5851,105 @@ def economic_view(page: ft.Page):
 
             return handler
 
+        def remove_payroll_application(
+            application_id,
+        ):
+            def handler(e=None):
+                try:
+                    (
+                        labor_reconciliation_service
+                        .remove_payroll_reconciliation(
+                            int(application_id),
+                            reason=(
+                                "Retirada manual desde "
+                                "Económico > Movimientos"
+                            ),
+                        )
+                    )
+
+                    show_message(
+                        success_alert(
+                            "Aplicación de nómina retirada"
+                        )
+                    )
+
+                    reopen_dialog()
+
+                except Exception as exc:
+                    set_message(
+                        str(exc),
+                        error=True,
+                    )
+
+            return handler
+
+        def remove_social_security_application(
+            application_id,
+        ):
+            def handler(e=None):
+                try:
+                    (
+                        labor_reconciliation_service
+                        .remove_social_security_reconciliation(
+                            int(application_id),
+                            reason=(
+                                "Retirada manual desde "
+                                "Económico > Movimientos"
+                            ),
+                        )
+                    )
+
+                    show_message(
+                        success_alert(
+                            "Aplicación TGSS retirada"
+                        )
+                    )
+
+                    reopen_dialog()
+
+                except Exception as exc:
+                    set_message(
+                        str(exc),
+                        error=True,
+                    )
+
+            return handler
+
+        def remove_suplido_application(
+            application_id,
+        ):
+            def handler(e=None):
+                try:
+                    (
+                        suplido_service
+                        .remove_suplido_payment(
+                            int(application_id),
+                            reason=(
+                                "Retirada manual desde "
+                                "Económico > Movimientos"
+                            ),
+                        )
+                    )
+
+                    show_message(
+                        success_alert(
+                            "Aplicación de suplido retirada"
+                        )
+                    )
+
+                    reopen_dialog()
+
+                except Exception as exc:
+                    set_message(
+                        str(exc),
+                        error=True,
+                    )
+
+            return handler
+
         application_controls = []
 
-        for application in summary["applications"]:
+        for application in expense_summary["applications"]:
             supplier = (
                 application.get(
                     "supplier_name_snapshot"
@@ -4987,6 +6026,273 @@ def economic_view(page: ft.Page):
                 )
             )
 
+        for application in labor_applications["payrolls"]:
+            worker_name = " ".join(
+                part
+                for part in [
+                    str(
+                        application.get("first_name")
+                        or ""
+                    ).strip(),
+                    str(
+                        application.get("last_name_1")
+                        or ""
+                    ).strip(),
+                    str(
+                        application.get("last_name_2")
+                        or ""
+                    ).strip(),
+                ]
+                if part
+            ) or "Trabajador sin nombre"
+
+            period_label = (
+                f"{int(application.get('period_month') or 0):02d}/"
+                f"{int(application.get('period_year') or 0):04d}"
+            )
+
+            application_controls.append(
+                ft.Container(
+                    bgcolor="#F4F3FF",
+                    border=ft.border.all(
+                        1,
+                        "#BDB4FE",
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "NÓMINA · "
+                                        + worker_name.upper(),
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        f"Periodo {period_label}",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            application.get(
+                                                "amount_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#027A48",
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color="#B42318",
+                                tooltip=(
+                                    "Retirar aplicación de nómina"
+                                ),
+                                on_click=(
+                                    remove_payroll_application(
+                                        application.get("id")
+                                    )
+                                ),
+                            ),
+                        ],
+                        alignment=(
+                            ft.MainAxisAlignment
+                            .SPACE_BETWEEN
+                        ),
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
+        for application in (
+            labor_applications["social_security"]
+        ):
+            period_label = (
+                f"{int(application.get('period_month') or 0):02d}/"
+                f"{int(application.get('period_year') or 0):04d}"
+            )
+
+            application_controls.append(
+                ft.Container(
+                    bgcolor="#ECFDF3",
+                    border=ft.border.all(
+                        1,
+                        "#6CE9A6",
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        (
+                                            "SEGURIDAD SOCIAL / TGSS · "
+                                            + period_label
+                                        ),
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        "Obligación mensual agregada",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            application.get(
+                                                "amount_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#027A48",
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color="#B42318",
+                                tooltip=(
+                                    "Retirar aplicación TGSS"
+                                ),
+                                on_click=(
+                                    remove_social_security_application(
+                                        application.get("id")
+                                    )
+                                ),
+                            ),
+                        ],
+                        alignment=(
+                            ft.MainAxisAlignment
+                            .SPACE_BETWEEN
+                        ),
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
+        for application in (
+            suplido_snapshot[
+                "suplido_applications"
+            ]
+        ):
+            client_name = " ".join(
+                part
+                for part in [
+                    str(
+                        application.get("nombre")
+                        or ""
+                    ).strip(),
+                    str(
+                        application.get(
+                            "primer_apellido"
+                        )
+                        or ""
+                    ).strip(),
+                    str(
+                        application.get(
+                            "segundo_apellido"
+                        )
+                        or ""
+                    ).strip(),
+                ]
+                if part
+            ) or "Cliente sin identificar"
+
+            application_controls.append(
+                ft.Container(
+                    bgcolor="#FFF6ED",
+                    border=ft.border.all(
+                        1,
+                        "#FDB022",
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        (
+                                            "SUPLIDO · "
+                                            + client_name.upper()
+                                        ),
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        application.get("concept")
+                                        or "Sin concepto",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        application.get(
+                                            "provider_name"
+                                        )
+                                        or "Sin proveedor",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        "Aplicado: "
+                                        + _money_centimos(
+                                            application.get(
+                                                "amount_centimos"
+                                            )
+                                            or 0
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#027A48",
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                icon_color="#B42318",
+                                tooltip=(
+                                    "Retirar aplicación "
+                                    "de suplido"
+                                ),
+                                on_click=(
+                                    remove_suplido_application(
+                                        application.get("id")
+                                    )
+                                ),
+                            ),
+                        ],
+                        alignment=(
+                            ft.MainAxisAlignment
+                            .SPACE_BETWEEN
+                        ),
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
         if application_controls:
             applications_box.content = ft.Column(
                 controls=[
@@ -5003,7 +6309,7 @@ def economic_view(page: ft.Page):
         else:
             applications_box.content = ft.Text(
                 "El movimiento todavía no tiene "
-                "gastos aplicados.",
+                "aplicaciones registradas.",
                 size=12,
                 color=Q_MUTED,
                 italic=True,
@@ -5044,6 +6350,207 @@ def economic_view(page: ft.Page):
                     success_alert(
                         "Gasto conciliado con "
                         "el movimiento"
+                    )
+                )
+
+                reopen_dialog()
+
+            except Exception as exc:
+                set_message(
+                    str(exc),
+                    error=True,
+                )
+
+        def apply_to_payroll(e=None):
+            payroll = selected_payroll.get("row")
+
+            if not payroll:
+                set_message(
+                    "Selecciona una nómina pendiente.",
+                    error=True,
+                )
+                return
+
+            try:
+                amount_centimos = parse_amount_centimos()
+
+                (
+                    labor_reconciliation_service
+                    .apply_payroll_reconciliation(
+                        movement_id=movement_id,
+                        payroll_id=int(
+                            payroll.get("id")
+                        ),
+                        amount_centimos=amount_centimos,
+                        notes=notes_input.value,
+                    )
+                )
+
+                show_message(
+                    success_alert(
+                        "Nómina conciliada con "
+                        "el movimiento"
+                    )
+                )
+
+                reopen_dialog()
+
+            except Exception as exc:
+                set_message(
+                    str(exc),
+                    error=True,
+                )
+
+        def apply_to_social_security(e=None):
+            period = selected_social_security.get(
+                "row"
+            )
+
+            if not period:
+                set_message(
+                    "Selecciona un periodo TGSS "
+                    "pendiente.",
+                    error=True,
+                )
+                return
+
+            try:
+                amount_centimos = parse_amount_centimos()
+
+                (
+                    labor_reconciliation_service
+                    .apply_social_security_reconciliation(
+                        movement_id=movement_id,
+                        social_security_period_id=int(
+                            period.get("id")
+                        ),
+                        amount_centimos=amount_centimos,
+                        notes=notes_input.value,
+                    )
+                )
+
+                show_message(
+                    success_alert(
+                        "Seguridad Social conciliada "
+                        "con el movimiento"
+                    )
+                )
+
+                reopen_dialog()
+
+            except Exception as exc:
+                set_message(
+                    str(exc),
+                    error=True,
+                )
+
+        def apply_to_suplido(e=None):
+            suplido = selected_suplido.get("row")
+
+            if not suplido:
+                set_message(
+                    "Selecciona un suplido adelantado pendiente.",
+                    error=True,
+                )
+                return
+
+            try:
+                amount_centimos = (
+                    parse_amount_centimos()
+                )
+
+                (
+                    suplido_service
+                    .apply_suplido_payment(
+                        movement_id=movement_id,
+                        suplido_id=int(
+                            suplido.get("id")
+                        ),
+                        amount_centimos=amount_centimos,
+                        notes=notes_input.value,
+                    )
+                )
+
+                show_message(
+                    success_alert(
+                        "Suplido adelantado vinculado "
+                        "al movimiento"
+                    )
+                )
+
+                reopen_dialog()
+
+            except Exception as exc:
+                set_message(
+                    str(exc),
+                    error=True,
+                )
+
+        def create_suplido_from_movement(e=None):
+            client_id = (
+                selected_autocomplete_id(
+                    new_suplido_client_ac
+                )
+                or new_suplido_client_id.get("value")
+            )
+
+            if not client_id:
+                set_message(
+                    "Selecciona el cliente por cuya "
+                    "cuenta se realizó el pago.",
+                    error=True,
+                )
+                return
+
+            concept = str(
+                new_suplido_concept_input.value or ""
+            ).strip()
+
+            if not concept:
+                set_message(
+                    "Indica el concepto del suplido adelantado.",
+                    error=True,
+                )
+                return
+
+            try:
+                amount_centimos = (
+                    parse_amount_centimos()
+                )
+
+                expedient_id = (
+                    selected_autocomplete_id(
+                        new_suplido_expedient_ac
+                    )
+                    or new_suplido_expedient_id.get(
+                        "value"
+                    )
+                )
+
+                (
+                    suplido_service
+                    .create_suplido_from_movement(
+                        movement_id=movement_id,
+                        client_id=int(client_id),
+                        expedient_id=(
+                            int(expedient_id)
+                            if expedient_id
+                            else None
+                        ),
+                        concept=concept,
+                        provider_name=str(
+                            new_suplido_provider_input.value
+                            or ""
+                        ).strip(),
+                        amount_centimos=amount_centimos,
+                        notes=notes_input.value,
+                    )
+                )
+
+                show_message(
+                    success_alert(
+                        "Suplido adelantado creado y "
+                        "vinculado al movimiento"
                     )
                 )
 
@@ -5180,11 +6687,55 @@ def economic_view(page: ft.Page):
             ),
         )
 
-        content = ft.Column(
+        destination_state = {
+            "value": "Gasto",
+        }
+
+        destination_options = [
+            {
+                "id": "expense",
+                "label": "Gasto",
+                "subtitle": (
+                    "Aplicar el movimiento a un "
+                    "gasto registrado"
+                ),
+            },
+            {
+                "id": "payroll",
+                "label": "Nómina",
+                "subtitle": (
+                    "Aplicar el movimiento al "
+                    "líquido de una nómina"
+                ),
+            },
+            {
+                "id": "social_security",
+                "label": "Seguridad Social / TGSS",
+                "subtitle": (
+                    "Aplicar el movimiento a la "
+                    "obligación mensual TGSS"
+                ),
+            },
+            {
+                "id": "suplido",
+                "label": "Suplido adelantado",
+                "subtitle": (
+                    "Registrar o vincular un pago "
+                    "adelantado por cuenta de un cliente"
+                ),
+            },
+            {
+                "id": "internal_transfer",
+                "label": "Traspaso interno",
+                "subtitle": (
+                    "Vincular esta salida con una entrada "
+                    "ya importada en otra cuenta"
+                ),
+            },
+        ]
+
+        expense_panel = ft.Column(
             controls=[
-                summary_box,
-                applications_box,
-                ft.Divider(height=1),
                 ft.Text(
                     "Aplicar a un gasto existente",
                     size=14,
@@ -5193,19 +6744,456 @@ def economic_view(page: ft.Page):
                 ),
                 expense_ac.control,
                 selection_summary,
+            ],
+            spacing=10,
+            visible=True,
+        )
+
+        payroll_panel = ft.Column(
+            controls=[
+                ft.Text(
+                    "Aplicar a una nómina",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                payroll_ac.control,
+                payroll_selection_summary,
+            ],
+            spacing=10,
+            visible=False,
+        )
+
+        social_security_panel = ft.Column(
+            controls=[
+                ft.Text(
+                    "Aplicar a Seguridad Social / TGSS",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                social_security_ac.control,
+                social_security_selection_summary,
+            ],
+            spacing=10,
+            visible=False,
+        )
+
+        new_suplido_client_id = {
+            "value": None,
+        }
+        new_suplido_expedient_id = {
+            "value": None,
+        }
+
+        new_suplido_concept_input = text_input(
+            "Concepto del suplido adelantado",
+            width=690,
+        )
+        new_suplido_concept_input.value = str(
+            movement.get("concept")
+            or "Pago realizado por cuenta del cliente"
+        ).strip()
+
+        new_suplido_provider_input = text_input(
+            "Proveedor u organismo",
+            width=690,
+        )
+        # El banco es el medio de pago, no el proveedor
+        # u organismo destinatario del suplido.
+        new_suplido_provider_input.value = ""
+
+        def new_suplido_expedient_selected(value):
+            new_suplido_expedient_id["value"] = (
+                option_id_from_label(value)
+            )
+
+        new_suplido_expedient_ac = AppAutocomplete(
+            page=page,
+            label="Expediente",
+            options=[],
+            width=690,
+            max_results=10,
+            on_select=(
+                new_suplido_expedient_selected
+            ),
+            allow_free_text=False,
+            hint_text=(
+                "Selecciona primero un cliente"
+            ),
+            empty_text=(
+                "El cliente no tiene expedientes"
+            ),
+        )
+
+        def new_suplido_client_selected(value):
+            client_id = option_id_from_label(
+                value
+            )
+
+            new_suplido_client_id["value"] = (
+                client_id
+            )
+            new_suplido_expedient_id["value"] = (
+                None
+            )
+
+            if not client_id:
+                new_suplido_expedient_ac.set_options(
+                    [],
+                    clear_value=True,
+                )
+                return
+
+            try:
+                expedients = (
+                    economic_service
+                    .get_expedientes_for_select(
+                        cliente_id=int(client_id)
+                    )
+                )
+
+                expedient_labels = [
+                    row["display"]
+                    for row in expedients
+                ]
+
+                new_suplido_expedient_ac.set_options(
+                    expedient_labels,
+                    clear_value=True,
+                )
+
+            except Exception as exc:
+                new_suplido_expedient_ac.set_options(
+                    [],
+                    clear_value=True,
+                )
+                set_message(
+                    (
+                        "No se pudieron cargar los "
+                        f"expedientes: {exc}"
+                    ),
+                    error=True,
+                )
+
+        new_suplido_client_ac = AppAutocomplete(
+            page=page,
+            label="Cliente *",
+            options=cliente_options,
+            width=690,
+            max_results=12,
+            on_select=new_suplido_client_selected,
+            allow_free_text=False,
+            hint_text=(
+                "Busca por nombre, apellidos, "
+                "documento o ID"
+            ),
+            empty_text=(
+                "No hay clientes que coincidan"
+            ),
+        )
+
+        create_suplido_button = primary_button(
+            (
+                "Crear suplido adelantado de "
+                f"{movement_pending / 100:.2f} €"
+            ).replace(".", ","),
+            create_suplido_from_movement,
+        )
+
+        suplido_panel = ft.Column(
+            controls=[
+                ft.Text(
+                    "Crear suplido adelantado desde este movimiento",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    (
+                        "El movimiento bancario negativo representa "
+                        "el pago realizado por el despacho. Se creará "
+                        "un suplido adelantado positivo pendiente de "
+                        "recuperar del cliente."
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                new_suplido_client_ac.control,
+                new_suplido_expedient_ac.control,
+                new_suplido_concept_input,
+                new_suplido_provider_input,
+                ft.Row(
+                    controls=[
+                        create_suplido_button,
+                    ],
+                    alignment=(
+                        ft.MainAxisAlignment.END
+                    ),
+                ),
+                ft.Divider(height=16),
+                ft.Text(
+                    "Vincular a un suplido adelantado existente",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    (
+                        "Utiliza esta opción únicamente cuando el "
+                        "suplido adelantado ya se haya registrado "
+                        "previamente."
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                suplido_ac.control,
+                suplido_selection_summary,
+            ],
+            spacing=10,
+            visible=False,
+        )
+
+        suplido_panel = ft.Column(
+            controls=[
+                ft.Text(
+                    "Aplicar a un cobro SUPLIDO_ADELANTADO",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    (
+                        "Esta operación concilia el movimiento bancario "
+                        "con el cobro. No crea ni recupera economic_suplidos."
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                advanced_applications_box,
+                advanced_client_ac.control,
+                advanced_payment_ac.control,
+                advanced_payment_summary,
+            ],
+            spacing=10,
+            visible=False,
+        )
+        refresh_advanced_applications()
+
+        transfer_panel = ft.Column(
+            controls=[
+                ft.Text(
+                    "Vincular con un movimiento positivo existente",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    (
+                        "Solo se muestran entradas del mismo importe, "
+                        "en otra cuenta y todavía no vinculadas."
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                transfer_candidate_ac.control,
+                transfer_selection_summary,
+            ],
+            spacing=10,
+            visible=False,
+        )
+
+        def apply_internal_transfer(e=None):
+            candidate = selected_transfer_candidate.get("row")
+            if not candidate:
+                set_message(
+                    "Selecciona el movimiento positivo contraparte.",
+                    error=True,
+                )
+                return
+            try:
+                transfer = (
+                    internal_transfer_service
+                    .link_existing_movements(
+                        source_type=source,
+                        source_movement_id=movement_id,
+                        destination_type=candidate.get("source"),
+                        destination_movement_id=int(candidate.get("id")),
+                        notes=notes_input.value or "",
+                    )
+                )
+                reconciliation_dialog.open = False
+                state.setdefault("movements_cache", {}).clear()
+                show_message(
+                    success_alert(
+                        "Traspaso interno conciliado "
+                        f"(#{transfer['id']})"
+                    )
+                )
+                refresh()
+            except Exception as exc:
+                set_message(str(exc), error=True)
+
+        create_expense_button = secondary_button(
+            "Crear gasto desde movimiento",
+            create_expense_from_movement,
+        )
+        apply_expense_button = primary_button(
+            "Aplicar al gasto",
+            apply_to_existing_expense,
+        )
+        apply_payroll_button = primary_button(
+            "Aplicar a nómina",
+            apply_to_payroll,
+        )
+        apply_social_security_button = primary_button(
+            "Aplicar a TGSS",
+            apply_to_social_security,
+        )
+        apply_suplido_button = secondary_button(
+            "Aplicar al cobro",
+            apply_to_advanced_payment,
+        )
+        apply_transfer_button = primary_button(
+            "Vincular traspaso",
+            apply_internal_transfer,
+        )
+
+        apply_payroll_button.visible = False
+        apply_social_security_button.visible = False
+        apply_suplido_button.visible = False
+        apply_transfer_button.visible = False
+
+        destination_help = ft.Text(
+            (
+                "El importe no puede superar el "
+                "pendiente del movimiento ni el "
+                "pendiente del destino."
+            ),
+            size=11,
+            color=Q_MUTED,
+        )
+
+        def on_destination_change(value):
+            destination = str(
+                value or "Gasto"
+            ).strip()
+
+            destination_state["value"] = destination
+
+            is_expense = destination == "Gasto"
+            is_payroll = destination == "Nómina"
+            is_social_security = (
+                destination
+                == "Seguridad Social / TGSS"
+            )
+            is_suplido = (
+                destination == "Suplido adelantado"
+            )
+            is_transfer = (
+                destination == "Traspaso interno"
+            )
+
+            expense_panel.visible = is_expense
+            payroll_panel.visible = is_payroll
+            social_security_panel.visible = (
+                is_social_security
+            )
+            suplido_panel.visible = is_suplido
+            transfer_panel.visible = is_transfer
+
+            create_expense_button.visible = is_expense
+            apply_expense_button.visible = is_expense
+            apply_payroll_button.visible = is_payroll
+            apply_social_security_button.visible = (
+                is_social_security
+            )
+            apply_suplido_button.visible = is_suplido
+            apply_transfer_button.visible = is_transfer
+
+            selected_expense["row"] = None
+            selected_payroll["row"] = None
+            selected_social_security["row"] = None
+            selected_suplido["row"] = None
+            selected_transfer_candidate["row"] = None
+
+            selection_summary.content = None
+            payroll_selection_summary.content = None
+            social_security_selection_summary.content = None
+            suplido_selection_summary.content = None
+            transfer_selection_summary.content = None
+
+            amount_input.value = (
+                f"{movement_pending / 100:.2f}"
+                .replace(".", ",")
+            )
+
+            set_message(
+                "Selecciona el destino pendiente "
+                "al que deseas aplicar el movimiento."
+            )
+
+            try:
+                expense_panel.update()
+                payroll_panel.update()
+                social_security_panel.update()
+                suplido_panel.update()
+                transfer_panel.update()
+                create_expense_button.update()
+                apply_expense_button.update()
+                apply_payroll_button.update()
+                apply_social_security_button.update()
+                apply_suplido_button.update()
+                apply_transfer_button.update()
+                amount_input.update()
+            except Exception:
+                page.update()
+
+        destination_ac = AppAutocomplete(
+            page=page,
+            label="Destino de la conciliación",
+            options=destination_options,
+            width=360,
+            max_results=4,
+            on_select=on_destination_change,
+            allow_free_text=False,
+            hint_text=(
+                "Selecciona gasto, nómina, TGSS o suplido adelantado"
+            ),
+            empty_text=(
+                "No hay destinos disponibles"
+            ),
+        )
+
+        content = ft.Column(
+            controls=[
+                summary_box,
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Aplicaciones registradas",
+                                size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            applications_box,
+                        ],
+                        spacing=7,
+                    ),
+                ),
+                ft.Divider(height=1),
+                destination_ac.control,
+                expense_panel,
+                payroll_panel,
+                social_security_panel,
+                suplido_panel,
+                transfer_panel,
                 ft.Row(
                     controls=[
                         amount_input,
                         ft.Container(
-                            content=ft.Text(
-                                (
-                                    "El importe no puede superar "
-                                    "el pendiente del movimiento "
-                                    "ni el pendiente del gasto."
-                                ),
-                                size=11,
-                                color=Q_MUTED,
-                            ),
+                            content=destination_help,
                             width=470,
                         ),
                     ],
@@ -5216,7 +7204,7 @@ def economic_view(page: ft.Page):
                 message_box,
             ],
             width=730,
-            height=580,
+            height=620,
             spacing=12,
             scroll=ft.ScrollMode.AUTO,
         )
@@ -5245,14 +7233,12 @@ def economic_view(page: ft.Page):
                         reconciliation_dialog
                     ),
                 ),
-                secondary_button(
-                    "Crear gasto desde movimiento",
-                    create_expense_from_movement,
-                ),
-                primary_button(
-                    "Aplicar al gasto",
-                    apply_to_existing_expense,
-                ),
+                create_expense_button,
+                apply_expense_button,
+                apply_payroll_button,
+                apply_social_security_button,
+                apply_suplido_button,
+                apply_transfer_button,
             ],
             actions_alignment=(
                 ft.MainAxisAlignment.END
@@ -8288,6 +10274,179 @@ def economic_view(page: ft.Page):
     )
 
 
+    facturas_freeze_all_summary = ft.Text(
+        "",
+        size=12,
+        color=Q_PRIMARY_DARK,
+    )
+
+    facturas_freeze_all_warning = ft.Text(
+        (
+            "Esta acción es irreversible. Las facturas quedarán "
+            "aprobadas y congeladas. Cualquier corrección posterior "
+            "deberá realizarse mediante factura rectificativa."
+        ),
+        size=11,
+        color="#B54708",
+    )
+
+
+    def _pending_facturas_for_freeze():
+        return [
+            factura
+            for factura in economic_service.list_facturas()
+            if not bool(
+                factura.get("exportada_holded")
+            )
+            and str(
+                factura.get("estado")
+                or "EMITIDA"
+            ).strip().upper()
+            != "ANULADA"
+            and not factura.get(
+                "factura_rectificada_id"
+            )
+            and str(
+                factura.get("tipo_factura")
+                or "NORMAL"
+            ).strip().upper()
+            != "RECTIFICATIVA"
+        ]
+
+
+    def open_facturas_freeze_all_dialog(e=None):
+        pending = _pending_facturas_for_freeze()
+
+        if not pending:
+            show_message(
+                error_alert(
+                    "No hay facturas pendientes de aprobación"
+                )
+            )
+            return
+
+        first_date = min(
+            str(
+                factura.get("fecha_factura")
+                or ""
+            )
+            for factura in pending
+        )
+        last_date = max(
+            str(
+                factura.get("fecha_factura")
+                or ""
+            )
+            for factura in pending
+        )
+
+        facturas_freeze_all_summary.value = (
+            f"Se aprobarán {len(pending)} facturas activas, "
+            f"desde {_date_to_display(first_date)} "
+            f"hasta {_date_to_display(last_date)}."
+        )
+
+        facturas_freeze_all_dialog.open = True
+        page.update()
+
+
+    def confirm_facturas_freeze_all(e=None):
+        try:
+            result = (
+                economic_service
+                .approve_all_pending_facturas()
+            )
+
+            facturas_freeze_all_dialog.open = False
+
+            show_message(
+                success_alert(
+                    (
+                        f"Se han aprobado y congelado "
+                        f"{result['count']} facturas."
+                    )
+                )
+            )
+
+        except Exception as exc:
+            facturas_freeze_all_dialog.open = False
+            show_message(
+                error_alert(str(exc))
+            )
+
+        refresh()
+
+
+    facturas_freeze_all_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.LOCK_OUTLINE,
+                    color="#B54708",
+                ),
+                ft.Text(
+                    "Congelar todas las facturas pendientes",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=8,
+        ),
+        content=ft.Container(
+            width=560,
+            content=ft.Column(
+                controls=[
+                    facturas_freeze_all_summary,
+                    ft.Container(
+                        bgcolor="#FFFAEB",
+                        border=ft.border.all(
+                            1,
+                            "#FEC84B",
+                        ),
+                        border_radius=10,
+                        padding=12,
+                        content=facturas_freeze_all_warning,
+                    ),
+                ],
+                spacing=12,
+                tight=True,
+            ),
+        ),
+        actions=[
+            secondary_button(
+                "Cancelar",
+                lambda e: close(
+                    facturas_freeze_all_dialog
+                ),
+            ),
+            primary_button(
+                "Aprobar y congelar todas",
+                confirm_facturas_freeze_all,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+        shape=ft.RoundedRectangleBorder(
+            radius=16
+        ),
+    )
+
+    page.overlay.append(
+        facturas_freeze_all_dialog
+    )
+
+
+    facturas_freeze_all_button = ft.IconButton(
+        icon=ft.Icons.LOCK_OUTLINE,
+        icon_color="#B54708",
+        tooltip=(
+            "Aprobar y congelar todas las "
+            "facturas pendientes"
+        ),
+        on_click=open_facturas_freeze_all_dialog,
+    )
+
+
     def build_facturas_results():
         facturas = filtered_facturas()
 
@@ -8673,6 +10832,7 @@ def economic_view(page: ft.Page):
                         facturas_period_button,
                         facturas_clear_button,
                         facturas_export_advisory_button,
+                        facturas_freeze_all_button,
                     ],
                     spacing=6,
                     wrap=True,
@@ -11205,7 +13365,21 @@ def economic_view(page: ft.Page):
     cobro_numero = text_input("Nº cobro automático", width=220)
     cobro_importe = required_text_input("Importe", width=160)
     cobro_forma = select_input("Forma pago", ["EFECTIVO", "TRANSFERENCIA", "TARJETA", "BIZUM", "OTRO"], value="EFECTIVO", width=180)
-    cobro_tipo = select_input("Tipo", ["CONSULTA", "PAGO_EXPEDIENTE", "PAGO_PARCIAL", "RESERVA", "DEVOLUCION", "AJUSTE"], value="PAGO_EXPEDIENTE", width=220)
+    cobro_tipo = select_input(
+        "Tipo",
+        [
+            "CONSULTA",
+            "PAGO_EXPEDIENTE",
+            "PAGO_PARCIAL",
+            "RESERVA",
+            "TASA",
+            "SUPLIDO_ADELANTADO",
+            "DEVOLUCION",
+            "AJUSTE",
+        ],
+        value="PAGO_EXPEDIENTE",
+        width=220,
+    )
     cobro_facturable = select_input(
         "Facturable",
         ["No", "Sí"],
@@ -11655,10 +13829,34 @@ def economic_view(page: ft.Page):
             if not cliente_id:
                 raise ValueError("Selecciona un cliente pagador válido")
 
-            # Las consultas previas pueden registrarse sin expediente y sin hoja.
-            # Los pagos de expediente sí deben vincularse a una hoja de encargo.
-            if cobro_tipo.value != "CONSULTA" and cobro_hoja_dd.value == "Sin hoja":
-                raise ValueError("Selecciona una hoja de encargo para el cobro")
+            expediente_id = (
+                None
+                if cobro_expediente_dd.value == "Sin expediente"
+                else _id(cobro_expediente_dd.value)
+            )
+
+            if (
+                cobro_tipo.value == "TASA"
+                and not expediente_id
+            ):
+                raise ValueError(
+                    "Los cobros de tipo TASA deben "
+                    "estar vinculados a un expediente"
+                )
+
+            if (
+                cobro_tipo.value not in {
+                    "CONSULTA",
+                    "SUPLIDO_ADELANTADO",
+                    "TASA",
+                }
+                and cobro_tipo_fiscal.value != "SUPLIDO"
+                and cobro_hoja_dd.value == "Sin hoja"
+            ):
+                raise ValueError(
+                    "Selecciona una hoja de encargo "
+                    "para el cobro"
+                )
 
             fecha_sql = _date_to_sql(cobro_fecha.value)
             importe_value = cobro_importe.value
@@ -11666,7 +13864,7 @@ def economic_view(page: ft.Page):
 
             cobro_payload = {
                 "cliente_id": cliente_id,
-                "expediente_id": None if cobro_expediente_dd.value == "Sin expediente" else _id(cobro_expediente_dd.value),
+                "expediente_id": expediente_id,
                 "hoja_encargo_id": None if cobro_hoja_dd.value == "Sin hoja" else _id(cobro_hoja_dd.value),
                 "fecha_cobro": fecha_sql,
                 "importe": importe_value,
@@ -11872,6 +14070,7 @@ def economic_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             cobro_tipo,
+                            cobro_tipo_fiscal,
                             cobro_numero,
                         ],
                         spacing=10,
@@ -11906,8 +14105,9 @@ def economic_view(page: ft.Page):
                                 ),
                                 ft.Text(
                                     (
-                                        "Los pagos de expediente deben vincularse a una hoja "
-                                        "de encargo. Las consultas pueden registrarse sin hoja."
+                                        "Los pagos ordinarios de expediente requieren hoja. "
+                                        "SUPLIDO_ADELANTADO puede quedar sin expediente y TASA requiere expediente, "
+                                        "pero no necesariamente hoja."
                                     ),
                                     size=11,
                                     color=Q_MUTED,
@@ -11928,7 +14128,6 @@ def economic_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             cobro_facturable,
-                            cobro_tipo_fiscal,
                             cobro_iva_porcentaje,
                             cobro_irpf_porcentaje,
                             ft.Container(
@@ -12014,12 +14213,44 @@ def economic_view(page: ft.Page):
 
 
     # Editar cobro dialog
-    edit_cobro_state = {"id": None, "cliente_id": None}
+    edit_cobro_state = {
+        "id": None,
+        "cliente_id": None,
+        "original_cliente_id": None,
+    }
+
+    edit_cobro_cliente_ac = AppAutocomplete(
+        page,
+        "Cliente pagador",
+        cliente_options,
+        width=720,
+        max_results=12,
+        allow_free_text=False,
+        hint_text=(
+            "Busca por nombre, apellidos, "
+            "documento o ID"
+        ),
+        empty_text="No hay clientes coincidentes",
+    )
 
     edit_cobro_fecha = required_text_input("Fecha cobro DD/MM/AAAA", width=220)
     edit_cobro_importe = required_text_input("Importe", width=160)
     edit_cobro_forma = select_input("Forma pago", ["EFECTIVO", "TRANSFERENCIA", "TARJETA", "BIZUM", "OTRO"], value="EFECTIVO", width=180)
-    edit_cobro_tipo = select_input("Tipo", ["CONSULTA", "PAGO_EXPEDIENTE", "PAGO_PARCIAL", "RESERVA", "DEVOLUCION", "AJUSTE"], value="PAGO_EXPEDIENTE", width=220)
+    edit_cobro_tipo = select_input(
+        "Tipo",
+        [
+            "CONSULTA",
+            "PAGO_EXPEDIENTE",
+            "PAGO_PARCIAL",
+            "RESERVA",
+            "TASA",
+            "SUPLIDO_ADELANTADO",
+            "DEVOLUCION",
+            "AJUSTE",
+        ],
+        value="PAGO_EXPEDIENTE",
+        width=220,
+    )
     edit_cobro_facturable = select_input(
         "Facturable",
         ["No", "Sí"],
@@ -12050,6 +14281,479 @@ def economic_view(page: ft.Page):
     edit_cobro_recibo = text_input("Ruta recibo/documento", width=620)
     edit_cobro_obs = multiline_input("Observaciones", width=620)
 
+    edit_cobro_suplido_state = {
+        "selected_suplido": None,
+        "snapshot": None,
+        "option_map": {},
+    }
+
+    edit_cobro_suplido_message = ft.Container()
+    edit_cobro_suplido_applications = ft.Container()
+
+    edit_cobro_suplido_amount = text_input(
+        "Importe a aplicar",
+        width=180,
+    )
+
+    def edit_cobro_suplido_selected(value):
+        label = str(value or "").strip()
+
+        suplido = (
+            edit_cobro_suplido_state[
+                "option_map"
+            ].get(label)
+        )
+
+        edit_cobro_suplido_state[
+            "selected_suplido"
+        ] = suplido
+
+        if not suplido:
+            edit_cobro_suplido_message.content = None
+            return
+
+        snapshot = (
+            edit_cobro_suplido_state.get(
+                "snapshot"
+            )
+            or {}
+        )
+
+        cobro_pending = int(
+            snapshot.get("pending_centimos")
+            or 0
+        )
+        suplido_pending = int(
+            suplido.get(
+                "pending_recovery_centimos"
+            )
+            or 0
+        )
+
+        applicable = min(
+            cobro_pending,
+            suplido_pending,
+        )
+
+        edit_cobro_suplido_amount.value = (
+            _money_centimos_to_input_value(
+                applicable
+            )
+        )
+
+        edit_cobro_suplido_message.content = (
+            ft.Container(
+                bgcolor="#FFF6ED",
+                border=ft.border.all(
+                    1,
+                    "#FDB022",
+                ),
+                border_radius=10,
+                padding=10,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            suplido.get("concept")
+                            or "Suplido sin concepto",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            suplido.get("provider_name")
+                            or "Sin proveedor",
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                        ft.Text(
+                            (
+                                "Pendiente de recuperar: "
+                                + _money_centimos(
+                                    suplido_pending
+                                )
+                            ),
+                            size=11,
+                            color="#B54708",
+                            weight=ft.FontWeight.BOLD,
+                        ),
+                    ],
+                    spacing=3,
+                ),
+            )
+        )
+
+        try:
+            edit_cobro_suplido_amount.update()
+            edit_cobro_suplido_message.update()
+        except Exception:
+            pass
+
+    edit_cobro_suplido_ac = AppAutocomplete(
+        page=page,
+        label="Suplido pendiente del cliente",
+        options=[],
+        width=720,
+        max_results=10,
+        on_select=edit_cobro_suplido_selected,
+        allow_free_text=False,
+        hint_text=(
+            "Busca por concepto, proveedor, "
+            "fecha, expediente o ID"
+        ),
+        empty_text=(
+            "El cliente no tiene suplidos "
+            "pendientes de recuperar"
+        ),
+    )
+
+    edit_cobro_suplido_panel = ft.Container(
+        visible=False,
+        content=ft.Column(
+            controls=[
+                ft.Container(
+                    bgcolor="#EFF8FF",
+                    border=ft.border.all(
+                        1,
+                        "#B2DDFF",
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.INFO_OUTLINE,
+                                size=17,
+                                color="#175CD3",
+                            ),
+                            ft.Text(
+                                (
+                                    "La recuperación identifica qué "
+                                    "suplido devuelve este cobro. "
+                                    "La entrada por banco, Cashmatic "
+                                    "o comercio se concilia por separado."
+                                ),
+                                size=11,
+                                color="#175CD3",
+                                expand=True,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                ),
+                edit_cobro_suplido_applications,
+                edit_cobro_suplido_ac.control,
+                edit_cobro_suplido_message,
+                edit_cobro_suplido_amount,
+            ],
+            spacing=10,
+        ),
+    )
+
+    def refresh_edit_cobro_suplido_panel(
+        cobro=None,
+    ):
+        cobro = cobro or {}
+
+        is_suplido = (
+            str(
+                edit_cobro_tipo.value
+                or ""
+            ).strip().upper()
+            == "SUPLIDO_ADELANTADO"
+            and str(
+                edit_cobro_tipo_fiscal.value
+                or ""
+            ).strip().upper()
+            == "SUPLIDO"
+        )
+
+        edit_cobro_suplido_panel.visible = (
+            is_suplido
+        )
+
+        edit_cobro_suplido_state[
+            "selected_suplido"
+        ] = None
+        edit_cobro_suplido_state[
+            "snapshot"
+        ] = None
+        edit_cobro_suplido_state[
+            "option_map"
+        ] = {}
+
+        edit_cobro_suplido_message.content = None
+        edit_cobro_suplido_applications.content = None
+        edit_cobro_suplido_amount.value = ""
+
+        edit_cobro_suplido_ac.set_options(
+            [],
+            clear_value=True,
+        )
+
+        if not is_suplido:
+            return
+
+        cobro_id = int(
+            cobro.get("id")
+            or edit_cobro_state.get("id")
+            or 0
+        )
+        client_id = int(
+            cobro.get("cliente_id")
+            or edit_cobro_state.get(
+                "cliente_id"
+            )
+            or 0
+        )
+
+        if cobro_id <= 0 or client_id <= 0:
+            return
+
+        try:
+            snapshot = (
+                suplido_service
+                .get_cobro_recovery_snapshot(
+                    cobro_id
+                )
+            )
+
+            recoverable = (
+                suplido_service
+                .list_recoverable_suplidos(
+                    client_id
+                )
+            )
+
+            edit_cobro_suplido_state[
+                "snapshot"
+            ] = snapshot
+
+            options = []
+            option_map = {}
+
+            for suplido in recoverable:
+                pending = int(
+                    suplido.get(
+                        "pending_recovery_centimos"
+                    )
+                    or 0
+                )
+
+                label = (
+                    f"{suplido.get('id')} - "
+                    f"{suplido.get('concept') or 'Sin concepto'}"
+                    f" · Pendiente "
+                    f"{_money_centimos(pending)}"
+                )
+
+                subtitle = " · ".join(
+                    part
+                    for part in [
+                        str(
+                            suplido.get(
+                                "provider_name"
+                            )
+                            or ""
+                        ).strip(),
+                        str(
+                            suplido.get(
+                                "payment_date"
+                            )
+                            or ""
+                        ).strip(),
+                        str(
+                            suplido.get(
+                                "numero_expediente"
+                            )
+                            or ""
+                        ).strip(),
+                    ]
+                    if part
+                )
+
+                option = {
+                    "id": suplido.get("id"),
+                    "label": label,
+                    "subtitle": subtitle,
+                }
+
+                options.append(option)
+                option_map[label] = suplido
+
+            edit_cobro_suplido_state[
+                "option_map"
+            ] = option_map
+
+            edit_cobro_suplido_ac.set_options(
+                options,
+                clear_value=True,
+            )
+
+            application_cards = []
+
+            for application in snapshot.get(
+                "recovery_applications",
+                [],
+            ):
+                application_cards.append(
+                    ft.Container(
+                        bgcolor="#ECFDF3",
+                        border=ft.border.all(
+                            1,
+                            "#ABEFC6",
+                        ),
+                        border_radius=10,
+                        padding=10,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text(
+                                    (
+                                        "RECUPERACIÓN APLICADA · "
+                                        + _money_centimos(
+                                            application.get(
+                                                "amount_centimos"
+                                            )
+                                            or 0
+                                        )
+                                    ),
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#067647",
+                                ),
+                                ft.Text(
+                                    application.get("concept")
+                                    or "Suplido sin concepto",
+                                    size=12,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    application.get(
+                                        "provider_name"
+                                    )
+                                    or "Sin proveedor",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                        ),
+                    )
+                )
+
+            if application_cards:
+                edit_cobro_suplido_applications.content = (
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Recuperaciones registradas",
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            *application_cards,
+                        ],
+                        spacing=8,
+                    )
+                )
+            else:
+                edit_cobro_suplido_applications.content = (
+                    ft.Text(
+                        (
+                            "Este cobro todavía no está "
+                            "aplicado a ningún suplido."
+                        ),
+                        size=11,
+                        color=Q_MUTED,
+                        italic=True,
+                    )
+                )
+
+            edit_cobro_suplido_amount.value = (
+                _money_centimos_to_input_value(
+                    snapshot.get(
+                        "pending_centimos"
+                    )
+                    or 0
+                )
+            )
+
+        except Exception as exc:
+            edit_cobro_suplido_applications.content = (
+                error_alert(
+                    "No se pudo cargar la recuperación "
+                    f"del suplido: {exc}"
+                )
+            )
+
+    def on_edit_cobro_tipo_fiscal_change(
+        e=None,
+    ):
+        refresh_edit_cobro_suplido_panel()
+
+        try:
+            edit_cobro_suplido_panel.update()
+        except Exception:
+            page.update()
+
+    edit_cobro_tipo_fiscal.on_change = (
+        on_edit_cobro_tipo_fiscal_change
+    )
+
+    def refresh_edit_cobro_dependencies(value=None):
+        cliente_id = _id(
+            edit_cobro_cliente_ac.get_value()
+        )
+
+        edit_cobro_state["cliente_id"] = (
+            int(cliente_id)
+            if cliente_id
+            else None
+        )
+
+        expedientes = (
+            economic_service
+            .get_expedientes_for_select(
+                cliente_id=cliente_id
+            )
+            if cliente_id
+            else []
+        )
+
+        _set_dropdown_options(
+            edit_cobro_expediente_dd,
+            [
+                row["display"]
+                for row in expedientes
+            ],
+            "Sin expediente",
+        )
+
+        hojas = (
+            economic_service
+            .get_hojas_for_select(
+                cliente_id=cliente_id
+            )
+            if cliente_id
+            else []
+        )
+
+        _set_dropdown_options(
+            edit_cobro_hoja_dd,
+            [
+                row["display"]
+                for row in hojas
+            ],
+            "Sin hoja",
+        )
+
+        refresh_edit_cobro_suplido_panel()
+
+        page.update()
+
+    edit_cobro_cliente_ac.on_select = (
+        refresh_edit_cobro_dependencies
+    )
+
     def refresh_edit_cobro_hojas(e=None):
         cliente_id = edit_cobro_state.get("cliente_id")
         expediente_id = None if edit_cobro_expediente_dd.value == "Sin expediente" else _id(edit_cobro_expediente_dd.value)
@@ -12068,12 +14772,104 @@ def economic_view(page: ft.Page):
     edit_cobro_expediente_dd.on_change = refresh_edit_cobro_hojas
 
     def open_edit_cobro_dialog(cobro):
+        cobro_id = int(
+            (cobro or {}).get("id")
+            or 0
+        )
+
+        if cobro_id <= 0:
+            show_message(
+                error_alert(
+                    "Cobro no identificado"
+                )
+            )
+            return
+
+        cobro = (
+            economic_service.get_cobro(
+                cobro_id
+            )
+            or {}
+        )
+
+        if not cobro:
+            show_message(
+                error_alert(
+                    "No se encontró el cobro"
+                )
+            )
+            return
+
+        factura_estado = str(
+            cobro.get("factura_estado")
+            or ""
+        ).strip().upper()
+
+        factura_aprobada = bool(
+            int(
+                cobro.get(
+                    "factura_exportada_holded"
+                )
+                or 0
+            )
+        ) or factura_estado == "APROBADA"
+
+        if factura_aprobada:
+            numero_factura = str(
+                cobro.get("numero_factura")
+                or ""
+            ).strip()
+
+            show_message(
+                error_alert(
+                    (
+                        "El cobro pertenece a la factura "
+                        f"{numero_factura or 'aprobada'}, "
+                        "que está congelada. "
+                        "Para corregirla debe emitirse "
+                        "una factura rectificativa."
+                    )
+                )
+            )
+            return
+
+        if factura_estado == "ANULADA":
+            numero_factura = str(
+                cobro.get("numero_factura")
+                or ""
+            ).strip()
+
+            show_message(
+                error_alert(
+                    (
+                        "El cobro pertenece a la factura "
+                        f"{numero_factura or 'anulada'}, "
+                        "que está anulada y no puede "
+                        "modificarse."
+                    )
+                )
+            )
+            return
+
         refresh_runtime_options()
 
         edit_cobro_state["id"] = cobro.get("id")
         edit_cobro_state["cliente_id"] = cobro.get("cliente_id")
+        edit_cobro_state["original_cliente_id"] = cobro.get("cliente_id")
 
         cliente_id = cobro.get("cliente_id")
+
+        edit_cobro_cliente_ac.set_options(
+            cliente_options,
+            clear_value=True,
+        )
+
+        edit_cobro_cliente_ac.set_value(
+            _find_cliente_option_by_id_for_cobro(
+                cliente_id
+            ),
+            update=False,
+        )
         exp_options = [
             e["display"]
             for e in economic_service.get_expedientes_for_select(cliente_id=cliente_id)
@@ -12114,6 +14910,8 @@ def economic_view(page: ft.Page):
         edit_cobro_recibo.value = cobro.get("recibo_ruta") or ""
         edit_cobro_obs.value = cobro.get("observaciones") or ""
 
+        refresh_edit_cobro_suplido_panel(cobro)
+
         edit_cobro_dialog.open = True
         page.update()
 
@@ -12123,12 +14921,76 @@ def economic_view(page: ft.Page):
             if not cobro_id:
                 raise ValueError("Cobro no identificado")
 
-            if edit_cobro_tipo.value != "CONSULTA" and edit_cobro_hoja_dd.value == "Sin hoja":
-                raise ValueError("Selecciona una hoja de encargo para el cobro")
+            edit_cliente_id = _id(
+                edit_cobro_cliente_ac.get_value()
+            )
+
+            if not edit_cliente_id:
+                raise ValueError(
+                    "Selecciona un cliente pagador válido"
+                )
+
+            snapshot = (
+                edit_cobro_suplido_state.get(
+                    "snapshot"
+                )
+                or {}
+            )
+
+            if (
+                snapshot.get("recovery_applications")
+                and int(edit_cliente_id)
+                != int(
+                    edit_cobro_state.get(
+                        "original_cliente_id"
+                    )
+                    or 0
+                )
+            ):
+                raise ValueError(
+                    "No se puede cambiar el cliente "
+                    "mientras existan recuperaciones "
+                    "de suplidos aplicadas"
+                )
+
+            edit_expediente_id = (
+                None
+                if edit_cobro_expediente_dd.value
+                == "Sin expediente"
+                else _id(
+                    edit_cobro_expediente_dd.value
+                )
+            )
+
+            if (
+                edit_cobro_tipo.value == "TASA"
+                and not edit_expediente_id
+            ):
+                raise ValueError(
+                    "Los cobros de tipo TASA deben "
+                    "estar vinculados a un expediente"
+                )
+
+            if (
+                edit_cobro_tipo.value not in {
+                    "CONSULTA",
+                    "SUPLIDO_ADELANTADO",
+                    "TASA",
+                }
+                and edit_cobro_tipo_fiscal.value
+                != "SUPLIDO"
+                and edit_cobro_hoja_dd.value
+                == "Sin hoja"
+            ):
+                raise ValueError(
+                    "Selecciona una hoja de encargo "
+                    "para el cobro"
+                )
 
             economic_service.update_cobro(cobro_id, {
+                "cliente_id": int(edit_cliente_id),
                 "fecha_cobro": _date_to_sql(edit_cobro_fecha.value),
-                "expediente_id": None if edit_cobro_expediente_dd.value == "Sin expediente" else _id(edit_cobro_expediente_dd.value),
+                "expediente_id": edit_expediente_id,
                 "hoja_encargo_id": None if edit_cobro_hoja_dd.value == "Sin hoja" else _id(edit_cobro_hoja_dd.value),
                 "importe": edit_cobro_importe.value,
                 "forma_pago": edit_cobro_forma.value,
@@ -12227,6 +15089,7 @@ def economic_view(page: ft.Page):
                 "Vinculación",
                 ft.Icons.LINK_OUTLINED,
                 controls=[
+                    edit_cobro_cliente_ac.control,
                     edit_cobro_expediente_dd,
                     ft.Row(
                         controls=[
@@ -12253,8 +15116,9 @@ def economic_view(page: ft.Page):
                                 ),
                                 ft.Text(
                                     (
-                                        "Los pagos de expediente deben permanecer vinculados "
-                                        "a una hoja de encargo. Las consultas pueden quedar sin hoja."
+                                        "Los pagos ordinarios de expediente requieren hoja. "
+                                        "SUPLIDO_ADELANTADO puede quedar sin expediente y TASA requiere expediente, "
+                                        "pero no necesariamente hoja."
                                     ),
                                     size=11,
                                     color=Q_MUTED,
@@ -12300,6 +15164,19 @@ def economic_view(page: ft.Page):
                     ),
                 ],
                 subtitle="Controla si el cobro debe generar factura.",
+                accent="#B54708",
+            ),
+
+            _cobro_form_section(
+                "Recuperación de suplido",
+                ft.Icons.ACCOUNT_BALANCE_WALLET_OUTLINED,
+                controls=[
+                    edit_cobro_suplido_panel,
+                ],
+                subtitle=(
+                    "Vincula el cobro fiscal de suplido "
+                    "con el pago adelantado por el despacho."
+                ),
                 accent="#B54708",
             ),
 

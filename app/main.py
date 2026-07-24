@@ -11,6 +11,7 @@ from frontend.views.settings_view import settings_view
 from frontend.views.expedients_view import expedients_view
 from frontend.views.expedient_traceability_view import expedient_traceability_view
 from frontend.views.economic_view import economic_view
+from frontend.views.accounting_view import accounting_view
 from frontend.views.fiscal_view import fiscal_view
 from frontend.views.payrolls_view import payrolls_view
 from frontend.views.box_watch_view import box_watch_view
@@ -100,6 +101,8 @@ def main(page: ft.Page):
             content = expedient_traceability_view(page)
         elif view_name in ("Cobros", "Conciliación"):
             content = economic_view(page)
+        elif view_name == "Pérdidas y ganancias":
+            content = accounting_view(page)
         elif view_name == "Fiscal":
             content = fiscal_view(page)
         elif view_name == "Nóminas":
