@@ -442,6 +442,10 @@ def search_expedientes(filters=None):
         conditions.append("e.cliente_id = ?")
         params.append(int(filters["cliente_id"]))
 
+    if filters.get("familia_id"):
+        conditions.append("te.familia_id = ?")
+        params.append(int(filters["familia_id"]))
+
     if filters.get("tipo_expediente_id"):
         conditions.append("e.tipo_expediente_id = ?")
         params.append(int(filters["tipo_expediente_id"]))
@@ -478,11 +482,14 @@ def search_expedientes(filters=None):
                 OR COALESCE(c.pasaporte, '') LIKE ?
                 OR COALESCE(c.dni, '') LIKE ?
                 OR COALESCE(e.box_folder_path, '') LIKE ?
+                OR COALESCE(te.nombre, '') LIKE ?
+                OR COALESCE(f.nombre, '') LIKE ?
+                OR COALESCE(f.codigo, '') LIKE ?
             )
             """
         )
         like = f"%{text}%"
-        params.extend([like] * 11)
+        params.extend([like] * 14)
 
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)

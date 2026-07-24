@@ -207,15 +207,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     table_container = ft.Container(expand=True)
 
     clientes = expedient_service.get_clientes_for_select()
-    tipos = expedient_service.get_tipos_expediente()
+    familias = config_service.get_familias_expediente(active_only=True)
+    tipos = config_service.get_tipos_expediente(active_only=True)
     subtipos = expedient_service.get_subtipos_expediente()
     estados_doc = expedient_service.get_estados_documentales()
     estados_admin = expedient_service.get_estados_administrativos()
     prioridades = expedient_service.get_prioridades()
 
     cliente_options = [c["display"] for c in clientes]
+    familia_options = [f"{f['id']} - {f['nombre']}" for f in familias]
     tipo_options = [f"{t['id']} - {t['nombre']}" for t in tipos]
-    subtipo_options = ["Sin subtipo"] + [f"{s['id']} - {s['tipo_expediente_nombre']} - {s['nombre']}" for s in subtipos]
+    subtipo_options = ["Sin subtipo"] + [
+        f"{s['id']} - {s['tipo_expediente_nombre']} - {s['nombre']}"
+        for s in subtipos
+    ]
     estado_doc_options = [f"{e['id']} - {e['nombre']}" for e in estados_doc]
     estado_admin_options = [f"{e['id']} - {e['nombre']}" for e in estados_admin]
     prioridad_options = [f"{p['id']} - {p['nombre']}" for p in prioridades]
@@ -226,10 +231,28 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         provincia_options = []
 
     search_input = text_input("Buscar expediente / cliente / registro", width=360)
+    filtro_familia = AppAutocomplete(
+        page=page,
+        label="Familia",
+        options=["Todos"] + familia_options,
+        value="",
+        width=240,
+        max_results=10,
+        allow_free_text=False,
+    )
     filtro_tipo = AppAutocomplete(
         page=page,
         label="Tipo",
         options=["Todos"] + tipo_options,
+        value="",
+        width=260,
+        max_results=10,
+        allow_free_text=False,
+    )
+    filtro_subtipo = AppAutocomplete(
+        page=page,
+        label="Subtipo",
+        options=["Todos"] + subtipo_options[1:],
         value="",
         width=260,
         max_results=10,
@@ -264,10 +287,18 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         max_results=12,
         allow_free_text=True,
     )
+    familia_expediente = AppAutocomplete(
+        page=page,
+        label="Familia expediente",
+        options=familia_options,
+        width=300,
+        max_results=10,
+        allow_free_text=False,
+    )
     tipo_expediente = AppAutocomplete(
         page=page,
         label="Tipo expediente",
-        options=tipo_options,
+        options=[],
         width=320,
         max_results=10,
         allow_free_text=False,
@@ -332,6 +363,64 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     admin_document_selected_file = text_input("Documento seleccionado", width=720)
     admin_document_selected_file.read_only = True
     admin_document_observaciones = multiline_input("Observaciones", width=720, height=90)
+
+    def refresh_tipo_options_for_familia(
+        selected_tipo_id=None,
+        familia_value=None,
+        reset_value=False,
+    ):
+        """
+        Refresca los tipos según la familia seleccionada.
+
+        La familia no se guarda en expedientes. Se usa únicamente para
+        restringir el catálogo de tipos y se deriva posteriormente del tipo.
+        """
+        current_family_value = familia_value or familia_expediente.get_value()
+        familia_id = _option_id(current_family_value)
+
+        try:
+            available_types = config_service.get_tipos_expediente(
+                active_only=True,
+                familia_id=familia_id,
+            ) if familia_id else []
+        except Exception:
+            available_types = [
+                item
+                for item in (tipos or [])
+                if int(item.get("familia_id") or 0) == int(familia_id or 0)
+            ]
+
+        options = [
+            f"{item['id']} - {item['nombre']}"
+            for item in available_types
+        ]
+
+        tipo_expediente.set_options(options, clear_value=False)
+
+        selected_value = ""
+        current_value = tipo_expediente.get_value()
+
+        if selected_tipo_id:
+            selected_value = next(
+                (
+                    option
+                    for option in options
+                    if option.startswith(str(selected_tipo_id) + " - ")
+                ),
+                "",
+            )
+        elif not reset_value and current_value in options:
+            selected_value = current_value
+        elif reset_value and len(options) == 1:
+            selected_value = options[0]
+
+        if selected_value:
+            tipo_expediente.set_value(selected_value, update=False)
+        else:
+            _clear_autocomplete(tipo_expediente)
+
+        return selected_value
+
 
     def refresh_subtipo_options_for_tipo(selected_subtipo_id=None, tipo_value=None, reset_value=False):
         """
@@ -398,15 +487,41 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         if selected_value and selected_value != "Sin subtipo":
             subtipo_expediente_manual.value = ""
 
+    def on_familia_expediente_change(selected_value=None):
+        selected_family_value = (
+            selected_value or familia_expediente.get_value()
+        )
+        familia_expediente.set_value(
+            selected_family_value,
+            update=False,
+        )
+
+        refresh_tipo_options_for_familia(
+            familia_value=selected_family_value,
+            reset_value=True,
+        )
+        refresh_subtipo_options_for_tipo(
+            tipo_value=tipo_expediente.get_value(),
+            reset_value=True,
+        )
+        subtipo_expediente_manual.value = ""
+        page.update()
+
     def on_tipo_expediente_change(selected_value=None):
         selected_tipo_value = selected_value or tipo_expediente.get_value()
         tipo_expediente.set_value(selected_tipo_value, update=False)
 
-        refresh_subtipo_options_for_tipo(tipo_value=selected_tipo_value, reset_value=True)
+        refresh_subtipo_options_for_tipo(
+            tipo_value=selected_tipo_value,
+            reset_value=True,
+        )
         if state.get("dialog_section") == "datos_especificos":
-            expediente_dialog.content = build_expediente_dialog_content(state.get("dialog_expediente_id"))
+            expediente_dialog.content = build_expediente_dialog_content(
+                state.get("dialog_expediente_id")
+            )
         page.update()
 
+    familia_expediente.on_select = on_familia_expediente_change
     tipo_expediente.on_select = on_tipo_expediente_change
 
     for date_field in [fecha_apertura, fecha_presentacion, fecha_resolucion]:
@@ -456,9 +571,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         state["editing_id"] = None
         numero_expediente.value = ""
         numero_expediente_mercurio.value = ""
+        _clear_autocomplete(familia_expediente)
         _clear_autocomplete(tipo_expediente)
         _clear_autocomplete(subtipo_expediente)
         cliente.set_value("", update=False)
+        tipo_expediente.set_options([], clear_value=True)
         refresh_subtipo_options_for_tipo(tipo_value="", reset_value=True)
         _clear_autocomplete(subtipo_expediente)
         subtipo_expediente_manual.value = ""
@@ -493,13 +610,26 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             ),
             update=False,
         )
-        tipo_expediente.set_value(
+        familia_expediente.set_value(
             next(
-                (x for x in tipo_options if x.startswith(str(expediente.get("tipo_expediente_id")) + " - ")),
+                (
+                    option
+                    for option in familia_options
+                    if option.startswith(
+                        str(expediente.get("familia_expediente_id")) + " - "
+                    )
+                ),
                 "",
             ),
             update=False,
         )
+
+        refresh_tipo_options_for_familia(
+            selected_tipo_id=expediente.get("tipo_expediente_id"),
+            familia_value=familia_expediente.get_value(),
+            reset_value=False,
+        )
+
         estado_documental.value = next(
             (x for x in estado_doc_options if x.startswith(str(expediente.get("estado_documental_id")) + " - ")),
             None,
@@ -536,6 +666,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             "cliente_id": _option_id(cliente.get_value()),
             "numero_expediente": numero_expediente.value,
             "numero_expediente_mercurio": numero_expediente_mercurio.value,
+            "familia_id": _option_id(familia_expediente.get_value()),
             "tipo_expediente_id": _option_id(tipo_expediente.get_value()),
             "subtipo_expediente_id": _option_id_from_autocomplete_value(subtipo_expediente.get_value(), subtipo_expediente.options),
             "subtipo_expediente": subtipo_expediente_manual.value or (
@@ -562,6 +693,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         errors = []
         if not data["cliente_id"]:
             errors.append("Selecciona un cliente")
+        if not data.get("familia_id"):
+            errors.append("Selecciona una familia de expediente")
         if not data["tipo_expediente_id"]:
             errors.append("Selecciona un tipo de expediente")
         if not data["estado_documental_id"]:
@@ -4589,7 +4722,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     "Cliente, tipo, subtipo y estado operativo del asunto.",
                     [
                         ft.Row([numero_expediente, numero_expediente_mercurio, cliente.control], wrap=True, spacing=10),
-                        ft.Row([tipo_expediente.control, subtipo_expediente.control, subtipo_expediente_manual, prioridad], wrap=True, spacing=10),
+                        ft.Row(
+                            [
+                                familia_expediente.control,
+                                tipo_expediente.control,
+                                subtipo_expediente.control,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        ft.Row(
+                            [subtipo_expediente_manual, prioridad],
+                            wrap=True,
+                            spacing=10,
+                        ),
                         ft.Row([estado_documental, estado_administrativo, estado_presentacion], wrap=True, spacing=10),
                         ft.Row([responsable, provincia.control], wrap=True, spacing=10),
                     ],
@@ -6969,6 +7115,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 str(expediente.get("cliente_nombre") or ""),
                 str(expediente.get("cliente_apellidos") or ""),
                 str(expediente.get("cliente_documento") or ""),
+                str(expediente.get("familia_expediente_nombre") or ""),
+                str(expediente.get("familia_expediente_codigo") or ""),
                 str(expediente.get("tipo_expediente_nombre") or ""),
                 str(expediente.get("subtipo_expediente_nombre") or ""),
                 str(expediente.get("subtipo_expediente") or ""),
@@ -7019,9 +7167,21 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         return (
             _matches_catalog_filter(
                 expediente,
+                _filter_control_value(filtro_familia),
+                "familia_expediente_id",
+                "familia_expediente_nombre",
+            )
+            and _matches_catalog_filter(
+                expediente,
                 _filter_control_value(filtro_tipo),
                 "tipo_expediente_id",
                 "tipo_expediente_nombre",
+            )
+            and _matches_catalog_filter(
+                expediente,
+                _filter_control_value(filtro_subtipo),
+                "subtipo_expediente_id",
+                "subtipo_expediente_nombre",
             )
             and _matches_catalog_filter(
                 expediente,
@@ -7073,8 +7233,13 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 on_change=lambda ev, eid=expediente_id, idx=index: toggle_selection(eid, index=idx),
             )
 
+            familia_label = e.get("familia_expediente_nombre") or "SIN FAMILIA"
             tipo_label = e.get("tipo_expediente_nombre") or "-"
-            subtipo_label = e.get("subtipo_expediente_nombre") or e.get("subtipo_expediente") or "-"
+            subtipo_label = (
+                e.get("subtipo_expediente_nombre")
+                or e.get("subtipo_expediente")
+                or "-"
+            )
             external_number = (
                 e.get("numero_expediente_mercurio")
                 or e.get("numero_registro")
@@ -7094,7 +7259,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     selected=is_selected,
                     on_click=lambda ev, eid=expediente_id, idx=index: toggle_selection(eid, index=idx),
                     badges=[
-                        expedient_status_badge("Extranjería", "#0057B8"),
+                        expedient_status_badge(familia_label, "#0057B8"),
                         expedient_status_badge(e.get("estado_documental_nombre"), e.get("estado_documental_color")),
                         expedient_status_badge(e.get("estado_administrativo_nombre"), e.get("estado_administrativo_color")),
                         priority_badge(e.get("prioridad_nombre"), e.get("prioridad_color")),
@@ -7150,8 +7315,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     body=[
                         ft.Row(
                             controls=[
+                                ft.Text("Familia:", size=11, color=Q_MUTED),
+                                ft.Text(
+                                    familia_label,
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY,
+                                ),
                                 ft.Text("Tipo:", size=11, color=Q_MUTED),
-                                ft.Text(tipo_label, size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                                ft.Text(
+                                    tipo_label,
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
                                 ft.Text("Subtipo:", size=11, color=Q_MUTED),
                                 ft.Text(subtipo_label, size=12, color=Q_PRIMARY_DARK),
                             ],
@@ -7347,7 +7524,9 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     dropdown=filtro_estado.control,
                     search_input=search_input,
                     actions=[
+                        filtro_familia.control,
                         filtro_tipo.control,
+                        filtro_subtipo.control,
                         filtro_prioridad.control,
                         secondary_button("Limpiar", clear_filters),
                     ],
@@ -7370,7 +7549,9 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
     def clear_filters(e=None):
         search_input.value = ""
+        _set_filter_control_value(filtro_familia, "")
         _set_filter_control_value(filtro_tipo, "")
+        _set_filter_control_value(filtro_subtipo, "")
         _set_filter_control_value(filtro_estado, "")
         _set_filter_control_value(filtro_prioridad, "")
         refresh()
@@ -7407,7 +7588,9 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
     search_input.on_change = on_live_filter_change
     search_input.on_submit = apply_filters
+    bind_filter_autocomplete(filtro_familia)
     bind_filter_autocomplete(filtro_tipo)
+    bind_filter_autocomplete(filtro_subtipo)
     bind_filter_autocomplete(filtro_estado)
     bind_filter_autocomplete(filtro_prioridad)
 
