@@ -2,6 +2,8 @@ import sqlite3
 from pathlib import Path
 from datetime import date
 
+from backend.services import expedient_family_service
+
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
 
@@ -53,6 +55,9 @@ def ensure_expedients_runtime_schema():
     subtipo_expediente_id para vincularlo con configuración.
     """
     with _connect() as conn:
+        expedient_family_service.ensure_expedient_family_schema(conn)
+        expedient_family_service.assign_existing_types_to_families(conn)
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS config_subtipos_expediente (
@@ -505,6 +510,11 @@ def _base_query():
             c.pasaporte AS cliente_pasaporte,
             c.dni AS cliente_dni,
             te.nombre AS tipo_expediente_nombre,
+            te.codigo AS tipo_expediente_codigo,
+            f.id AS familia_expediente_id,
+            f.codigo AS familia_expediente_codigo,
+            f.nombre AS familia_expediente_nombre,
+            f.notification_workflow_code,
             st.nombre AS subtipo_expediente_nombre,
             st.codigo AS subtipo_expediente_codigo,
             ed.nombre AS estado_documental_nombre,
@@ -516,6 +526,7 @@ def _base_query():
         FROM expedientes e
         JOIN clientes c ON c.id = e.cliente_id
         LEFT JOIN config_tipos_expediente te ON te.id = e.tipo_expediente_id
+        LEFT JOIN config_familias_expediente f ON f.id = te.familia_id
         LEFT JOIN config_subtipos_expediente st ON st.id = e.subtipo_expediente_id
         LEFT JOIN config_estados_documentales ed ON ed.id = e.estado_documental_id
         LEFT JOIN config_estados_administrativos ea ON ea.id = e.estado_administrativo_id
