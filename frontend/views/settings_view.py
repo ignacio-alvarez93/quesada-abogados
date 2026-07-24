@@ -867,6 +867,28 @@ def settings_view(page: ft.Page):
         def build_tipos_tab():
             editing = config_service.get_record("config_tipos_expediente", state["editing_id"]) if state["editing_id"] else {}
 
+            familias = config_service.get_familias_expediente(active_only=True)
+            familia_options = [
+                f"{f['id']} - {f['nombre']}"
+                for f in familias
+            ]
+            selected_familia = ""
+            if editing and editing.get("familia_id"):
+                selected_familia = next(
+                    (
+                        option
+                        for option in familia_options
+                        if option.startswith(str(editing.get("familia_id")) + " - ")
+                    ),
+                    "",
+                )
+
+            familia = select_input(
+                "Familia *",
+                familia_options,
+                value=selected_familia,
+                width=320,
+            )
             codigo = text_input("Código", editing.get("codigo", ""), width=220)
             nombre = required_text_input("Nombre", editing.get("nombre", ""), width=320)
             descripcion = multiline_input("Descripción", editing.get("descripcion", ""), width=560, height=90)
@@ -882,12 +904,15 @@ def settings_view(page: ft.Page):
 
             def save():
                 data = {
+                    "familia_id": selected_id(familia.value),
                     "codigo": codigo.value,
                     "nombre": nombre.value,
                     "descripcion": descripcion.value,
                     "url_presentacion": url_presentacion.value,
                     "activo": _bool_to_int(activo.value),
                 }
+                if not data["familia_id"]:
+                    raise ValueError("Selecciona una familia")
                 if not data["nombre"]:
                     raise ValueError("El nombre es obligatorio")
                 if state["editing_id"]:
@@ -922,7 +947,13 @@ def settings_view(page: ft.Page):
                             ],
                             spacing=10,
                         ),
-                        ft.Row([codigo, nombre, activo], wrap=True, spacing=10),
+                        ft.Row([familia, codigo, nombre, activo], wrap=True, spacing=10),
+                        ft.Text(
+                            "La familia determina el dominio y el futuro flujo de seguimiento: "
+                            "Extranjería, Nacionalidad, Visados, UGE, Antecedentes, Asilo u Otros.",
+                            size=12,
+                            color=Q_MUTED,
+                        ),
                         ayuda_codigo,
                         url_presentacion,
                         ft.Text(
@@ -947,6 +978,7 @@ def settings_view(page: ft.Page):
             for r in config_service.get_tipos_expediente():
                 rows.append(
                     [
+                        r.get("familia_nombre") or "SIN FAMILIA",
                         r["codigo"],
                         r["nombre"],
                         r.get("descripcion"),
@@ -964,11 +996,23 @@ def settings_view(page: ft.Page):
 
             return _expediente_workspace(
                 "Tipos de expediente",
-                "Catálogo principal de trámites: arraigo, nacionalidad, renovaciones, recursos y futuras automatizaciones.",
+                "Catálogo de trámites organizado por familias: Extranjería, Nacionalidad, Visados, UGE y demás dominios.",
                 ft.Column(
                     controls=[
                         form,
-                        _table(["Código", "Nombre", "Descripción", "URL presentación", "Activo", "Acciones"], rows, height=360),
+                        _table(
+                            [
+                                "Familia",
+                                "Código",
+                                "Nombre",
+                                "Descripción",
+                                "URL presentación",
+                                "Activo",
+                                "Acciones",
+                            ],
+                            rows,
+                            height=360,
+                        ),
                     ],
                     spacing=14,
                 ),
