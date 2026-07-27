@@ -2,6 +2,8 @@ import sqlite3
 from pathlib import Path
 from datetime import date
 
+from backend.services import expedient_family_service
+
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
 
@@ -53,6 +55,9 @@ def ensure_expedients_runtime_schema():
     subtipo_expediente_id para vincularlo con configuración.
     """
     with _connect() as conn:
+        expedient_family_service.ensure_expedient_family_schema(conn)
+        expedient_family_service.assign_existing_types_to_families(conn)
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS config_subtipos_expediente (
@@ -74,6 +79,30 @@ def ensure_expedients_runtime_schema():
             conn.execute("ALTER TABLE expedientes ADD COLUMN subtipo_expediente_id INTEGER")
         if not _column_exists(conn, "expedientes", "numero_expediente_mercurio"):
             conn.execute("ALTER TABLE expedientes ADD COLUMN numero_expediente_mercurio TEXT")
+
+        if not _column_exists(
+            conn,
+            "expedientes",
+            "numero_presentacion_registro",
+        ):
+            conn.execute(
+                """
+                ALTER TABLE expedientes
+                ADD COLUMN numero_presentacion_registro TEXT
+                """
+            )
+
+        if not _column_exists(
+            conn,
+            "expedientes",
+            "numero_expediente_extranjeria",
+        ):
+            conn.execute(
+                """
+                ALTER TABLE expedientes
+                ADD COLUMN numero_expediente_extranjeria TEXT
+                """
+            )
 
         # Preparación documental Mercurio / Box.
         # No altera el flujo Mercurio ni automatiza subidas: solo guarda estado detectado.
@@ -269,7 +298,19 @@ def _next_numero_expediente():
 
 
 def create_expediente(data):
-    numero = _normalize_text(data.get("numero_expediente")) or _next_numero_expediente()
+    numero = (
+        _normalize_text(data.get("numero_expediente"))
+        or _next_numero_expediente()
+    )
+
+    id_presentacion = _normalize_text(
+        data.get("numero_presentacion_registro")
+        or data.get("numero_expediente_mercurio")
+    )
+
+    numero_extranjeria = _normalize_text(
+        data.get("numero_expediente_extranjeria")
+    )
 
     with _connect() as conn:
         cur = conn.execute(
@@ -278,6 +319,8 @@ def create_expediente(data):
                 cliente_id,
                 numero_expediente,
                 numero_expediente_mercurio,
+                numero_presentacion_registro,
+                numero_expediente_extranjeria,
                 tipo_expediente_id,
                 subtipo_expediente_id,
                 subtipo_expediente,
@@ -297,12 +340,17 @@ def create_expediente(data):
                 box_folder_path,
                 activo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             """,
             (
                 int(data.get("cliente_id")),
                 numero,
-                _normalize_text(data.get("numero_expediente_mercurio")),
+                id_presentacion,
+                id_presentacion,
+                numero_extranjeria,
                 _int_or_none(data.get("tipo_expediente_id")),
                 _int_or_none(data.get("subtipo_expediente_id")),
                 _normalize_text(data.get("subtipo_expediente")),
@@ -328,6 +376,15 @@ def create_expediente(data):
 
 
 def update_expediente(expediente_id, data):
+    id_presentacion = _normalize_text(
+        data.get("numero_presentacion_registro")
+        or data.get("numero_expediente_mercurio")
+    )
+
+    numero_extranjeria = _normalize_text(
+        data.get("numero_expediente_extranjeria")
+    )
+
     with _connect() as conn:
         conn.execute(
             """
@@ -335,6 +392,8 @@ def update_expediente(expediente_id, data):
             SET cliente_id = ?,
                 numero_expediente = ?,
                 numero_expediente_mercurio = ?,
+                numero_presentacion_registro = ?,
+                numero_expediente_extranjeria = ?,
                 tipo_expediente_id = ?,
                 subtipo_expediente_id = ?,
                 subtipo_expediente = ?,
@@ -359,7 +418,9 @@ def update_expediente(expediente_id, data):
             (
                 int(data.get("cliente_id")),
                 _normalize_text(data.get("numero_expediente")),
-                _normalize_text(data.get("numero_expediente_mercurio")),
+                id_presentacion,
+                id_presentacion,
+                numero_extranjeria,
                 _int_or_none(data.get("tipo_expediente_id")),
                 _int_or_none(data.get("subtipo_expediente_id")),
                 _normalize_text(data.get("subtipo_expediente")),
@@ -437,6 +498,10 @@ def search_expedientes(filters=None):
         conditions.append("e.cliente_id = ?")
         params.append(int(filters["cliente_id"]))
 
+    if filters.get("familia_id"):
+        conditions.append("te.familia_id = ?")
+        params.append(int(filters["familia_id"]))
+
     if filters.get("tipo_expediente_id"):
         conditions.append("e.tipo_expediente_id = ?")
         params.append(int(filters["tipo_expediente_id"]))
@@ -473,11 +538,14 @@ def search_expedientes(filters=None):
                 OR COALESCE(c.pasaporte, '') LIKE ?
                 OR COALESCE(c.dni, '') LIKE ?
                 OR COALESCE(e.box_folder_path, '') LIKE ?
+                OR COALESCE(te.nombre, '') LIKE ?
+                OR COALESCE(f.nombre, '') LIKE ?
+                OR COALESCE(f.codigo, '') LIKE ?
             )
             """
         )
         like = f"%{text}%"
-        params.extend([like] * 11)
+        params.extend([like] * 14)
 
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
@@ -505,6 +573,11 @@ def _base_query():
             c.pasaporte AS cliente_pasaporte,
             c.dni AS cliente_dni,
             te.nombre AS tipo_expediente_nombre,
+            te.codigo AS tipo_expediente_codigo,
+            f.id AS familia_expediente_id,
+            f.codigo AS familia_expediente_codigo,
+            f.nombre AS familia_expediente_nombre,
+            f.notification_workflow_code,
             st.nombre AS subtipo_expediente_nombre,
             st.codigo AS subtipo_expediente_codigo,
             ed.nombre AS estado_documental_nombre,
@@ -516,6 +589,7 @@ def _base_query():
         FROM expedientes e
         JOIN clientes c ON c.id = e.cliente_id
         LEFT JOIN config_tipos_expediente te ON te.id = e.tipo_expediente_id
+        LEFT JOIN config_familias_expediente f ON f.id = te.familia_id
         LEFT JOIN config_subtipos_expediente st ON st.id = e.subtipo_expediente_id
         LEFT JOIN config_estados_documentales ed ON ed.id = e.estado_documental_id
         LEFT JOIN config_estados_administrativos ea ON ea.id = e.estado_administrativo_id

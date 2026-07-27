@@ -209,7 +209,6 @@ def expedient_traceability_view(page: ft.Page):
                 j.get("archivo_ruta") or "-",
                 _date(j.get("fecha_presentacion")),
                 j.get("numero_registro") or "-",
-                traceability_badge(j.get("estado_conciliacion")),
                 secondary_button("Conciliar", lambda e, jid=j["id"]: conciliar_justificante(jid)),
             ])
 

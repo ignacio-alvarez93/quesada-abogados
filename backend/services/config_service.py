@@ -2,6 +2,8 @@ import sqlite3
 import re
 from pathlib import Path
 
+from backend.services import expedient_family_service
+
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
 
@@ -150,6 +152,9 @@ def ensure_config_runtime_schema():
     _initialize_dynamic_forms_runtime_schema()
 
     with _connect() as conn:
+        expedient_family_service.ensure_expedient_family_schema(conn)
+        expedient_family_service.assign_existing_types_to_families(conn)
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS config_subtipos_expediente (
@@ -228,42 +233,175 @@ def set_active(table, record_id, active):
         conn.commit()
 
 
+def get_familias_expediente(active_only=False):
+    ensure_config_runtime_schema()
+    return expedient_family_service.get_expedient_families(
+        active_only=active_only
+    )
+
+
+def _validate_tipo_family(conn, family_id):
+    if not family_id:
+        raise ValueError("Selecciona una familia de expediente")
+
+    row = conn.execute(
+        """
+        SELECT id, codigo, nombre, activo
+        FROM config_familias_expediente
+        WHERE id = ?
+        """,
+        (int(family_id),),
+    ).fetchone()
+
+    if not row:
+        raise ValueError("La familia seleccionada no existe")
+
+    if int(row["activo"] or 0) != 1:
+        raise ValueError("La familia seleccionada está inactiva")
+
+    return dict(row)
+
+
 def create_tipo_expediente(data):
+    ensure_config_runtime_schema()
+
+    familia_id = _int_or_none(data.get("familia_id"))
     codigo = _normalize_code(data.get("codigo") or data.get("nombre"))
     nombre = _normalize_text(data.get("nombre"))
     descripcion = (data.get("descripcion") or "").strip()
     url_presentacion = (data.get("url_presentacion") or "").strip()
+    activo = int(data.get("activo", 1))
+
+    if not nombre:
+        raise ValueError("El nombre del tipo es obligatorio")
+
     with _connect() as conn:
+        familia = _validate_tipo_family(conn, familia_id)
+
         cur = conn.execute(
             """
-            INSERT INTO config_tipos_expediente (codigo, nombre, descripcion, url_presentacion, activo)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO config_tipos_expediente (
+                familia_id,
+                codigo,
+                nombre,
+                descripcion,
+                url_presentacion,
+                workflow_code,
+                activo
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (codigo, nombre, descripcion, url_presentacion, int(data.get("activo", 1))),
+            (
+                int(familia_id),
+                codigo,
+                nombre,
+                descripcion,
+                url_presentacion,
+                familia.get("codigo"),
+                activo,
+            ),
         )
         conn.commit()
         return cur.lastrowid
 
 
 def update_tipo_expediente(record_id, data):
+    ensure_config_runtime_schema()
+
     codigo = _normalize_code(data.get("codigo") or data.get("nombre"))
     nombre = _normalize_text(data.get("nombre"))
     descripcion = (data.get("descripcion") or "").strip()
     url_presentacion = (data.get("url_presentacion") or "").strip()
+    activo = int(data.get("activo", 1))
+
+    if not nombre:
+        raise ValueError("El nombre del tipo es obligatorio")
+
     with _connect() as conn:
+        current = conn.execute(
+            """
+            SELECT familia_id
+            FROM config_tipos_expediente
+            WHERE id = ?
+            """,
+            (int(record_id),),
+        ).fetchone()
+
+        if not current:
+            raise ValueError("Tipo de expediente no encontrado")
+
+        familia_id = _int_or_none(data.get("familia_id"))
+        if familia_id is None:
+            familia_id = _int_or_none(current["familia_id"])
+
+        familia = _validate_tipo_family(conn, familia_id)
+
         conn.execute(
             """
             UPDATE config_tipos_expediente
-            SET codigo = ?, nombre = ?, descripcion = ?, url_presentacion = ?, activo = ?, updated_at = CURRENT_TIMESTAMP
+            SET familia_id = ?,
+                codigo = ?,
+                nombre = ?,
+                descripcion = ?,
+                url_presentacion = ?,
+                workflow_code = ?,
+                activo = ?,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (codigo, nombre, descripcion, url_presentacion, int(data.get("activo", 1)), record_id),
+            (
+                int(familia_id),
+                codigo,
+                nombre,
+                descripcion,
+                url_presentacion,
+                familia.get("codigo"),
+                activo,
+                int(record_id),
+            ),
         )
         conn.commit()
 
 
-def get_tipos_expediente(active_only=False):
-    return list_records("config_tipos_expediente", True if active_only else None, "nombre ASC")
+def get_tipos_expediente(active_only=False, familia_id=None):
+    ensure_config_runtime_schema()
+
+    sql = """
+        SELECT
+            t.*,
+            f.codigo AS familia_codigo,
+            f.nombre AS familia_nombre,
+            f.notification_workflow_code
+        FROM config_tipos_expediente t
+        LEFT JOIN config_familias_expediente f
+          ON f.id = t.familia_id
+    """
+    conditions = []
+    params = []
+
+    if active_only:
+        conditions.append("t.activo = 1")
+
+    if familia_id:
+        conditions.append("t.familia_id = ?")
+        params.append(int(familia_id))
+
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+
+    sql += """
+        ORDER BY
+            COALESCE(f.orden, 999),
+            f.nombre ASC,
+            t.nombre ASC
+    """
+
+    with _connect() as conn:
+        return [
+            _row_to_dict(row)
+            for row in conn.execute(sql, params).fetchall()
+        ]
+
 
 
 def create_subtipo_expediente(data):
