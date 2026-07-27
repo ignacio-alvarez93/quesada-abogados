@@ -31,6 +31,16 @@ CREATE TABLE IF NOT EXISTS expediente_justificantes (
     fecha_presentacion TEXT,
     numero_registro TEXT,
     organo_presentacion TEXT,
+
+    -- Metadatos propios del documento administrativo.
+    fecha_documento TEXT,
+    csv_documento TEXT,
+    dir3_documento TEXT,
+    organo_documento TEXT,
+    nie_documento TEXT,
+    numero_expediente_documento TEXT,
+    metadata_documento_json TEXT,
+
     procedimiento_detectado TEXT,
     estado_conciliacion TEXT NOT NULL DEFAULT 'PENDIENTE',
     observaciones TEXT,

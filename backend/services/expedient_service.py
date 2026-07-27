@@ -80,6 +80,30 @@ def ensure_expedients_runtime_schema():
         if not _column_exists(conn, "expedientes", "numero_expediente_mercurio"):
             conn.execute("ALTER TABLE expedientes ADD COLUMN numero_expediente_mercurio TEXT")
 
+        if not _column_exists(
+            conn,
+            "expedientes",
+            "numero_presentacion_registro",
+        ):
+            conn.execute(
+                """
+                ALTER TABLE expedientes
+                ADD COLUMN numero_presentacion_registro TEXT
+                """
+            )
+
+        if not _column_exists(
+            conn,
+            "expedientes",
+            "numero_expediente_extranjeria",
+        ):
+            conn.execute(
+                """
+                ALTER TABLE expedientes
+                ADD COLUMN numero_expediente_extranjeria TEXT
+                """
+            )
+
         # Preparación documental Mercurio / Box.
         # No altera el flujo Mercurio ni automatiza subidas: solo guarda estado detectado.
         if not _column_exists(conn, "expedientes", "box_root_folder_id"):
@@ -274,7 +298,19 @@ def _next_numero_expediente():
 
 
 def create_expediente(data):
-    numero = _normalize_text(data.get("numero_expediente")) or _next_numero_expediente()
+    numero = (
+        _normalize_text(data.get("numero_expediente"))
+        or _next_numero_expediente()
+    )
+
+    id_presentacion = _normalize_text(
+        data.get("numero_presentacion_registro")
+        or data.get("numero_expediente_mercurio")
+    )
+
+    numero_extranjeria = _normalize_text(
+        data.get("numero_expediente_extranjeria")
+    )
 
     with _connect() as conn:
         cur = conn.execute(
@@ -283,6 +319,8 @@ def create_expediente(data):
                 cliente_id,
                 numero_expediente,
                 numero_expediente_mercurio,
+                numero_presentacion_registro,
+                numero_expediente_extranjeria,
                 tipo_expediente_id,
                 subtipo_expediente_id,
                 subtipo_expediente,
@@ -302,12 +340,17 @@ def create_expediente(data):
                 box_folder_path,
                 activo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             """,
             (
                 int(data.get("cliente_id")),
                 numero,
-                _normalize_text(data.get("numero_expediente_mercurio")),
+                id_presentacion,
+                id_presentacion,
+                numero_extranjeria,
                 _int_or_none(data.get("tipo_expediente_id")),
                 _int_or_none(data.get("subtipo_expediente_id")),
                 _normalize_text(data.get("subtipo_expediente")),
@@ -333,6 +376,15 @@ def create_expediente(data):
 
 
 def update_expediente(expediente_id, data):
+    id_presentacion = _normalize_text(
+        data.get("numero_presentacion_registro")
+        or data.get("numero_expediente_mercurio")
+    )
+
+    numero_extranjeria = _normalize_text(
+        data.get("numero_expediente_extranjeria")
+    )
+
     with _connect() as conn:
         conn.execute(
             """
@@ -340,6 +392,8 @@ def update_expediente(expediente_id, data):
             SET cliente_id = ?,
                 numero_expediente = ?,
                 numero_expediente_mercurio = ?,
+                numero_presentacion_registro = ?,
+                numero_expediente_extranjeria = ?,
                 tipo_expediente_id = ?,
                 subtipo_expediente_id = ?,
                 subtipo_expediente = ?,
@@ -364,7 +418,9 @@ def update_expediente(expediente_id, data):
             (
                 int(data.get("cliente_id")),
                 _normalize_text(data.get("numero_expediente")),
-                _normalize_text(data.get("numero_expediente_mercurio")),
+                id_presentacion,
+                id_presentacion,
+                numero_extranjeria,
                 _int_or_none(data.get("tipo_expediente_id")),
                 _int_or_none(data.get("subtipo_expediente_id")),
                 _normalize_text(data.get("subtipo_expediente")),

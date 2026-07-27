@@ -49,6 +49,39 @@ Q_MUTED = "#64748B"
 Q_BORDER = "#E4E7EC"
 
 
+def warning_alert(message):
+    """
+    Aviso visual local compatible con la versión actual de Flet.
+
+    Se mantiene separado de error_alert porque una extracción
+    incompleta permite revisar y corregir manualmente los datos.
+    """
+    return ft.Container(
+        bgcolor="#FFFAEB",
+        border=ft.border.all(1, "#FEC84B"),
+        border_radius=10,
+        padding=10,
+        content=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.WARNING_AMBER_ROUNDED,
+                    color="#B54708",
+                    size=20,
+                ),
+                ft.Text(
+                    str(message or ""),
+                    color="#92400E",
+                    size=12,
+                    selectable=True,
+                    expand=True,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+        ),
+    )
+
+
 def _option_id(value):
     if not value or " - " not in value:
         return None
@@ -201,6 +234,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         "payload_preview_destination": "MERCURIO",
         "payload_preview_result": {},
         "payload_preview_error": {},
+        "traceability_tab": "ANEXOS",
     }
 
     content_area = ft.Container(expand=True)
@@ -277,8 +311,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         allow_free_text=False,
     )
 
-    numero_expediente = text_input("Nº expediente", width=220)
-    numero_expediente_mercurio = text_input("Nº expediente Mercurio", width=260)
+    numero_expediente = text_input(
+        "Expediente interno CRM",
+        width=240,
+    )
+
+    id_presentacion = text_input(
+        "ID presentación",
+        width=280,
+    )
+
+    numero_expediente_extranjeria = text_input(
+        "N.º expediente Extranjería",
+        width=320,
+    )
     cliente = AppAutocomplete(
         page=page,
         label="Cliente",
@@ -311,7 +357,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         max_results=10,
         allow_free_text=False,
     )
-    subtipo_expediente_manual = text_input("Subtipo manual / variante", width=320)
     estado_documental = select_input("Estado documental", estado_doc_options, width=320)
     estado_administrativo = select_input("Estado administrativo", estado_admin_options, width=320)
     estado_presentacion = select_input(
@@ -345,12 +390,12 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         "ADMISION_TRAMITE - Admisión a trámite",
         "INADMISION_TRAMITE - Inadmisión a trámite",
         "ADMISION_TRAMITE_TASA - Admisión a trámite y tasa",
-        "JUSTIFICANTE_TASA - Justificante de tasa",
+        "JUSTIFICANTE_APORTACION_TASA - Justificante de aportación de tasa",
         "REQUERIMIENTO - Requerimiento",
         "JUSTIFICANTE_APORTACION_DOCUMENTACION - Justificante aportación documentación",
         "JUSTIFICANTE_AMPLIACION_PLAZO - Justificante ampliación de plazo",
         "RESOLUCION_FAVORABLE - Resolución favorable",
-        "RESOLUCION_DESFAVORABLE - Resolución desfavorable",
+        "RESOLUCION_DENEGATORIA - Resolución denegatoria",
         "OTRO - Otro documento administrativo",
     ]
 
@@ -360,9 +405,1211 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         value=admin_document_event_options[0],
         width=620,
     )
-    admin_document_selected_file = text_input("Documento seleccionado", width=720)
+    admin_document_selected_file = text_input(
+        "Documento seleccionado",
+        width=610,
+    )
     admin_document_selected_file.read_only = True
-    admin_document_observaciones = multiline_input("Observaciones", width=720, height=90)
+
+    admin_document_type_summary = ft.Container(
+        bgcolor="#EAF3FF",
+        border=ft.border.all(1, "#B9D7FF"),
+        border_radius=12,
+        padding=12,
+        content=ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.DESCRIPTION_OUTLINED,
+                    color=Q_PRIMARY,
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            "Documento administrativo",
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                        ft.Text(
+                            "Sin seleccionar",
+                            size=15,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                    ],
+                    spacing=2,
+                    expand=True,
+                ),
+            ],
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
+    admin_document_observaciones = multiline_input(
+        "Observaciones",
+        width=720,
+        height=90,
+    )
+
+    expedient_note_title = text_input(
+        "Título de la nota",
+        width=500,
+    )
+
+    expedient_note_category = select_input(
+        "Categoría",
+        [
+            "GENERAL - General",
+            "JURIDICA - Análisis jurídico",
+            "ESTRATEGIA - Estrategia",
+            "INCIDENCIA - Incidencia",
+            "LLAMADA - Llamada o comunicación",
+            "PROXIMO_PASO - Próximo paso",
+        ],
+        value="GENERAL - General",
+        width=260,
+    )
+
+    expedient_note_content = multiline_input(
+        "Contenido",
+        width=760,
+        height=220,
+    )
+
+    presentation_preview_title = ft.Text(
+        "Datos detectados en el justificante",
+        size=15,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+        visible=False,
+    )
+
+    presentation_numero = text_input(
+        "ID presentación",
+        width=320,
+    )
+    presentation_fecha = text_input(
+        "Fecha y hora presentación",
+        width=280,
+    )
+    presentation_fecha_registro = text_input(
+        "Fecha y hora registro",
+        width=280,
+    )
+    presentation_regage = text_input(
+        "Número REGAGE",
+        width=340,
+    )
+    presentation_oficina_nombre = text_input(
+        "Oficina de registro",
+        width=520,
+    )
+    presentation_oficina_codigo = text_input(
+        "Código oficina",
+        width=180,
+    )
+    presentation_unidad_nombre = text_input(
+        "Unidad de tramitación",
+        width=520,
+    )
+    presentation_unidad_codigo = text_input(
+        "Código unidad",
+        width=180,
+    )
+    presentation_organismo = text_input(
+        "Organismo",
+        width=700,
+    )
+    presentation_ambito = text_input(
+        "Ámbito / prefijo",
+        width=180,
+    )
+    presentation_csv = text_input(
+        "CSV GEISER",
+        width=520,
+    )
+
+    presentation_preview_message = ft.Column(
+        controls=[],
+        visible=False,
+        spacing=6,
+    )
+
+    presentation_preview_controls = [
+        presentation_preview_title,
+        ft.Row(
+            [
+                presentation_numero,
+                presentation_regage,
+            ],
+            wrap=True,
+            spacing=10,
+        ),
+        ft.Row(
+            [
+                presentation_fecha,
+                presentation_fecha_registro,
+            ],
+            wrap=True,
+            spacing=10,
+        ),
+        ft.Row(
+            [
+                presentation_oficina_nombre,
+                presentation_oficina_codigo,
+            ],
+            wrap=True,
+            spacing=10,
+        ),
+        ft.Row(
+            [
+                presentation_unidad_nombre,
+                presentation_unidad_codigo,
+            ],
+            wrap=True,
+            spacing=10,
+        ),
+        presentation_organismo,
+        ft.Row(
+            [
+                presentation_ambito,
+                presentation_csv,
+            ],
+            wrap=True,
+            spacing=10,
+        ),
+        presentation_preview_message,
+    ]
+
+    for control in presentation_preview_controls[1:-1]:
+        control.visible = False
+
+    tax_submission_preview_title = ft.Text(
+        "Datos detectados en la aportación de tasa",
+        size=15,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+        visible=False,
+    )
+
+    tax_submission_registration_date = text_input(
+        "Fecha y hora de registro",
+        width=270,
+    )
+
+    tax_submission_date = text_input(
+        "Fecha de presentación",
+        width=270,
+    )
+
+    tax_submission_csv = text_input(
+        "CSV GEISER",
+        width=620,
+    )
+
+    tax_submission_regage = text_input(
+        "Número REGAGE",
+        width=340,
+    )
+
+    tax_submission_expediente = text_input(
+        "N.º expediente Extranjería",
+        width=340,
+    )
+
+    tax_submission_nie = text_input(
+        "NIE detectado",
+        width=230,
+    )
+
+    tax_submission_dir3 = text_input(
+        "DIR3",
+        width=220,
+    )
+
+    tax_submission_organo = text_input(
+        "Órgano de destino",
+        width=650,
+    )
+
+    tax_submission_document = text_input(
+        "Documento aportado",
+        width=650,
+    )
+
+    tax_submission_summary = multiline_input(
+        "Resumen / asunto",
+        width=700,
+        height=90,
+    )
+
+    tax_submission_preview_message = ft.Column(
+        controls=[],
+        visible=False,
+        spacing=6,
+    )
+
+    tax_submission_preview_controls = [
+        tax_submission_preview_title,
+        ft.Row(
+            controls=[
+                tax_submission_registration_date,
+                tax_submission_date,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        tax_submission_csv,
+        ft.Row(
+            controls=[
+                tax_submission_regage,
+                tax_submission_expediente,
+                tax_submission_nie,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        ft.Row(
+            controls=[
+                tax_submission_dir3,
+                tax_submission_organo,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        tax_submission_document,
+        tax_submission_summary,
+        tax_submission_preview_message,
+    ]
+
+    for control in tax_submission_preview_controls[1:-1]:
+        control.visible = False
+
+
+    requirement_extension_preview_title = ft.Text(
+        "Solicitud de ampliación del plazo",
+        size=15,
+        weight=ft.FontWeight.BOLD,
+        color="#175CD3",
+        visible=False,
+    )
+
+    requirement_extension_date = text_input(
+        "Fecha y hora de registro",
+        width=270,
+    )
+
+    requirement_extension_csv = text_input(
+        "CSV GEISER",
+        width=720,
+    )
+
+    requirement_extension_regage = text_input(
+        "REGAGE",
+        width=310,
+    )
+
+    requirement_extension_expediente = text_input(
+        "N.º expediente Extranjería",
+        width=350,
+    )
+
+    requirement_extension_nie = text_input(
+        "NIE detectado",
+        width=220,
+    )
+
+    requirement_extension_dir3 = text_input(
+        "DIR3",
+        width=210,
+    )
+
+    requirement_extension_body = text_input(
+        "Órgano destinatario",
+        width=500,
+    )
+
+    requirement_extension_documents = multiline_input(
+        "Documentos adjuntos",
+        width=720,
+        height=100,
+    )
+
+    requirement_extension_reason = multiline_input(
+        "Motivo o alcance de la ampliación",
+        width=720,
+        height=150,
+    )
+
+    requirement_extension_days = text_input(
+        "Días de ampliación solicitados",
+        width=250,
+    )
+
+    requirement_extension_new_deadline = text_input(
+        "Nueva fecha límite solicitada",
+        width=260,
+    )
+
+    requirement_extension_preview_message = ft.Column(
+        controls=[],
+        visible=False,
+        spacing=6,
+    )
+
+    requirement_extension_preview_controls = [
+        requirement_extension_preview_title,
+        ft.Row(
+            controls=[
+                requirement_extension_date,
+                requirement_extension_regage,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        requirement_extension_csv,
+        ft.Row(
+            controls=[
+                requirement_extension_expediente,
+                requirement_extension_nie,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        ft.Row(
+            controls=[
+                requirement_extension_dir3,
+                requirement_extension_body,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        requirement_extension_documents,
+        ft.Container(
+            bgcolor="#EFF8FF",
+            border=ft.border.all(
+                1,
+                "#B2DDFF",
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Datos de la ampliación",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color="#175CD3",
+                    ),
+                    ft.Text(
+                        "Completa el alcance de la solicitud "
+                        "y, cuando proceda, el nuevo plazo pedido.",
+                        size=11,
+                        color="#1849A9",
+                    ),
+                    requirement_extension_reason,
+                    ft.Row(
+                        controls=[
+                            requirement_extension_days,
+                            requirement_extension_new_deadline,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                spacing=8,
+            ),
+        ),
+        requirement_extension_preview_message,
+    ]
+
+    for control in (
+        requirement_extension_preview_controls[1:-1]
+    ):
+        control.visible = False
+
+
+    denial_resolution_preview_title = ft.Text(
+        "Datos detectados en la resolución denegatoria",
+        size=15,
+        weight=ft.FontWeight.BOLD,
+        color="#B42318",
+        visible=False,
+    )
+
+    denial_resolution_date = text_input(
+        "Fecha de resolución",
+        width=230,
+    )
+
+    denial_resolution_csv = text_input(
+        "CSV",
+        width=620,
+    )
+
+    denial_resolution_expediente = text_input(
+        "N.º expediente Extranjería",
+        width=350,
+    )
+
+    denial_resolution_nie = text_input(
+        "NIE detectado",
+        width=230,
+    )
+
+    denial_resolution_dir3 = text_input(
+        "DIR3",
+        width=220,
+    )
+
+    denial_resolution_body = text_input(
+        "Órgano",
+        width=620,
+    )
+
+    denial_resolution_reason = multiline_input(
+        "Motivo de la denegación",
+        width=720,
+        height=240,
+    )
+
+    denial_resolution_end_route = ft.Checkbox(
+        label="Pone fin a la vía administrativa",
+        value=False,
+    )
+
+    denial_resolution_reconsideration_months = text_input(
+        "Reposición · meses",
+        width=210,
+    )
+
+    denial_resolution_court_months = text_input(
+        "Contencioso · meses",
+        width=210,
+    )
+
+    denial_resolution_departure_days = text_input(
+        "Salida del país · días",
+        width=210,
+    )
+
+    denial_resolution_preview_message = ft.Column(
+        controls=[],
+        visible=False,
+        spacing=6,
+    )
+
+    denial_resolution_preview_controls = [
+        denial_resolution_preview_title,
+        ft.Row(
+            controls=[
+                denial_resolution_date,
+                denial_resolution_expediente,
+                denial_resolution_nie,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        denial_resolution_csv,
+        ft.Row(
+            controls=[
+                denial_resolution_dir3,
+                denial_resolution_body,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        ft.Container(
+            bgcolor="#FEF3F2",
+            border=ft.border.all(
+                1,
+                "#FDA29B",
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Fundamento de la denegación",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color="#B42318",
+                    ),
+                    ft.Text(
+                        "Revisa el texto extraído y redacta "
+                        "el motivo que debe quedar registrado "
+                        "en el expediente.",
+                        size=11,
+                        color="#7A271A",
+                    ),
+                    denial_resolution_reason,
+                ],
+                spacing=7,
+            ),
+        ),
+        ft.Container(
+            bgcolor="#FFFAEB",
+            border=ft.border.all(
+                1,
+                "#FEDF89",
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Plazos y efectos",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color="#B54708",
+                    ),
+                    denial_resolution_end_route,
+                    ft.Row(
+                        controls=[
+                            denial_resolution_reconsideration_months,
+                            denial_resolution_court_months,
+                            denial_resolution_departure_days,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                spacing=7,
+            ),
+        ),
+        denial_resolution_preview_message,
+    ]
+
+    for control in (
+        denial_resolution_preview_controls[1:-1]
+    ):
+        control.visible = False
+
+
+    favorable_resolution_preview_title = ft.Text(
+        "Datos detectados en la resolución favorable",
+        size=15,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+        visible=False,
+    )
+
+    favorable_resolution_date = text_input(
+        "Fecha de resolución",
+        width=230,
+    )
+
+    favorable_resolution_effective_date = text_input(
+        "Fecha de efectos",
+        width=230,
+    )
+
+    favorable_resolution_expiry_date = text_input(
+        "Fecha de caducidad",
+        width=230,
+    )
+
+    favorable_resolution_csv = text_input(
+        "CSV",
+        width=620,
+    )
+
+    favorable_resolution_expediente = text_input(
+        "N.º expediente Extranjería",
+        width=340,
+    )
+
+    favorable_resolution_nie = text_input(
+        "NIE detectado",
+        width=220,
+    )
+
+    favorable_resolution_holder = text_input(
+        "Titular",
+        width=620,
+    )
+
+    favorable_resolution_nationality = text_input(
+        "Nacionalidad",
+        width=260,
+    )
+
+    favorable_resolution_passport = text_input(
+        "Pasaporte",
+        width=260,
+    )
+
+    favorable_resolution_type = multiline_input(
+        "Tipo de autorización",
+        width=720,
+        height=100,
+    )
+
+    favorable_resolution_dir3 = text_input(
+        "DIR3",
+        width=220,
+    )
+
+    favorable_resolution_body = text_input(
+        "Órgano",
+        width=620,
+    )
+
+    favorable_resolution_work_employee = ft.Checkbox(
+        label="Autoriza trabajo por cuenta ajena",
+        value=False,
+    )
+
+    favorable_resolution_work_self = ft.Checkbox(
+        label="Autoriza trabajo por cuenta propia",
+        value=False,
+    )
+
+    favorable_resolution_ss_condition = ft.Checkbox(
+        label=(
+            "Eficacia condicionada al alta "
+            "en Seguridad Social"
+        ),
+        value=False,
+    )
+
+    favorable_resolution_ss_months = text_input(
+        "Plazo alta SS · meses",
+        width=220,
+    )
+
+    favorable_resolution_requires_tie = ft.Checkbox(
+        label="Debe solicitar TIE",
+        value=False,
+    )
+
+    favorable_resolution_tie_months = text_input(
+        "Plazo TIE · meses",
+        width=220,
+    )
+
+    favorable_resolution_next_steps = multiline_input(
+        "Próximos pasos indicados por el abogado",
+        width=720,
+        height=190,
+    )
+
+    favorable_resolution_preview_message = ft.Column(
+        controls=[],
+        visible=False,
+        spacing=6,
+    )
+
+    favorable_resolution_preview_controls = [
+        favorable_resolution_preview_title,
+        ft.Row(
+            controls=[
+                favorable_resolution_date,
+                favorable_resolution_effective_date,
+                favorable_resolution_expiry_date,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        favorable_resolution_csv,
+        ft.Row(
+            controls=[
+                favorable_resolution_expediente,
+                favorable_resolution_nie,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        ft.Row(
+            controls=[
+                favorable_resolution_dir3,
+                favorable_resolution_body,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        ft.Container(
+            bgcolor="#ECFDF3",
+            border=ft.border.all(
+                1,
+                "#A6F4C5",
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Alcance de la autorización",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color="#027A48",
+                    ),
+                    favorable_resolution_work_employee,
+                    favorable_resolution_work_self,
+                ],
+                spacing=5,
+            ),
+        ),
+        ft.Container(
+            bgcolor="#FFFAEB",
+            border=ft.border.all(
+                1,
+                "#FEDF89",
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    favorable_resolution_ss_condition,
+                    favorable_resolution_ss_months,
+                    favorable_resolution_requires_tie,
+                    favorable_resolution_tie_months,
+                ],
+                spacing=7,
+            ),
+        ),
+        favorable_resolution_next_steps,
+        favorable_resolution_preview_message,
+    ]
+
+    for control in (
+        favorable_resolution_preview_controls[1:-1]
+    ):
+        control.visible = False
+
+
+    document_submission_preview_title = ft.Text(
+        "Datos detectados en la aportación documental",
+        size=15,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+        visible=False,
+    )
+
+    document_submission_registration_date = text_input(
+        "Fecha y hora de registro",
+        width=270,
+    )
+
+    document_submission_date = text_input(
+        "Fecha de presentación",
+        width=270,
+    )
+
+    document_submission_csv = text_input(
+        "CSV GEISER",
+        width=620,
+    )
+
+    document_submission_regage = text_input(
+        "Número REGAGE",
+        width=350,
+    )
+
+    document_submission_expediente = text_input(
+        "N.º expediente Extranjería",
+        width=350,
+    )
+
+    document_submission_nie = text_input(
+        "NIE detectado",
+        width=230,
+    )
+
+    document_submission_dir3 = text_input(
+        "DIR3",
+        width=220,
+    )
+
+    document_submission_organo = text_input(
+        "Órgano",
+        width=620,
+    )
+
+    document_submission_documents = multiline_input(
+        "Documentos aportados",
+        width=720,
+        height=260,
+    )
+
+    document_submission_notes = multiline_input(
+        "Notas sobre la aportación",
+        width=720,
+        height=160,
+    )
+
+    document_submission_preview_message = ft.Column(
+        controls=[],
+        visible=False,
+        spacing=6,
+    )
+
+    document_submission_preview_controls = [
+        document_submission_preview_title,
+        ft.Row(
+            controls=[
+                document_submission_registration_date,
+                document_submission_date,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        document_submission_csv,
+        ft.Row(
+            controls=[
+                document_submission_regage,
+                document_submission_expediente,
+                document_submission_nie,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        ft.Row(
+            controls=[
+                document_submission_dir3,
+                document_submission_organo,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Relación documental",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Comprueba los nombres y las "
+                        "descripciones extraídas del registro.",
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                    document_submission_documents,
+                ],
+                spacing=7,
+            ),
+        ),
+        ft.Container(
+            bgcolor="#FFFAEB",
+            border=ft.border.all(
+                1,
+                "#FEDF89",
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Notas del abogado",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color="#B54708",
+                    ),
+                    ft.Text(
+                        "Explica qué se ha aportado, "
+                        "qué punto del requerimiento se "
+                        "contesta o cualquier incidencia.",
+                        size=11,
+                        color="#7A2E0E",
+                    ),
+                    document_submission_notes,
+                ],
+                spacing=7,
+            ),
+        ),
+        document_submission_preview_message,
+    ]
+
+    for control in (
+        document_submission_preview_controls[1:-1]
+    ):
+        control.visible = False
+
+
+    requirement_preview_title = ft.Text(
+        "Datos detectados en el requerimiento",
+        size=15,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+        visible=False,
+    )
+
+    requirement_date = text_input(
+        "Fecha del requerimiento",
+        width=240,
+    )
+
+    requirement_csv = text_input(
+        "CSV",
+        width=560,
+    )
+
+    requirement_expediente = text_input(
+        "N.º expediente Extranjería",
+        width=330,
+    )
+
+    requirement_nie = text_input(
+        "NIE detectado",
+        width=220,
+    )
+
+    requirement_solicitante = text_input(
+        "Solicitante",
+        width=620,
+    )
+
+    requirement_dir3 = text_input(
+        "DIR3",
+        width=220,
+    )
+
+    requirement_organo = text_input(
+        "Órgano",
+        width=620,
+    )
+
+    requirement_deadline = text_input(
+        "Plazo concedido · días",
+        width=240,
+    )
+
+    requirement_original_documents = multiline_input(
+        "Documentación indicada por Extranjería",
+        width=720,
+        height=170,
+    )
+
+    requirement_lawyer_documents = multiline_input(
+        "Documentación que debe aportar el cliente",
+        width=720,
+        height=210,
+    )
+
+    requirement_preview_message = ft.Column(
+        controls=[],
+        visible=False,
+        spacing=6,
+    )
+
+    requirement_preview_controls = [
+        requirement_preview_title,
+        ft.Row(
+            controls=[
+                requirement_date,
+                requirement_deadline,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        requirement_csv,
+        ft.Row(
+            controls=[
+                requirement_expediente,
+                requirement_nie,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        requirement_solicitante,
+        ft.Row(
+            controls=[
+                requirement_dir3,
+                requirement_organo,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        requirement_original_documents,
+        ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Criterio del abogado",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Reescribe aquí la documentación "
+                        "de forma práctica para solicitarla "
+                        "al cliente.",
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                    requirement_lawyer_documents,
+                ],
+                spacing=7,
+            ),
+        ),
+        requirement_preview_message,
+    ]
+
+    for control in requirement_preview_controls[1:-1]:
+        control.visible = False
+
+
+    admission_preview_title = ft.Text(
+        "Datos detectados en la admisión a trámite",
+        size=15,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+        visible=False,
+    )
+
+    admission_fecha = text_input(
+        "Fecha de admisión",
+        width=240,
+    )
+
+    admission_csv = text_input(
+        "CSV",
+        width=520,
+    )
+
+    admission_nie = text_input(
+        "NIE detectado",
+        width=240,
+    )
+
+    admission_expediente = text_input(
+        "N.º expediente Extranjería",
+        width=340,
+    )
+
+    admission_dir3 = text_input(
+        "Código DIR3",
+        width=220,
+    )
+
+    admission_solicitante = text_input(
+        "Solicitante detectado",
+        width=600,
+    )
+
+    admission_tax_required = ft.Checkbox(
+        label="El documento requiere el pago de tasa",
+        value=False,
+    )
+
+    admission_tax_model = text_input(
+        "Modelo",
+        width=150,
+    )
+
+    admission_tax_code = text_input(
+        "Código",
+        width=150,
+    )
+
+    admission_tax_amount = text_input(
+        "Importe",
+        width=180,
+    )
+
+    admission_tax_section = text_input(
+        "Apartado",
+        width=180,
+    )
+
+    admission_tax_concept = multiline_input(
+        "Concepto de la tasa",
+        width=700,
+        height=80,
+    )
+
+    admission_tax_submission_days = text_input(
+        "Plazo de pago · días hábiles",
+        width=260,
+    )
+
+    admission_tax_submission_days = text_input(
+        "Plazo para aportar justificante · días",
+        width=310,
+    )
+
+    admission_preview_message = ft.Column(
+        controls=[],
+        visible=False,
+        spacing=6,
+    )
+
+    admission_preview_controls = [
+        admission_preview_title,
+        ft.Row(
+            controls=[
+                admission_fecha,
+                admission_csv,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        ft.Row(
+            controls=[
+                admission_nie,
+                admission_expediente,
+                admission_dir3,
+            ],
+            spacing=10,
+            wrap=True,
+        ),
+        admission_solicitante,
+        ft.Container(
+            bgcolor="#FFFAEB",
+            border=ft.border.all(1, "#FEDF89"),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Datos de la tasa",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color="#B54708",
+                    ),
+                    admission_tax_required,
+                    ft.Row(
+                        controls=[
+                            admission_tax_model,
+                            admission_tax_code,
+                            admission_tax_amount,
+                            admission_tax_section,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    admission_tax_concept,
+                    ft.Row(
+                        controls=[
+                            admission_tax_submission_days,
+                            admission_tax_submission_days,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                ],
+                spacing=10,
+            ),
+        ),
+        admission_preview_message,
+    ]
+
+    for control in admission_preview_controls[1:-1]:
+        control.visible = False
 
     def refresh_tipo_options_for_familia(
         selected_tipo_id=None,
@@ -484,8 +1731,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         else:
             _clear_autocomplete(subtipo_expediente)
 
-        if selected_value and selected_value != "Sin subtipo":
-            subtipo_expediente_manual.value = ""
 
     def on_familia_expediente_change(selected_value=None):
         selected_family_value = (
@@ -504,7 +1749,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             tipo_value=tipo_expediente.get_value(),
             reset_value=True,
         )
-        subtipo_expediente_manual.value = ""
         page.update()
 
     def on_tipo_expediente_change(selected_value=None):
@@ -570,7 +1814,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     def clear_form():
         state["editing_id"] = None
         numero_expediente.value = ""
-        numero_expediente_mercurio.value = ""
+        id_presentacion.value = ""
+        numero_expediente_extranjeria.value = ""
         _clear_autocomplete(familia_expediente)
         _clear_autocomplete(tipo_expediente)
         _clear_autocomplete(subtipo_expediente)
@@ -578,7 +1823,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         tipo_expediente.set_options([], clear_value=True)
         refresh_subtipo_options_for_tipo(tipo_value="", reset_value=True)
         _clear_autocomplete(subtipo_expediente)
-        subtipo_expediente_manual.value = ""
         estado_documental.value = estado_doc_options[0] if estado_doc_options else None
         estado_administrativo.value = next(
             (x for x in estado_admin_options if "NO PRESENTADO" in str(x or "").upper()),
@@ -601,7 +1845,16 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     def load_form(expediente):
         state["editing_id"] = expediente["id"]
         numero_expediente.value = expediente.get("numero_expediente") or ""
-        numero_expediente_mercurio.value = expediente.get("numero_expediente_mercurio") or ""
+        id_presentacion.value = (
+            expediente.get("numero_presentacion_registro")
+            or expediente.get("numero_expediente_mercurio")
+            or ""
+        )
+
+        numero_expediente_extranjeria.value = (
+            expediente.get("numero_expediente_extranjeria")
+            or ""
+        )
 
         cliente.set_value(
             next(
@@ -643,12 +1896,15 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             None,
         )
 
-        refresh_subtipo_options_for_tipo(expediente.get("subtipo_expediente_id"), tipo_value=tipo_expediente.get_value())
-        if not subtipo_expediente.get_value() or subtipo_expediente.get_value() == "Sin subtipo":
-            subtipo_expediente_manual.value = expediente.get("subtipo_expediente") or ""
-        else:
-            subtipo_expediente_manual.value = ""
-        estado_presentacion.value = expediente.get("estado_presentacion") or "NO PRESENTADO"
+        refresh_subtipo_options_for_tipo(
+            expediente.get("subtipo_expediente_id"),
+            tipo_value=tipo_expediente.get_value(),
+        )
+
+        estado_presentacion.value = (
+            expediente.get("estado_presentacion")
+            or "NO PRESENTADO"
+        )
         responsable.value = expediente.get("responsable") or ""
         fecha_apertura.value = _date_to_display(expediente.get("fecha_apertura"))
         fecha_presentacion.value = _date_to_display(expediente.get("fecha_presentacion"))
@@ -665,12 +1921,44 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         return {
             "cliente_id": _option_id(cliente.get_value()),
             "numero_expediente": numero_expediente.value,
-            "numero_expediente_mercurio": numero_expediente_mercurio.value,
-            "familia_id": _option_id(familia_expediente.get_value()),
+
+            "numero_presentacion_registro": (
+                id_presentacion.value or ""
+            ).strip(),
+
+            # Compatibilidad temporal con código legacy.
+            "numero_expediente_mercurio": (
+                id_presentacion.value or ""
+            ).strip(),
+
+            "numero_expediente_extranjeria": (
+                numero_expediente_extranjeria.value
+                or ""
+            ).strip(),
+
+            "familia_id": _option_id(
+                familia_expediente.get_value()
+            ),
             "tipo_expediente_id": _option_id(tipo_expediente.get_value()),
-            "subtipo_expediente_id": _option_id_from_autocomplete_value(subtipo_expediente.get_value(), subtipo_expediente.options),
-            "subtipo_expediente": subtipo_expediente_manual.value or (
-                subtipo_expediente.get_value().split(" - ", 2)[-1] if subtipo_expediente.get_value() and subtipo_expediente.get_value() != "Sin subtipo" else ""
+            "subtipo_expediente_id":
+                _option_id_from_autocomplete_value(
+                    subtipo_expediente.get_value(),
+                    subtipo_expediente.options,
+                ),
+
+            # El subtipo textual se deriva exclusivamente del catálogo.
+            # Se conserva para compatibilidad con registros legacy.
+            "subtipo_expediente": (
+                subtipo_expediente.get_value().split(
+                    " - ",
+                    2,
+                )[-1]
+                if (
+                    subtipo_expediente.get_value()
+                    and subtipo_expediente.get_value()
+                    != "Sin subtipo"
+                )
+                else ""
             ),
             "estado_documental_id": _option_id(estado_documental.value),
             "estado_administrativo_id": _option_id(estado_administrativo.value),
@@ -1164,12 +2452,19 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         return value or "-"
 
     def _selected_subtipo_label():
-        value = str(subtipo_expediente.get_value() or "").strip()
+        value = str(
+            subtipo_expediente.get_value() or ""
+        ).strip()
+
         if not value or value == "Sin subtipo":
-            manual = str(subtipo_expediente_manual.value or "").strip()
-            return manual or "Sin subtipo"
+            return "Sin subtipo"
+
         parts = value.split(" - ", 2)
-        return parts[-1].strip() if parts else value
+        return (
+            parts[-1].strip()
+            if parts
+            else value
+        )
 
     def _dynamic_value(control):
         """Lee controles normales y AppAutocomplete de forma uniforme."""
@@ -4721,7 +6016,16 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     "Datos principales",
                     "Cliente, tipo, subtipo y estado operativo del asunto.",
                     [
-                        ft.Row([numero_expediente, numero_expediente_mercurio, cliente.control], wrap=True, spacing=10),
+                        ft.Row(
+                            [
+                                numero_expediente,
+                                id_presentacion,
+                                numero_expediente_extranjeria,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        cliente.control,
                         ft.Row(
                             [
                                 familia_expediente.control,
@@ -4732,7 +6036,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             spacing=10,
                         ),
                         ft.Row(
-                            [subtipo_expediente_manual, prioridad],
+                            [prioridad],
                             wrap=True,
                             spacing=10,
                         ),
@@ -4991,21 +6295,2204 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         except Exception as exc:
             return ft.Container(width=920, height=620, content=error_alert(str(exc)))
 
+    def _set_presentation_preview_visible(visible):
+        presentation_preview_title.visible = bool(visible)
+
+        for control in presentation_preview_controls[1:-1]:
+            control.visible = bool(visible)
+
+        presentation_preview_message.visible = bool(
+            visible and presentation_preview_message.controls
+        )
+
+
+    def _clear_presentation_preview():
+        state["admin_document_presentation_extraction"] = None
+
+        for control in [
+            presentation_numero,
+            presentation_fecha,
+            presentation_fecha_registro,
+            presentation_regage,
+            presentation_oficina_nombre,
+            presentation_oficina_codigo,
+            presentation_unidad_nombre,
+            presentation_unidad_codigo,
+            presentation_organismo,
+            presentation_ambito,
+            presentation_csv,
+        ]:
+            control.value = ""
+
+        presentation_preview_message.controls.clear()
+        presentation_preview_message.visible = False
+        _set_presentation_preview_visible(False)
+
+
+    def _populate_presentation_preview(extraction):
+        extraction = extraction or {}
+
+        presentation_numero.value = (
+            extraction.get("numero_presentacion_registro") or ""
+        )
+        presentation_fecha.value = (
+            extraction.get("fecha_hora_presentacion") or ""
+        )
+        presentation_fecha_registro.value = (
+            extraction.get("fecha_hora_registro") or ""
+        )
+        presentation_regage.value = (
+            extraction.get("numero_registro_regage") or ""
+        )
+        presentation_oficina_nombre.value = (
+            extraction.get("oficina_registro_nombre") or ""
+        )
+        presentation_oficina_codigo.value = (
+            extraction.get("oficina_registro_codigo") or ""
+        )
+        presentation_unidad_nombre.value = (
+            extraction.get("unidad_tramitacion_nombre") or ""
+        )
+        presentation_unidad_codigo.value = (
+            extraction.get("unidad_tramitacion_codigo") or ""
+        )
+        presentation_organismo.value = (
+            extraction.get("organismo_tramitacion") or ""
+        )
+        presentation_ambito.value = (
+            extraction.get("registro_ambito_prefijo") or ""
+        )
+        presentation_csv.value = (
+            extraction.get("registro_csv_geiser") or ""
+        )
+
+        presentation_preview_message.controls.clear()
+
+        warnings = extraction.get("warnings") or []
+        confidence = extraction.get("confidence")
+
+        if warnings:
+            presentation_preview_message.controls.append(
+                warning_alert(
+                    "Revisa los datos detectados:\n"
+                    + "\n".join(f"• {item}" for item in warnings)
+                )
+            )
+        else:
+            presentation_preview_message.controls.append(
+                success_alert(
+                    f"Lectura automática completada"
+                    + (
+                        f" · confianza {float(confidence) * 100:.0f}%"
+                        if confidence is not None
+                        else ""
+                    )
+                )
+            )
+
+        presentation_preview_message.visible = True
+        _set_presentation_preview_visible(True)
+
+
+    def _presentation_extraction_from_controls():
+        original = dict(
+            state.get("admin_document_presentation_extraction") or {}
+        )
+
+        original.update(
+            {
+                "numero_presentacion_registro":
+                    (presentation_numero.value or "").strip(),
+                "fecha_hora_presentacion":
+                    (presentation_fecha.value or "").strip(),
+                "fecha_hora_registro":
+                    (presentation_fecha_registro.value or "").strip(),
+                "numero_registro_regage":
+                    (presentation_regage.value or "").strip(),
+                "oficina_registro_nombre":
+                    (presentation_oficina_nombre.value or "").strip(),
+                "oficina_registro_codigo":
+                    (presentation_oficina_codigo.value or "").strip(),
+                "unidad_tramitacion_nombre":
+                    (presentation_unidad_nombre.value or "").strip(),
+                "unidad_tramitacion_codigo":
+                    (presentation_unidad_codigo.value or "").strip(),
+                "organismo_tramitacion":
+                    (presentation_organismo.value or "").strip(),
+                "registro_ambito_prefijo":
+                    (presentation_ambito.value or "").strip(),
+                "registro_csv_geiser":
+                    (presentation_csv.value or "").strip(),
+            }
+        )
+
+        return original
+
+
+    def _validate_presentation_preview(extraction):
+        required = {
+            "numero_presentacion_registro":
+                "Falta el ID presentación",
+            "fecha_hora_presentacion":
+                "Falta la fecha de presentación",
+            "numero_registro_regage":
+                "Falta el número REGAGE",
+            "registro_csv_geiser":
+                "Falta el CSV GEISER",
+        }
+
+        errors = [
+            message
+            for key, message in required.items()
+            if not (extraction.get(key) or "").strip()
+        ]
+
+        if errors:
+            raise ValueError("\n".join(errors))
+
+
+    def _set_tax_submission_preview_visible(visible):
+        tax_submission_preview_title.visible = bool(
+            visible
+        )
+
+        for control in tax_submission_preview_controls[1:-1]:
+            control.visible = bool(visible)
+
+        tax_submission_preview_message.visible = bool(
+            visible
+            and tax_submission_preview_message.controls
+        )
+
+
+    def _clear_tax_submission_preview():
+        state[
+            "admin_document_tax_submission_extraction"
+        ] = None
+
+        for control in [
+            tax_submission_registration_date,
+            tax_submission_date,
+            tax_submission_csv,
+            tax_submission_regage,
+            tax_submission_expediente,
+            tax_submission_nie,
+            tax_submission_dir3,
+            tax_submission_organo,
+            tax_submission_document,
+            tax_submission_summary,
+        ]:
+            control.value = ""
+
+        tax_submission_preview_message.controls.clear()
+        tax_submission_preview_message.visible = False
+
+        _set_tax_submission_preview_visible(False)
+
+
+    def _populate_tax_submission_preview(extraction):
+        extraction = dict(extraction or {})
+
+        tax_submission_registration_date.value = (
+            extraction.get("fecha_registro")
+            or ""
+        )
+        tax_submission_date.value = (
+            extraction.get("fecha_presentacion")
+            or ""
+        )
+        tax_submission_csv.value = (
+            extraction.get("csv_geiser")
+            or ""
+        )
+        tax_submission_regage.value = (
+            extraction.get("numero_registro_regage")
+            or ""
+        )
+        tax_submission_expediente.value = (
+            extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+        tax_submission_nie.value = (
+            extraction.get("nie_detectado")
+            or ""
+        )
+        tax_submission_dir3.value = (
+            extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+        tax_submission_organo.value = (
+            extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or ""
+        )
+        tax_submission_document.value = (
+            extraction.get("documento_aportado")
+            or ""
+        )
+        tax_submission_summary.value = (
+            extraction.get("resumen_asunto")
+            or ""
+        )
+
+        tax_submission_preview_message.controls.clear()
+
+        warnings = list(
+            extraction.get("warnings") or []
+        )
+        confidence = extraction.get("confidence")
+
+        if not (
+            extraction.get("numero_registro_regage")
+            or ""
+        ).strip():
+            warning_text = (
+                "No se detectó el número REGAGE. "
+                "Puedes completarlo manualmente o guardar "
+                "el justificante sin ese dato."
+            )
+
+            if warning_text not in warnings:
+                warnings.append(warning_text)
+
+        if warnings:
+            tax_submission_preview_message.controls.append(
+                warning_alert(
+                    "Revisa los datos de la aportación:\n"
+                    + "\n".join(
+                        f"• {warning}"
+                        for warning in warnings
+                    )
+                )
+            )
+        else:
+            tax_submission_preview_message.controls.append(
+                success_alert(
+                    "Aportación de tasa leída correctamente"
+                    + (
+                        f" · confianza "
+                        f"{float(confidence) * 100:.0f}%"
+                        if confidence is not None
+                        else ""
+                    )
+                )
+            )
+
+        tax_submission_preview_message.visible = True
+        _set_tax_submission_preview_visible(True)
+
+
+    def _tax_submission_extraction_from_controls():
+        original = dict(
+            state.get(
+                "admin_document_tax_submission_extraction"
+            )
+            or {}
+        )
+
+        original.update(
+            {
+                "fecha_registro":
+                    (
+                        tax_submission_registration_date.value
+                        or ""
+                    ).strip(),
+                "fecha_presentacion":
+                    (
+                        tax_submission_date.value
+                        or ""
+                    ).strip(),
+                "csv_geiser":
+                    (
+                        tax_submission_csv.value
+                        or ""
+                    ).strip(),
+                "numero_registro_regage":
+                    (
+                        tax_submission_regage.value
+                        or ""
+                    ).strip().upper(),
+                "numero_expediente_extranjeria":
+                    (
+                        tax_submission_expediente.value
+                        or ""
+                    ).strip(),
+                "nie_detectado":
+                    (
+                        tax_submission_nie.value
+                        or ""
+                    ).strip().upper(),
+                "unidad_tramitacion_codigo":
+                    (
+                        tax_submission_dir3.value
+                        or ""
+                    ).strip().upper(),
+                "unidad_tramitacion_nombre":
+                    (
+                        tax_submission_organo.value
+                        or ""
+                    ).strip(),
+                "documento_aportado":
+                    (
+                        tax_submission_document.value
+                        or ""
+                    ).strip(),
+                "resumen_asunto":
+                    (
+                        tax_submission_summary.value
+                        or ""
+                    ).strip(),
+                "aportacion_tasa_confirmada": True,
+                "estado_tasa": "APORTADA",
+            }
+        )
+
+        return original
+
+
+    def _validate_tax_submission_preview(extraction):
+        required = {
+            "fecha_registro":
+                "Falta la fecha de registro",
+            "csv_geiser":
+                "Falta el CSV GEISER",
+            "numero_expediente_extranjeria":
+                "Falta el número de expediente",
+        }
+
+        errors = [
+            message
+            for key, message in required.items()
+            if not str(
+                extraction.get(key) or ""
+            ).strip()
+        ]
+
+        if errors:
+            raise ValueError(
+                "\n".join(errors)
+            )
+
+
+
+    def _set_requirement_extension_preview_visible(
+        visible,
+    ):
+        requirement_extension_preview_title.visible = bool(
+            visible
+        )
+
+        for control in (
+            requirement_extension_preview_controls[1:-1]
+        ):
+            control.visible = bool(visible)
+
+        requirement_extension_preview_message.visible = bool(
+            visible
+            and requirement_extension_preview_message.controls
+        )
+
+
+    def _clear_requirement_extension_preview():
+        state[
+            "admin_document_requirement_extension_extraction"
+        ] = None
+
+        for control in [
+            requirement_extension_date,
+            requirement_extension_csv,
+            requirement_extension_regage,
+            requirement_extension_expediente,
+            requirement_extension_nie,
+            requirement_extension_dir3,
+            requirement_extension_body,
+            requirement_extension_documents,
+            requirement_extension_reason,
+            requirement_extension_days,
+            requirement_extension_new_deadline,
+        ]:
+            control.value = ""
+
+        requirement_extension_preview_message.controls.clear()
+        requirement_extension_preview_message.visible = False
+
+        _set_requirement_extension_preview_visible(
+            False
+        )
+
+
+    def _populate_requirement_extension_preview(
+        extraction,
+    ):
+        extraction = dict(extraction or {})
+
+        requirement_extension_date.value = (
+            extraction.get("fecha_hora_registro")
+            or extraction.get("fecha_registro")
+            or ""
+        )
+        requirement_extension_csv.value = (
+            extraction.get("csv_geiser")
+            or ""
+        )
+        requirement_extension_regage.value = (
+            extraction.get(
+                "numero_registro_regage"
+            )
+            or ""
+        )
+        requirement_extension_expediente.value = (
+            extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+        requirement_extension_nie.value = (
+            extraction.get("nie_detectado")
+            or ""
+        )
+        requirement_extension_dir3.value = (
+            extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+        requirement_extension_body.value = (
+            extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or ""
+        )
+        requirement_extension_documents.value = (
+            extraction.get(
+                "documentos_adjuntos_texto"
+            )
+            or ""
+        )
+        requirement_extension_reason.value = (
+            extraction.get(
+                "motivo_ampliacion_abogado"
+            )
+            or extraction.get(
+                "observaciones_registro"
+            )
+            or ""
+        )
+
+        days = extraction.get(
+            "plazo_solicitado_dias"
+        )
+        requirement_extension_days.value = (
+            str(days)
+            if days is not None
+            else ""
+        )
+
+        requirement_extension_new_deadline.value = (
+            extraction.get(
+                "nueva_fecha_limite_solicitada"
+            )
+            or ""
+        )
+
+        requirement_extension_preview_message.controls.clear()
+
+        warnings = extraction.get("warnings") or []
+
+        if warnings:
+            requirement_extension_preview_message.controls.append(
+                warning_alert(
+                    "Revisa la solicitud de ampliación:\n"
+                    + "\n".join(
+                        f"• {warning}"
+                        for warning in warnings
+                    )
+                )
+            )
+        else:
+            requirement_extension_preview_message.controls.append(
+                success_alert(
+                    "Justificante de ampliación "
+                    "leído correctamente"
+                )
+            )
+
+        requirement_extension_preview_message.visible = True
+        _set_requirement_extension_preview_visible(
+            True
+        )
+
+
+    def _requirement_extension_extraction_from_controls():
+        original = dict(
+            state.get(
+                "admin_document_requirement_extension_extraction"
+            )
+            or {}
+        )
+
+        days = (
+            requirement_extension_days.value
+            or ""
+        ).strip()
+
+        original.update(
+            {
+                "fecha_hora_registro":
+                    (
+                        requirement_extension_date.value
+                        or ""
+                    ).strip(),
+                "fecha_registro":
+                    (
+                        requirement_extension_date.value
+                        or ""
+                    ).strip()[:10],
+                "csv_geiser":
+                    (
+                        requirement_extension_csv.value
+                        or ""
+                    ).strip(),
+                "numero_registro_regage":
+                    (
+                        requirement_extension_regage.value
+                        or ""
+                    ).strip(),
+                "numero_expediente_extranjeria":
+                    (
+                        requirement_extension_expediente.value
+                        or ""
+                    ).strip(),
+                "nie_detectado":
+                    (
+                        requirement_extension_nie.value
+                        or ""
+                    ).strip().upper(),
+                "unidad_tramitacion_codigo":
+                    (
+                        requirement_extension_dir3.value
+                        or ""
+                    ).strip().upper(),
+                "unidad_tramitacion_nombre":
+                    (
+                        requirement_extension_body.value
+                        or ""
+                    ).strip(),
+                "documentos_adjuntos_texto":
+                    (
+                        requirement_extension_documents.value
+                        or ""
+                    ).strip(),
+                "motivo_ampliacion_abogado":
+                    (
+                        requirement_extension_reason.value
+                        or ""
+                    ).strip(),
+                "plazo_solicitado_dias":
+                    (
+                        int(days)
+                        if days.isdigit()
+                        else None
+                    ),
+                "nueva_fecha_limite_solicitada":
+                    (
+                        requirement_extension_new_deadline.value
+                        or ""
+                    ).strip(),
+                "estado_solicitud_ampliacion":
+                    "PRESENTADA",
+                "solicitud_ampliacion_confirmada":
+                    True,
+            }
+        )
+
+        return original
+
+
+    def _validate_requirement_extension_preview(
+        extraction,
+    ):
+        required = {
+            "fecha_hora_registro":
+                "Falta la fecha de registro",
+            "csv_geiser":
+                "Falta el CSV GEISER",
+            "numero_registro_regage":
+                "Falta el REGAGE",
+            "numero_expediente_extranjeria":
+                "Falta el número de expediente",
+            "motivo_ampliacion_abogado":
+                "Debes indicar el motivo de la ampliación",
+        }
+
+        errors = [
+            message
+            for key, message in required.items()
+            if not str(
+                extraction.get(key) or ""
+            ).strip()
+        ]
+
+        if errors:
+            raise ValueError(
+                "\n".join(errors)
+            )
+
+
+    def _normalize_admin_document_event_code(
+        event_code,
+    ):
+        value = str(event_code or "").strip().upper()
+
+        aliases = {
+            "RESOLUCION_DESFAVORABLE":
+                "RESOLUCION_DENEGATORIA",
+            "RESOLUCION_DENEGACION":
+                "RESOLUCION_DENEGATORIA",
+            "RESOLUCION_DENEGADA":
+                "RESOLUCION_DENEGATORIA",
+            "RESOLUCIÓN_DENEGATORIA":
+                "RESOLUCION_DENEGATORIA",
+            "DENEGACION":
+                "RESOLUCION_DENEGATORIA",
+            "DENEGATORIA":
+                "RESOLUCION_DENEGATORIA",
+        }
+
+        return aliases.get(value, value)
+
+
+    def _set_denial_resolution_preview_visible(
+        visible,
+    ):
+        denial_resolution_preview_title.visible = bool(
+            visible
+        )
+
+        for control in (
+            denial_resolution_preview_controls[1:-1]
+        ):
+            control.visible = bool(visible)
+
+        denial_resolution_preview_message.visible = bool(
+            visible
+            and denial_resolution_preview_message.controls
+        )
+
+
+    def _clear_denial_resolution_preview():
+        state[
+            "admin_document_denial_resolution_extraction"
+        ] = None
+
+        for control in [
+            denial_resolution_date,
+            denial_resolution_csv,
+            denial_resolution_expediente,
+            denial_resolution_nie,
+            denial_resolution_dir3,
+            denial_resolution_body,
+            denial_resolution_reason,
+            denial_resolution_reconsideration_months,
+            denial_resolution_court_months,
+            denial_resolution_departure_days,
+        ]:
+            control.value = ""
+
+        denial_resolution_end_route.value = False
+        denial_resolution_preview_message.controls.clear()
+        denial_resolution_preview_message.visible = False
+
+        _set_denial_resolution_preview_visible(False)
+
+
+    def _populate_denial_resolution_preview(
+        extraction,
+    ):
+        extraction = dict(extraction or {})
+
+        denial_resolution_date.value = (
+            extraction.get("fecha_resolucion")
+            or ""
+        )
+        denial_resolution_csv.value = (
+            extraction.get("csv_resolucion")
+            or ""
+        )
+        denial_resolution_expediente.value = (
+            extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+        denial_resolution_nie.value = (
+            extraction.get("nie_detectado")
+            or ""
+        )
+        denial_resolution_dir3.value = (
+            extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+        denial_resolution_body.value = (
+            extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or ""
+        )
+        denial_resolution_reason.value = (
+            extraction.get(
+                "motivo_denegacion_abogado"
+            )
+            or extraction.get(
+                "motivo_denegacion_detectado"
+            )
+            or ""
+        )
+
+        denial_resolution_end_route.value = bool(
+            extraction.get(
+                "fin_via_administrativa"
+            )
+        )
+
+        for control, key in [
+            (
+                denial_resolution_reconsideration_months,
+                "recurso_reposicion_meses",
+            ),
+            (
+                denial_resolution_court_months,
+                "recurso_contencioso_meses",
+            ),
+            (
+                denial_resolution_departure_days,
+                "plazo_salida_dias",
+            ),
+        ]:
+            value = extraction.get(key)
+
+            control.value = (
+                str(value)
+                if value is not None
+                else ""
+            )
+
+        denial_resolution_preview_message.controls.clear()
+
+        warnings = extraction.get("warnings") or []
+        confidence = extraction.get("confidence")
+
+        if warnings:
+            denial_resolution_preview_message.controls.append(
+                warning_alert(
+                    "Revisa la resolución denegatoria:\n"
+                    + "\n".join(
+                        f"• {warning}"
+                        for warning in warnings
+                    )
+                )
+            )
+        else:
+            denial_resolution_preview_message.controls.append(
+                success_alert(
+                    "Resolución denegatoria leída correctamente"
+                    + (
+                        f" · confianza "
+                        f"{float(confidence) * 100:.0f}%"
+                        if confidence is not None
+                        else ""
+                    )
+                )
+            )
+
+        denial_resolution_preview_message.visible = True
+        _set_denial_resolution_preview_visible(True)
+
+
+    def _denial_resolution_extraction_from_controls():
+        original = dict(
+            state.get(
+                "admin_document_denial_resolution_extraction"
+            )
+            or {}
+        )
+
+        reconsideration_months = (
+            denial_resolution_reconsideration_months.value
+            or ""
+        ).strip()
+
+        court_months = (
+            denial_resolution_court_months.value
+            or ""
+        ).strip()
+
+        departure_days = (
+            denial_resolution_departure_days.value
+            or ""
+        ).strip()
+
+        original.update(
+            {
+                "fecha_resolucion":
+                    (
+                        denial_resolution_date.value
+                        or ""
+                    ).strip(),
+                "csv_resolucion":
+                    (
+                        denial_resolution_csv.value
+                        or ""
+                    ).strip(),
+                "numero_expediente_extranjeria":
+                    (
+                        denial_resolution_expediente.value
+                        or ""
+                    ).strip(),
+                "nie_detectado":
+                    (
+                        denial_resolution_nie.value
+                        or ""
+                    ).strip().upper(),
+                "unidad_tramitacion_codigo":
+                    (
+                        denial_resolution_dir3.value
+                        or ""
+                    ).strip().upper(),
+                "unidad_tramitacion_nombre":
+                    (
+                        denial_resolution_body.value
+                        or ""
+                    ).strip(),
+                "motivo_denegacion_abogado":
+                    (
+                        denial_resolution_reason.value
+                        or ""
+                    ).strip(),
+                "fin_via_administrativa":
+                    bool(
+                        denial_resolution_end_route.value
+                    ),
+                "recurso_reposicion_meses":
+                    (
+                        int(reconsideration_months)
+                        if reconsideration_months.isdigit()
+                        else None
+                    ),
+                "recurso_contencioso_meses":
+                    (
+                        int(court_months)
+                        if court_months.isdigit()
+                        else None
+                    ),
+                "plazo_salida_dias":
+                    (
+                        int(departure_days)
+                        if departure_days.isdigit()
+                        else None
+                    ),
+                "estado_resolucion":
+                    "DENEGATORIA",
+                "resolucion_denegatoria_confirmada":
+                    True,
+            }
+        )
+
+        return original
+
+
+    def _validate_denial_resolution_preview(
+        extraction,
+    ):
+        required = {
+            "fecha_resolucion":
+                "Falta la fecha de resolución",
+            "numero_expediente_extranjeria":
+                "Falta el número de expediente",
+            "nie_detectado":
+                "Falta el NIE",
+            "motivo_denegacion_abogado":
+                "Debes establecer el motivo de la denegación",
+        }
+
+        errors = [
+            message
+            for key, message in required.items()
+            if not str(
+                extraction.get(key) or ""
+            ).strip()
+        ]
+
+        if errors:
+            raise ValueError(
+                "\n".join(errors)
+            )
+
+
+    def _set_favorable_resolution_preview_visible(
+        visible,
+    ):
+        favorable_resolution_preview_title.visible = bool(
+            visible
+        )
+
+        for control in (
+            favorable_resolution_preview_controls[1:-1]
+        ):
+            control.visible = bool(visible)
+
+        favorable_resolution_preview_message.visible = bool(
+            visible
+            and favorable_resolution_preview_message.controls
+        )
+
+
+    def _clear_favorable_resolution_preview():
+        state[
+            "admin_document_favorable_resolution_extraction"
+        ] = None
+
+        for control in [
+            favorable_resolution_date,
+            favorable_resolution_effective_date,
+            favorable_resolution_expiry_date,
+            favorable_resolution_csv,
+            favorable_resolution_expediente,
+            favorable_resolution_nie,
+            favorable_resolution_holder,
+            favorable_resolution_nationality,
+            favorable_resolution_passport,
+            favorable_resolution_type,
+            favorable_resolution_dir3,
+            favorable_resolution_body,
+            favorable_resolution_ss_months,
+            favorable_resolution_tie_months,
+            favorable_resolution_next_steps,
+        ]:
+            control.value = ""
+
+        favorable_resolution_work_employee.value = False
+        favorable_resolution_work_self.value = False
+        favorable_resolution_ss_condition.value = False
+        favorable_resolution_requires_tie.value = False
+
+        favorable_resolution_preview_message.controls.clear()
+        favorable_resolution_preview_message.visible = False
+
+        _set_favorable_resolution_preview_visible(False)
+
+
+    def _populate_favorable_resolution_preview(
+        extraction,
+    ):
+        extraction = dict(extraction or {})
+
+        favorable_resolution_date.value = (
+            extraction.get("fecha_resolucion")
+            or ""
+        )
+        favorable_resolution_effective_date.value = (
+            extraction.get("fecha_efectos")
+            or ""
+        )
+        favorable_resolution_expiry_date.value = (
+            extraction.get("fecha_caducidad")
+            or ""
+        )
+        favorable_resolution_csv.value = (
+            extraction.get("csv_resolucion")
+            or ""
+        )
+        favorable_resolution_expediente.value = (
+            extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+        favorable_resolution_nie.value = (
+            extraction.get("nie_detectado")
+            or ""
+        )
+        favorable_resolution_holder.value = (
+            extraction.get("titular_detectado")
+            or ""
+        )
+        favorable_resolution_nationality.value = (
+            extraction.get("nacionalidad")
+            or ""
+        )
+        favorable_resolution_passport.value = (
+            extraction.get("pasaporte")
+            or ""
+        )
+        favorable_resolution_type.value = (
+            extraction.get("tipo_autorizacion")
+            or ""
+        )
+        favorable_resolution_dir3.value = (
+            extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+        favorable_resolution_body.value = (
+            extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or ""
+        )
+
+        favorable_resolution_work_employee.value = bool(
+            extraction.get("trabajo_cuenta_ajena")
+        )
+        favorable_resolution_work_self.value = bool(
+            extraction.get("trabajo_cuenta_propia")
+        )
+        favorable_resolution_ss_condition.value = bool(
+            extraction.get(
+                "eficacia_condicionada_alta_ss"
+            )
+        )
+        favorable_resolution_requires_tie.value = bool(
+            extraction.get("requiere_tie")
+        )
+
+        ss_months = extraction.get(
+            "plazo_alta_ss_meses"
+        )
+        favorable_resolution_ss_months.value = (
+            str(ss_months)
+            if ss_months is not None
+            else ""
+        )
+
+        tie_months = extraction.get(
+            "plazo_tie_meses"
+        )
+        favorable_resolution_tie_months.value = (
+            str(tie_months)
+            if tie_months is not None
+            else ""
+        )
+
+        favorable_resolution_next_steps.value = (
+            extraction.get(
+                "proximos_pasos_abogado"
+            )
+            or ""
+        )
+
+        favorable_resolution_preview_message.controls.clear()
+
+        warnings = extraction.get("warnings") or []
+        confidence = extraction.get("confidence")
+
+        if warnings:
+            favorable_resolution_preview_message.controls.append(
+                warning_alert(
+                    "Revisa la resolución favorable:\n"
+                    + "\n".join(
+                        f"• {warning}"
+                        for warning in warnings
+                    )
+                )
+            )
+        else:
+            favorable_resolution_preview_message.controls.append(
+                success_alert(
+                    "Resolución favorable leída correctamente"
+                    + (
+                        f" · confianza "
+                        f"{float(confidence) * 100:.0f}%"
+                        if confidence is not None
+                        else ""
+                    )
+                )
+            )
+
+        favorable_resolution_preview_message.visible = True
+        _set_favorable_resolution_preview_visible(True)
+
+
+    def _favorable_resolution_extraction_from_controls():
+        original = dict(
+            state.get(
+                "admin_document_favorable_resolution_extraction"
+            )
+            or {}
+        )
+
+        ss_months = (
+            favorable_resolution_ss_months.value
+            or ""
+        ).strip()
+
+        tie_months = (
+            favorable_resolution_tie_months.value
+            or ""
+        ).strip()
+
+        original.update(
+            {
+                "fecha_resolucion":
+                    (
+                        favorable_resolution_date.value
+                        or ""
+                    ).strip(),
+                "fecha_efectos":
+                    (
+                        favorable_resolution_effective_date.value
+                        or ""
+                    ).strip(),
+                "fecha_caducidad":
+                    (
+                        favorable_resolution_expiry_date.value
+                        or ""
+                    ).strip(),
+                "csv_resolucion":
+                    (
+                        favorable_resolution_csv.value
+                        or ""
+                    ).strip(),
+                "numero_expediente_extranjeria":
+                    (
+                        favorable_resolution_expediente.value
+                        or ""
+                    ).strip(),
+                "nie_detectado":
+                    (
+                        favorable_resolution_nie.value
+                        or ""
+                    ).strip().upper(),
+                "titular_detectado":
+                    (
+                        favorable_resolution_holder.value
+                        or ""
+                    ).strip(),
+                "nacionalidad":
+                    (
+                        favorable_resolution_nationality.value
+                        or ""
+                    ).strip(),
+                "pasaporte":
+                    (
+                        favorable_resolution_passport.value
+                        or ""
+                    ).strip().upper(),
+                "tipo_autorizacion":
+                    (
+                        favorable_resolution_type.value
+                        or ""
+                    ).strip(),
+                "unidad_tramitacion_codigo":
+                    (
+                        favorable_resolution_dir3.value
+                        or ""
+                    ).strip().upper(),
+                "unidad_tramitacion_nombre":
+                    (
+                        favorable_resolution_body.value
+                        or ""
+                    ).strip(),
+                "trabajo_cuenta_ajena":
+                    bool(
+                        favorable_resolution_work_employee.value
+                    ),
+                "trabajo_cuenta_propia":
+                    bool(
+                        favorable_resolution_work_self.value
+                    ),
+                "eficacia_condicionada_alta_ss":
+                    bool(
+                        favorable_resolution_ss_condition.value
+                    ),
+                "plazo_alta_ss_meses":
+                    (
+                        int(ss_months)
+                        if ss_months.isdigit()
+                        else None
+                    ),
+                "requiere_tie":
+                    bool(
+                        favorable_resolution_requires_tie.value
+                    ),
+                "plazo_tie_meses":
+                    (
+                        int(tie_months)
+                        if tie_months.isdigit()
+                        else None
+                    ),
+                "proximos_pasos_abogado":
+                    (
+                        favorable_resolution_next_steps.value
+                        or ""
+                    ).strip(),
+                "estado_resolucion":
+                    "FAVORABLE",
+                "resolucion_favorable_confirmada":
+                    True,
+            }
+        )
+
+        return original
+
+
+    def _validate_favorable_resolution_preview(
+        extraction,
+    ):
+        required = {
+            "fecha_resolucion":
+                "Falta la fecha de resolución",
+            "numero_expediente_extranjeria":
+                "Falta el número de expediente",
+            "nie_detectado":
+                "Falta el NIE",
+        }
+
+        errors = [
+            message
+            for key, message in required.items()
+            if not str(
+                extraction.get(key) or ""
+            ).strip()
+        ]
+
+        if errors:
+            raise ValueError(
+                "\n".join(errors)
+            )
+
+
+    def _set_document_submission_preview_visible(
+        visible,
+    ):
+        document_submission_preview_title.visible = (
+            bool(visible)
+        )
+
+        for control in (
+            document_submission_preview_controls[1:-1]
+        ):
+            control.visible = bool(visible)
+
+        document_submission_preview_message.visible = (
+            bool(
+                visible
+                and document_submission_preview_message.controls
+            )
+        )
+
+
+    def _clear_document_submission_preview():
+        state[
+            "admin_document_submission_extraction"
+        ] = None
+
+        for control in [
+            document_submission_registration_date,
+            document_submission_date,
+            document_submission_csv,
+            document_submission_regage,
+            document_submission_expediente,
+            document_submission_nie,
+            document_submission_dir3,
+            document_submission_organo,
+            document_submission_documents,
+            document_submission_notes,
+        ]:
+            control.value = ""
+
+        document_submission_preview_message.controls.clear()
+        document_submission_preview_message.visible = False
+
+        _set_document_submission_preview_visible(
+            False
+        )
+
+
+    def _populate_document_submission_preview(
+        extraction,
+    ):
+        extraction = dict(extraction or {})
+
+        document_submission_registration_date.value = (
+            extraction.get("fecha_registro")
+            or ""
+        )
+        document_submission_date.value = (
+            extraction.get("fecha_presentacion")
+            or ""
+        )
+        document_submission_csv.value = (
+            extraction.get("csv_geiser")
+            or ""
+        )
+        document_submission_regage.value = (
+            extraction.get(
+                "numero_registro_regage"
+            )
+            or ""
+        )
+        document_submission_expediente.value = (
+            extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+        document_submission_nie.value = (
+            extraction.get("nie_detectado")
+            or ""
+        )
+        document_submission_dir3.value = (
+            extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+        document_submission_organo.value = (
+            extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or ""
+        )
+        document_submission_documents.value = (
+            extraction.get(
+                "documentos_aportados_texto"
+            )
+            or ""
+        )
+        document_submission_notes.value = (
+            extraction.get(
+                "notas_aportacion_abogado"
+            )
+            or ""
+        )
+
+        document_submission_preview_message.controls.clear()
+
+        warnings = (
+            extraction.get("warnings")
+            or []
+        )
+        confidence = extraction.get("confidence")
+        count = extraction.get(
+            "numero_documentos_aportados"
+        )
+
+        if warnings:
+            document_submission_preview_message.controls.append(
+                warning_alert(
+                    "Revisa la aportación documental:\n"
+                    + "\n".join(
+                        f"• {warning}"
+                        for warning in warnings
+                    )
+                )
+            )
+        else:
+            document_submission_preview_message.controls.append(
+                success_alert(
+                    "Aportación leída correctamente"
+                    + (
+                        f" · {count} documentos"
+                        if count is not None
+                        else ""
+                    )
+                    + (
+                        f" · confianza "
+                        f"{float(confidence) * 100:.0f}%"
+                        if confidence is not None
+                        else ""
+                    )
+                )
+            )
+
+        document_submission_preview_message.visible = True
+
+        _set_document_submission_preview_visible(
+            True
+        )
+
+
+    def _document_submission_extraction_from_controls():
+        original = dict(
+            state.get(
+                "admin_document_submission_extraction"
+            )
+            or {}
+        )
+
+        documents_text = (
+            document_submission_documents.value
+            or ""
+        ).strip()
+
+        original.update(
+            {
+                "fecha_registro":
+                    (
+                        document_submission_registration_date.value
+                        or ""
+                    ).strip(),
+                "fecha_presentacion":
+                    (
+                        document_submission_date.value
+                        or ""
+                    ).strip(),
+                "csv_geiser":
+                    (
+                        document_submission_csv.value
+                        or ""
+                    ).strip(),
+                "numero_registro_regage":
+                    (
+                        document_submission_regage.value
+                        or ""
+                    ).strip(),
+                "numero_expediente_extranjeria":
+                    (
+                        document_submission_expediente.value
+                        or ""
+                    ).strip(),
+                "nie_detectado":
+                    (
+                        document_submission_nie.value
+                        or ""
+                    ).strip().upper(),
+                "unidad_tramitacion_codigo":
+                    (
+                        document_submission_dir3.value
+                        or ""
+                    ).strip().upper(),
+                "unidad_tramitacion_nombre":
+                    (
+                        document_submission_organo.value
+                        or ""
+                    ).strip(),
+                "documentos_aportados_texto":
+                    documents_text,
+                "notas_aportacion_abogado":
+                    (
+                        document_submission_notes.value
+                        or ""
+                    ).strip(),
+                "estado_aportacion":
+                    "APORTADA",
+            }
+        )
+
+        return original
+
+
+    def _validate_document_submission_preview(
+        extraction,
+    ):
+        required = {
+            "fecha_registro":
+                "Falta la fecha de registro",
+            "csv_geiser":
+                "Falta el CSV GEISER",
+            "numero_expediente_extranjeria":
+                "Falta el número de expediente",
+            "documentos_aportados_texto":
+                "Debes indicar qué documentos "
+                "se han aportado",
+        }
+
+        errors = [
+            message
+            for key, message in required.items()
+            if not str(
+                extraction.get(key) or ""
+            ).strip()
+        ]
+
+        if errors:
+            raise ValueError(
+                "\n".join(errors)
+            )
+
+
+    def _set_requirement_preview_visible(visible):
+        requirement_preview_title.visible = bool(visible)
+
+        for control in requirement_preview_controls[1:-1]:
+            control.visible = bool(visible)
+
+        requirement_preview_message.visible = bool(
+            visible
+            and requirement_preview_message.controls
+        )
+
+
+    def _clear_requirement_preview():
+        state[
+            "admin_document_requirement_extraction"
+        ] = None
+
+        for control in [
+            requirement_date,
+            requirement_csv,
+            requirement_expediente,
+            requirement_nie,
+            requirement_solicitante,
+            requirement_dir3,
+            requirement_organo,
+            requirement_deadline,
+            requirement_original_documents,
+            requirement_lawyer_documents,
+        ]:
+            control.value = ""
+
+        requirement_preview_message.controls.clear()
+        requirement_preview_message.visible = False
+
+        _set_requirement_preview_visible(False)
+
+
+    def _populate_requirement_preview(extraction):
+        extraction = dict(extraction or {})
+
+        requirement_date.value = (
+            extraction.get("fecha_requerimiento")
+            or ""
+        )
+        requirement_csv.value = (
+            extraction.get("csv_requerimiento")
+            or ""
+        )
+        requirement_expediente.value = (
+            extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+        requirement_nie.value = (
+            extraction.get("nie_detectado")
+            or ""
+        )
+        requirement_solicitante.value = (
+            extraction.get("solicitante_detectado")
+            or ""
+        )
+        requirement_dir3.value = (
+            extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+        requirement_organo.value = (
+            extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or ""
+        )
+
+        plazo = extraction.get("plazo_dias")
+
+        requirement_deadline.value = (
+            str(plazo)
+            if plazo is not None
+            else ""
+        )
+
+        original_documents = (
+            extraction.get(
+                "documentacion_requerida_original"
+            )
+            or ""
+        )
+
+        requirement_original_documents.value = (
+            original_documents
+        )
+
+        requirement_lawyer_documents.value = (
+            extraction.get(
+                "documentacion_requerida_abogado"
+            )
+            or original_documents
+        )
+
+        requirement_preview_message.controls.clear()
+
+        warnings = extraction.get("warnings") or []
+        confidence = extraction.get("confidence")
+
+        if warnings:
+            requirement_preview_message.controls.append(
+                warning_alert(
+                    "Revisa los datos del requerimiento:\n"
+                    + "\n".join(
+                        f"• {warning}"
+                        for warning in warnings
+                    )
+                )
+            )
+        else:
+            requirement_preview_message.controls.append(
+                success_alert(
+                    "Requerimiento leído correctamente"
+                    + (
+                        f" · confianza "
+                        f"{float(confidence) * 100:.0f}%"
+                        if confidence is not None
+                        else ""
+                    )
+                )
+            )
+
+        requirement_preview_message.visible = True
+        _set_requirement_preview_visible(True)
+
+
+    def _requirement_extraction_from_controls():
+        original = dict(
+            state.get(
+                "admin_document_requirement_extraction"
+            )
+            or {}
+        )
+
+        plazo_text = (
+            requirement_deadline.value
+            or ""
+        ).strip()
+
+        original.update(
+            {
+                "fecha_requerimiento":
+                    (requirement_date.value or "").strip(),
+                "csv_requerimiento":
+                    (requirement_csv.value or "").strip(),
+                "numero_expediente_extranjeria":
+                    (
+                        requirement_expediente.value
+                        or ""
+                    ).strip(),
+                "nie_detectado":
+                    (
+                        requirement_nie.value
+                        or ""
+                    ).strip().upper(),
+                "solicitante_detectado":
+                    (
+                        requirement_solicitante.value
+                        or ""
+                    ).strip(),
+                "unidad_tramitacion_codigo":
+                    (
+                        requirement_dir3.value
+                        or ""
+                    ).strip().upper(),
+                "unidad_tramitacion_nombre":
+                    (
+                        requirement_organo.value
+                        or ""
+                    ).strip(),
+                "plazo_dias":
+                    (
+                        int(plazo_text)
+                        if plazo_text.isdigit()
+                        else None
+                    ),
+                "documentacion_requerida_original":
+                    (
+                        requirement_original_documents.value
+                        or ""
+                    ).strip(),
+                "documentacion_requerida_abogado":
+                    (
+                        requirement_lawyer_documents.value
+                        or ""
+                    ).strip(),
+                "estado_requerimiento": "PENDIENTE",
+            }
+        )
+
+        return original
+
+
+    def _validate_requirement_preview(extraction):
+        required = {
+            "fecha_requerimiento":
+                "Falta la fecha del requerimiento",
+            "csv_requerimiento":
+                "Falta el CSV",
+            "numero_expediente_extranjeria":
+                "Falta el número de expediente",
+            "documentacion_requerida_abogado":
+                "Debes indicar la documentación "
+                "que debe aportar el cliente",
+        }
+
+        errors = [
+            message
+            for key, message in required.items()
+            if not str(
+                extraction.get(key) or ""
+            ).strip()
+        ]
+
+        if errors:
+            raise ValueError(
+                "\n".join(errors)
+            )
+
+
+    def _set_admission_preview_visible(visible):
+        admission_preview_title.visible = bool(visible)
+
+        for control in admission_preview_controls[1:-1]:
+            control.visible = bool(visible)
+
+        admission_preview_message.visible = bool(
+            visible and admission_preview_message.controls
+        )
+
+
+    def _clear_admission_preview():
+        state["admin_document_admission_extraction"] = None
+
+        for control in [
+            admission_fecha,
+            admission_csv,
+            admission_nie,
+            admission_expediente,
+            admission_dir3,
+            admission_solicitante,
+            admission_tax_model,
+            admission_tax_code,
+            admission_tax_amount,
+            admission_tax_section,
+            admission_tax_concept,
+            admission_tax_submission_days,
+            admission_tax_submission_days,
+        ]:
+            control.value = ""
+
+        admission_tax_required.value = False
+
+        admission_preview_message.controls.clear()
+        admission_preview_message.visible = False
+
+        _set_admission_preview_visible(False)
+
+
+    def _populate_admission_preview(extraction):
+        extraction = dict(extraction or {})
+
+        admission_fecha.value = (
+            extraction.get("fecha_admision_tramite")
+            or ""
+        )
+        admission_csv.value = (
+            extraction.get("csv_admision_tramite")
+            or ""
+        )
+        admission_nie.value = (
+            extraction.get("nie_detectado")
+            or ""
+        )
+        admission_expediente.value = (
+            extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+        admission_dir3.value = (
+            extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+        admission_solicitante.value = (
+            extraction.get("solicitante_detectado")
+            or ""
+        )
+
+        admission_tax_required.value = bool(
+            extraction.get("tasa_requerida")
+        )
+        admission_tax_model.value = (
+            extraction.get("tasa_modelo")
+            or ""
+        )
+        admission_tax_code.value = (
+            extraction.get("tasa_codigo")
+            or ""
+        )
+
+        tax_amount_centimos = extraction.get(
+            "tasa_importe_centimos"
+        )
+
+        admission_tax_amount.value = (
+            (
+                f"{int(tax_amount_centimos) / 100:.2f}"
+                .replace(".", ",")
+                + " €"
+            )
+            if tax_amount_centimos is not None
+            else ""
+        )
+
+        admission_tax_section.value = (
+            extraction.get("tasa_apartado")
+            or ""
+        )
+        admission_tax_concept.value = (
+            extraction.get("tasa_concepto")
+            or ""
+        )
+        admission_tax_submission_days.value = (
+            str(
+                extraction.get(
+                    "plazo_pago_dias_habiles"
+                )
+            )
+            if extraction.get(
+                "plazo_pago_dias_habiles"
+            ) is not None
+            else ""
+        )
+        admission_tax_submission_days.value = (
+            str(
+                extraction.get(
+                    "plazo_aportacion_dias"
+                )
+            )
+            if extraction.get(
+                "plazo_aportacion_dias"
+            ) is not None
+            else ""
+        )
+
+        admission_preview_message.controls.clear()
+
+        warnings = extraction.get("warnings") or []
+        confidence = extraction.get("confidence")
+
+        if warnings:
+            admission_preview_message.controls.append(
+                warning_alert(
+                    "Revisa los datos detectados:\n"
+                    + "\n".join(
+                        f"• {warning}"
+                        for warning in warnings
+                    )
+                )
+            )
+        else:
+            admission_preview_message.controls.append(
+                success_alert(
+                    "Lectura automática completada"
+                    + (
+                        f" · confianza "
+                        f"{float(confidence) * 100:.0f}%"
+                        if confidence is not None
+                        else ""
+                    )
+                )
+            )
+
+        admission_preview_message.visible = True
+        _set_admission_preview_visible(True)
+
+
+    def _admission_extraction_from_controls():
+        original = dict(
+            state.get(
+                "admin_document_admission_extraction"
+            )
+            or {}
+        )
+
+        original.update(
+            {
+                "fecha_admision_tramite":
+                    (admission_fecha.value or "").strip(),
+                "csv_admision_tramite":
+                    (admission_csv.value or "").strip(),
+                "nie_detectado":
+                    (admission_nie.value or "").strip().upper(),
+                "numero_expediente_extranjeria":
+                    (
+                        admission_expediente.value
+                        or ""
+                    ).strip(),
+                "unidad_tramitacion_codigo":
+                    (admission_dir3.value or "").strip().upper(),
+                "solicitante_detectado":
+                    (
+                        admission_solicitante.value
+                        or ""
+                    ).strip(),
+                "tasa_requerida":
+                    bool(admission_tax_required.value),
+                "tasa_modelo":
+                    (
+                        admission_tax_model.value
+                        or ""
+                    ).strip(),
+                "tasa_codigo":
+                    (
+                        admission_tax_code.value
+                        or ""
+                    ).strip(),
+                "tasa_importe_centimos":
+                    (
+                        int(
+                            round(
+                                float(
+                                    (
+                                        admission_tax_amount.value
+                                        or "0"
+                                    )
+                                    .replace("€", "")
+                                    .replace(".", "")
+                                    .replace(",", ".")
+                                    .strip()
+                                )
+                                * 100
+                            )
+                        )
+                        if (
+                            admission_tax_amount.value
+                            or ""
+                        ).strip()
+                        else None
+                    ),
+                "tasa_apartado":
+                    (
+                        admission_tax_section.value
+                        or ""
+                    ).strip(),
+                "tasa_concepto":
+                    (
+                        admission_tax_concept.value
+                        or ""
+                    ).strip(),
+                "plazo_pago_dias_habiles":
+                    (
+                        int(
+                            admission_tax_submission_days.value
+                        )
+                        if (
+                            admission_tax_submission_days.value
+                            or ""
+                        ).strip().isdigit()
+                        else None
+                    ),
+                "plazo_aportacion_dias":
+                    (
+                        int(
+                            admission_tax_submission_days.value
+                        )
+                        if (
+                            admission_tax_submission_days.value
+                            or ""
+                        ).strip().isdigit()
+                        else None
+                    ),
+                "estado_tasa":
+                    (
+                        "PENDIENTE"
+                        if admission_tax_required.value
+                        else ""
+                    ),
+            }
+        )
+
+        return original
+
+
+    def _validate_admission_preview(extraction):
+        required = {
+            "fecha_admision_tramite":
+                "Falta la fecha de admisión",
+            "csv_admision_tramite":
+                "Falta el CSV",
+            "numero_expediente_extranjeria":
+                "Falta el número de expediente de Extranjería",
+        }
+
+        errors = [
+            message
+            for key, message in required.items()
+            if not str(
+                extraction.get(key) or ""
+            ).strip()
+        ]
+
+        if errors:
+            raise ValueError("\n".join(errors))
+
+
     def _admin_event_code_from_option(value):
         value = str(value or "").strip()
-        return value.split(" - ", 1)[0].strip() if " - " in value else value
 
-    async def open_admin_document_picker(e=None):
-        expediente_id = state.get("dialog_expediente_id") or state.get("editing_id")
+        event_code = (
+            value.split(" - ", 1)[0].strip()
+            if " - " in value
+            else value
+        )
+
+        return _normalize_admin_document_event_code(
+            event_code
+        )
+
+    def _admin_document_option_from_code(event_code):
+        event_code = (
+            _normalize_admin_document_event_code(
+                event_code
+            )
+        )
+
+        return next(
+            (
+                option
+                for option in admin_document_event_options
+                if (
+                    _admin_event_code_from_option(
+                        option
+                    )
+                    == event_code
+                )
+            ),
+            "",
+        )
+
+
+    def _admin_document_label_from_code(event_code):
+        option = _admin_document_option_from_code(event_code)
+
+        if " - " in option:
+            return option.split(" - ", 1)[1].strip()
+
+        return event_code or "Documento administrativo"
+
+
+    def _set_admin_document_type_summary(event_code):
+        label = _admin_document_label_from_code(event_code)
+
+        try:
+            admin_document_type_summary.content.controls[1].controls[1].value = (
+                label
+            )
+        except Exception:
+            pass
+
+
+    def close_admin_document_type_dialog(e=None):
+        admin_document_type_dialog.open = False
+        page.update()
+
+
+    def select_admin_document_type(event_code):
+        event_code = (
+            _normalize_admin_document_event_code(
+                event_code
+            )
+        )
+
+        expediente_id = (
+            state.get("dialog_expediente_id")
+            or state.get("editing_id")
+        )
+
         if not expediente_id:
-            show_form_error("Guarda primero el expediente antes de anexar documentos")
+            show_form_error(
+                "Guarda primero el expediente antes de anexar documentos"
+            )
+            return
+
+        option = _admin_document_option_from_code(event_code)
+
+        if not option:
+            show_form_error(
+                "El tipo documental seleccionado no está disponible"
+            )
             return
 
         state["admin_document_expediente_id"] = int(expediente_id)
         state["admin_document_file"] = None
+        event_code = (
+            _normalize_admin_document_event_code(
+                event_code
+            )
+        )
+        state["admin_document_event_code"] = event_code
+
+        admin_document_event_type.value = option
+        admin_document_selected_file.value = ""
+        admin_document_observaciones.value = ""
+
+        _set_admin_document_type_summary(event_code)
+        _clear_presentation_preview()
+        _clear_admission_preview()
+        _clear_tax_submission_preview()
+
+        admin_document_type_dialog.open = False
+        admin_document_dialog.open = True
+        page.update()
+
+
+    def open_admin_document_picker(e=None):
+        expediente_id = (
+            state.get("dialog_expediente_id")
+            or state.get("editing_id")
+        )
+
+        if not expediente_id:
+            show_form_error(
+                "Guarda primero el expediente antes de anexar documentos"
+            )
+            return
+
+        state["admin_document_expediente_id"] = int(expediente_id)
+        state["admin_document_file"] = None
+        state["admin_document_event_code"] = None
+
+        admin_document_type_dialog.open = True
+        page.update()
+
+
+    async def pick_admin_document_file(e=None):
+        event_code = (
+            state.get("admin_document_event_code")
+            or _admin_event_code_from_option(
+                admin_document_event_type.value
+            )
+        )
+
+        event_code = (
+            _normalize_admin_document_event_code(
+                event_code
+            )
+        )
+
+        state["admin_document_event_code"] = (
+            event_code
+        )
+
+        if not event_code:
+            show_form_error(
+                "Selecciona primero el tipo de documento"
+            )
+            return
 
         try:
-            files = await ft.FilePicker().pick_files(allow_multiple=False)
+            files = await ft.FilePicker().pick_files(
+                allow_multiple=False,
+            )
         except Exception as exc:
             show_form_error(str(exc))
             return
@@ -5014,11 +8501,19 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             return
 
         selected = files[0]
-        file_path = getattr(selected, "path", "") or getattr(selected, "name", "")
-        file_name = getattr(selected, "name", "") or Path(str(file_path)).name
+        file_path = (
+            getattr(selected, "path", "")
+            or getattr(selected, "name", "")
+        )
+        file_name = (
+            getattr(selected, "name", "")
+            or Path(str(file_path)).name
+        )
 
         if not file_path:
-            show_form_error("No se pudo obtener la ruta del archivo seleccionado")
+            show_form_error(
+                "No se pudo obtener la ruta del archivo seleccionado"
+            )
             return
 
         state["admin_document_file"] = {
@@ -5027,16 +8522,279 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         }
 
         admin_document_selected_file.value = str(file_path)
-        admin_document_event_type.value = admin_document_event_options[0] if admin_document_event_options else None
-        admin_document_observaciones.value = ""
-        admin_document_dialog.open = True
+        _clear_presentation_preview()
+        _clear_admission_preview()
+        _clear_tax_submission_preview()
+        _clear_requirement_preview()
+        _clear_document_submission_preview()
+        _clear_requirement_extension_preview()
+        _clear_favorable_resolution_preview()
+        _clear_denial_resolution_preview()
+
+        if event_code == "JUSTIFICANTE_PRESENTACION":
+            try:
+                extraction = (
+                    trace_service.extract_admin_presentation_document(
+                        str(file_path)
+                    )
+                )
+
+                state[
+                    "admin_document_presentation_extraction"
+                ] = extraction
+
+                _populate_presentation_preview(extraction)
+
+            except Exception as exc:
+                presentation_preview_message.controls.clear()
+                presentation_preview_message.controls.append(
+                    error_alert(
+                        "No se pudo leer automáticamente "
+                        "el justificante:\n"
+                        + str(exc)
+                    )
+                )
+                presentation_preview_message.visible = True
+                _set_presentation_preview_visible(True)
+
+        elif event_code == "JUSTIFICANTE_APORTACION_TASA":
+            try:
+                extraction = (
+                    trace_service
+                    .extract_admin_tax_submission_document(
+                        str(file_path)
+                    )
+                )
+
+                state[
+                    "admin_document_tax_submission_extraction"
+                ] = extraction
+
+                _populate_tax_submission_preview(
+                    extraction
+                )
+
+            except Exception as exc:
+                tax_submission_preview_message.controls.clear()
+                tax_submission_preview_message.controls.append(
+                    error_alert(
+                        "No se pudo leer automáticamente "
+                        "el justificante de aportación:\n"
+                        + str(exc)
+                    )
+                )
+                tax_submission_preview_message.visible = True
+                _set_tax_submission_preview_visible(True)
+
+        elif event_code == "JUSTIFICANTE_AMPLIACION_PLAZO":
+            _set_requirement_extension_preview_visible(
+                True
+            )
+
+            try:
+                extraction = (
+                    trace_service
+                    .extract_admin_requirement_extension(
+                        str(file_path)
+                    )
+                )
+
+                state[
+                    "admin_document_requirement_extension_extraction"
+                ] = extraction
+
+                _populate_requirement_extension_preview(
+                    extraction
+                )
+
+            except Exception as exc:
+                requirement_extension_preview_message.controls.clear()
+                requirement_extension_preview_message.controls.append(
+                    error_alert(
+                        "No se pudo leer el justificante "
+                        "de ampliación:\n"
+                        + str(exc)
+                    )
+                )
+                requirement_extension_preview_message.visible = True
+                _set_requirement_extension_preview_visible(
+                    True
+                )
+
+        elif event_code == "RESOLUCION_DENEGATORIA":
+            _set_denial_resolution_preview_visible(
+                True
+            )
+
+            try:
+                extraction = (
+                    trace_service
+                    .extract_admin_denial_resolution(
+                        str(file_path)
+                    )
+                )
+
+                state[
+                    "admin_document_denial_resolution_extraction"
+                ] = extraction
+
+                _populate_denial_resolution_preview(
+                    extraction
+                )
+
+            except Exception as exc:
+                denial_resolution_preview_message.controls.clear()
+                denial_resolution_preview_message.controls.append(
+                    error_alert(
+                        "No se pudo leer automáticamente "
+                        "la resolución denegatoria:\n"
+                        + str(exc)
+                    )
+                )
+                denial_resolution_preview_message.visible = True
+                _set_denial_resolution_preview_visible(
+                    True
+                )
+
+        elif event_code == "RESOLUCION_FAVORABLE":
+            try:
+                extraction = (
+                    trace_service
+                    .extract_admin_favorable_resolution(
+                        str(file_path)
+                    )
+                )
+
+                state[
+                    "admin_document_favorable_resolution_extraction"
+                ] = extraction
+
+                _populate_favorable_resolution_preview(
+                    extraction
+                )
+
+            except Exception as exc:
+                favorable_resolution_preview_message.controls.clear()
+                favorable_resolution_preview_message.controls.append(
+                    error_alert(
+                        "No se pudo leer automáticamente "
+                        "la resolución favorable:\n"
+                        + str(exc)
+                    )
+                )
+                favorable_resolution_preview_message.visible = True
+                _set_favorable_resolution_preview_visible(
+                    True
+                )
+
+        elif event_code == (
+            "JUSTIFICANTE_APORTACION_DOCUMENTACION"
+        ):
+            try:
+                extraction = (
+                    trace_service
+                    .extract_admin_document_submission(
+                        str(file_path)
+                    )
+                )
+
+                state[
+                    "admin_document_submission_extraction"
+                ] = extraction
+
+                _populate_document_submission_preview(
+                    extraction
+                )
+
+            except Exception as exc:
+                document_submission_preview_message.controls.clear()
+                document_submission_preview_message.controls.append(
+                    error_alert(
+                        "No se pudo leer automáticamente "
+                        "el justificante de aportación:\n"
+                        + str(exc)
+                    )
+                )
+                document_submission_preview_message.visible = True
+                _set_document_submission_preview_visible(
+                    True
+                )
+
+        elif event_code == "REQUERIMIENTO":
+            try:
+                extraction = (
+                    trace_service
+                    .extract_admin_requirement_document(
+                        str(file_path)
+                    )
+                )
+
+                state[
+                    "admin_document_requirement_extraction"
+                ] = extraction
+
+                _populate_requirement_preview(
+                    extraction
+                )
+
+            except Exception as exc:
+                requirement_preview_message.controls.clear()
+                requirement_preview_message.controls.append(
+                    error_alert(
+                        "No se pudo leer automáticamente "
+                        "el requerimiento:\n"
+                        + str(exc)
+                    )
+                )
+                requirement_preview_message.visible = True
+                _set_requirement_preview_visible(True)
+
+        elif event_code in {
+            "ADMISION_TRAMITE",
+            "ADMISION_TRAMITE_TASA",
+        }:
+            try:
+                extraction = (
+                    trace_service.extract_admin_admission_document(
+                        str(file_path)
+                    )
+                )
+
+                state[
+                    "admin_document_admission_extraction"
+                ] = extraction
+
+                _populate_admission_preview(extraction)
+
+            except Exception as exc:
+                admission_preview_message.controls.clear()
+                admission_preview_message.controls.append(
+                    error_alert(
+                        "No se pudo leer automáticamente "
+                        "la admisión a trámite:\n"
+                        + str(exc)
+                    )
+                )
+                admission_preview_message.visible = True
+                _set_admission_preview_visible(True)
+
         page.update()
+
 
     def close_admin_document_dialog(e=None):
         admin_document_dialog.open = False
         state["admin_document_file"] = None
+        state["admin_document_event_code"] = None
         admin_document_selected_file.value = ""
         admin_document_observaciones.value = ""
+        _clear_presentation_preview()
+        _clear_admission_preview()
+        _clear_tax_submission_preview()
+        _clear_requirement_preview()
+        _clear_document_submission_preview()
+        _clear_requirement_extension_preview()
+        _clear_favorable_resolution_preview()
+        _clear_denial_resolution_preview()
         page.update()
 
     def save_admin_document_event(e=None):
@@ -5050,14 +8808,128 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             return
 
         try:
+            event_code = _admin_event_code_from_option(
+                admin_document_event_type.value
+            )
+
+            presentation_extraction = None
+            admission_extraction = None
+            tax_submission_extraction = None
+            requirement_extraction = None
+            document_submission_extraction = None
+            requirement_extension_extraction = None
+            favorable_resolution_extraction = None
+            denial_resolution_extraction = None
+
+            if event_code == "JUSTIFICANTE_PRESENTACION":
+                presentation_extraction = (
+                    _presentation_extraction_from_controls()
+                )
+                _validate_presentation_preview(
+                    presentation_extraction
+                )
+
+            elif event_code == "JUSTIFICANTE_APORTACION_TASA":
+                tax_submission_extraction = (
+                    _tax_submission_extraction_from_controls()
+                )
+                _validate_tax_submission_preview(
+                    tax_submission_extraction
+                )
+
+            elif event_code == "JUSTIFICANTE_AMPLIACION_PLAZO":
+                requirement_extension_extraction = (
+                    _requirement_extension_extraction_from_controls()
+                )
+                _validate_requirement_extension_preview(
+                    requirement_extension_extraction
+                )
+
+            elif event_code == "RESOLUCION_DENEGATORIA":
+                denial_resolution_extraction = (
+                    _denial_resolution_extraction_from_controls()
+                )
+                _validate_denial_resolution_preview(
+                    denial_resolution_extraction
+                )
+
+            elif event_code == "RESOLUCION_FAVORABLE":
+                favorable_resolution_extraction = (
+                    _favorable_resolution_extraction_from_controls()
+                )
+                _validate_favorable_resolution_preview(
+                    favorable_resolution_extraction
+                )
+
+            elif event_code == (
+                "JUSTIFICANTE_APORTACION_DOCUMENTACION"
+            ):
+                document_submission_extraction = (
+                    _document_submission_extraction_from_controls()
+                )
+                _validate_document_submission_preview(
+                    document_submission_extraction
+                )
+
+            elif event_code == "REQUERIMIENTO":
+                requirement_extraction = (
+                    _requirement_extraction_from_controls()
+                )
+                _validate_requirement_preview(
+                    requirement_extraction
+                )
+
+            elif event_code in {
+                "ADMISION_TRAMITE",
+                "ADMISION_TRAMITE_TASA",
+            }:
+                admission_extraction = (
+                    _admission_extraction_from_controls()
+                )
+                _validate_admission_preview(
+                    admission_extraction
+                )
+
             result = trace_service.create_admin_document_event({
                 "expediente_id": expediente_id,
-                "archivo_nombre": selected.get("name") or Path(selected.get("path") or "").name,
-                "archivo_ruta": selected.get("path") or selected.get("name"),
-                "event_code": _admin_event_code_from_option(admin_document_event_type.value),
+                "archivo_nombre": (
+                    selected.get("name")
+                    or Path(selected.get("path") or "").name
+                ),
+                "archivo_ruta": (
+                    selected.get("path")
+                    or selected.get("name")
+                ),
+                "event_code": event_code,
                 "observaciones": admin_document_observaciones.value,
                 "usuario": "ERP",
+                "presentation_extraction":
+                    presentation_extraction,
+                "admission_extraction":
+                    admission_extraction,
+                "tax_submission_extraction":
+                    tax_submission_extraction,
+                "requirement_extraction":
+                    requirement_extraction,
+                "document_submission_extraction":
+                    document_submission_extraction,
+                "requirement_extension_extraction":
+                    requirement_extension_extraction,
+                "favorable_resolution_extraction":
+                    favorable_resolution_extraction,
+                "denial_resolution_extraction":
+                    denial_resolution_extraction,
             })
+
+            admission_result = None
+
+            if admission_extraction:
+                admission_result = (
+                    trace_service.persist_admission_data(
+                        expediente_id,
+                        admission_extraction,
+                    )
+                )
 
             # Sincroniza los controles principales del formulario abierto.
             # Sin esto, al guardar el expediente se pisa la transición automática
@@ -5078,16 +8950,144 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             if estado_nuevo == "PRESENTADO":
                 estado_presentacion.value = "PRESENTADO"
 
+            extraction = result.get("presentation_extraction") or {}
+
+            if extraction:
+                id_presentacion.value = (
+                    extraction.get(
+                        "numero_presentacion_registro"
+                    )
+                    or id_presentacion.value
+                )
+                numero_registro.value = (
+                    extraction.get(
+                        "numero_registro_regage"
+                    )
+                    or numero_registro.value
+                )
+                organo_presentacion.value = (
+                    extraction.get(
+                        "unidad_tramitacion_nombre"
+                    )
+                    or organo_presentacion.value
+                )
+
+                presentation_date = (
+                    extraction.get(
+                        "fecha_hora_presentacion"
+                    )
+                    or ""
+                )
+
+                if presentation_date:
+                    try:
+                        yyyy, mm, dd = (
+                            presentation_date[:10].split("-")
+                        )
+                        fecha_presentacion.value = (
+                            f"{dd}/{mm}/{yyyy}"
+                        )
+                    except Exception:
+                        pass
+
+            if admission_result:
+                admission_data = (
+                    admission_result.get("extraction")
+                    or {}
+                )
+
+                detected_expediente = (
+                    admission_data.get(
+                        "numero_expediente_extranjeria"
+                    )
+                    or ""
+                )
+
+                if detected_expediente:
+                    numero_expediente_extranjeria.value = (
+                        detected_expediente
+                    )
+
+                admission_date = (
+                    admission_data.get(
+                        "fecha_admision_tramite"
+                    )
+                    or ""
+                )
+
+                if admission_date:
+                    try:
+                        yyyy, mm, dd = (
+                            admission_date[:10].split("-")
+                        )
+                        fecha_admision_display = (
+                            f"{dd}/{mm}/{yyyy}"
+                        )
+                    except Exception:
+                        fecha_admision_display = (
+                            admission_date
+                        )
+
+                conflicts = (
+                    admission_result.get("conflicts")
+                    or []
+                )
+
+                if conflicts:
+                    conflict_lines = []
+
+                    for conflict in conflicts:
+                        field = conflict.get("field")
+
+                        label = {
+                            "cliente_nie": "NIE del cliente",
+                            "numero_expediente_extranjeria":
+                                "N.º expediente Extranjería",
+                        }.get(field, field)
+
+                        conflict_lines.append(
+                            f"• {label}: actual "
+                            f"{conflict.get('existing') or '-'} "
+                            f"· detectado "
+                            f"{conflict.get('detected') or '-'}"
+                        )
+
+                    set_message(
+                        error_alert(
+                            "Documento guardado, pero existen "
+                            "datos en conflicto:\n"
+                            + "\n".join(conflict_lines)
+                        )
+                    )
+
             admin_document_dialog.open = False
+            _clear_presentation_preview()
+            _clear_admission_preview()
 
             queue_completion = result.get("queue_completion") or {}
-            if queue_completion.get("changed"):
-                set_message(success_alert(
-                    f"Documento anexado: {result.get('event_label') or 'evento administrativo'}\n"
-                    "Cola de presentación marcada como presentada."
-                ))
-            else:
-                set_message(success_alert(f"Documento anexado: {result.get('event_label') or 'evento administrativo'}"))
+
+            has_admission_conflicts = bool(
+                admission_result
+                and admission_result.get("conflicts")
+            )
+
+            if not has_admission_conflicts:
+                if queue_completion.get("changed"):
+                    set_message(
+                        success_alert(
+                            f"Documento anexado: "
+                            f"{result.get('event_label') or 'evento administrativo'}\n"
+                            "Cola de presentación marcada "
+                            "como presentada."
+                        )
+                    )
+                else:
+                    set_message(
+                        success_alert(
+                            f"Documento anexado: "
+                            f"{result.get('event_label') or 'evento administrativo'}"
+                        )
+                    )
 
             state["dialog_section"] = "trazabilidad"
             expediente_dialog.content = build_expediente_dialog_content(expediente_id)
@@ -5096,131 +9096,2681 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         except Exception as exc:
             show_form_error(str(exc))
 
+    def set_traceability_tab(tab_code, expediente_id):
+        state["traceability_tab"] = tab_code
+
+        expediente_dialog.content = (
+            build_expediente_dialog_content(
+                expediente_id
+            )
+        )
+        page.update()
+
+
+    def _traceability_chip(
+        expediente_id,
+        code,
+        label,
+        icon,
+        count=None,
+    ):
+        selected = (
+            state.get("traceability_tab", "ANEXOS")
+            == code
+        )
+
+        chip_controls = [
+            ft.Icon(
+                icon,
+                size=16,
+                color=(
+                    "#FFFFFF"
+                    if selected
+                    else Q_PRIMARY
+                ),
+            ),
+            ft.Text(
+                label,
+                size=12,
+                weight=ft.FontWeight.BOLD,
+                color=(
+                    "#FFFFFF"
+                    if selected
+                    else Q_PRIMARY_DARK
+                ),
+            ),
+        ]
+
+        if count is not None:
+            chip_controls.append(
+                ft.Container(
+                    padding=ft.Padding(
+                        left=6,
+                        right=6,
+                        top=2,
+                        bottom=2,
+                    ),
+                    border_radius=10,
+                    bgcolor=(
+                        "#FFFFFF"
+                        if selected
+                        else "#EAF3FF"
+                    ),
+                    content=ft.Text(
+                        str(count),
+                        size=10,
+                        color=Q_PRIMARY,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                )
+            )
+
+        return ft.Container(
+            padding=ft.Padding(
+                left=12,
+                right=12,
+                top=8,
+                bottom=8,
+            ),
+            border_radius=18,
+            bgcolor=(
+                Q_PRIMARY
+                if selected
+                else "#FFFFFF"
+            ),
+            border=ft.border.all(
+                1,
+                (
+                    Q_PRIMARY
+                    if selected
+                    else Q_BORDER
+                ),
+            ),
+            ink=True,
+            on_click=lambda e, tab=code: (
+                set_traceability_tab(
+                    tab,
+                    expediente_id,
+                )
+            ),
+            content=ft.Row(
+                controls=chip_controls,
+                spacing=6,
+                tight=True,
+            ),
+        )
+
+
+    def close_expedient_note_dialog(e=None):
+        expedient_note_dialog.open = False
+        expedient_note_title.value = ""
+        expedient_note_content.value = ""
+        expedient_note_category.value = (
+            "GENERAL - General"
+        )
+        page.update()
+
+
+    def open_expedient_note_dialog(e=None):
+        expediente_id = (
+            state.get("dialog_expediente_id")
+            or state.get("editing_id")
+        )
+
+        if not expediente_id:
+            show_form_error(
+                "No hay un expediente activo"
+            )
+            return
+
+        state["expedient_note_expediente_id"] = int(
+            expediente_id
+        )
+
+        expedient_note_title.value = ""
+        expedient_note_content.value = ""
+        expedient_note_category.value = (
+            "GENERAL - General"
+        )
+
+        expedient_note_dialog.open = True
+        page.update()
+
+
+    def save_expedient_note(e=None):
+        expediente_id = (
+            state.get("expedient_note_expediente_id")
+            or state.get("dialog_expediente_id")
+            or state.get("editing_id")
+        )
+
+        try:
+            category = _admin_event_code_from_option(
+                expedient_note_category.value
+            )
+
+            trace_service.create_expedient_note(
+                expediente_id=expediente_id,
+                titulo=expedient_note_title.value,
+                contenido=expedient_note_content.value,
+                categoria=category,
+                autor="ERP",
+            )
+
+            expedient_note_dialog.open = False
+            expedient_note_title.value = ""
+            expedient_note_content.value = ""
+
+            state["traceability_tab"] = "NOTAS"
+
+            set_message(
+                success_alert(
+                    "Nota añadida al expediente"
+                )
+            )
+
+            expediente_dialog.content = (
+                build_expediente_dialog_content(
+                    expediente_id
+                )
+            )
+            page.update()
+        except Exception as exc:
+            show_form_error(str(exc))
+
+
     def build_traceability_content(expediente_id):
         if not expediente_id:
             return ft.Container(
                 width=920,
                 height=620,
-                content=empty_state("Guarda el expediente para poder ver su trazabilidad"),
+                content=empty_state(
+                    "Guarda el expediente para poder ver su trazabilidad"
+                ),
             )
 
+        def _trace_value(label, value, selectable=False):
+            return ft.Column(
+                controls=[
+                    ft.Text(
+                        label,
+                        size=10,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        str(value or "-"),
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                        selectable=selectable,
+                    ),
+                ],
+                spacing=1,
+            )
+
+
+        def _trace_status_badge(value):
+            normalized = _norm(value)
+
+            if normalized in {
+                "CONCILIADO",
+                "CONFIRMADA",
+                "PRESENTADO",
+                "RESUELTO FAVORABLE",
+            }:
+                return expedient_status_badge(
+                    value or "Confirmado",
+                    "#027A48",
+                )
+
+            if normalized in {
+                "PENDIENTE",
+                "REQUERIDO",
+                "PENDIENTE REVISION",
+            }:
+                return expedient_status_badge(
+                    value or "Pendiente",
+                    "#B54708",
+                )
+
+            if normalized in {
+                "ERROR",
+                "INADMITIDO",
+                "RESUELTO DENEGADO",
+            }:
+                return expedient_status_badge(
+                    value or "Error",
+                    "#B42318",
+                )
+
+            return expedient_status_badge(
+                value or "Registrado",
+                Q_PRIMARY,
+            )
+
+
+        def _document_icon(event_code):
+            event_code = _norm(event_code)
+
+            if event_code == "JUSTIFICANTE_PRESENTACION":
+                return ft.Icons.UPLOAD_FILE
+
+            if "REQUERIMIENTO" in event_code:
+                return ft.Icons.NOTIFICATION_IMPORTANT_OUTLINED
+
+            if "RESOLUCION" in event_code:
+                return ft.Icons.GAVEL_OUTLINED
+
+            if "TASA" in event_code:
+                return ft.Icons.RECEIPT_LONG_OUTLINED
+
+            if "ADMISION" in event_code:
+                return ft.Icons.FACT_CHECK_OUTLINED
+
+            return ft.Icons.DESCRIPTION_OUTLINED
+
+
+        def _open_trace_document(path, name):
+            import os
+            import subprocess
+            import sys
+
+            raw_path = str(path or "").strip()
+
+            if not raw_path:
+                show_form_error(
+                    "Este documento no tiene una ruta disponible"
+                )
+                return
+
+            document_path = Path(raw_path).expanduser()
+
+            if not document_path.is_absolute():
+                document_path = document_path.resolve()
+
+            if not document_path.exists():
+                show_form_error(
+                    "El archivo ya no existe en la ruta guardada:\n"
+                    + str(document_path)
+                )
+                return
+
+            if not document_path.is_file():
+                show_form_error(
+                    "La ruta guardada no corresponde a un archivo:\n"
+                    + str(document_path)
+                )
+                return
+
+            try:
+                if os.name == "nt":
+                    os.startfile(str(document_path))
+                    return
+
+                if sys.platform == "darwin":
+                    subprocess.Popen(
+                        ["open", str(document_path)]
+                    )
+                    return
+
+                subprocess.Popen(
+                    ["xdg-open", str(document_path)]
+                )
+                return
+
+            except Exception as native_error:
+                try:
+                    open_document_with_system(
+                        str(document_path),
+                        expediente_id=expediente_id,
+                    )
+                except Exception as fallback_error:
+                    show_form_error(
+                        "No se pudo abrir el documento.\n"
+                        f"Apertura nativa: {native_error}\n"
+                        f"Visor del CRM: {fallback_error}"
+                    )
+
+
         try:
-            resumen = trace_service.get_resumen_trazabilidad(expediente_id)
+            resumen = trace_service.get_resumen_trazabilidad(
+                expediente_id
+            )
+            expediente = (
+                trace_service.get_expediente_basic(expediente_id)
+                or {}
+            )
+
             justificantes = resumen.get("justificantes", [])
-            hojas = resumen.get("hojas_encargo", [])
-            consultas = resumen.get("consultas_aplicadas", [])
             eventos = resumen.get("eventos", [])
+            notas = resumen.get("notas", [])
 
-            def rows_or_empty(headers, rows, empty_text, height=220):
-                if not rows:
-                    return empty_state(empty_text)
-                return app_table(headers, rows, height=height)
+            id_presentacion = (
+                expediente.get("numero_presentacion_registro")
+                or expediente.get("numero_expediente_mercurio")
+                or ""
+            )
+            numero_extranjeria = (
+                expediente.get("numero_expediente_extranjeria")
+                or ""
+            )
 
-            justificante_rows = [
-                [
-                    j.get("archivo_nombre") or "-",
-                    j.get("archivo_ruta") or "-",
-                    _date_to_display(j.get("fecha_presentacion")),
-                    j.get("numero_registro") or "-",
-                    j.get("estado_conciliacion") or "-",
+            def _normalize_identity_number(value):
+                return "".join(
+                    character
+                    for character in str(value or "").upper()
+                    if character.isalnum()
+                )
+
+            cliente_nie = (
+                expediente.get("cliente_nie")
+                or ""
+            )
+            fecha_presentacion_value = (
+                expediente.get("fecha_hora_presentacion")
+                or expediente.get("fecha_presentacion")
+                or ""
+            )
+            numero_regage = (
+                expediente.get("numero_registro_regage")
+                or expediente.get("numero_registro")
+                or ""
+            )
+
+            presentation_summary = ft.Container(
+                bgcolor="#EAF3FF",
+                border=ft.border.all(1, "#B9D7FF"),
+                border_radius=16,
+                padding=14,
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.ACCOUNT_TREE_OUTLINED,
+                            color=Q_PRIMARY,
+                            size=24,
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Seguimiento administrativo",
+                                    size=17,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    "Documentos, actuaciones e historial "
+                                    "administrativo del expediente.",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                        primary_button(
+                            "Anexar documento",
+                            open_admin_document_picker,
+                        ),
+                    ],
+                    spacing=10,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+            )
+
+            document_cards = []
+
+            def _document_metadata(document):
+                import json
+
+                raw = (
+                    document.get(
+                        "metadata_documento_json"
+                    )
+                    or "{}"
+                )
+
+                try:
+                    value = json.loads(raw)
+                    return (
+                        value
+                        if isinstance(value, dict)
+                        else {}
+                    )
+                except Exception:
+                    return {}
+
+            for justificante in justificantes:
+                event_code = (
+                    justificante.get("tipo_justificante")
+                    or "OTRO"
+                )
+                label = (
+                    trace_service.ADMIN_DOCUMENT_EVENT_LABELS.get(
+                        event_code
+                    )
+                    or str(event_code).replace("_", " ").title()
+                )
+
+                file_path = (
+                    justificante.get("archivo_ruta")
+                    or ""
+                )
+                file_name = (
+                    justificante.get("archivo_nombre")
+                    or Path(file_path).name
+                    or "Documento administrativo"
+                )
+
+                is_presentation_receipt = (
+                    event_code == "JUSTIFICANTE_PRESENTACION"
+                )
+
+                is_admission_document = event_code in {
+                    "ADMISION_TRAMITE",
+                    "ADMISION_TRAMITE_TASA",
+                }
+
+                is_tax_submission_document = (
+                    event_code == "JUSTIFICANTE_APORTACION_TASA"
+                )
+
+                document_metadata = _document_metadata(
+                    justificante
+                )
+
+                card_regage = (
+                    justificante.get("numero_registro")
+                    or (
+                        expediente.get("numero_registro_regage")
+                        if is_presentation_receipt
+                        else ""
+                    )
+                    or (
+                        expediente.get("numero_registro")
+                        if is_presentation_receipt
+                        else ""
+                    )
+                    or "-"
+                )
+
+                card_csv = (
+                    justificante.get("csv_documento")
+                    or (
+                        expediente.get(
+                            "registro_csv_geiser"
+                        )
+                        if is_presentation_receipt
+                        else ""
+                    )
+                    or (
+                        expediente.get(
+                            "csv_admision_tramite"
+                        )
+                        if is_admission_document
+                        else ""
+                    )
+                    or "-"
+                )
+
+                card_organo = (
+                    justificante.get("organo_documento")
+                    or justificante.get(
+                        "organo_presentacion"
+                    )
+                    or expediente.get(
+                        "unidad_tramitacion_nombre"
+                    )
+                    or expediente.get(
+                        "organismo_tramitacion"
+                    )
+                    or expediente.get(
+                        "organo_presentacion"
+                    )
+                    or "-"
+                )
+
+                card_dir3 = (
+                    justificante.get("dir3_documento")
+                    or expediente.get(
+                        "unidad_tramitacion_codigo"
+                    )
+                    or "-"
+                )
+
+                card_fecha = (
+                    justificante.get("fecha_documento")
+                    or justificante.get("fecha_presentacion")
+                    or (
+                        expediente.get(
+                            "fecha_hora_presentacion"
+                        )
+                        if is_presentation_receipt
+                        else ""
+                    )
+                    or justificante.get("created_at")
+                    or ""
+                )
+
+                body = [
+                    ft.Row(
+                        controls=[
+                            _trace_value(
+                                "Fecha",
+                                (
+                                    _date_to_display(
+                                        str(card_fecha)[:10]
+                                    )
+                                    or "-"
+                                ),
+                            ),
+                            _trace_value(
+                                "CSV",
+                                card_csv,
+                                selectable=True,
+                            ),
+                            _trace_value(
+                                "Órgano",
+                                card_organo,
+                            ),
+                            _trace_value(
+                                "DIR3",
+                                card_dir3,
+                                selectable=True,
+                            ),
+                        ],
+                        spacing=22,
+                        wrap=True,
+                    ),
                 ]
-                for j in justificantes
-            ]
-            hoja_rows = [
-                [
-                    h.get("numero_hoja") or "-",
-                    _date_to_display(h.get("fecha_firma")),
-                    h.get("procedimiento") or "-",
-                    f"{float(h.get('importe_neto') or 0):.2f} €",
-                    h.get("estado_firma") or h.get("estado") or "-",
+
+                if is_presentation_receipt:
+                    body.append(
+                        ft.Row(
+                            controls=[
+                                _trace_value(
+                                    "ID presentación",
+                                    id_presentacion or "-",
+                                    selectable=True,
+                                ),
+                                _trace_value(
+                                    "REGAGE",
+                                    card_regage,
+                                    selectable=True,
+                                ),
+                            ],
+                            spacing=22,
+                            wrap=True,
+                        )
+                    )
+
+                    organismo = (
+                        expediente.get(
+                            "organismo_tramitacion"
+                        )
+                        or ""
+                    )
+
+                    if organismo:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border_radius=8,
+                                padding=8,
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.ACCOUNT_BALANCE_OUTLINED,
+                                            size=16,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(
+                                            organismo,
+                                            size=11,
+                                            color=Q_MUTED,
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=7,
+                                ),
+                            )
+                        )
+
+                if is_admission_document:
+                    document_nie = (
+                        justificante.get("nie_documento")
+                        or document_metadata.get(
+                            "nie_detectado"
+                        )
+                        or ""
+                    )
+
+                    body.append(
+                        ft.Row(
+                            controls=[
+                                _trace_value(
+                                    "NIE",
+                                    document_nie or "-",
+                                    selectable=True,
+                                ),
+                                _trace_value(
+                                    "N.º expediente Extranjería",
+                                    (
+                                        justificante.get(
+                                            "numero_expediente_documento"
+                                        )
+                                        or document_metadata.get(
+                                            "numero_expediente_extranjeria"
+                                        )
+                                        or numero_extranjeria
+                                        or "-"
+                                    ),
+                                    selectable=True,
+                                ),
+                            ],
+                            spacing=22,
+                            wrap=True,
+                        )
+                    )
+
+                    normalized_client_nie = (
+                        _normalize_identity_number(
+                            cliente_nie
+                        )
+                    )
+                    normalized_document_nie = (
+                        _normalize_identity_number(
+                            document_nie
+                        )
+                    )
+
+                    document_expediente_number = (
+                        justificante.get(
+                            "numero_expediente_documento"
+                        )
+                        or document_metadata.get(
+                            "numero_expediente_extranjeria"
+                        )
+                        or ""
+                    )
+
+                    normalized_existing_expediente = (
+                        _normalize_identity_number(
+                            numero_extranjeria
+                        )
+                    )
+                    normalized_document_expediente = (
+                        _normalize_identity_number(
+                            document_expediente_number
+                        )
+                    )
+
+                    discrepancies = []
+
+                    if (
+                        normalized_client_nie
+                        and normalized_document_nie
+                        and normalized_client_nie
+                        != normalized_document_nie
+                    ):
+                        discrepancies.append(
+                            (
+                                "NIE",
+                                cliente_nie,
+                                document_nie,
+                            )
+                        )
+
+                    if (
+                        normalized_existing_expediente
+                        and normalized_document_expediente
+                        and normalized_existing_expediente
+                        != normalized_document_expediente
+                    ):
+                        discrepancies.append(
+                            (
+                                "N.º expediente Extranjería",
+                                numero_extranjeria,
+                                document_expediente_number,
+                            )
+                        )
+
+                    if discrepancies:
+                        discrepancy_controls = [
+                            ft.Text(
+                                "El documento no coincide con "
+                                "los datos de la ficha",
+                                weight=ft.FontWeight.BOLD,
+                                color="#B42318",
+                                size=12,
+                            )
+                        ]
+
+                        for (
+                            discrepancy_label,
+                            existing_value,
+                            detected_value,
+                        ) in discrepancies:
+                            discrepancy_controls.append(
+                                ft.Text(
+                                    (
+                                        f"{discrepancy_label} · "
+                                        f"Ficha: {existing_value or '-'} · "
+                                        f"Documento: {detected_value or '-'}"
+                                    ),
+                                    color="#7A271A",
+                                    size=11,
+                                    selectable=True,
+                                )
+                            )
+
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FEF3F2",
+                                border=ft.border.all(
+                                    1,
+                                    "#FDA29B",
+                                ),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.ERROR_OUTLINE,
+                                            color="#B42318",
+                                            size=21,
+                                        ),
+                                        ft.Column(
+                                            controls=discrepancy_controls,
+                                            spacing=3,
+                                            expand=True,
+                                        ),
+                                    ],
+                                    spacing=9,
+                                    vertical_alignment=(
+                                        ft.CrossAxisAlignment.CENTER
+                                    ),
+                                ),
+                            )
+                        )
+
+                    if (
+                        event_code == "ADMISION_TRAMITE_TASA"
+                        or document_metadata.get(
+                            "tasa_requerida"
+                        )
+                    ):
+                        tasa_centimos = document_metadata.get(
+                            "tasa_importe_centimos"
+                        )
+
+                        tasa_importe = (
+                            (
+                                f"{int(tasa_centimos) / 100:.2f}"
+                                .replace(".", ",")
+                                + " €"
+                            )
+                            if tasa_centimos is not None
+                            else "-"
+                        )
+
+                        tax_details = [
+                            part
+                            for part in [
+                                (
+                                    "Modelo "
+                                    + str(
+                                        document_metadata.get(
+                                            "tasa_modelo"
+                                        )
+                                        or "790"
+                                    )
+                                ),
+                                (
+                                    "Código "
+                                    + str(
+                                        document_metadata.get(
+                                            "tasa_codigo"
+                                        )
+                                        or "-"
+                                    )
+                                ),
+                                tasa_importe,
+                            ]
+                            if part
+                        ]
+
+                        tax_body = [
+                            ft.Text(
+                                "Tasa pendiente",
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color="#B54708",
+                            ),
+                            ft.Text(
+                                " · ".join(tax_details),
+                                size=12,
+                                color="#7A2E0E",
+                                selectable=True,
+                            ),
+                        ]
+
+                        tax_concept = (
+                            document_metadata.get(
+                                "tasa_concepto"
+                            )
+                            or ""
+                        )
+
+                        if tax_concept:
+                            tax_body.append(
+                                ft.Text(
+                                    tax_concept,
+                                    size=11,
+                                    color="#7A2E0E",
+                                    selectable=True,
+                                )
+                            )
+
+                        deadlines = []
+
+                        if document_metadata.get(
+                            "plazo_pago_dias_habiles"
+                        ):
+                            deadlines.append(
+                                "Pago: "
+                                + str(
+                                    document_metadata.get(
+                                        "plazo_pago_dias_habiles"
+                                    )
+                                )
+                                + " días hábiles"
+                            )
+
+                        if document_metadata.get(
+                            "plazo_aportacion_dias"
+                        ):
+                            deadlines.append(
+                                "Aportación: "
+                                + str(
+                                    document_metadata.get(
+                                        "plazo_aportacion_dias"
+                                    )
+                                )
+                                + " días desde el pago"
+                            )
+
+                        if deadlines:
+                            tax_body.append(
+                                ft.Text(
+                                    " · ".join(deadlines),
+                                    size=11,
+                                    color="#7A2E0E",
+                                )
+                            )
+
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FFFAEB",
+                                border=ft.border.all(
+                                    1,
+                                    "#FEDF89",
+                                ),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.RECEIPT_LONG_OUTLINED,
+                                            color="#B54708",
+                                            size=21,
+                                        ),
+                                        ft.Column(
+                                            controls=tax_body,
+                                            spacing=3,
+                                            expand=True,
+                                        ),
+                                    ],
+                                    spacing=9,
+                                ),
+                            )
+                        )
+
+                if is_tax_submission_document:
+                    submission_expediente = (
+                        justificante.get(
+                            "numero_expediente_documento"
+                        )
+                        or document_metadata.get(
+                            "numero_expediente_extranjeria"
+                        )
+                        or ""
+                    )
+
+                    submission_nie = (
+                        justificante.get(
+                            "nie_documento"
+                        )
+                        or document_metadata.get(
+                            "nie_detectado"
+                        )
+                        or ""
+                    )
+
+                    body.append(
+                        ft.Row(
+                            controls=[
+                                _trace_value(
+                                    "REGAGE",
+                                    document_metadata.get(
+                                        "numero_registro_regage"
+                                    )
+                                    or justificante.get(
+                                        "numero_registro"
+                                    )
+                                    or "-",
+                                    selectable=True,
+                                ),
+                                _trace_value(
+                                    "N.º expediente Extranjería",
+                                    submission_expediente or "-",
+                                    selectable=True,
+                                ),
+                                _trace_value(
+                                    "NIE",
+                                    submission_nie or "-",
+                                    selectable=True,
+                                ),
+                            ],
+                            spacing=22,
+                            wrap=True,
+                        )
+                    )
+
+                    document_name = (
+                        document_metadata.get(
+                            "documento_aportado"
+                        )
+                        or ""
+                    )
+
+                    if document_name:
+                        body.append(
+                            _trace_value(
+                                "Documento aportado",
+                                document_name,
+                                selectable=True,
+                            )
+                        )
+
+                    discrepancies = []
+
+                    normalized_submission_nie = (
+                        _normalize_identity_number(
+                            submission_nie
+                        )
+                    )
+                    normalized_client_nie = (
+                        _normalize_identity_number(
+                            cliente_nie
+                        )
+                    )
+
+                    if (
+                        normalized_submission_nie
+                        and normalized_client_nie
+                        and normalized_submission_nie
+                        != normalized_client_nie
+                    ):
+                        discrepancies.append(
+                            (
+                                "NIE",
+                                cliente_nie,
+                                submission_nie,
+                            )
+                        )
+
+                    normalized_submission_expediente = (
+                        _normalize_identity_number(
+                            submission_expediente
+                        )
+                    )
+                    normalized_ficha_expediente = (
+                        _normalize_identity_number(
+                            numero_extranjeria
+                        )
+                    )
+
+                    if (
+                        normalized_submission_expediente
+                        and normalized_ficha_expediente
+                        and normalized_submission_expediente
+                        != normalized_ficha_expediente
+                    ):
+                        discrepancies.append(
+                            (
+                                "N.º expediente Extranjería",
+                                numero_extranjeria,
+                                submission_expediente,
+                            )
+                        )
+
+                    if discrepancies:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FEF3F2",
+                                border=ft.border.all(
+                                    1,
+                                    "#FDA29B",
+                                ),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "La aportación no coincide "
+                                            "con los datos de la ficha",
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B42318",
+                                            size=12,
+                                        ),
+                                        *[
+                                            ft.Text(
+                                                (
+                                                    f"{field_label} · "
+                                                    f"Ficha: {existing or '-'} · "
+                                                    f"Documento: {detected or '-'}"
+                                                ),
+                                                color="#7A271A",
+                                                size=11,
+                                                selectable=True,
+                                            )
+                                            for (
+                                                field_label,
+                                                existing,
+                                                detected,
+                                            ) in discrepancies
+                                        ],
+                                    ],
+                                    spacing=3,
+                                ),
+                            )
+                        )
+
+                    body.append(
+                        ft.Container(
+                            bgcolor="#ECFDF3",
+                            border=ft.border.all(
+                                1,
+                                "#A6F4C5",
+                            ),
+                            border_radius=10,
+                            padding=10,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        ft.Icons.CHECK_CIRCLE_OUTLINE,
+                                        color="#027A48",
+                                        size=20,
+                                    ),
+                                    ft.Text(
+                                        "Tasas aportadas",
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#027A48",
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+                        )
+                    )
+
+                if event_code == "REQUERIMIENTO":
+                    lawyer_documents = (
+                        document_metadata.get(
+                            "documentacion_requerida_abogado"
+                        )
+                        or ""
+                    )
+
+                    original_documents = (
+                        document_metadata.get(
+                            "documentacion_requerida_original"
+                        )
+                        or ""
+                    )
+
+                    requirement_expediente_value = (
+                        justificante.get(
+                            "numero_expediente_documento"
+                        )
+                        or document_metadata.get(
+                            "numero_expediente_extranjeria"
+                        )
+                        or ""
+                    )
+
+                    requirement_nie_value = (
+                        justificante.get(
+                            "nie_documento"
+                        )
+                        or document_metadata.get(
+                            "nie_detectado"
+                        )
+                        or ""
+                    )
+
+                    deadline_days = (
+                        document_metadata.get(
+                            "plazo_dias"
+                        )
+                    )
+
+                    if deadline_days:
+                        body.append(
+                            _trace_value(
+                                "Plazo concedido",
+                                f"{deadline_days} días",
+                            )
+                        )
+
+                    if lawyer_documents:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FFFAEB",
+                                border=ft.border.all(
+                                    1,
+                                    "#FEDF89",
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Documentación que debe "
+                                            "aportar el cliente",
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B54708",
+                                        ),
+                                        ft.Text(
+                                            lawyer_documents,
+                                            size=12,
+                                            color="#7A2E0E",
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=6,
+                                ),
+                            )
+                        )
+
+                    elif original_documents:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(
+                                    1,
+                                    Q_BORDER,
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Documentación indicada "
+                                            "por Extranjería",
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            original_documents,
+                                            size=12,
+                                            color=Q_MUTED,
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=6,
+                                ),
+                            )
+                        )
+
+                    requirement_discrepancies = []
+
+                    normalized_requirement_nie = (
+                        _normalize_identity_number(
+                            requirement_nie_value
+                        )
+                    )
+
+                    normalized_client_nie = (
+                        _normalize_identity_number(
+                            cliente_nie
+                        )
+                    )
+
+                    if (
+                        normalized_requirement_nie
+                        and normalized_client_nie
+                        and normalized_requirement_nie
+                        != normalized_client_nie
+                    ):
+                        requirement_discrepancies.append(
+                            (
+                                "NIE",
+                                cliente_nie,
+                                requirement_nie_value,
+                            )
+                        )
+
+                    normalized_requirement_expediente = (
+                        _normalize_identity_number(
+                            requirement_expediente_value
+                        )
+                    )
+
+                    normalized_ficha_expediente = (
+                        _normalize_identity_number(
+                            numero_extranjeria
+                        )
+                    )
+
+                    if (
+                        normalized_requirement_expediente
+                        and normalized_ficha_expediente
+                        and normalized_requirement_expediente
+                        != normalized_ficha_expediente
+                    ):
+                        requirement_discrepancies.append(
+                            (
+                                "N.º expediente Extranjería",
+                                numero_extranjeria,
+                                requirement_expediente_value,
+                            )
+                        )
+
+                    if requirement_discrepancies:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FEF3F2",
+                                border=ft.border.all(
+                                    1,
+                                    "#FDA29B",
+                                ),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "El requerimiento no coincide "
+                                            "con los datos de la ficha",
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B42318",
+                                            size=12,
+                                        ),
+                                        *[
+                                            ft.Text(
+                                                (
+                                                    f"{field_label} · "
+                                                    f"Ficha: {existing or '-'} · "
+                                                    f"Documento: {detected or '-'}"
+                                                ),
+                                                color="#7A271A",
+                                                size=11,
+                                                selectable=True,
+                                            )
+                                            for (
+                                                field_label,
+                                                existing,
+                                                detected,
+                                            ) in requirement_discrepancies
+                                        ],
+                                    ],
+                                    spacing=3,
+                                ),
+                            )
+                        )
+
+                if event_code == (
+                    "JUSTIFICANTE_APORTACION_DOCUMENTACION"
+                ):
+                    submitted_documents_text = (
+                        document_metadata.get(
+                            "documentos_aportados_texto"
+                        )
+                        or ""
+                    )
+
+                    submitted_documents = (
+                        document_metadata.get(
+                            "documentos_aportados"
+                        )
+                        or []
+                    )
+
+                    submission_notes = (
+                        document_metadata.get(
+                            "notas_aportacion_abogado"
+                        )
+                        or ""
+                    )
+
+                    document_count = (
+                        document_metadata.get(
+                            "numero_documentos_aportados"
+                        )
+                    )
+
+                    if document_count is None:
+                        document_count = len(
+                            submitted_documents
+                        )
+
+                    if document_count:
+                        body.append(
+                            _trace_value(
+                                "Documentos aportados",
+                                str(document_count),
+                            )
+                        )
+
+                    if submitted_documents_text:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(
+                                    1,
+                                    Q_BORDER,
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Relación de documentos "
+                                            "aportados",
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            submitted_documents_text,
+                                            size=12,
+                                            color=Q_MUTED,
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=6,
+                                ),
+                            )
+                        )
+
+                    if submission_notes:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FFFAEB",
+                                border=ft.border.all(
+                                    1,
+                                    "#FEDF89",
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Notas sobre la aportación",
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B54708",
+                                        ),
+                                        ft.Text(
+                                            submission_notes,
+                                            size=12,
+                                            color="#7A2E0E",
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=6,
+                                ),
+                            )
+                        )
+
+                    submission_expediente_value = (
+                        justificante.get(
+                            "numero_expediente_documento"
+                        )
+                        or document_metadata.get(
+                            "numero_expediente_extranjeria"
+                        )
+                        or ""
+                    )
+
+                    submission_nie_value = (
+                        justificante.get(
+                            "nie_documento"
+                        )
+                        or document_metadata.get(
+                            "nie_detectado"
+                        )
+                        or ""
+                    )
+
+                    discrepancies = []
+
+                    normalized_submission_nie = (
+                        _normalize_identity_number(
+                            submission_nie_value
+                        )
+                    )
+
+                    normalized_client_nie = (
+                        _normalize_identity_number(
+                            cliente_nie
+                        )
+                    )
+
+                    if (
+                        normalized_submission_nie
+                        and normalized_client_nie
+                        and normalized_submission_nie
+                        != normalized_client_nie
+                    ):
+                        discrepancies.append(
+                            (
+                                "NIE",
+                                cliente_nie,
+                                submission_nie_value,
+                            )
+                        )
+
+                    normalized_submission_expediente = (
+                        _normalize_identity_number(
+                            submission_expediente_value
+                        )
+                    )
+
+                    normalized_ficha_expediente = (
+                        _normalize_identity_number(
+                            numero_extranjeria
+                        )
+                    )
+
+                    if (
+                        normalized_submission_expediente
+                        and normalized_ficha_expediente
+                        and normalized_submission_expediente
+                        != normalized_ficha_expediente
+                    ):
+                        discrepancies.append(
+                            (
+                                "N.º expediente Extranjería",
+                                numero_extranjeria,
+                                submission_expediente_value,
+                            )
+                        )
+
+                    if discrepancies:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FEF3F2",
+                                border=ft.border.all(
+                                    1,
+                                    "#FDA29B",
+                                ),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "La aportación no coincide "
+                                            "con los datos de la ficha",
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B42318",
+                                            size=12,
+                                        ),
+                                        *[
+                                            ft.Text(
+                                                (
+                                                    f"{field_label} · "
+                                                    f"Ficha: {existing or '-'} · "
+                                                    f"Documento: {detected or '-'}"
+                                                ),
+                                                color="#7A271A",
+                                                size=11,
+                                                selectable=True,
+                                            )
+                                            for (
+                                                field_label,
+                                                existing,
+                                                detected,
+                                            ) in discrepancies
+                                        ],
+                                    ],
+                                    spacing=3,
+                                ),
+                            )
+                        )
+
+                if event_code == "JUSTIFICANTE_AMPLIACION_PLAZO":
+                    extension_reason = (
+                        document_metadata.get(
+                            "motivo_ampliacion_abogado"
+                        )
+                        or document_metadata.get(
+                            "observaciones_registro"
+                        )
+                        or ""
+                    )
+
+                    attached_documents = (
+                        document_metadata.get(
+                            "documentos_adjuntos_texto"
+                        )
+                        or ""
+                    )
+
+                    extension_days = (
+                        document_metadata.get(
+                            "plazo_solicitado_dias"
+                        )
+                    )
+
+                    new_deadline = (
+                        document_metadata.get(
+                            "nueva_fecha_limite_solicitada"
+                        )
+                        or ""
+                    )
+
+                    if extension_reason:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#EFF8FF",
+                                border=ft.border.all(
+                                    1,
+                                    "#B2DDFF",
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Ampliación de plazo solicitada",
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#175CD3",
+                                        ),
+                                        ft.Text(
+                                            extension_reason,
+                                            size=12,
+                                            color="#1849A9",
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=6,
+                                ),
+                            )
+                        )
+
+                    extension_details = []
+
+                    if extension_days:
+                        extension_details.append(
+                            f"{extension_days} días solicitados"
+                        )
+
+                    if new_deadline:
+                        extension_details.append(
+                            f"Nueva fecha límite: {new_deadline}"
+                        )
+
+                    if extension_details:
+                        body.append(
+                            ft.Text(
+                                " · ".join(extension_details),
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color="#175CD3",
+                            )
+                        )
+
+                    if attached_documents:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border_radius=8,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Documentación adjunta",
+                                            size=11,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(
+                                            attached_documents,
+                                            size=11,
+                                            color=Q_PRIMARY_DARK,
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=4,
+                                ),
+                            )
+                        )
+
+                if event_code == "RESOLUCION_FAVORABLE":
+                    effective_date = (
+                        document_metadata.get(
+                            "fecha_efectos"
+                        )
+                        or ""
+                    )
+
+                    expiry_date = (
+                        document_metadata.get(
+                            "fecha_caducidad"
+                        )
+                        or ""
+                    )
+
+                    next_steps = (
+                        document_metadata.get(
+                            "proximos_pasos_abogado"
+                        )
+                        or ""
+                    )
+
+                    if effective_date or expiry_date:
+                        body.append(
+                            _trace_value(
+                                "Vigencia",
+                                (
+                                    f"{effective_date or '-'} "
+                                    f"→ {expiry_date or '-'}"
+                                ),
+                                selectable=True,
+                            )
+                        )
+
+                    work_labels = []
+
+                    if document_metadata.get(
+                        "trabajo_cuenta_ajena"
+                    ):
+                        work_labels.append(
+                            "cuenta ajena"
+                        )
+
+                    if document_metadata.get(
+                        "trabajo_cuenta_propia"
+                    ):
+                        work_labels.append(
+                            "cuenta propia"
+                        )
+
+                    if work_labels:
+                        body.append(
+                            _trace_value(
+                                "Autoriza a trabajar",
+                                " y ".join(work_labels),
+                            )
+                        )
+
+                    if document_metadata.get(
+                        "eficacia_condicionada_alta_ss"
+                    ):
+                        months = (
+                            document_metadata.get(
+                                "plazo_alta_ss_meses"
+                            )
+                        )
+
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FFFAEB",
+                                border=ft.border.all(
+                                    1,
+                                    "#FEDF89",
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Eficacia condicionada",
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B54708",
+                                            size=12,
+                                        ),
+                                        ft.Text(
+                                            (
+                                                "Debe producirse el alta "
+                                                "en Seguridad Social"
+                                                + (
+                                                    f" en el plazo de "
+                                                    f"{months} mes"
+                                                    f"{'es' if months != 1 else ''}."
+                                                    if months
+                                                    else "."
+                                                )
+                                            ),
+                                            color="#7A2E0E",
+                                            size=12,
+                                        ),
+                                    ],
+                                    spacing=5,
+                                ),
+                            )
+                        )
+
+                    if document_metadata.get(
+                        "requiere_tie"
+                    ):
+                        tie_months = (
+                            document_metadata.get(
+                                "plazo_tie_meses"
+                            )
+                        )
+
+                        body.append(
+                            ft.Container(
+                                bgcolor="#ECFDF3",
+                                border=ft.border.all(
+                                    1,
+                                    "#A6F4C5",
+                                ),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Text(
+                                    (
+                                        "Debe solicitar la TIE"
+                                        + (
+                                            f" en {tie_months} mes"
+                                            f"{'es' if tie_months != 1 else ''}"
+                                            if tie_months
+                                            else ""
+                                        )
+                                    ),
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#027A48",
+                                    size=12,
+                                ),
+                            )
+                        )
+
+                    if next_steps:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(
+                                    1,
+                                    Q_BORDER,
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Próximos pasos",
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            next_steps,
+                                            size=12,
+                                            color=Q_MUTED,
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=6,
+                                ),
+                            )
+                        )
+
+                    resolution_expediente = (
+                        justificante.get(
+                            "numero_expediente_documento"
+                        )
+                        or document_metadata.get(
+                            "numero_expediente_extranjeria"
+                        )
+                        or ""
+                    )
+
+                    resolution_nie = (
+                        justificante.get(
+                            "nie_documento"
+                        )
+                        or document_metadata.get(
+                            "nie_detectado"
+                        )
+                        or ""
+                    )
+
+                    resolution_discrepancies = []
+
+                    if (
+                        _normalize_identity_number(
+                            resolution_nie
+                        )
+                        and _normalize_identity_number(
+                            cliente_nie
+                        )
+                        and _normalize_identity_number(
+                            resolution_nie
+                        )
+                        != _normalize_identity_number(
+                            cliente_nie
+                        )
+                    ):
+                        resolution_discrepancies.append(
+                            (
+                                "NIE",
+                                cliente_nie,
+                                resolution_nie,
+                            )
+                        )
+
+                    if (
+                        _normalize_identity_number(
+                            resolution_expediente
+                        )
+                        and _normalize_identity_number(
+                            numero_extranjeria
+                        )
+                        and _normalize_identity_number(
+                            resolution_expediente
+                        )
+                        != _normalize_identity_number(
+                            numero_extranjeria
+                        )
+                    ):
+                        resolution_discrepancies.append(
+                            (
+                                "N.º expediente Extranjería",
+                                numero_extranjeria,
+                                resolution_expediente,
+                            )
+                        )
+
+                    if resolution_discrepancies:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FEF3F2",
+                                border=ft.border.all(
+                                    1,
+                                    "#FDA29B",
+                                ),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "La resolución no coincide "
+                                            "con los datos de la ficha",
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B42318",
+                                            size=12,
+                                        ),
+                                        *[
+                                            ft.Text(
+                                                (
+                                                    f"{label} · "
+                                                    f"Ficha: {existing or '-'} · "
+                                                    f"Documento: {detected or '-'}"
+                                                ),
+                                                color="#7A271A",
+                                                size=11,
+                                                selectable=True,
+                                            )
+                                            for (
+                                                label,
+                                                existing,
+                                                detected,
+                                            ) in resolution_discrepancies
+                                        ],
+                                    ],
+                                    spacing=3,
+                                ),
+                            )
+                        )
+
+                if event_code == "RESOLUCION_DENEGATORIA":
+                    denial_reason = (
+                        document_metadata.get(
+                            "motivo_denegacion_abogado"
+                        )
+                        or document_metadata.get(
+                            "motivo_denegacion_detectado"
+                        )
+                        or ""
+                    )
+
+                    if denial_reason:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FEF3F2",
+                                border=ft.border.all(
+                                    1,
+                                    "#FDA29B",
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Motivo de la denegación",
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B42318",
+                                        ),
+                                        ft.Text(
+                                            denial_reason,
+                                            size=12,
+                                            color="#7A271A",
+                                            selectable=True,
+                                        ),
+                                    ],
+                                    spacing=6,
+                                ),
+                            )
+                        )
+
+                    deadline_controls = []
+
+                    reconsideration_months = (
+                        document_metadata.get(
+                            "recurso_reposicion_meses"
+                        )
+                    )
+
+                    court_months = (
+                        document_metadata.get(
+                            "recurso_contencioso_meses"
+                        )
+                    )
+
+                    departure_days = (
+                        document_metadata.get(
+                            "plazo_salida_dias"
+                        )
+                    )
+
+                    if reconsideration_months:
+                        deadline_controls.append(
+                            ft.Text(
+                                (
+                                    "Reposición: "
+                                    f"{reconsideration_months} mes"
+                                    f"{'es' if reconsideration_months != 1 else ''}"
+                                ),
+                                size=12,
+                                color="#7A2E0E",
+                            )
+                        )
+
+                    if court_months:
+                        deadline_controls.append(
+                            ft.Text(
+                                (
+                                    "Contencioso-administrativo: "
+                                    f"{court_months} mes"
+                                    f"{'es' if court_months != 1 else ''}"
+                                ),
+                                size=12,
+                                color="#7A2E0E",
+                            )
+                        )
+
+                    if departure_days:
+                        deadline_controls.append(
+                            ft.Text(
+                                (
+                                    "Salida del país, cuando proceda: "
+                                    f"{departure_days} días"
+                                ),
+                                size=12,
+                                color="#7A2E0E",
+                            )
+                        )
+
+                    if deadline_controls:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FFFAEB",
+                                border=ft.border.all(
+                                    1,
+                                    "#FEDF89",
+                                ),
+                                border_radius=10,
+                                padding=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Plazos relevantes",
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B54708",
+                                        ),
+                                        *deadline_controls,
+                                    ],
+                                    spacing=5,
+                                ),
+                            )
+                        )
+
+                    denial_expediente = (
+                        justificante.get(
+                            "numero_expediente_documento"
+                        )
+                        or document_metadata.get(
+                            "numero_expediente_extranjeria"
+                        )
+                        or ""
+                    )
+
+                    denial_nie = (
+                        justificante.get(
+                            "nie_documento"
+                        )
+                        or document_metadata.get(
+                            "nie_detectado"
+                        )
+                        or ""
+                    )
+
+                    denial_discrepancies = []
+
+                    if (
+                        _normalize_identity_number(
+                            denial_nie
+                        )
+                        and _normalize_identity_number(
+                            cliente_nie
+                        )
+                        and _normalize_identity_number(
+                            denial_nie
+                        )
+                        != _normalize_identity_number(
+                            cliente_nie
+                        )
+                    ):
+                        denial_discrepancies.append(
+                            (
+                                "NIE",
+                                cliente_nie,
+                                denial_nie,
+                            )
+                        )
+
+                    if (
+                        _normalize_identity_number(
+                            denial_expediente
+                        )
+                        and _normalize_identity_number(
+                            numero_extranjeria
+                        )
+                        and _normalize_identity_number(
+                            denial_expediente
+                        )
+                        != _normalize_identity_number(
+                            numero_extranjeria
+                        )
+                    ):
+                        denial_discrepancies.append(
+                            (
+                                "N.º expediente Extranjería",
+                                numero_extranjeria,
+                                denial_expediente,
+                            )
+                        )
+
+                    if denial_discrepancies:
+                        body.append(
+                            ft.Container(
+                                bgcolor="#FEF3F2",
+                                border=ft.border.all(
+                                    1,
+                                    "#FDA29B",
+                                ),
+                                border_radius=10,
+                                padding=10,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "La resolución no coincide "
+                                            "con los datos de la ficha",
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#B42318",
+                                            size=12,
+                                        ),
+                                        *[
+                                            ft.Text(
+                                                (
+                                                    f"{label} · "
+                                                    f"Ficha: {existing or '-'} · "
+                                                    f"Documento: {detected or '-'}"
+                                                ),
+                                                color="#7A271A",
+                                                size=11,
+                                                selectable=True,
+                                            )
+                                            for (
+                                                label,
+                                                existing,
+                                                detected,
+                                            ) in denial_discrepancies
+                                        ],
+                                    ],
+                                    spacing=3,
+                                ),
+                            )
+                        )
+
+                observations = (
+                    justificante.get("observaciones")
+                    or ""
+                )
+
+                if observations:
+                    body.append(
+                        ft.Container(
+                            bgcolor="#F8FAFC",
+                            border_radius=8,
+                            padding=8,
+                            content=ft.Text(
+                                observations,
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                        )
+                    )
+
+                actions = [
+                    ft.PopupMenuButton(
+                        icon=ft.Icons.MORE_VERT,
+                        tooltip="Acciones del documento",
+                        items=[
+                            ft.PopupMenuItem(
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.OPEN_IN_NEW,
+                                            size=17,
+                                            color=Q_PRIMARY,
+                                        ),
+                                        ft.Text(
+                                            "Abrir documento"
+                                        ),
+                                    ],
+                                    spacing=8,
+                                ),
+                                disabled=not bool(file_path),
+                                on_click=(
+                                    lambda e,
+                                    p=file_path,
+                                    n=file_name: (
+                                        _open_trace_document(
+                                            p,
+                                            n,
+                                        )
+                                    )
+                                ),
+                            ),
+                            ft.PopupMenuItem(
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.EDIT_OUTLINED,
+                                            size=17,
+                                            color=Q_PRIMARY,
+                                        ),
+                                        ft.Text("Editar datos"),
+                                    ],
+                                    spacing=8,
+                                ),
+                                on_click=(
+                                    lambda e,
+                                    d=dict(justificante): (
+                                        open_admin_edit_dialog(d)
+                                    )
+                                ),
+                            ),
+                            ft.PopupMenuItem(
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.UPLOAD_FILE,
+                                            size=17,
+                                            color=Q_PRIMARY,
+                                        ),
+                                        ft.Text(
+                                            "Volver a cargar PDF"
+                                        ),
+                                    ],
+                                    spacing=8,
+                                ),
+                                on_click=(
+                                    lambda e,
+                                    d=dict(justificante): (
+                                        start_reload_admin_document(d)
+                                    )
+                                ),
+                            ),
+                            ft.PopupMenuItem(),
+                            ft.PopupMenuItem(
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.DELETE_OUTLINE,
+                                            size=17,
+                                            color="#B42318",
+                                        ),
+                                        ft.Text(
+                                            "Eliminar documento",
+                                            color="#B42318",
+                                        ),
+                                    ],
+                                    spacing=8,
+                                ),
+                                on_click=(
+                                    lambda e,
+                                    d=dict(justificante): (
+                                        confirm_delete_admin_document(
+                                            d
+                                        )
+                                    )
+                                ),
+                            ),
+                        ],
+                    )
                 ]
-                for h in hojas
-            ]
-            consulta_rows = [
-                [
-                    _date_to_display(c.get("fecha_consulta")),
-                    f"{float(c.get('importe_aplicado') or 0):.2f} €",
-                    f"{float(c.get('importe_original') or 0):.2f} €",
-                    c.get("observaciones") or "-",
+
+                document_cards.append(
+                    card_item(
+                        title=label,
+                        subtitle=file_name,
+                        leading=ft.Container(
+                            width=42,
+                            height=42,
+                            border_radius=12,
+                            bgcolor="#EAF3FF",
+                            alignment=ft.Alignment(0, 0),
+                            content=ft.Icon(
+                                _document_icon(event_code),
+                                color=Q_PRIMARY,
+                                size=22,
+                            ),
+                        ),
+                        badges=[],
+                        actions=actions,
+                        body=body,
+                        border_color=Q_BORDER,
+                        padding=12,
+                    )
+                )
+
+            if not document_cards:
+                document_cards = [
+                    empty_state(
+                        "Todavía no hay documentos administrativos "
+                        "anexados"
+                    )
                 ]
-                for c in consultas
-            ]
-            evento_rows = [
-                [
-                    _date_to_display(ev.get("fecha_evento")),
-                    ev.get("tipo_evento") or "-",
-                    ev.get("titulo") or "-",
-                    ev.get("descripcion") or "-",
+
+            event_cards = []
+
+            for event in eventos:
+                event_title = (
+                    event.get("titulo")
+                    or event.get("tipo_evento")
+                    or "Evento administrativo"
+                )
+                event_date = (
+                    event.get("fecha_evento")
+                    or event.get("created_at")
+                    or ""
+                )
+
+                state_change = " → ".join(
+                    value
+                    for value in [
+                        event.get("estado_anterior"),
+                        event.get("estado_nuevo"),
+                    ]
+                    if value
+                )
+
+                event_body = []
+
+                if event.get("descripcion"):
+                    event_body.append(
+                        ft.Text(
+                            event.get("descripcion"),
+                            size=12,
+                            color=Q_MUTED,
+                            selectable=True,
+                        )
+                    )
+
+                footer_controls = [
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.SCHEDULE,
+                                size=14,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                str(event_date).replace(
+                                    "T",
+                                    " ",
+                                ),
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                state_change,
+                                size=11,
+                                color=Q_PRIMARY,
+                                weight=ft.FontWeight.BOLD,
+                            )
+                            if state_change
+                            else ft.Container(),
+                        ],
+                        spacing=6,
+                        wrap=True,
+                    )
                 ]
-                for ev in eventos
-            ]
+
+                event_cards.append(
+                    card_item(
+                        title=event_title,
+                        subtitle=(
+                            event.get("tipo_evento")
+                            or "TRAZABILIDAD"
+                        ),
+                        leading=ft.Container(
+                            width=36,
+                            height=36,
+                            border_radius=18,
+                            bgcolor="#F2F4F7",
+                            alignment=ft.Alignment(0, 0),
+                            content=ft.Icon(
+                                ft.Icons.HISTORY,
+                                color=Q_MUTED,
+                                size=18,
+                            ),
+                        ),
+                        body=event_body,
+                        footer=footer_controls,
+                        border_color="#EAECF0",
+                        padding=10,
+                    )
+                )
+
+            if not event_cards:
+                event_cards = [
+                    empty_state(
+                        "Todavía no hay eventos registrados"
+                    )
+                ]
+
+            note_cards = []
+
+            category_labels = {
+                "GENERAL": "General",
+                "JURIDICA": "Análisis jurídico",
+                "ESTRATEGIA": "Estrategia",
+                "INCIDENCIA": "Incidencia",
+                "LLAMADA": "Llamada",
+                "PROXIMO_PASO": "Próximo paso",
+            }
+
+            for note in notas:
+                category = (
+                    note.get("categoria")
+                    or "GENERAL"
+                )
+
+                note_cards.append(
+                    card_item(
+                        title=(
+                            note.get("titulo")
+                            or "Nota del expediente"
+                        ),
+                        subtitle=(
+                            category_labels.get(
+                                category,
+                                category,
+                            )
+                        ),
+                        leading=ft.Container(
+                            width=40,
+                            height=40,
+                            border_radius=12,
+                            bgcolor="#F4EBFF",
+                            alignment=ft.Alignment(0, 0),
+                            content=ft.Icon(
+                                ft.Icons.EDIT_NOTE,
+                                color="#7F56D9",
+                                size=22,
+                            ),
+                        ),
+                        badges=[
+                            expedient_status_badge(
+                                category_labels.get(
+                                    category,
+                                    category,
+                                ),
+                                "#7F56D9",
+                            )
+                        ],
+                        body=[
+                            ft.Container(
+                                bgcolor="#FAFAFA",
+                                border_radius=8,
+                                padding=10,
+                                content=ft.Text(
+                                    note.get("contenido")
+                                    or "-",
+                                    size=12,
+                                    color=Q_PRIMARY_DARK,
+                                    selectable=True,
+                                ),
+                            )
+                        ],
+                        footer=[
+                            ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        ft.Icons.SCHEDULE,
+                                        size=14,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        str(
+                                            note.get("created_at")
+                                            or ""
+                                        ).replace("T", " "),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        note.get("autor") or "ERP",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=6,
+                            )
+                        ],
+                        border_color="#E9D7FE",
+                        padding=12,
+                    )
+                )
+
+            if not note_cards:
+                note_cards = [
+                    empty_state(
+                        "Todavía no hay notas en el expediente"
+                    )
+                ]
+
+            active_tab = state.get(
+                "traceability_tab",
+                "ANEXOS",
+            )
+
+            if active_tab == "HISTORIA":
+                active_content = ft.Column(
+                    controls=[
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Historia del expediente",
+                                    size=17,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    "Cronología de actuaciones y "
+                                    "cambios administrativos.",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                        ),
+                        ft.Column(
+                            controls=event_cards,
+                            spacing=8,
+                        ),
+                    ],
+                    spacing=12,
+                )
+
+            elif active_tab == "NOTAS":
+                active_content = ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Notas del expediente",
+                                            size=17,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            "Análisis, incidencias, "
+                                            "estrategia y próximos pasos.",
+                                            size=11,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                primary_button(
+                                    "Nueva nota",
+                                    open_expedient_note_dialog,
+                                ),
+                            ],
+                            alignment=(
+                                ft.MainAxisAlignment.SPACE_BETWEEN
+                            ),
+                        ),
+                        ft.Column(
+                            controls=note_cards,
+                            spacing=10,
+                        ),
+                    ],
+                    spacing=12,
+                )
+
+            else:
+                active_content = ft.Column(
+                    controls=[
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Anexos administrativos",
+                                    size=17,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    f"{len(justificantes)} "
+                                    "documento(s) vinculado(s).",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                        ),
+                        ft.Column(
+                            controls=document_cards,
+                            spacing=10,
+                        ),
+                    ],
+                    spacing=12,
+                )
 
             return ft.Column(
                 width=920,
                 height=620,
                 scroll=ft.ScrollMode.AUTO,
-                spacing=14,
+                spacing=16,
                 controls=[
-                    ft.Container(
-                        bgcolor="#EAF3FF",
-                        border=ft.border.all(1, "#B9D7FF"),
-                        border_radius=16,
-                        padding=14,
-                        content=ft.Row(
-                            controls=[
-                                ft.Container(
-                                    content=ft.Icon(ft.Icons.ATTACH_FILE, size=24, color=Q_PRIMARY),
-                                    bgcolor="#FFFFFF",
-                                    border_radius=24,
-                                    width=48,
-                                    height=48,
-                                    alignment=ft.alignment.Alignment(0, 0),
-                                ),
-                                ft.Column(
-                                    controls=[
-                                        ft.Text("Trazabilidad administrativa", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                        ft.Text("Anexa documentos desde la carpeta del cliente y deja rastro en el historial del expediente.", size=13, color=Q_MUTED),
-                                    ],
-                                    spacing=2,
-                                    expand=True,
-                                ),
-                                primary_button("Anexar documento", open_admin_document_picker),
-                            ],
-                            spacing=12,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        ),
+                    presentation_summary,
+                    ft.Row(
+                        controls=[
+                            _traceability_chip(
+                                expediente_id,
+                                "ANEXOS",
+                                "Anexos",
+                                ft.Icons.ATTACH_FILE,
+                                len(justificantes),
+                            ),
+                            _traceability_chip(
+                                expediente_id,
+                                "HISTORIA",
+                                "Historia",
+                                ft.Icons.HISTORY,
+                                len(eventos),
+                            ),
+                            _traceability_chip(
+                                expediente_id,
+                                "NOTAS",
+                                "Notas del expediente",
+                                ft.Icons.EDIT_NOTE,
+                                len(notas),
+                            ),
+                        ],
+                        spacing=8,
+                        wrap=True,
                     ),
-                    _section_box(
-                        "Justificantes",
-                        [rows_or_empty(["Archivo", "Ruta", "Fecha presentación", "Registro", "Estado"], justificante_rows, "No hay justificantes cargados", 240)],
+                    ft.Divider(
+                        height=1,
+                        color=Q_BORDER,
                     ),
-                    _section_box(
-                        "Hojas de encargo",
-                        [rows_or_empty(["Nº hoja", "Firma", "Procedimiento", "Importe neto", "Estado"], hoja_rows, "No hay hojas de encargo asociadas", 220)],
-                    ),
-                    _section_box(
-                        "Consultas aplicadas",
-                        [rows_or_empty(["Fecha consulta", "Aplicado", "Importe original", "Observaciones"], consulta_rows, "No hay consultas aplicadas", 200)],
-                    ),
-                    _section_box(
-                        "Historial del expediente",
-                        [rows_or_empty(["Fecha", "Tipo", "Título", "Descripción"], evento_rows, "No hay eventos registrados", 300)],
-                    ),
+                    active_content,
                 ],
             )
-        except Exception as exc:
-            return ft.Container(width=920, height=620, content=error_alert(str(exc)))
 
-    def _format_file_size(size):
-        try:
-            size = int(size or 0)
-        except Exception:
-            size = 0
-        if size >= 1024 * 1024:
-            return f"{size / (1024 * 1024):.1f} MB"
-        if size >= 1024:
-            return f"{size / 1024:.1f} KB"
-        return f"{size} B"
+        except Exception as exc:
+            return ft.Container(
+                width=920,
+                height=620,
+                content=error_alert(str(exc)),
+            )
+
 
     def _document_browser_current_path(expediente_id, root_path):
         by_exp = state.setdefault("document_browser_path", {})
@@ -6511,27 +13061,784 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         )
 
 
-    admin_document_dialog = form_dialog(
-        "Anexar documento administrativo",
+    def _admin_document_choice_card(
+        event_code,
+        title,
+        subtitle,
+        icon,
+        color="#0057B8",
+        bgcolor="#EAF3FF",
+    ):
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=12,
+            ink=True,
+            on_click=lambda e, code=event_code: (
+                select_admin_document_type(code)
+            ),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=44,
+                        height=44,
+                        border_radius=12,
+                        bgcolor=bgcolor,
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Icon(
+                            icon,
+                            color=color,
+                            size=23,
+                        ),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                title,
+                                size=14,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                subtitle,
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                    ft.Icon(
+                        ft.Icons.CHEVRON_RIGHT,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+
+    expedient_note_dialog = form_dialog(
+        "Nueva nota del expediente",
         ft.Column(
             controls=[
-                admin_document_selected_file,
-                admin_document_event_type,
-                admin_document_observaciones,
                 ft.Text(
-                    "Fase 1: se guarda la referencia del archivo y se registra el evento en trazabilidad. El cambio automático de estado administrativo se conectará en la siguiente fase.",
+                    "La nota quedará separada de los eventos "
+                    "administrativos y podrá incluirse en "
+                    "futuras exportaciones a Knowledge.",
                     size=12,
                     color=Q_MUTED,
                 ),
+                ft.Row(
+                    controls=[
+                        expedient_note_title,
+                        expedient_note_category,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                expedient_note_content,
             ],
-            width=760,
-            height=300,
+            width=800,
+            height=390,
             spacing=12,
             scroll=ft.ScrollMode.AUTO,
         ),
         actions=[
-            secondary_button("Cancelar", close_admin_document_dialog),
-            primary_button("Guardar evento", save_admin_document_event),
+            secondary_button(
+                "Cancelar",
+                close_expedient_note_dialog,
+            ),
+            primary_button(
+                "Guardar nota",
+                save_expedient_note,
+            ),
+        ],
+    )
+
+
+    admin_document_type_dialog = form_dialog(
+        "¿Qué documento quieres anexar?",
+        ft.Column(
+            controls=[
+                ft.Text(
+                    "Selecciona primero el tipo documental. "
+                    "Después podrás elegir el archivo y revisar "
+                    "sus datos antes de guardarlo.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                _admin_document_choice_card(
+                    "JUSTIFICANTE_PRESENTACION",
+                    "Justificante de presentación",
+                    "Lee automáticamente ID presentación, "
+                    "REGAGE, fechas y CSV GEISER.",
+                    ft.Icons.UPLOAD_FILE,
+                ),
+                _admin_document_choice_card(
+                    "ADMISION_TRAMITE",
+                    "Admisión a trámite",
+                    "Anexa la comunicación de admisión.",
+                    ft.Icons.FACT_CHECK_OUTLINED,
+                    "#027A48",
+                    "#ECFDF3",
+                ),
+                _admin_document_choice_card(
+                    "ADMISION_TRAMITE_TASA",
+                    "Admisión a trámite y tasa",
+                    "Registra la admisión que incorpora "
+                    "la liquidación de tasa.",
+                    ft.Icons.RECEIPT_LONG_OUTLINED,
+                    "#B54708",
+                    "#FFFAEB",
+                ),
+                _admin_document_choice_card(
+                    "JUSTIFICANTE_APORTACION_TASA",
+                    "Justificante de aportación de tasa",
+                    "Registra la presentación de una o varias "
+                    "tasas ante Extranjería.",
+                    ft.Icons.PAYMENTS_OUTLINED,
+                    "#027A48",
+                    "#ECFDF3",
+                ),
+                _admin_document_choice_card(
+                    "REQUERIMIENTO",
+                    "Requerimiento",
+                    "Anexa el requerimiento recibido "
+                    "y actualiza el estado administrativo.",
+                    ft.Icons.NOTIFICATION_IMPORTANT_OUTLINED,
+                    "#B54708",
+                    "#FFFAEB",
+                ),
+                _admin_document_choice_card(
+                    "JUSTIFICANTE_APORTACION_DOCUMENTACION",
+                    "Aportación de documentación",
+                    "Registra el justificante de respuesta "
+                    "a un requerimiento.",
+                    ft.Icons.NOTE_ADD_OUTLINED,
+                ),
+                _admin_document_choice_card(
+                    "JUSTIFICANTE_AMPLIACION_PLAZO",
+                    "Ampliación de plazo",
+                    "Anexa el justificante de solicitud "
+                    "de ampliación del plazo de un requerimiento.",
+                    ft.Icons.MORE_TIME_OUTLINED,
+                    "#175CD3",
+                    "#EFF8FF",
+                ),
+                _admin_document_choice_card(
+                    "RESOLUCION_FAVORABLE",
+                    "Resolución favorable",
+                    "Anexa la resolución favorable del expediente.",
+                    ft.Icons.CHECK_CIRCLE_OUTLINE,
+                    "#027A48",
+                    "#ECFDF3",
+                ),
+                _admin_document_choice_card(
+                    "RESOLUCION_DENEGATORIA",
+                    "Resolución denegatoria",
+                    "Anexa la resolución denegatoria "
+                    "o desfavorable.",
+                    ft.Icons.CANCEL_OUTLINED,
+                    "#B42318",
+                    "#FEF3F2",
+                ),
+                _admin_document_choice_card(
+                    "OTRO",
+                    "Otro documento administrativo",
+                    "Anexa cualquier otro documento "
+                    "relevante para la trazabilidad.",
+                    ft.Icons.DESCRIPTION_OUTLINED,
+                    Q_MUTED,
+                    "#F2F4F7",
+                ),
+            ],
+            width=650,
+            height=570,
+            spacing=9,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        actions=[
+            secondary_button(
+                "Cancelar",
+                close_admin_document_type_dialog,
+            ),
+        ],
+    )
+
+
+    admin_edit_fecha = text_input(
+        "Fecha del documento",
+        width=240,
+    )
+    admin_edit_csv = text_input(
+        "CSV",
+        width=560,
+    )
+    admin_edit_organo = text_input(
+        "Órgano",
+        width=560,
+    )
+    admin_edit_dir3 = text_input(
+        "DIR3",
+        width=220,
+    )
+    admin_edit_nie = text_input(
+        "NIE",
+        width=220,
+    )
+    admin_edit_expediente = text_input(
+        "N.º expediente Extranjería",
+        width=320,
+    )
+    admin_edit_regage = text_input(
+        "REGAGE",
+        width=360,
+    )
+    admin_edit_denial_reason = multiline_input(
+        "Motivo de la denegación",
+        width=700,
+        height=240,
+    )
+
+    admin_edit_favorable_next_steps = multiline_input(
+        "Próximos pasos indicados por el abogado",
+        width=700,
+        height=190,
+    )
+
+    admin_edit_submitted_documents = multiline_input(
+        "Documentos aportados",
+        width=700,
+        height=220,
+    )
+
+    admin_edit_submission_notes = multiline_input(
+        "Notas sobre la aportación",
+        width=700,
+        height=160,
+    )
+
+    admin_edit_requirement_documents = multiline_input(
+        "Documentación que debe aportar el cliente",
+        width=700,
+        height=180,
+    )
+
+    admin_edit_observaciones = multiline_input(
+        "Observaciones",
+        width=700,
+    )
+
+    def close_admin_edit_dialog(e=None):
+        admin_edit_dialog.open = False
+        page.update()
+
+    def open_admin_edit_dialog(document):
+        state["editing_admin_document_id"] = int(
+            document.get("id")
+        )
+
+        metadata = {}
+
+        try:
+            import json
+            metadata = json.loads(
+                document.get(
+                    "metadata_documento_json"
+                )
+                or "{}"
+            )
+        except Exception:
+            metadata = {}
+
+        admin_edit_fecha.value = (
+            document.get("fecha_documento")
+            or document.get("fecha_presentacion")
+            or ""
+        )
+        admin_edit_csv.value = (
+            document.get("csv_documento")
+            or metadata.get("registro_csv_geiser")
+            or metadata.get("csv_admision_tramite")
+            or ""
+        )
+        admin_edit_organo.value = (
+            document.get("organo_documento")
+            or document.get("organo_presentacion")
+            or ""
+        )
+        admin_edit_dir3.value = (
+            document.get("dir3_documento")
+            or metadata.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+        admin_edit_nie.value = (
+            document.get("nie_documento")
+            or metadata.get("nie_detectado")
+            or ""
+        )
+        admin_edit_expediente.value = (
+            document.get(
+                "numero_expediente_documento"
+            )
+            or metadata.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+        admin_edit_regage.value = (
+            document.get("numero_registro")
+            or metadata.get(
+                "numero_registro_regage"
+            )
+            or ""
+        )
+        admin_edit_denial_reason.value = (
+            metadata.get(
+                "motivo_denegacion_abogado"
+            )
+            or metadata.get(
+                "motivo_denegacion_detectado"
+            )
+            or ""
+        )
+
+        admin_edit_favorable_next_steps.value = (
+            metadata.get(
+                "proximos_pasos_abogado"
+            )
+            or ""
+        )
+
+        admin_edit_submitted_documents.value = (
+            metadata.get(
+                "documentos_aportados_texto"
+            )
+            or ""
+        )
+
+        admin_edit_submission_notes.value = (
+            metadata.get(
+                "notas_aportacion_abogado"
+            )
+            or ""
+        )
+
+        admin_edit_requirement_documents.value = (
+            metadata.get(
+                "documentacion_requerida_abogado"
+            )
+            or ""
+        )
+
+        admin_edit_observaciones.value = (
+            document.get("observaciones")
+            or ""
+        )
+
+        event_code = (
+            document.get("tipo_justificante")
+            or "OTRO"
+        )
+
+        is_admission = event_code in {
+            "ADMISION_TRAMITE",
+            "ADMISION_TRAMITE_TASA",
+        }
+        is_presentation = (
+            event_code == "JUSTIFICANTE_PRESENTACION"
+        )
+        is_requirement = (
+            event_code == "REQUERIMIENTO"
+        )
+        is_document_submission = (
+            event_code
+            == "JUSTIFICANTE_APORTACION_DOCUMENTACION"
+        )
+        is_favorable_resolution = (
+            event_code == "RESOLUCION_FAVORABLE"
+        )
+        is_denial_resolution = (
+            event_code == "RESOLUCION_DENEGATORIA"
+        )
+
+        admin_edit_nie.visible = is_admission
+        admin_edit_expediente.visible = is_admission
+        admin_edit_regage.visible = is_presentation
+        admin_edit_requirement_documents.visible = (
+            is_requirement
+        )
+        admin_edit_submitted_documents.visible = (
+            is_document_submission
+        )
+        admin_edit_submission_notes.visible = (
+            is_document_submission
+        )
+        admin_edit_favorable_next_steps.visible = (
+            is_favorable_resolution
+        )
+        admin_edit_denial_reason.visible = (
+            is_denial_resolution
+        )
+
+        admin_edit_dialog.title = ft.Text(
+            "Editar documento administrativo",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        )
+        admin_edit_dialog.open = True
+        page.update()
+
+    def save_admin_edit_dialog(e=None):
+        document_id = state.get(
+            "editing_admin_document_id"
+        )
+
+        if not document_id:
+            show_form_error(
+                "No se ha seleccionado un documento"
+            )
+            return
+
+        try:
+            trace_service.update_admin_document(
+                document_id,
+                {
+                    "fecha_documento":
+                        admin_edit_fecha.value,
+                    "csv_documento":
+                        admin_edit_csv.value,
+                    "organo_documento":
+                        admin_edit_organo.value,
+                    "dir3_documento":
+                        admin_edit_dir3.value,
+                    "nie_documento":
+                        admin_edit_nie.value,
+                    "numero_expediente_documento":
+                        admin_edit_expediente.value,
+                    "numero_registro":
+                        admin_edit_regage.value,
+                    "observaciones":
+                        admin_edit_observaciones.value,
+                    "metadata_updates": {
+                        "documentacion_requerida_abogado":
+                            (
+                                admin_edit_requirement_documents.value
+                                or ""
+                            ).strip(),
+                        "documentos_aportados_texto":
+                            (
+                                admin_edit_submitted_documents.value
+                                or ""
+                            ).strip(),
+                        "notas_aportacion_abogado":
+                            (
+                                admin_edit_submission_notes.value
+                                or ""
+                            ).strip(),
+                        "proximos_pasos_abogado":
+                            (
+                                admin_edit_favorable_next_steps.value
+                                or ""
+                            ).strip(),
+                        "motivo_denegacion_abogado":
+                            (
+                                admin_edit_denial_reason.value
+                                or ""
+                            ).strip(),
+                    },
+                    "usuario": "ERP",
+                },
+            )
+
+            admin_edit_dialog.open = False
+            expediente_dialog.content = (
+                build_expediente_dialog_content(
+                    state.get("dialog_expediente_id")
+                )
+            )
+            set_message(
+                success_alert(
+                    "Documento actualizado"
+                )
+            )
+            page.update()
+
+        except Exception as exc:
+            show_form_error(str(exc))
+
+    def confirm_delete_admin_document(document):
+        document_id = int(document.get("id"))
+
+        def cancel_delete(e=None):
+            delete_admin_document_dialog.open = False
+            page.update()
+
+        def execute_delete(e=None):
+            try:
+                trace_service.archive_admin_document(
+                    document_id
+                )
+                delete_admin_document_dialog.open = False
+                expediente_dialog.content = (
+                    build_expediente_dialog_content(
+                        state.get(
+                            "dialog_expediente_id"
+                        )
+                    )
+                )
+                set_message(
+                    success_alert(
+                        "Documento eliminado de la trazabilidad"
+                    )
+                )
+                page.update()
+            except Exception as exc:
+                show_form_error(str(exc))
+
+        delete_admin_document_dialog.title = ft.Text(
+            "Eliminar documento",
+            weight=ft.FontWeight.BOLD,
+            color="#B42318",
+        )
+        delete_admin_document_dialog.content = ft.Text(
+            "El documento dejará de aparecer en la "
+            "trazabilidad. El archivo físico no será borrado."
+        )
+        delete_admin_document_dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                cancel_delete,
+            ),
+            ft.TextButton(
+                "Eliminar",
+                on_click=execute_delete,
+                style=ft.ButtonStyle(
+                    color="#B42318",
+                ),
+            ),
+        ]
+        delete_admin_document_dialog.open = True
+        page.update()
+
+    async def reload_admin_document(document):
+        """
+        Sustituye el PDF y actualiza el mismo registro documental.
+
+        La versión actual de Flet devuelve los archivos directamente
+        desde await FilePicker().pick_files().
+        """
+        document_id = int(document.get("id"))
+        event_code = (
+            document.get("tipo_justificante")
+            or "OTRO"
+        )
+
+        try:
+            files = await ft.FilePicker().pick_files(
+                dialog_title="Seleccionar nuevo PDF",
+                allow_multiple=False,
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["pdf"],
+            )
+
+            if not files:
+                return
+
+            selected_file = files[0]
+
+            file_path = (
+                getattr(selected_file, "path", None)
+                or ""
+            )
+            file_name = (
+                getattr(selected_file, "name", None)
+                or Path(file_path).name
+            )
+
+            if not file_path:
+                raise ValueError(
+                    "El archivo seleccionado no dispone "
+                    "de una ruta local"
+                )
+
+            if event_code == "JUSTIFICANTE_PRESENTACION":
+                metadata = (
+                    trace_service
+                    .extract_admin_presentation_document(
+                        file_path
+                    )
+                )
+
+                trace_service.persist_presentation_registry_data(
+                    state.get("dialog_expediente_id"),
+                    metadata,
+                )
+
+            elif event_code in {
+                "ADMISION_TRAMITE",
+                "ADMISION_TRAMITE_TASA",
+            }:
+                metadata = (
+                    trace_service
+                    .extract_admin_admission_document(
+                        file_path
+                    )
+                )
+
+                trace_service.persist_admission_data(
+                    state.get("dialog_expediente_id"),
+                    metadata,
+                )
+
+            else:
+                metadata = {}
+
+            trace_service.replace_admin_document_file(
+                document_id,
+                file_name,
+                file_path,
+                metadata,
+            )
+
+            expediente_dialog.content = (
+                build_expediente_dialog_content(
+                    state.get("dialog_expediente_id")
+                )
+            )
+
+            set_message(
+                success_alert(
+                    "Documento recargado sobre la misma card"
+                )
+            )
+
+            page.update()
+
+        except Exception as exc:
+            show_form_error(str(exc))
+
+
+    def start_reload_admin_document(document):
+        """
+        Lanza la función asíncrona desde el menú contextual.
+        """
+        page.run_task(
+            reload_admin_document,
+            document,
+        )
+
+
+    admin_edit_dialog = form_dialog(
+        "Editar documento administrativo",
+        ft.Column(
+            controls=[
+                ft.Row(
+                    [
+                        admin_edit_fecha,
+                        admin_edit_dir3,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                admin_edit_csv,
+                admin_edit_organo,
+                ft.Row(
+                    [
+                        admin_edit_nie,
+                        admin_edit_expediente,
+                        admin_edit_regage,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                admin_edit_denial_reason,
+                admin_edit_favorable_next_steps,
+                admin_edit_submitted_documents,
+                admin_edit_submission_notes,
+                admin_edit_requirement_documents,
+                admin_edit_observaciones,
+            ],
+            width=760,
+            height=470,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        actions=[
+            secondary_button(
+                "Cancelar",
+                close_admin_edit_dialog,
+            ),
+            primary_button(
+                "Guardar cambios",
+                save_admin_edit_dialog,
+            ),
+        ],
+    )
+
+    delete_admin_document_dialog = form_dialog(
+        "Eliminar documento",
+        ft.Text(""),
+        actions=[],
+    )
+
+    admin_document_dialog = form_dialog(
+        "Anexar documento administrativo",
+        ft.Column(
+            controls=[
+                admin_document_type_summary,
+                ft.Row(
+                    controls=[
+                        admin_document_selected_file,
+                        secondary_button(
+                            "Seleccionar archivo",
+                            pick_admin_document_file,
+                        ),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                admin_document_observaciones,
+                ft.Divider(
+                    height=1,
+                    color=Q_BORDER,
+                ),
+                *presentation_preview_controls,
+                *admission_preview_controls,
+                *tax_submission_preview_controls,
+                *requirement_preview_controls,
+                *document_submission_preview_controls,
+                *requirement_extension_preview_controls,
+                *favorable_resolution_preview_controls,
+                *denial_resolution_preview_controls,
+                ft.Text(
+                    "Los datos extraídos pueden corregirse "
+                    "antes de guardar. El ID presentación "
+                    "identifica el registro inicial; el número "
+                    "de expediente de Extranjería llegará después.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+            ],
+            width=820,
+            height=610,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        actions=[
+            secondary_button(
+                "Cancelar",
+                close_admin_document_dialog,
+            ),
+            primary_button(
+                "Guardar documento",
+                save_admin_document_event,
+            ),
         ],
     )
 
@@ -6548,6 +13855,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         expediente_dialog.surface_tint_color = "#FFFFFF"
     except Exception:
         pass
+    page.overlay.append(expedient_note_dialog)
+    page.overlay.append(admin_document_type_dialog)
+    page.overlay.append(admin_document_dialog)
+    page.overlay.append(admin_edit_dialog)
+    page.overlay.append(delete_admin_document_dialog)
     page.overlay.append(expediente_dialog)
     def build_expediente_documents_inline(expediente_id=None):
         if not expediente_id:
@@ -6703,7 +14015,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         actions_alignment=ft.MainAxisAlignment.END,
     )
     page.overlay.append(box_folder_options_dialog)
-    page.overlay.append(admin_document_dialog)
 
     def open_new(e=None, cliente_id=None):
         if not cliente_options:
@@ -7110,7 +14421,21 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         haystack = " ".join(
             [
                 str(expediente.get("numero_expediente") or ""),
-                str(expediente.get("numero_expediente_mercurio") or ""),
+                str(
+                    expediente.get(
+                        "numero_presentacion_registro"
+                    )
+                    or expediente.get(
+                        "numero_expediente_mercurio"
+                    )
+                    or ""
+                ),
+                str(
+                    expediente.get(
+                        "numero_expediente_extranjeria"
+                    )
+                    or ""
+                ),
                 str(expediente.get("numero_registro") or ""),
                 str(expediente.get("cliente_nombre") or ""),
                 str(expediente.get("cliente_apellidos") or ""),
@@ -7119,7 +14444,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 str(expediente.get("familia_expediente_codigo") or ""),
                 str(expediente.get("tipo_expediente_nombre") or ""),
                 str(expediente.get("subtipo_expediente_nombre") or ""),
-                str(expediente.get("subtipo_expediente") or ""),
                 str(expediente.get("estado_administrativo_nombre") or ""),
                 str(expediente.get("prioridad_nombre") or ""),
                 str(_cliente_nombre(expediente) or ""),
@@ -7237,7 +14561,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             tipo_label = e.get("tipo_expediente_nombre") or "-"
             subtipo_label = (
                 e.get("subtipo_expediente_nombre")
-                or e.get("subtipo_expediente")
                 or "-"
             )
             external_number = (

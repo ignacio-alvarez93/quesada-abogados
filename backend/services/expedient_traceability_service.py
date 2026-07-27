@@ -1,6 +1,9 @@
+import json
 import sqlite3
 from pathlib import Path
 from datetime import datetime
+
+from backend.services import justificante_presentacion_extraction_service as presentation_extractor
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
@@ -37,10 +40,62 @@ def _int_or_none(value):
     return int(value)
 
 
+def _column_exists(conn, table_name, column_name):
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row["name"] == column_name for row in rows)
+
+
+def ensure_presentation_registry_runtime_schema(conn):
+    columns = {
+        "numero_presentacion_registro": "TEXT",
+        "numero_expediente_extranjeria": "TEXT",
+        "fecha_hora_presentacion": "TEXT",
+        "fecha_hora_registro": "TEXT",
+        "numero_registro_regage": "TEXT",
+        "oficina_registro_nombre": "TEXT",
+        "oficina_registro_codigo": "TEXT",
+        "unidad_tramitacion_nombre": "TEXT",
+        "unidad_tramitacion_codigo": "TEXT",
+        "organismo_tramitacion": "TEXT",
+        "registro_ambito_prefijo": "TEXT",
+        "registro_csv_geiser": "TEXT",
+        "justificante_presentacion_sha256": "TEXT",
+        "justificante_extraction_status": "TEXT",
+        "justificante_extraction_json": "TEXT",
+        "justificante_extracted_at": "TEXT",
+    }
+
+    for column_name, column_type in columns.items():
+        if not _column_exists(conn, "expedientes", column_name):
+            conn.execute(
+                f"ALTER TABLE expedientes ADD COLUMN {column_name} {column_type}"
+            )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_expedientes_numero_presentacion
+        ON expedientes(numero_presentacion_registro)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_expedientes_numero_extranjeria
+        ON expedientes(numero_expediente_extranjeria)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_expedientes_regage
+        ON expedientes(numero_registro_regage)
+        """
+    )
+
+
 def initialize_traceability_schema():
     schema_path = Path(__file__).resolve().parents[2] / "database" / "expedient_traceability_schema.sql"
     with _connect() as conn:
         conn.executescript(schema_path.read_text(encoding="utf-8"))
+        ensure_presentation_registry_runtime_schema(conn)
         conn.commit()
 
 
@@ -49,7 +104,14 @@ def get_expediente_basic(expediente_id):
         return _dict(
             conn.execute(
                 """
-                SELECT e.*, c.nombre, c.primer_apellido, c.segundo_apellido
+                SELECT
+                    e.*,
+                    c.nombre,
+                    c.primer_apellido,
+                    c.segundo_apellido,
+                    c.nie AS cliente_nie,
+                    c.dni AS cliente_dni,
+                    c.pasaporte AS cliente_pasaporte
                 FROM expedientes e
                 JOIN clientes c ON c.id = e.cliente_id
                 WHERE e.id = ?
@@ -114,6 +176,34 @@ def get_eventos_expediente(expediente_id):
         ]
 
 
+ADMIN_DOCUMENT_METADATA_COLUMNS = {
+    "fecha_documento": "TEXT",
+    "csv_documento": "TEXT",
+    "dir3_documento": "TEXT",
+    "organo_documento": "TEXT",
+    "nie_documento": "TEXT",
+    "numero_expediente_documento": "TEXT",
+    "metadata_documento_json": "TEXT",
+}
+
+
+def ensure_admin_document_metadata_schema(conn):
+    for column_name, column_type in (
+        ADMIN_DOCUMENT_METADATA_COLUMNS.items()
+    ):
+        if not _column_exists(
+            conn,
+            "expediente_justificantes",
+            column_name,
+        ):
+            conn.execute(
+                f"""
+                ALTER TABLE expediente_justificantes
+                ADD COLUMN {column_name} {column_type}
+                """
+            )
+
+
 def create_justificante(data):
     expediente_id = int(data.get("expediente_id"))
     expediente = get_expediente_basic(expediente_id)
@@ -122,28 +212,72 @@ def create_justificante(data):
 
     cliente_id = expediente["cliente_id"]
 
+    import json
+
     with _connect() as conn:
+        ensure_admin_document_metadata_schema(conn)
+
+        metadata = data.get("metadata_documento") or {}
+
         cur = conn.execute(
             """
             INSERT INTO expediente_justificantes (
-                expediente_id, cliente_id, archivo_nombre, archivo_ruta,
-                tipo_justificante, fecha_presentacion, numero_registro,
-                organo_presentacion, procedimiento_detectado,
-                estado_conciliacion, observaciones, activo
+                expediente_id,
+                cliente_id,
+                archivo_nombre,
+                archivo_ruta,
+                tipo_justificante,
+                fecha_presentacion,
+                numero_registro,
+                organo_presentacion,
+                fecha_documento,
+                csv_documento,
+                dir3_documento,
+                organo_documento,
+                nie_documento,
+                numero_expediente_documento,
+                metadata_documento_json,
+                procedimiento_detectado,
+                estado_conciliacion,
+                observaciones,
+                activo
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, 1
+            )
             """,
             (
                 expediente_id,
                 cliente_id,
                 _raw(data.get("archivo_nombre")),
                 _raw(data.get("archivo_ruta")),
-                _text(data.get("tipo_justificante") or "PRESENTACION"),
+                _text(
+                    data.get("tipo_justificante")
+                    or "PRESENTACION"
+                ),
                 _raw(data.get("fecha_presentacion")),
                 _text(data.get("numero_registro")),
                 _text(data.get("organo_presentacion")),
+                _raw(data.get("fecha_documento")),
+                _raw(data.get("csv_documento")),
+                _text(data.get("dir3_documento")),
+                _raw(data.get("organo_documento")),
+                _text(data.get("nie_documento")),
+                _text(
+                    data.get(
+                        "numero_expediente_documento"
+                    )
+                ),
+                json.dumps(
+                    metadata,
+                    ensure_ascii=False,
+                ),
                 _text(data.get("procedimiento_detectado")),
-                _text(data.get("estado_conciliacion") or "PENDIENTE"),
+                _text(
+                    data.get("estado_conciliacion")
+                    or "PENDIENTE"
+                ),
                 _raw(data.get("observaciones")),
             ),
         )
@@ -161,6 +295,356 @@ def create_justificante(data):
     )
 
     return justificante_id
+
+
+def get_admin_document(justificante_id):
+    with _connect() as conn:
+        ensure_admin_document_metadata_schema(conn)
+
+        return _dict(
+            conn.execute(
+                """
+                SELECT *
+                FROM expediente_justificantes
+                WHERE id = ?
+                  AND activo = 1
+                """,
+                (int(justificante_id),),
+            ).fetchone()
+        )
+
+
+def update_admin_document(
+    justificante_id,
+    data,
+):
+    import json
+
+    justificante = get_admin_document(justificante_id)
+
+    if not justificante:
+        raise ValueError(
+            "Documento administrativo no encontrado"
+        )
+
+    metadata = data.get("metadata_documento")
+
+    if metadata is None:
+        try:
+            metadata = json.loads(
+                justificante.get(
+                    "metadata_documento_json"
+                )
+                or "{}"
+            )
+        except Exception:
+            metadata = {}
+
+    metadata_updates = (
+        data.get("metadata_updates")
+        or {}
+    )
+
+    with _connect() as conn:
+        ensure_admin_document_metadata_schema(conn)
+
+        current_row = conn.execute(
+            """
+            SELECT metadata_documento_json
+            FROM expediente_justificantes
+            WHERE id = ?
+            """,
+            (int(document_id),),
+        ).fetchone()
+
+        try:
+            current_metadata = json.loads(
+                (
+                    current_row[
+                        "metadata_documento_json"
+                    ]
+                    if current_row
+                    else ""
+                )
+                or "{}"
+            )
+        except Exception:
+            current_metadata = {}
+
+        if not isinstance(current_metadata, dict):
+            current_metadata = {}
+
+        current_metadata.update(
+            metadata_updates
+        )
+
+        data["metadata_documento_json"] = (
+            json.dumps(
+                current_metadata,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+
+        conn.execute(
+            """
+            UPDATE expediente_justificantes
+            SET
+                fecha_documento = ?,
+                fecha_presentacion = ?,
+                csv_documento = ?,
+                dir3_documento = ?,
+                organo_documento = ?,
+                organo_presentacion = ?,
+                numero_registro = ?,
+                nie_documento = ?,
+                numero_expediente_documento = ?,
+                observaciones = ?,
+                metadata_documento_json = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND activo = 1
+            """,
+            (
+                _raw(data.get("fecha_documento")),
+                _raw(data.get("fecha_documento")),
+                _raw(data.get("csv_documento")),
+                _text(data.get("dir3_documento")),
+                _raw(data.get("organo_documento")),
+                _raw(data.get("organo_documento")),
+                _text(data.get("numero_registro")),
+                _text(data.get("nie_documento")),
+                _text(
+                    data.get(
+                        "numero_expediente_documento"
+                    )
+                ),
+                _raw(data.get("observaciones")),
+                json.dumps(
+                    metadata,
+                    ensure_ascii=False,
+                ),
+                int(justificante_id),
+            ),
+        )
+        conn.commit()
+
+    registrar_evento(
+        expediente_id=justificante["expediente_id"],
+        cliente_id=justificante["cliente_id"],
+        tipo_evento="DOCUMENTO_ADMINISTRATIVO_EDITADO",
+        titulo="DOCUMENTO ADMINISTRATIVO EDITADO",
+        descripcion=(
+            "Se han actualizado los metadatos del "
+            f"documento #{int(justificante_id)}."
+        ),
+        entidad_relacionada="expediente_justificantes",
+        entidad_relacionada_id=int(justificante_id),
+        usuario=_raw(data.get("usuario") or "ERP"),
+    )
+
+    return get_admin_document(justificante_id)
+
+
+def replace_admin_document_file(
+    justificante_id,
+    file_name,
+    file_path,
+    metadata,
+):
+    import json
+
+    justificante = get_admin_document(justificante_id)
+
+    if not justificante:
+        raise ValueError(
+            "Documento administrativo no encontrado"
+        )
+
+    metadata = dict(metadata or {})
+
+    event_code = _text(
+        justificante.get("tipo_justificante")
+        or "OTRO"
+    )
+
+    fecha_documento = ""
+    csv_documento = ""
+    dir3_documento = ""
+    organo_documento = ""
+    numero_registro = ""
+    nie_documento = ""
+    numero_expediente_documento = ""
+
+    if event_code == "JUSTIFICANTE_PRESENTACION":
+        fecha_documento = (
+            metadata.get("fecha_hora_presentacion")
+            or metadata.get("fecha_hora_registro")
+            or ""
+        )
+        csv_documento = (
+            metadata.get("registro_csv_geiser")
+            or ""
+        )
+        dir3_documento = (
+            metadata.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+        organo_documento = (
+            metadata.get(
+                "unidad_tramitacion_nombre"
+            )
+            or metadata.get(
+                "organismo_tramitacion"
+            )
+            or ""
+        )
+        numero_registro = (
+            metadata.get("numero_registro_regage")
+            or ""
+        )
+
+    elif event_code in {
+        "ADMISION_TRAMITE",
+        "ADMISION_TRAMITE_TASA",
+    }:
+        fecha_documento = (
+            metadata.get("fecha_admision_tramite")
+            or ""
+        )
+        csv_documento = (
+            metadata.get("csv_admision_tramite")
+            or ""
+        )
+        dir3_documento = (
+            metadata.get(
+                "unidad_tramitacion_codigo"
+            )
+            or justificante.get("dir3_documento")
+            or ""
+        )
+        organo_documento = (
+            justificante.get("organo_documento")
+            or justificante.get(
+                "organo_presentacion"
+            )
+            or ""
+        )
+        nie_documento = (
+            metadata.get("nie_detectado")
+            or ""
+        )
+        numero_expediente_documento = (
+            metadata.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+
+    with _connect() as conn:
+        ensure_admin_document_metadata_schema(conn)
+
+        conn.execute(
+            """
+            UPDATE expediente_justificantes
+            SET
+                archivo_nombre = ?,
+                archivo_ruta = ?,
+                fecha_documento = ?,
+                fecha_presentacion = ?,
+                csv_documento = ?,
+                dir3_documento = ?,
+                organo_documento = ?,
+                organo_presentacion = ?,
+                numero_registro = ?,
+                nie_documento = ?,
+                numero_expediente_documento = ?,
+                metadata_documento_json = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND activo = 1
+            """,
+            (
+                _raw(file_name),
+                _raw(file_path),
+                _raw(fecha_documento),
+                _raw(fecha_documento),
+                _raw(csv_documento),
+                _text(dir3_documento),
+                _raw(organo_documento),
+                _raw(organo_documento),
+                _text(numero_registro),
+                _text(nie_documento),
+                _text(numero_expediente_documento),
+                json.dumps(
+                    metadata,
+                    ensure_ascii=False,
+                ),
+                int(justificante_id),
+            ),
+        )
+        conn.commit()
+
+    registrar_evento(
+        expediente_id=justificante["expediente_id"],
+        cliente_id=justificante["cliente_id"],
+        tipo_evento="DOCUMENTO_ADMINISTRATIVO_RECARGADO",
+        titulo="DOCUMENTO ADMINISTRATIVO RECARGADO",
+        descripcion=(
+            f"Se ha reemplazado el archivo del documento "
+            f"#{int(justificante_id)} por "
+            f"{_raw(file_name) or _raw(file_path)}."
+        ),
+        entidad_relacionada="expediente_justificantes",
+        entidad_relacionada_id=int(justificante_id),
+        usuario="ERP",
+    )
+
+    return get_admin_document(justificante_id)
+
+
+def archive_admin_document(justificante_id):
+    justificante = get_admin_document(justificante_id)
+
+    if not justificante:
+        raise ValueError(
+            "Documento administrativo no encontrado"
+        )
+
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE expediente_justificantes
+            SET
+                activo = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (int(justificante_id),),
+        )
+        conn.commit()
+
+    registrar_evento(
+        expediente_id=justificante["expediente_id"],
+        cliente_id=justificante["cliente_id"],
+        tipo_evento="DOCUMENTO_ADMINISTRATIVO_ELIMINADO",
+        titulo="DOCUMENTO ADMINISTRATIVO ELIMINADO",
+        descripcion=(
+            "Se ha retirado de la trazabilidad el documento "
+            f"#{int(justificante_id)}: "
+            f"{justificante.get('archivo_nombre') or '-'}."
+        ),
+        entidad_relacionada="expediente_justificantes",
+        entidad_relacionada_id=int(justificante_id),
+        usuario="ERP",
+    )
+
+    return {
+        "ok": True,
+        "justificante_id": int(justificante_id),
+    }
 
 
 def conciliar_justificante(justificante_id, actualizar_expediente=True):
@@ -228,7 +712,27 @@ def get_justificantes_expediente(expediente_id):
                 SELECT *
                 FROM expediente_justificantes
                 WHERE expediente_id = ? AND activo = 1
-                ORDER BY created_at DESC, id DESC
+                ORDER BY
+                    CASE tipo_justificante
+                        WHEN 'JUSTIFICANTE_PRESENTACION' THEN 10
+                        WHEN 'ADMISION_TRAMITE' THEN 20
+                        WHEN 'ADMISION_TRAMITE_TASA' THEN 21
+                        WHEN 'INADMISION_TRAMITE' THEN 22
+                        WHEN 'JUSTIFICANTE_APORTACION_TASA' THEN 30
+                        WHEN 'REQUERIMIENTO' THEN 40
+                        WHEN 'JUSTIFICANTE_AMPLIACION_PLAZO' THEN 41
+                        WHEN 'JUSTIFICANTE_APORTACION_DOCUMENTACION' THEN 42
+                        WHEN 'RESOLUCION_FAVORABLE' THEN 90
+                        WHEN 'RESOLUCION_DENEGATORIA' THEN 91
+                        WHEN 'RESOLUCION_DESFAVORABLE' THEN 91
+                        ELSE 80
+                    END ASC,
+                    COALESCE(
+                        NULLIF(fecha_documento, ''),
+                        NULLIF(fecha_presentacion, ''),
+                        created_at
+                    ) ASC,
+                    id ASC
                 """,
                 (int(expediente_id),),
             ).fetchall()
@@ -242,12 +746,13 @@ ADMIN_DOCUMENT_EVENT_LABELS = {
     "ADMISION_TRAMITE": "Admisión a trámite",
     "INADMISION_TRAMITE": "Inadmisión a trámite",
     "ADMISION_TRAMITE_TASA": "Admisión a trámite y tasa",
-    "JUSTIFICANTE_TASA": "Justificante de tasa",
+    "JUSTIFICANTE_APORTACION_TASA": "Justificante de aportación de tasa",
     "REQUERIMIENTO": "Requerimiento",
     "JUSTIFICANTE_APORTACION_DOCUMENTACION": "Justificante aportación documentación",
     "JUSTIFICANTE_AMPLIACION_PLAZO": "Justificante ampliación de plazo",
     "RESOLUCION_FAVORABLE": "Resolución favorable",
-    "RESOLUCION_DESFAVORABLE": "Resolución desfavorable",
+    "RESOLUCION_DENEGATORIA": "Resolución denegatoria",
+    "RESOLUCION_DESFAVORABLE": "Resolución denegatoria",
     "OTRO": "Otro documento administrativo",
 }
 
@@ -257,6 +762,7 @@ ADMIN_DOCUMENT_BASE_STATE_TRANSITIONS = {
     "ADMISION_TRAMITE": "ADMITIDO",
     "REQUERIMIENTO": "REQUERIDO",
     "RESOLUCION_FAVORABLE": "RESUELTO FAVORABLE",
+    "RESOLUCION_DENEGATORIA": "RESUELTO DENEGADO",
     "RESOLUCION_DESFAVORABLE": "RESUELTO DENEGADO",
 }
 
@@ -269,11 +775,12 @@ ADMIN_DOCUMENT_STATE_TRANSITIONS_BY_WORKFLOW = {
         "ADMISION_TRAMITE": "ADMITIDO",
         "INADMISION_TRAMITE": "INADMITIDO",
         "ADMISION_TRAMITE_TASA": "ADMITIDO CON TASA",
-        "JUSTIFICANTE_TASA": "TASA APORTADA",
+        "JUSTIFICANTE_APORTACION_TASA": "TASA APORTADA",
         "REQUERIMIENTO": "REQUERIDO",
         "JUSTIFICANTE_APORTACION_DOCUMENTACION": "REQUERIMIENTO APORTADO",
         "JUSTIFICANTE_AMPLIACION_PLAZO": "AMPLIACIÓN DE PLAZO SOLICITADA",
         "RESOLUCION_FAVORABLE": "RESUELTO FAVORABLE",
+        "RESOLUCION_DENEGATORIA": "RESUELTO DENEGADO",
         "RESOLUCION_DESFAVORABLE": "RESUELTO DENEGADO",
     },
 }
@@ -448,6 +955,102 @@ def _apply_admin_document_transition(expediente_id, event_code):
 
 
 
+def extract_admin_presentation_document(file_path):
+    """
+    Lee un justificante GEISER sin modificar la base de datos.
+    Se usará desde la vista para la previsualización editable.
+    """
+    return presentation_extractor.extract_justificante_presentacion(file_path)
+
+
+def persist_presentation_registry_data(
+    expediente_id,
+    extraction,
+    conn=None,
+):
+    """
+    Guarda los identificadores registrales del justificante.
+
+    No escribe numero_expediente_extranjeria porque ese valor llegará
+    posteriormente mediante la vigilancia del correo electrónico.
+    """
+    owns_connection = conn is None
+    connection = conn or _connect()
+
+    try:
+        ensure_presentation_registry_runtime_schema(connection)
+
+        connection.execute(
+            """
+            UPDATE expedientes
+            SET numero_presentacion_registro = ?,
+                fecha_hora_presentacion = ?,
+                fecha_hora_registro = ?,
+                numero_registro_regage = ?,
+                oficina_registro_nombre = ?,
+                oficina_registro_codigo = ?,
+                unidad_tramitacion_nombre = ?,
+                unidad_tramitacion_codigo = ?,
+                organismo_tramitacion = ?,
+                registro_ambito_prefijo = ?,
+                registro_csv_geiser = ?,
+                justificante_presentacion_sha256 = ?,
+                justificante_extraction_status = ?,
+                justificante_extraction_json = ?,
+                justificante_extracted_at = CURRENT_TIMESTAMP,
+                fecha_presentacion = COALESCE(
+                    NULLIF(SUBSTR(?, 1, 10), ''),
+                    fecha_presentacion
+                ),
+                numero_registro = COALESCE(
+                    NULLIF(?, ''),
+                    numero_registro
+                ),
+                organo_presentacion = COALESCE(
+                    NULLIF(?, ''),
+                    organo_presentacion
+                ),
+                numero_expediente_mercurio = COALESCE(
+                    NULLIF(?, ''),
+                    numero_expediente_mercurio
+                ),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                _raw(extraction.get("numero_presentacion_registro")),
+                _raw(extraction.get("fecha_hora_presentacion")),
+                _raw(extraction.get("fecha_hora_registro")),
+                _raw(extraction.get("numero_registro_regage")),
+                _raw(extraction.get("oficina_registro_nombre")),
+                _raw(extraction.get("oficina_registro_codigo")),
+                _raw(extraction.get("unidad_tramitacion_nombre")),
+                _raw(extraction.get("unidad_tramitacion_codigo")),
+                _raw(extraction.get("organismo_tramitacion")),
+                _raw(extraction.get("registro_ambito_prefijo")),
+                _raw(extraction.get("registro_csv_geiser")),
+                _raw(extraction.get("sha256")),
+                "CONFIRMADA",
+                json.dumps(extraction, ensure_ascii=False, sort_keys=True),
+                _raw(extraction.get("fecha_hora_presentacion")),
+                _raw(extraction.get("numero_registro_regage")),
+                _raw(extraction.get("unidad_tramitacion_nombre")),
+                _raw(extraction.get("numero_presentacion_registro")),
+                int(expediente_id),
+            ),
+        )
+
+        if owns_connection:
+            connection.commit()
+    except Exception:
+        if owns_connection:
+            connection.rollback()
+        raise
+    finally:
+        if owns_connection:
+            connection.close()
+
+
 def create_admin_document_event(data):
     """
     Registra un documento administrativo seleccionado manualmente desde la
@@ -462,7 +1065,62 @@ def create_admin_document_event(data):
     file_path = _raw(data.get("archivo_ruta") or data.get("file_path"))
     file_name = _raw(data.get("archivo_nombre") or data.get("file_name"))
     event_code = _text(data.get("event_code") or data.get("tipo_justificante") or "OTRO")
+
+    if event_code in {
+        "RESOLUCION_DESFAVORABLE",
+        "RESOLUCION_DENEGACION",
+        "RESOLUCION_DENEGADA",
+    }:
+        event_code = "RESOLUCION_DENEGATORIA"
     observaciones = _raw(data.get("observaciones"))
+
+    presentation_extraction = (
+        data.get("presentation_extraction")
+        or None
+    )
+
+    admission_extraction = (
+        data.get("admission_extraction")
+        or None
+    )
+
+    tax_submission_extraction = (
+        data.get("tax_submission_extraction")
+        or None
+    )
+
+    requirement_extraction = (
+        data.get("requirement_extraction")
+        or None
+    )
+
+    document_submission_extraction = (
+        data.get(
+            "document_submission_extraction"
+        )
+        or None
+    )
+
+    requirement_extension_extraction = (
+        data.get(
+            "requirement_extension_extraction"
+        )
+        or None
+    )
+
+    favorable_resolution_extraction = (
+        data.get(
+            "favorable_resolution_extraction"
+        )
+        or None
+    )
+
+    denial_resolution_extraction = (
+        data.get(
+            "denial_resolution_extraction"
+        )
+        or None
+    )
 
     if not file_path and not file_name:
         raise ValueError("Selecciona un documento para anexar")
@@ -471,15 +1129,516 @@ def create_admin_document_event(data):
     if not expediente:
         raise ValueError("Expediente no encontrado")
 
-    label = ADMIN_DOCUMENT_EVENT_LABELS.get(event_code, event_code.replace("_", " ").title())
-    justificante_id = create_justificante({
-        "expediente_id": expediente_id,
-        "archivo_nombre": file_name or Path(file_path).name,
-        "archivo_ruta": file_path,
-        "tipo_justificante": event_code,
-        "estado_conciliacion": "PENDIENTE",
-        "observaciones": observaciones,
-    })
+    label = ADMIN_DOCUMENT_EVENT_LABELS.get(
+        event_code,
+        event_code.replace("_", " ").title(),
+    )
+
+    document_metadata = (
+        presentation_extraction
+        or admission_extraction
+        or tax_submission_extraction
+        or requirement_extraction
+        or document_submission_extraction
+        or requirement_extension_extraction
+        or favorable_resolution_extraction
+        or denial_resolution_extraction
+        or {}
+    )
+
+    fecha_documento = ""
+    csv_documento = ""
+    dir3_documento = ""
+    organo_documento = ""
+
+    numero_registro_documento = ""
+    nie_documento = ""
+    numero_expediente_documento = ""
+
+    if presentation_extraction:
+        fecha_documento = (
+            presentation_extraction.get(
+                "fecha_hora_presentacion"
+            )
+            or presentation_extraction.get(
+                "fecha_hora_registro"
+            )
+            or ""
+        )
+
+        csv_documento = (
+            presentation_extraction.get(
+                "registro_csv_geiser"
+            )
+            or ""
+        )
+
+        dir3_documento = (
+            presentation_extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+
+        organo_documento = (
+            presentation_extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or presentation_extraction.get(
+                "organismo_tramitacion"
+            )
+            or ""
+        )
+
+        numero_registro_documento = (
+            presentation_extraction.get(
+                "numero_registro_regage"
+            )
+            or ""
+        )
+
+    elif admission_extraction:
+        fecha_documento = (
+            admission_extraction.get(
+                "fecha_admision_tramite"
+            )
+            or ""
+        )
+
+        csv_documento = (
+            admission_extraction.get(
+                "csv_admision_tramite"
+            )
+            or ""
+        )
+
+        dir3_documento = (
+            admission_extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or expediente.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+
+        # La admisión pertenece al mismo órgano y unidad
+        # tramitadora que el justificante de presentación.
+        organo_documento = (
+            expediente.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "organismo_tramitacion"
+            )
+            or expediente.get(
+                "organo_presentacion"
+            )
+            or ""
+        )
+
+        nie_documento = (
+            admission_extraction.get("nie_detectado")
+            or ""
+        )
+
+        numero_expediente_documento = (
+            admission_extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+
+    elif tax_submission_extraction:
+        fecha_documento = (
+            tax_submission_extraction.get(
+                "fecha_registro"
+            )
+            or tax_submission_extraction.get(
+                "fecha_presentacion"
+            )
+            or ""
+        )
+
+        csv_documento = (
+            tax_submission_extraction.get(
+                "csv_geiser"
+            )
+            or ""
+        )
+
+        dir3_documento = (
+            expediente.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+
+        organo_documento = (
+            expediente.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "organismo_tramitacion"
+            )
+            or expediente.get(
+                "organo_presentacion"
+            )
+            or ""
+        )
+
+        nie_documento = (
+            tax_submission_extraction.get(
+                "nie_detectado"
+            )
+            or ""
+        )
+
+        numero_expediente_documento = (
+            tax_submission_extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+
+        numero_registro_documento = (
+            tax_submission_extraction.get(
+                "numero_registro_regage"
+            )
+            or ""
+        )
+
+    elif requirement_extraction:
+        fecha_documento = (
+            requirement_extraction.get(
+                "fecha_requerimiento"
+            )
+            or ""
+        )
+
+        csv_documento = (
+            requirement_extraction.get(
+                "csv_requerimiento"
+            )
+            or ""
+        )
+
+        dir3_documento = (
+            requirement_extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or expediente.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+
+        organo_documento = (
+            requirement_extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "organismo_tramitacion"
+            )
+            or expediente.get(
+                "organo_presentacion"
+            )
+            or ""
+        )
+
+        nie_documento = (
+            requirement_extraction.get(
+                "nie_detectado"
+            )
+            or ""
+        )
+
+        numero_expediente_documento = (
+            requirement_extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+
+    elif document_submission_extraction:
+        fecha_documento = (
+            document_submission_extraction.get(
+                "fecha_registro"
+            )
+            or document_submission_extraction.get(
+                "fecha_presentacion"
+            )
+            or ""
+        )
+
+        csv_documento = (
+            document_submission_extraction.get(
+                "csv_geiser"
+            )
+            or ""
+        )
+
+        dir3_documento = (
+            document_submission_extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or expediente.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+
+        organo_documento = (
+            document_submission_extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "organismo_tramitacion"
+            )
+            or expediente.get(
+                "organo_presentacion"
+            )
+            or ""
+        )
+
+        nie_documento = (
+            document_submission_extraction.get(
+                "nie_detectado"
+            )
+            or ""
+        )
+
+        numero_expediente_documento = (
+            document_submission_extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+
+        numero_registro_documento = (
+            document_submission_extraction.get(
+                "numero_registro_regage"
+            )
+            or ""
+        )
+
+    elif requirement_extension_extraction:
+        fecha_documento = (
+            requirement_extension_extraction.get(
+                "fecha_hora_registro"
+            )
+            or requirement_extension_extraction.get(
+                "fecha_registro"
+            )
+            or ""
+        )
+
+        csv_documento = (
+            requirement_extension_extraction.get(
+                "csv_geiser"
+            )
+            or ""
+        )
+
+        numero_registro_documento = (
+            requirement_extension_extraction.get(
+                "numero_registro_regage"
+            )
+            or ""
+        )
+
+        dir3_documento = (
+            requirement_extension_extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or expediente.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+
+        organo_documento = (
+            requirement_extension_extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "organismo_tramitacion"
+            )
+            or expediente.get(
+                "organo_presentacion"
+            )
+            or ""
+        )
+
+        nie_documento = (
+            requirement_extension_extraction.get(
+                "nie_detectado"
+            )
+            or ""
+        )
+
+        numero_expediente_documento = (
+            requirement_extension_extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+
+    elif favorable_resolution_extraction:
+        fecha_documento = (
+            favorable_resolution_extraction.get(
+                "fecha_resolucion"
+            )
+            or ""
+        )
+
+        csv_documento = (
+            favorable_resolution_extraction.get(
+                "csv_resolucion"
+            )
+            or ""
+        )
+
+        dir3_documento = (
+            favorable_resolution_extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or expediente.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+
+        organo_documento = (
+            favorable_resolution_extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "organismo_tramitacion"
+            )
+            or expediente.get(
+                "organo_presentacion"
+            )
+            or ""
+        )
+
+        nie_documento = (
+            favorable_resolution_extraction.get(
+                "nie_detectado"
+            )
+            or ""
+        )
+
+        numero_expediente_documento = (
+            favorable_resolution_extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+
+    elif denial_resolution_extraction:
+        fecha_documento = (
+            denial_resolution_extraction.get(
+                "fecha_resolucion"
+            )
+            or ""
+        )
+
+        csv_documento = (
+            denial_resolution_extraction.get(
+                "csv_resolucion"
+            )
+            or ""
+        )
+
+        dir3_documento = (
+            denial_resolution_extraction.get(
+                "unidad_tramitacion_codigo"
+            )
+            or expediente.get(
+                "unidad_tramitacion_codigo"
+            )
+            or ""
+        )
+
+        organo_documento = (
+            denial_resolution_extraction.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "unidad_tramitacion_nombre"
+            )
+            or expediente.get(
+                "organismo_tramitacion"
+            )
+            or expediente.get(
+                "organo_presentacion"
+            )
+            or ""
+        )
+
+        nie_documento = (
+            denial_resolution_extraction.get(
+                "nie_detectado"
+            )
+            or ""
+        )
+
+        numero_expediente_documento = (
+            denial_resolution_extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        )
+
+    justificante_id = create_justificante(
+        {
+            "expediente_id": expediente_id,
+            "archivo_nombre":
+                file_name or Path(file_path).name,
+            "archivo_ruta": file_path,
+            "tipo_justificante": event_code,
+
+            # Compatibilidad con campos legacy.
+            "fecha_presentacion": fecha_documento,
+            "numero_registro":
+                numero_registro_documento,
+            "organo_presentacion":
+                organo_documento,
+
+            # Metadatos propios del PDF.
+            "fecha_documento": fecha_documento,
+            "csv_documento": csv_documento,
+            "dir3_documento": dir3_documento,
+            "organo_documento": organo_documento,
+            "nie_documento": nie_documento,
+            "numero_expediente_documento":
+                numero_expediente_documento,
+            "metadata_documento":
+                document_metadata,
+
+            "estado_conciliacion": "PENDIENTE",
+            "observaciones": observaciones,
+        }
+    )
+
+    if event_code == "JUSTIFICANTE_PRESENTACION" and presentation_extraction:
+        persist_presentation_registry_data(
+            expediente_id,
+            presentation_extraction,
+        )
 
     transition = _apply_admin_document_transition(expediente_id, event_code)
 
@@ -515,6 +1674,16 @@ def create_admin_document_event(data):
             f"Documento: {file_name or Path(file_path).name or file_path}"
             + (f"\nRuta: {file_path}" if file_path else "")
             + (f"\nObservaciones: {observaciones}" if observaciones else "")
+            + (
+                "\nN.º presentación: "
+                + str(presentation_extraction.get("numero_presentacion_registro") or "-")
+                + "\nREGAGE: "
+                + str(presentation_extraction.get("numero_registro_regage") or "-")
+                + "\nCSV GEISER: "
+                + str(presentation_extraction.get("registro_csv_geiser") or "-")
+                if presentation_extraction
+                else ""
+            )
             + transition_text
         ),
         estado_anterior=transition.get("estado_anterior") or "",
@@ -535,6 +1704,22 @@ def create_admin_document_event(data):
         "estado_nuevo": transition.get("estado_nuevo") or "",
         "estado_nuevo_id": transition.get("estado_nuevo_id"),
         "queue_completion": queue_completion,
+        "presentation_extraction":
+            presentation_extraction,
+        "admission_extraction":
+            admission_extraction,
+        "tax_submission_extraction":
+            tax_submission_extraction,
+        "requirement_extraction":
+            requirement_extraction,
+        "document_submission_extraction":
+            document_submission_extraction,
+        "requirement_extension_extraction":
+            requirement_extension_extraction,
+        "favorable_resolution_extraction":
+            favorable_resolution_extraction,
+        "denial_resolution_extraction":
+            denial_resolution_extraction,
     }
 
 
@@ -744,6 +1929,193 @@ def aplicar_consulta_a_expediente(expediente_id, consulta_previa_id, hoja_encarg
     return applied_id
 
 
+
+def ensure_expedient_notes_schema(conn=None):
+    own_connection = conn is None
+    connection = conn or _connect()
+
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS expediente_notas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                expediente_id INTEGER NOT NULL,
+                titulo TEXT NOT NULL,
+                contenido TEXT NOT NULL,
+                categoria TEXT NOT NULL DEFAULT 'GENERAL',
+                autor TEXT,
+                activo INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (expediente_id)
+                    REFERENCES expedientes(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS
+                idx_expediente_notas_expediente
+            ON expediente_notas(
+                expediente_id,
+                created_at DESC
+            );
+            """
+        )
+
+        if own_connection:
+            connection.commit()
+    finally:
+        if own_connection:
+            connection.close()
+
+
+def get_expedient_notes(expediente_id):
+    connection = _connect()
+
+    try:
+        ensure_expedient_notes_schema(connection)
+
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM expediente_notas
+            WHERE expediente_id = ?
+              AND activo = 1
+            ORDER BY created_at DESC, id DESC
+            """,
+            (int(expediente_id),),
+        ).fetchall()
+
+        return [_dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def create_expedient_note(
+    expediente_id,
+    titulo,
+    contenido,
+    categoria="GENERAL",
+    autor="ERP",
+):
+    # El contenido de una nota debe conservar la escritura original.
+    # _text() se usa en otros puntos para normalización administrativa,
+    # pero convierte a mayúsculas y no es apropiado aquí.
+    titulo = str(titulo or "").strip()
+    contenido = str(contenido or "").strip()
+    categoria = str(categoria or "GENERAL").strip().upper()
+    autor = str(autor or "ERP").strip() or "ERP"
+
+    if not titulo:
+        raise ValueError("La nota necesita un título")
+
+    if not contenido:
+        raise ValueError("La nota necesita contenido")
+
+    connection = _connect()
+
+    try:
+        ensure_expedient_notes_schema(connection)
+
+        expediente = connection.execute(
+            """
+            SELECT id, cliente_id
+            FROM expedientes
+            WHERE id = ?
+            """,
+            (int(expediente_id),),
+        ).fetchone()
+
+        if not expediente:
+            raise ValueError("No existe el expediente")
+
+        cursor = connection.execute(
+            """
+            INSERT INTO expediente_notas (
+                expediente_id,
+                titulo,
+                contenido,
+                categoria,
+                autor
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                int(expediente_id),
+                titulo,
+                contenido,
+                categoria,
+                autor,
+            ),
+        )
+
+        note_id = cursor.lastrowid
+
+        # El evento histórico se registra en la misma transacción.
+        # Así la nota y su trazabilidad son atómicas y no se abre
+        # una segunda conexión SQLite que pueda quedar bloqueada.
+        connection.execute(
+            """
+            INSERT INTO expediente_eventos (
+                expediente_id,
+                cliente_id,
+                tipo_evento,
+                titulo,
+                descripcion,
+                entidad_relacionada,
+                entidad_relacionada_id,
+                usuario
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(expediente_id),
+                int(expediente["cliente_id"]),
+                "NOTA_EXPEDIENTE",
+                "NOTA AÑADIDA",
+                titulo,
+                "expediente_notas",
+                int(note_id),
+                autor,
+            ),
+        )
+
+        connection.commit()
+
+        return note_id
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
+
+
+def archive_expedient_note(note_id):
+    connection = _connect()
+
+    try:
+        ensure_expedient_notes_schema(connection)
+
+        connection.execute(
+            """
+            UPDATE expediente_notas
+            SET
+                activo = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (int(note_id),),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+
 def get_resumen_trazabilidad(expediente_id):
     justificantes = get_justificantes_expediente(expediente_id)
     hojas = get_hojas_encargo_expediente(expediente_id)
@@ -769,4 +2141,306 @@ def get_resumen_trazabilidad(expediente_id):
         "hojas_encargo": hojas,
         "consultas_aplicadas": consultas_aplicadas,
         "eventos": eventos,
+        "notas": get_expedient_notes(expediente_id),
     }
+
+
+ADMISSION_RUNTIME_COLUMNS = {
+    "fecha_admision_tramite": "TEXT",
+    "csv_admision_tramite": "TEXT",
+    "admision_tramite_sha256": "TEXT",
+    "admision_extraction_status": "TEXT",
+    "admision_extraction_json": "TEXT",
+    "admision_extracted_at": "TEXT",
+}
+
+
+def ensure_admission_runtime_schema(conn):
+    for column_name, column_type in (
+        ADMISSION_RUNTIME_COLUMNS.items()
+    ):
+        if not _column_exists(
+            conn,
+            "expedientes",
+            column_name,
+        ):
+            conn.execute(
+                f"""
+                ALTER TABLE expedientes
+                ADD COLUMN {column_name} {column_type}
+                """
+            )
+
+
+
+def extract_admin_tax_submission_document(file_path):
+    from backend.services import (
+        justificante_aportacion_tasa_extraction_service
+        as tax_submission_extractor,
+    )
+
+    return (
+        tax_submission_extractor
+        .extract_justificante_aportacion_tasa(
+            file_path
+        )
+    )
+
+
+def extract_admin_requirement_extension(
+    file_path,
+):
+    from backend.services import (
+        justificante_ampliacion_plazo_extraction_service
+        as extension_extractor,
+    )
+
+    return (
+        extension_extractor
+        .extract_justificante_ampliacion_plazo(
+            file_path
+        )
+    )
+
+
+def extract_admin_denial_resolution(
+    file_path,
+):
+    from backend.services import (
+        resolucion_denegacion_extraction_service
+        as denial_resolution_extractor,
+    )
+
+    return (
+        denial_resolution_extractor
+        .extract_resolucion_denegacion(
+            file_path
+        )
+    )
+
+
+def extract_admin_favorable_resolution(
+    file_path,
+):
+    from backend.services import (
+        resolucion_favorable_extraction_service
+        as favorable_resolution_extractor,
+    )
+
+    return (
+        favorable_resolution_extractor
+        .extract_resolucion_favorable(
+            file_path
+        )
+    )
+
+
+def extract_admin_document_submission(
+    file_path,
+):
+    from backend.services import (
+        justificante_aportacion_documentacion_extraction_service
+        as document_submission_extractor,
+    )
+
+    return (
+        document_submission_extractor
+        .extract_justificante_aportacion_documentacion(
+            file_path
+        )
+    )
+
+
+def extract_admin_requirement_document(file_path):
+    from backend.services import (
+        requerimiento_extraction_service
+        as requirement_extractor,
+    )
+
+    return requirement_extractor.extract_requerimiento(
+        file_path
+    )
+
+
+def extract_admin_admission_document(file_path):
+    from backend.services import (
+        admision_tramite_extraction_service
+        as admission_extractor,
+    )
+
+    return admission_extractor.extract_admision_tramite(
+        file_path
+    )
+
+
+def persist_admission_data(
+    expediente_id,
+    extraction,
+):
+    import json
+
+    extraction = dict(extraction or {})
+    connection = _connect()
+
+    try:
+        ensure_admission_runtime_schema(connection)
+
+        expediente = connection.execute(
+            """
+            SELECT
+                e.id,
+                e.cliente_id,
+                e.numero_expediente_extranjeria,
+                e.fecha_admision_tramite,
+                e.csv_admision_tramite,
+                c.nie AS cliente_nie
+            FROM expedientes e
+            JOIN clientes c
+              ON c.id = e.cliente_id
+            WHERE e.id = ?
+            """,
+            (int(expediente_id),),
+        ).fetchone()
+
+        if not expediente:
+            raise ValueError(
+                "No existe el expediente"
+            )
+
+        detected_nie = str(
+            extraction.get("nie_detectado")
+            or ""
+        ).strip().upper()
+
+        detected_expediente = str(
+            extraction.get(
+                "numero_expediente_extranjeria"
+            )
+            or ""
+        ).strip()
+
+        existing_nie = str(
+            expediente["cliente_nie"]
+            or ""
+        ).strip().upper()
+
+        existing_expediente = str(
+            expediente[
+                "numero_expediente_extranjeria"
+            ]
+            or ""
+        ).strip()
+
+        conflicts = []
+        updates = {}
+
+        if detected_nie:
+            if not existing_nie:
+                connection.execute(
+                    """
+                    UPDATE clientes
+                    SET
+                        nie = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        detected_nie,
+                        int(expediente["cliente_id"]),
+                    ),
+                )
+                updates["cliente_nie"] = detected_nie
+
+            elif existing_nie != detected_nie:
+                conflicts.append(
+                    {
+                        "field": "cliente_nie",
+                        "existing": existing_nie,
+                        "detected": detected_nie,
+                    }
+                )
+
+        if detected_expediente:
+            if not existing_expediente:
+                updates[
+                    "numero_expediente_extranjeria"
+                ] = detected_expediente
+
+            elif (
+                existing_expediente
+                != detected_expediente
+            ):
+                conflicts.append(
+                    {
+                        "field":
+                            "numero_expediente_extranjeria",
+                        "existing": existing_expediente,
+                        "detected": detected_expediente,
+                    }
+                )
+
+        status = (
+            "CONFLICTO"
+            if conflicts
+            else "CONFIRMADA"
+        )
+
+        connection.execute(
+            """
+            UPDATE expedientes
+            SET
+                fecha_admision_tramite = ?,
+                csv_admision_tramite = ?,
+                admision_tramite_sha256 = ?,
+                admision_extraction_status = ?,
+                admision_extraction_json = ?,
+                admision_extracted_at =
+                    CURRENT_TIMESTAMP,
+                numero_expediente_extranjeria =
+                    COALESCE(
+                        NULLIF(
+                            numero_expediente_extranjeria,
+                            ''
+                        ),
+                        ?
+                    ),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                extraction.get(
+                    "fecha_admision_tramite"
+                ),
+                extraction.get(
+                    "csv_admision_tramite"
+                ),
+                extraction.get("sha256"),
+                status,
+                json.dumps(
+                    extraction,
+                    ensure_ascii=False,
+                ),
+                (
+                    detected_expediente
+                    if not existing_expediente
+                    else None
+                ),
+                int(expediente_id),
+            ),
+        )
+
+        connection.commit()
+
+        return {
+            "status": status,
+            "updates": updates,
+            "conflicts": conflicts,
+            "extraction": extraction,
+        }
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
