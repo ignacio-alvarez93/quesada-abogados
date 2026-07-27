@@ -920,6 +920,10 @@ def clients_view(page: ft.Page, on_create_expediente=None):
     nie = text_input("NIE", width=220)
     pasaporte = text_input("Pasaporte", width=220)
     dni = text_input("DNI", width=220)
+    fecha_caducidad_residencia = text_input(
+        "Caducidad NIE/TIE DD/MM/AAAA",
+        width=260,
+    )
     nacionalidad_autocomplete = AppAutocomplete(
         page=page,
         label='Nacionalidad',
@@ -1013,6 +1017,21 @@ def clients_view(page: ft.Page, on_create_expediente=None):
 
     fecha_nacimiento.on_change = on_fecha_nacimiento_change
 
+    def on_fecha_caducidad_residencia_change(e=None):
+        formatted = formatear_fecha_ddmmaaaa(
+            fecha_caducidad_residencia.value
+        )
+        if (
+            fecha_caducidad_residencia.value
+            != formatted
+        ):
+            fecha_caducidad_residencia.value = formatted
+            page.update()
+
+    fecha_caducidad_residencia.on_change = (
+        on_fecha_caducidad_residencia_change
+    )
+
     def show_message(control):
         form_message.controls.clear()
         form_message.controls.append(control)
@@ -1032,6 +1051,7 @@ def clients_view(page: ft.Page, on_create_expediente=None):
             nie,
             pasaporte,
             dni,
+            fecha_caducidad_residencia,
             fecha_nacimiento,
             telefono,
             email,
@@ -1066,6 +1086,9 @@ def clients_view(page: ft.Page, on_create_expediente=None):
         nie.value = cliente.get("nie") or ""
         pasaporte.value = cliente.get("pasaporte") or ""
         dni.value = cliente.get("dni") or ""
+        fecha_caducidad_residencia.value = fecha_a_display(
+            cliente.get("fecha_caducidad_residencia")
+        )
         nacionalidad_autocomplete.set_value(cliente.get("nacionalidad") or "", update=False)
         fecha_nacimiento.value = fecha_a_display(cliente.get("fecha_nacimiento"))
         telefono.value = cliente.get("telefono") or ""
@@ -1108,6 +1131,9 @@ def clients_view(page: ft.Page, on_create_expediente=None):
             "nie": nie.value,
             "pasaporte": pasaporte.value,
             "dni": dni.value,
+            "fecha_caducidad_residencia": fecha_a_sql(
+                fecha_caducidad_residencia.value
+            ),
             "nacionalidad": nacionalidad_autocomplete.get_value(),
             "fecha_nacimiento": fecha_a_sql(fecha_nacimiento.value),
             "telefono": telefono.value,
@@ -1145,6 +1171,16 @@ def clients_view(page: ft.Page, on_create_expediente=None):
             errores.append("El nombre es obligatorio")
         if fecha_nacimiento.value and not fecha_a_sql(fecha_nacimiento.value):
             errores.append("La fecha de nacimiento debe tener formato DD/MM/AAAA")
+        if (
+            fecha_caducidad_residencia.value
+            and not fecha_a_sql(
+                fecha_caducidad_residencia.value
+            )
+        ):
+            errores.append(
+                "La caducidad NIE/TIE debe tener "
+                "formato DD/MM/AAAA"
+            )
         return errores
 
     def cerrar_dialogo(e=None):
@@ -1289,7 +1325,16 @@ def clients_view(page: ft.Page, on_create_expediente=None):
             controls=[
                 ft.Text("Datos básicos", size=16, weight=ft.FontWeight.BOLD, color="#003B7A"),
                 ft.Row([nombre, primer_apellido, segundo_apellido], wrap=True, spacing=10),
-                ft.Row([nie, pasaporte, dni], wrap=True, spacing=10),
+                ft.Row(
+                    [
+                        nie,
+                        pasaporte,
+                        dni,
+                        fecha_caducidad_residencia,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
                 ft.Row([nacionalidad_autocomplete.control, fecha_nacimiento, telefono], wrap=True, spacing=10),
                 ft.Row([email, estado_cliente], wrap=True, spacing=10),
                 ft.Text("Dirección en España", size=16, weight=ft.FontWeight.BOLD, color="#003B7A"),
@@ -2430,6 +2475,14 @@ def clients_view(page: ft.Page, on_create_expediente=None):
                         ("Nacionalidad", cliente.get("nacionalidad")),
                         ("Fecha nacimiento", fecha_a_display(cliente.get("fecha_nacimiento"))),
                         ("Edad", calcular_edad(cliente.get("fecha_nacimiento"))),
+                        (
+                            "Caducidad NIE/TIE",
+                            fecha_a_display(
+                                cliente.get(
+                                    "fecha_caducidad_residencia"
+                                )
+                            ),
+                        ),
                         ("Teléfono", cliente.get("telefono")),
                         ("Email", cliente.get("email")),
                         ("Estado", cliente.get("estado_cliente")),
