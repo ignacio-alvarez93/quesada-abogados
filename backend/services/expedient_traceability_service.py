@@ -605,45 +605,550 @@ def replace_admin_document_file(
     return get_admin_document(justificante_id)
 
 
-def archive_admin_document(justificante_id):
-    justificante = get_admin_document(justificante_id)
+def _derive_admin_state_from_documents(
+    documents,
+    workflow_code,
+):
+    """
+    Calcula el estado administrativo resultante recorriendo los
+    documentos activos en el orden en que fueron incorporados.
 
-    if not justificante:
-        raise ValueError(
-            "Documento administrativo no encontrado"
+    Los documentos sin transición administrativa se ignoran.
+    El último documento que produzca transición determina el estado.
+    """
+    target_state = ""
+    target_event_code = ""
+
+    for document in documents or []:
+        event_code = _text(
+            document.get("tipo_justificante")
+            if isinstance(document, dict)
+            else document["tipo_justificante"]
         )
 
-    with _connect() as conn:
+        state_name = _get_admin_document_target_state(
+            event_code,
+            workflow_code,
+        )
+
+        if not state_name:
+            continue
+
+        target_state = _text(state_name)
+        target_event_code = event_code
+
+    return {
+        "estado_nuevo": target_state,
+        "event_code_origen": target_event_code,
+    }
+
+
+def _get_admin_traceability_initial_state(
+    conn,
+    expediente_id,
+):
+    """
+    Recupera el estado existente antes de la primera transición
+    documental administrativa registrada para el expediente.
+    """
+    row = conn.execute(
+        """
+        SELECT estado_anterior
+        FROM expediente_eventos
+        WHERE expediente_id = ?
+          AND tipo_evento = 'DOCUMENTO_ADMINISTRATIVO'
+          AND entidad_relacionada = 'expediente_justificantes'
+          AND NULLIF(TRIM(COALESCE(estado_anterior, '')), '') IS NOT NULL
+        ORDER BY fecha_evento ASC, id ASC
+        LIMIT 1
+        """,
+        (int(expediente_id),),
+    ).fetchone()
+
+    if row:
+        initial_state = _text(row["estado_anterior"])
+        if initial_state:
+            return initial_state
+
+    # Respaldo para expedientes antiguos sin evento histórico completo.
+    return "NO PRESENTADO"
+
+
+def _recalculate_admin_state_after_document_archive(
+    conn,
+    expediente_id,
+    archived_event_code,
+):
+    """
+    Recalcula el estado del expediente tras archivar una card.
+
+    Solo se recalcula cuando la card eliminada tenía una transición
+    administrativa. Eliminar documentos informativos no altera el estado.
+    """
+    expediente = conn.execute(
+        """
+        SELECT
+            id,
+            cliente_id,
+            estado_administrativo_id,
+            estado_presentacion
+        FROM expedientes
+        WHERE id = ?
+        """,
+        (int(expediente_id),),
+    ).fetchone()
+
+    if not expediente:
+        raise ValueError("Expediente no encontrado")
+
+    workflow_code = _resolve_expediente_workflow_code(
+        conn,
+        expediente_id,
+    )
+
+    archived_target_state = _get_admin_document_target_state(
+        archived_event_code,
+        workflow_code,
+    )
+
+    estado_anterior = _get_estado_administrativo_nombre(
+        conn,
+        expediente["estado_administrativo_id"],
+    )
+
+    # Una card sin transición no interviene en el estado administrativo.
+    if not archived_target_state:
+        return {
+            "changed": False,
+            "workflow_code": workflow_code,
+            "estado_anterior": estado_anterior,
+            "estado_nuevo": estado_anterior,
+            "estado_nuevo_id":
+                expediente["estado_administrativo_id"],
+            "event_code_origen": "",
+            "reason": "DOCUMENTO_SIN_TRANSICION",
+        }
+
+    rows = conn.execute(
+        """
+        SELECT
+            id,
+            tipo_justificante,
+            fecha_documento,
+            fecha_presentacion,
+            created_at
+        FROM expediente_justificantes
+        WHERE expediente_id = ?
+          AND activo = 1
+        ORDER BY created_at ASC, id ASC
+        """,
+        (int(expediente_id),),
+    ).fetchall()
+
+    documents = [
+        dict(row)
+        for row in rows
+    ]
+
+    derived = _derive_admin_state_from_documents(
+        documents,
+        workflow_code,
+    )
+
+    estado_nuevo = (
+        derived.get("estado_nuevo")
+        or _get_admin_traceability_initial_state(
+            conn,
+            expediente_id,
+        )
+    )
+
+    estado_nuevo_id = _get_estado_administrativo_id(
+        conn,
+        estado_nuevo,
+    )
+
+    if not estado_nuevo_id:
+        raise ValueError(
+            "No existe el estado administrativo "
+            f"'{estado_nuevo}' en la configuración"
+        )
+
+    changed = (
+        int(expediente["estado_administrativo_id"] or 0)
+        != int(estado_nuevo_id)
+    )
+
+    # estado_presentacion se basa en que siga existiendo al menos
+    # un justificante de presentación activo. Solo se revisa cuando
+    # se elimina una card de presentación.
+    if _text(archived_event_code) == "JUSTIFICANTE_PRESENTACION":
+        presentation_row = conn.execute(
+            """
+            SELECT id
+            FROM expediente_justificantes
+            WHERE expediente_id = ?
+              AND activo = 1
+              AND tipo_justificante = 'JUSTIFICANTE_PRESENTACION'
+            LIMIT 1
+            """,
+            (int(expediente_id),),
+        ).fetchone()
+
+        estado_presentacion = (
+            "PRESENTADO"
+            if presentation_row
+            else "NO PRESENTADO"
+        )
+
         conn.execute(
             """
-            UPDATE expediente_justificantes
-            SET
-                activo = 0,
+            UPDATE expedientes
+            SET estado_administrativo_id = ?,
+                estado_presentacion = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (int(justificante_id),),
+            (
+                int(estado_nuevo_id),
+                estado_presentacion,
+                int(expediente_id),
+            ),
         )
+    else:
+        conn.execute(
+            """
+            UPDATE expedientes
+            SET estado_administrativo_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(estado_nuevo_id),
+                int(expediente_id),
+            ),
+        )
+
+    return {
+        "changed": changed,
+        "workflow_code": workflow_code,
+        "estado_anterior": estado_anterior,
+        "estado_nuevo": estado_nuevo,
+        "estado_nuevo_id": int(estado_nuevo_id),
+        "event_code_origen":
+            derived.get("event_code_origen") or "",
+        "reason":
+            (
+                "ULTIMO_DOCUMENTO_ACTIVO"
+                if derived.get("estado_nuevo")
+                else "ESTADO_INICIAL"
+            ),
+    }
+
+
+def recalculate_expedient_admin_state(
+    expediente_id,
+    usuario="ERP",
+):
+    """
+    Reconstruye el estado administrativo desde todos los documentos
+    activos del expediente.
+
+    Puede utilizarse después de un archivado o para reparar expedientes
+    cuyo estado histórico haya quedado desincronizado.
+    """
+    expediente_id = int(expediente_id)
+
+    with _connect() as conn:
+        expediente = conn.execute(
+            """
+            SELECT
+                id,
+                cliente_id,
+                estado_administrativo_id,
+                estado_presentacion
+            FROM expedientes
+            WHERE id = ?
+            """,
+            (expediente_id,),
+        ).fetchone()
+
+        if not expediente:
+            raise ValueError("Expediente no encontrado")
+
+        workflow_code = _resolve_expediente_workflow_code(
+            conn,
+            expediente_id,
+        )
+
+        estado_anterior = _get_estado_administrativo_nombre(
+            conn,
+            expediente["estado_administrativo_id"],
+        )
+
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                tipo_justificante,
+                fecha_documento,
+                fecha_presentacion,
+                created_at
+            FROM expediente_justificantes
+            WHERE expediente_id = ?
+              AND activo = 1
+            ORDER BY
+                created_at ASC,
+                id ASC
+            """,
+            (expediente_id,),
+        ).fetchall()
+
+        documents = [
+            dict(row)
+            for row in rows
+        ]
+
+        derived = _derive_admin_state_from_documents(
+            documents,
+            workflow_code,
+        )
+
+        estado_nuevo = (
+            derived.get("estado_nuevo")
+            or _get_admin_traceability_initial_state(
+                conn,
+                expediente_id,
+            )
+        )
+
+        estado_nuevo_id = _get_estado_administrativo_id(
+            conn,
+            estado_nuevo,
+        )
+
+        if not estado_nuevo_id:
+            raise ValueError(
+                "No existe el estado administrativo "
+                f"'{estado_nuevo}' en configuración"
+            )
+
+        presentation_exists = conn.execute(
+            """
+            SELECT 1
+            FROM expediente_justificantes
+            WHERE expediente_id = ?
+              AND activo = 1
+              AND tipo_justificante = 'JUSTIFICANTE_PRESENTACION'
+            LIMIT 1
+            """,
+            (expediente_id,),
+        ).fetchone()
+
+        estado_presentacion = (
+            "PRESENTADO"
+            if presentation_exists
+            else "NO PRESENTADO"
+        )
+
+        changed = (
+            int(expediente["estado_administrativo_id"] or 0)
+            != int(estado_nuevo_id)
+            or str(
+                expediente["estado_presentacion"] or ""
+            ).strip().upper()
+            != estado_presentacion
+        )
+
+        conn.execute(
+            """
+            UPDATE expedientes
+            SET estado_administrativo_id = ?,
+                estado_presentacion = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(estado_nuevo_id),
+                estado_presentacion,
+                expediente_id,
+            ),
+        )
+
         conn.commit()
 
-    registrar_evento(
-        expediente_id=justificante["expediente_id"],
-        cliente_id=justificante["cliente_id"],
-        tipo_evento="DOCUMENTO_ADMINISTRATIVO_ELIMINADO",
-        titulo="DOCUMENTO ADMINISTRATIVO ELIMINADO",
-        descripcion=(
-            "Se ha retirado de la trazabilidad el documento "
-            f"#{int(justificante_id)}: "
-            f"{justificante.get('archivo_nombre') or '-'}."
-        ),
-        entidad_relacionada="expediente_justificantes",
-        entidad_relacionada_id=int(justificante_id),
+    return {
+        "changed": changed,
+        "expediente_id": expediente_id,
+        "workflow_code": workflow_code,
+        "estado_anterior": estado_anterior,
+        "estado_nuevo": estado_nuevo,
+        "estado_nuevo_id": int(estado_nuevo_id),
+        "estado_presentacion": estado_presentacion,
+        "event_code_origen":
+            derived.get("event_code_origen") or "",
+        "active_document_count": len(documents),
+    }
+
+
+def archive_admin_document(justificante_id):
+    """
+    Retira una card de la trazabilidad y recalcula dentro de la misma
+    transacción el estado administrativo del expediente.
+    """
+    justificante_id = int(justificante_id)
+
+    with _connect() as conn:
+        justificante = conn.execute(
+            """
+            SELECT *
+            FROM expediente_justificantes
+            WHERE id = ?
+              AND activo = 1
+            """,
+            (justificante_id,),
+        ).fetchone()
+
+        if not justificante:
+            raise ValueError(
+                "Documento administrativo no encontrado "
+                "o ya eliminado"
+            )
+
+        justificante = dict(justificante)
+
+        expediente_id = int(
+            justificante["expediente_id"]
+        )
+        cliente_id = int(
+            justificante["cliente_id"]
+        )
+        event_code = _text(
+            justificante.get("tipo_justificante")
+        )
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+
+            conn.execute(
+                """
+                UPDATE expediente_justificantes
+                SET activo = 0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                  AND activo = 1
+                """,
+                (justificante_id,),
+            )
+
+            transition = (
+                _recalculate_admin_state_after_document_archive(
+                    conn,
+                    expediente_id,
+                    event_code,
+                )
+            )
+
+            event_label = (
+                ADMIN_DOCUMENT_EVENT_LABELS.get(
+                    event_code,
+                    event_code.replace("_", " ").title(),
+                )
+            )
+
+            estado_anterior = (
+                transition.get("estado_anterior")
+                or ""
+            )
+            estado_nuevo = (
+                transition.get("estado_nuevo")
+                or ""
+            )
+
+            transition_text = ""
+
+            if transition.get("changed"):
+                transition_text = (
+                    "\nReversión administrativa: "
+                    f"{estado_anterior or 'SIN ESTADO'} "
+                    f"→ {estado_nuevo or 'SIN ESTADO'}."
+                )
+            elif transition.get("reason") == "DOCUMENTO_SIN_TRANSICION":
+                transition_text = (
+                    "\nEl documento no modificaba el estado "
+                    "administrativo."
+                )
+            else:
+                transition_text = (
+                    "\nEl estado administrativo se mantiene en "
+                    f"{estado_nuevo or estado_anterior or 'SIN ESTADO'}."
+                )
+
+            conn.execute(
+                """
+                INSERT INTO expediente_eventos (
+                    expediente_id,
+                    cliente_id,
+                    tipo_evento,
+                    titulo,
+                    descripcion,
+                    estado_anterior,
+                    estado_nuevo,
+                    entidad_relacionada,
+                    entidad_relacionada_id,
+                    usuario
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    expediente_id,
+                    cliente_id,
+                    "DOCUMENTO_ADMINISTRATIVO_ELIMINADO",
+                    (
+                        "DOCUMENTO ADMINISTRATIVO ELIMINADO · "
+                        + event_label
+                    ),
+                    (
+                        "Se ha retirado de la trazabilidad el "
+                        f"documento #{justificante_id}: "
+                        f"{justificante.get('archivo_nombre') or '-'}."
+                        + transition_text
+                    ),
+                    estado_anterior,
+                    estado_nuevo,
+                    "expediente_justificantes",
+                    justificante_id,
+                    "ERP",
+                ),
+            )
+
+            conn.commit()
+
+        except Exception:
+            conn.rollback()
+            raise
+
+    # Segundo recálculo completo tras confirmar el archivado.
+    # Actúa como garantía ante datos históricos desincronizados.
+    final_transition = recalculate_expedient_admin_state(
+        expediente_id,
         usuario="ERP",
     )
 
+    transition = final_transition
+
     return {
         "ok": True,
-        "justificante_id": int(justificante_id),
+        "justificante_id": justificante_id,
+        "expediente_id": expediente_id,
+        "event_code": event_code,
+        "state_recalculation": transition,
+        "estado_anterior":
+            transition.get("estado_anterior") or "",
+        "estado_nuevo":
+            transition.get("estado_nuevo") or "",
+        "state_changed":
+            bool(transition.get("changed")),
     }
 
 
