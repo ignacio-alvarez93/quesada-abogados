@@ -17,6 +17,7 @@ from frontend.views.payrolls_view import payrolls_view
 from frontend.views.box_watch_view import box_watch_view
 from frontend.views.reporting_view import reporting_view
 from frontend.views.presentation_queue_view import presentation_queue_view
+from frontend.views.notifications_view import notifications_view
 from frontend.views.document_inbox_view import document_inbox_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
@@ -95,6 +96,14 @@ def main(page: ft.Page):
                     "Expedientes",
                     open_expediente_id=expediente_id,
                     return_to_queue=True,
+                ),
+            )
+        elif view_name == "Notificaciones":
+            content = notifications_view(
+                page,
+                on_open_expediente=lambda expediente_id: navigate(
+                    "Expedientes",
+                    open_expediente_id=expediente_id,
                 ),
             )
         elif view_name == "Trazabilidad Expedientes":
