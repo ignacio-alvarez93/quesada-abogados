@@ -444,6 +444,22 @@ def update_expediente(expediente_id, data):
         )
         conn.commit()
 
+    try:
+        from backend.services import (
+            notification_tracking_service
+        )
+
+        notification_tracking_service.reconcile_expedient(
+            expediente_id,
+            source="UPDATE_EXPEDIENTE",
+            usuario="ERP",
+        )
+
+    except Exception:
+        # La edición del expediente no debe quedar bloqueada
+        # por un error de proyección operativa.
+        pass
+
 
 def archive_expediente(expediente_id):
     with _connect() as conn:
