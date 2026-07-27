@@ -111,6 +111,7 @@ FICHA_FIELDS = [
     "dni",
     "nacionalidad",
     "fecha_nacimiento",
+    "fecha_caducidad_residencia",
     "telefono",
     "email",
     "estado_cliente",
@@ -806,6 +807,52 @@ def _money(value):
         return "0.00 €"
 
 
+def _residence_expiry_origin_label(value):
+    origin = str(value or "").strip().upper()
+
+    labels = {
+        "MANUAL": "Introducción manual",
+        "RESOLUCION_FAVORABLE":
+            "Resolución favorable",
+    }
+
+    return labels.get(
+        origin,
+        str(value or "").strip(),
+    )
+
+
+def _get_residence_expiry_expedient_number(client):
+    expediente_id = client.get(
+        "fecha_caducidad_expediente_id"
+    )
+
+    if not expediente_id:
+        return ""
+
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                """
+                SELECT numero_expediente
+                FROM expedientes
+                WHERE id = ?
+                """,
+                (int(expediente_id),),
+            ).fetchone()
+
+            if row:
+                return (
+                    row["numero_expediente"]
+                    or f"Expediente #{expediente_id}"
+                )
+
+    except Exception:
+        pass
+
+    return f"Expediente #{expediente_id}"
+
+
 def _calcular_edad(fecha_nacimiento):
     if not fecha_nacimiento:
         return ""
@@ -1259,8 +1306,55 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         ("Pasaporte", client.get("pasaporte")),
                         ("DNI", client.get("dni")),
                         ("Nacionalidad", client.get("nacionalidad")),
-                        ("Fecha nacimiento", _fecha_display(client.get("fecha_nacimiento"))),
-                        ("Edad", _calcular_edad(client.get("fecha_nacimiento"))),
+                        (
+                            "Fecha nacimiento",
+                            _fecha_display(
+                                client.get(
+                                    "fecha_nacimiento"
+                                )
+                            ),
+                        ),
+                        (
+                            "Edad",
+                            _calcular_edad(
+                                client.get(
+                                    "fecha_nacimiento"
+                                )
+                            ),
+                        ),
+                        (
+                            "Caducidad NIE/TIE",
+                            _fecha_display(
+                                client.get(
+                                    "fecha_caducidad_residencia"
+                                )
+                            ),
+                        ),
+                        (
+                            "Origen caducidad",
+                            _residence_expiry_origin_label(
+                                client.get(
+                                    "fecha_caducidad_origen"
+                                )
+                            ),
+                        ),
+                        (
+                            "Expediente origen",
+                            _get_residence_expiry_expedient_number(
+                                client
+                            ),
+                        ),
+                        (
+                            "Caducidad actualizada",
+                            _fecha_display(
+                                str(
+                                    client.get(
+                                        "fecha_caducidad_actualizada_at"
+                                    )
+                                    or ""
+                                )[:10]
+                            ),
+                        ),
                         ("Estado cliente", client.get("estado_cliente")),
                         ("Sexo", client.get("sexo")),
                         ("Ficha completada", f"{_porcentaje_ficha(client)}%"),

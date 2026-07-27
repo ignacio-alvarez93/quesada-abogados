@@ -1556,6 +1556,264 @@ def persist_presentation_registry_data(
             connection.close()
 
 
+def _normalize_residence_expiry_date(value):
+    from datetime import datetime
+
+    value = str(value or "").strip()
+
+    if not value:
+        return ""
+
+    for date_format in (
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+    ):
+        try:
+            return datetime.strptime(
+                value[:10],
+                date_format,
+            ).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    return ""
+
+
+def _decide_client_residence_expiry_update(
+    existing_date,
+    detected_date,
+):
+    existing = _normalize_residence_expiry_date(
+        existing_date
+    )
+    detected = _normalize_residence_expiry_date(
+        detected_date
+    )
+
+    if not detected:
+        return {
+            "status": "NO_VALID_DATE",
+            "should_update": False,
+            "existing_date": existing,
+            "detected_date": "",
+        }
+
+    if not existing:
+        return {
+            "status": "CREATED",
+            "should_update": True,
+            "existing_date": "",
+            "detected_date": detected,
+        }
+
+    if detected == existing:
+        return {
+            "status": "UNCHANGED",
+            "should_update": False,
+            "existing_date": existing,
+            "detected_date": detected,
+        }
+
+    if detected > existing:
+        return {
+            "status": "UPDATED",
+            "should_update": True,
+            "existing_date": existing,
+            "detected_date": detected,
+        }
+
+    return {
+        "status": "CONFLICT_OLDER_DATE",
+        "should_update": False,
+        "existing_date": existing,
+        "detected_date": detected,
+    }
+
+
+def _ensure_client_residence_expiry_schema(conn):
+    columns = {
+        row["name"]
+        for row in conn.execute(
+            "PRAGMA table_info(clientes)"
+        ).fetchall()
+    }
+
+    required = {
+        "fecha_caducidad_residencia": "TEXT",
+        "fecha_caducidad_origen": "TEXT",
+        "fecha_caducidad_expediente_id": "INTEGER",
+        "fecha_caducidad_documento_id": "INTEGER",
+        "fecha_caducidad_actualizada_at": "TEXT",
+    }
+
+    for column_name, column_type in required.items():
+        if column_name not in columns:
+            conn.execute(
+                f"ALTER TABLE clientes "
+                f"ADD COLUMN {column_name} "
+                f"{column_type}"
+            )
+
+
+def _update_client_residence_expiry_from_resolution(
+    expediente_id,
+    justificante_id,
+    extraction,
+    usuario="ERP",
+):
+    extraction = dict(extraction or {})
+    detected_date = extraction.get(
+        "fecha_caducidad"
+    )
+
+    with _connect() as conn:
+        _ensure_client_residence_expiry_schema(conn)
+
+        row = conn.execute(
+            """
+            SELECT
+                e.id AS expediente_id,
+                e.cliente_id,
+                c.fecha_caducidad_residencia
+            FROM expedientes e
+            JOIN clientes c
+              ON c.id = e.cliente_id
+            WHERE e.id = ?
+            """,
+            (int(expediente_id),),
+        ).fetchone()
+
+        if not row:
+            raise ValueError(
+                "No existe el expediente o su cliente"
+            )
+
+        decision = (
+            _decide_client_residence_expiry_update(
+                row["fecha_caducidad_residencia"],
+                detected_date,
+            )
+        )
+
+        result = {
+            **decision,
+            "expediente_id": int(expediente_id),
+            "cliente_id": int(row["cliente_id"]),
+            "justificante_id": int(justificante_id),
+        }
+
+        if decision["should_update"]:
+            conn.execute(
+                """
+                UPDATE clientes
+                SET
+                    fecha_caducidad_residencia = ?,
+                    fecha_caducidad_origen =
+                        'RESOLUCION_FAVORABLE',
+                    fecha_caducidad_expediente_id = ?,
+                    fecha_caducidad_documento_id = ?,
+                    fecha_caducidad_actualizada_at =
+                        CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    decision["detected_date"],
+                    int(expediente_id),
+                    int(justificante_id),
+                    int(row["cliente_id"]),
+                ),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO expediente_eventos (
+                    expediente_id,
+                    cliente_id,
+                    tipo_evento,
+                    titulo,
+                    descripcion,
+                    estado_anterior,
+                    estado_nuevo,
+                    entidad_relacionada,
+                    entidad_relacionada_id,
+                    usuario
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(expediente_id),
+                    int(row["cliente_id"]),
+                    (
+                        "CLIENTE_CADUCIDAD_"
+                        "RESIDENCIA_ACTUALIZADA"
+                    ),
+                    (
+                        "CADUCIDAD DE RESIDENCIA "
+                        "ACTUALIZADA"
+                    ),
+                    (
+                        "La resolución favorable "
+                        "actualiza la caducidad NIE/TIE "
+                        "del cliente."
+                    ),
+                    decision["existing_date"],
+                    decision["detected_date"],
+                    "expediente_justificantes",
+                    int(justificante_id),
+                    str(usuario or "ERP").strip(),
+                ),
+            )
+
+        elif (
+            decision["status"]
+            == "CONFLICT_OLDER_DATE"
+        ):
+            conn.execute(
+                """
+                INSERT INTO expediente_eventos (
+                    expediente_id,
+                    cliente_id,
+                    tipo_evento,
+                    titulo,
+                    descripcion,
+                    estado_anterior,
+                    estado_nuevo,
+                    entidad_relacionada,
+                    entidad_relacionada_id,
+                    usuario
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(expediente_id),
+                    int(row["cliente_id"]),
+                    (
+                        "CLIENTE_CADUCIDAD_"
+                        "RESIDENCIA_CONFLICTO"
+                    ),
+                    (
+                        "CONFLICTO EN CADUCIDAD "
+                        "DE RESIDENCIA"
+                    ),
+                    (
+                        "La fecha detectada en la "
+                        "resolución es anterior a la "
+                        "fecha vigente del cliente y "
+                        "no se ha sobrescrito."
+                    ),
+                    decision["existing_date"],
+                    decision["detected_date"],
+                    "expediente_justificantes",
+                    int(justificante_id),
+                    str(usuario or "ERP").strip(),
+                ),
+            )
+
+        conn.commit()
+        return result
+
+
 def create_admin_document_event(data):
     """
     Registra un documento administrativo seleccionado manualmente desde la
@@ -2145,6 +2403,24 @@ def create_admin_document_event(data):
             presentation_extraction,
         )
 
+    residence_expiry_update = None
+
+    if (
+        event_code == "RESOLUCION_FAVORABLE"
+        and favorable_resolution_extraction
+    ):
+        residence_expiry_update = (
+            _update_client_residence_expiry_from_resolution(
+                expediente_id=expediente_id,
+                justificante_id=justificante_id,
+                extraction=favorable_resolution_extraction,
+                usuario=_raw(
+                    data.get("usuario")
+                    or "ERP"
+                ),
+            )
+        )
+
     transition = _apply_admin_document_transition(expediente_id, event_code)
 
     transition_text = ""
@@ -2209,6 +2485,8 @@ def create_admin_document_event(data):
         "estado_nuevo": transition.get("estado_nuevo") or "",
         "estado_nuevo_id": transition.get("estado_nuevo_id"),
         "queue_completion": queue_completion,
+        "residence_expiry_update":
+            residence_expiry_update,
         "presentation_extraction":
             presentation_extraction,
         "admission_extraction":

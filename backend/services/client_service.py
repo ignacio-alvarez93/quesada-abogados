@@ -47,6 +47,12 @@ def normalize_client_data(data):
     if 'telefono' in normalized:
         normalized['telefono'] = (normalized.get('telefono') or '').strip()
 
+    if 'fecha_caducidad_residencia' in normalized:
+        normalized['fecha_caducidad_residencia'] = (
+            normalized.get('fecha_caducidad_residencia')
+            or ''
+        ).strip()
+
     return normalized
 
 
@@ -83,7 +89,11 @@ def _table_columns(cursor, table_name):
 
 def ensure_client_hubspot_columns(cursor):
     """
-    Migración defensiva para bases ya creadas antes de la integración HubSpot.
+    Migración defensiva del modelo de clientes.
+
+    Conserva el nombre histórico de la función para no romper llamadas
+    existentes, aunque actualmente también asegura los campos de vigencia
+    y procedencia de la autorización de residencia.
     """
     if not _table_exists(cursor, "clientes"):
         return
@@ -93,11 +103,19 @@ def ensure_client_hubspot_columns(cursor):
         "hubspot_id": "TEXT",
         "hubspot_url": "TEXT",
         "hubspot_imported_at": "TEXT",
+        "fecha_caducidad_residencia": "TEXT",
+        "fecha_caducidad_origen": "TEXT",
+        "fecha_caducidad_expediente_id": "INTEGER",
+        "fecha_caducidad_documento_id": "INTEGER",
+        "fecha_caducidad_actualizada_at": "TEXT",
     }
 
     for column, column_type in required.items():
         if column not in columns:
-            cursor.execute(f"ALTER TABLE clientes ADD COLUMN {column} {column_type}")
+            cursor.execute(
+                f"ALTER TABLE clientes "
+                f"ADD COLUMN {column} {column_type}"
+            )
 
 
 def _sync_linked_contact_rows_for_client(cursor, client_id, data):
@@ -146,9 +164,17 @@ def create_client(data):
             tipo_via, nombre_via, domicilio_espana, localidad, codigo_postal, provincia, numero, piso,
             estado_cliente, fecha_alta, origen_cliente, responsable_interno,
             observaciones, observaciones_internas, sexo,
-            hubspot_id, hubspot_url, hubspot_imported_at
+            hubspot_id, hubspot_url, hubspot_imported_at,
+            fecha_caducidad_residencia,
+            fecha_caducidad_origen,
+            fecha_caducidad_actualizada_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?
+        )
     """, (
         data.get("nombre"),
         data.get("primer_apellido"),
@@ -183,6 +209,17 @@ def create_client(data):
         data.get("hubspot_id"),
         data.get("hubspot_url"),
         data.get("hubspot_imported_at"),
+        data.get("fecha_caducidad_residencia") or None,
+        (
+            "MANUAL"
+            if data.get("fecha_caducidad_residencia")
+            else None
+        ),
+        (
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if data.get("fecha_caducidad_residencia")
+            else None
+        ),
     ))
 
     conn.commit()
@@ -219,6 +256,81 @@ def update_client(client_id, data):
     cursor = conn.cursor()
     ensure_client_hubspot_columns(cursor)
 
+    existing = cursor.execute(
+        """
+        SELECT
+            fecha_caducidad_residencia,
+            fecha_caducidad_origen,
+            fecha_caducidad_expediente_id,
+            fecha_caducidad_documento_id,
+            fecha_caducidad_actualizada_at
+        FROM clientes
+        WHERE id = ?
+        """,
+        (int(client_id),),
+    ).fetchone()
+
+    existing_expiry = (
+        existing["fecha_caducidad_residencia"]
+        if existing
+        else None
+    )
+
+    new_expiry = (
+        data.get("fecha_caducidad_residencia")
+        or None
+    )
+
+    expiry_changed = (
+        (existing_expiry or "")
+        !=
+        (new_expiry or "")
+    )
+
+    expiry_origin = (
+        "MANUAL"
+        if expiry_changed and new_expiry
+        else (
+            None
+            if expiry_changed
+            else (
+                existing["fecha_caducidad_origen"]
+                if existing
+                else None
+            )
+        )
+    )
+
+    expiry_expediente_id = (
+        None
+        if expiry_changed
+        else (
+            existing["fecha_caducidad_expediente_id"]
+            if existing
+            else None
+        )
+    )
+
+    expiry_documento_id = (
+        None
+        if expiry_changed
+        else (
+            existing["fecha_caducidad_documento_id"]
+            if existing
+            else None
+        )
+    )
+
+    expiry_updated_at = (
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if expiry_changed
+        else (
+            existing["fecha_caducidad_actualizada_at"]
+            if existing
+            else None
+        )
+    )
+
     cursor.execute("""
         UPDATE clientes
         SET
@@ -254,6 +366,11 @@ def update_client(client_id, data):
             hubspot_id = ?,
             hubspot_url = ?,
             hubspot_imported_at = ?,
+            fecha_caducidad_residencia = ?,
+            fecha_caducidad_origen = ?,
+            fecha_caducidad_expediente_id = ?,
+            fecha_caducidad_documento_id = ?,
+            fecha_caducidad_actualizada_at = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     """, (
@@ -289,6 +406,11 @@ def update_client(client_id, data):
         data.get("hubspot_id"),
         data.get("hubspot_url"),
         data.get("hubspot_imported_at"),
+        new_expiry,
+        expiry_origin,
+        expiry_expediente_id,
+        expiry_documento_id,
+        expiry_updated_at,
         client_id,
     ))
 
