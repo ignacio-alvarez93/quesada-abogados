@@ -1137,12 +1137,40 @@ def archive_admin_document(justificante_id):
 
     transition = final_transition
 
+    notification_tracking = None
+
+    try:
+        from backend.services import (
+            notification_tracking_service
+        )
+
+        notification_tracking = (
+            notification_tracking_service
+            .reconcile_expedient(
+                expediente_id,
+                source=(
+                    "ARCHIVE_ADMIN_DOCUMENT:"
+                    + event_code
+                ),
+                usuario="ERP",
+            )
+        )
+
+    except Exception as exc:
+        notification_tracking = {
+            "ok": False,
+            "changed": False,
+            "error": str(exc),
+        }
+
     return {
         "ok": True,
         "justificante_id": justificante_id,
         "expediente_id": expediente_id,
         "event_code": event_code,
         "state_recalculation": transition,
+        "notification_tracking":
+            notification_tracking,
         "estado_anterior":
             transition.get("estado_anterior") or "",
         "estado_nuevo":
@@ -2474,6 +2502,35 @@ def create_admin_document_event(data):
         usuario=_raw(data.get("usuario") or "ERP"),
     )
 
+    notification_tracking = None
+
+    try:
+        from backend.services import (
+            notification_tracking_service
+        )
+
+        notification_tracking = (
+            notification_tracking_service
+            .reconcile_expedient(
+                expediente_id,
+                source=(
+                    "DOCUMENTO_ADMINISTRATIVO:"
+                    + event_code
+                ),
+                usuario=_raw(
+                    data.get("usuario")
+                    or "ERP"
+                ),
+            )
+        )
+
+    except Exception as exc:
+        notification_tracking = {
+            "ok": False,
+            "changed": False,
+            "error": str(exc),
+        }
+
     return {
         "justificante_id": justificante_id,
         "evento_id": evento_id,
@@ -2485,6 +2542,8 @@ def create_admin_document_event(data):
         "estado_nuevo": transition.get("estado_nuevo") or "",
         "estado_nuevo_id": transition.get("estado_nuevo_id"),
         "queue_completion": queue_completion,
+        "notification_tracking":
+            notification_tracking,
         "residence_expiry_update":
             residence_expiry_update,
         "presentation_extraction":
@@ -3214,11 +3273,36 @@ def persist_admission_data(
 
         connection.commit()
 
+        notification_tracking = None
+
+        try:
+            from backend.services import (
+                notification_tracking_service
+            )
+
+            notification_tracking = (
+                notification_tracking_service
+                .reconcile_expedient(
+                    expediente_id,
+                    source="PERSIST_ADMISSION_DATA",
+                    usuario="ERP",
+                )
+            )
+
+        except Exception as exc:
+            notification_tracking = {
+                "ok": False,
+                "changed": False,
+                "error": str(exc),
+            }
+
         return {
             "status": status,
             "updates": updates,
             "conflicts": conflicts,
             "extraction": extraction,
+            "notification_tracking":
+                notification_tracking,
         }
 
     except Exception:
