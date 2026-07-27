@@ -157,6 +157,7 @@ KNOWN_ACTIVE_VIEWS = {
     "Trabajadores",
     "Expedientes",
     "Colas de presentación",
+    "Notificaciones",
     "Cobros",
     "Conciliación",
     "Pérdidas y ganancias",
