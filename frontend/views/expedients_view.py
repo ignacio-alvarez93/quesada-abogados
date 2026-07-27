@@ -13581,20 +13581,59 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
         def execute_delete(e=None):
             try:
-                trace_service.archive_admin_document(
+                result = trace_service.archive_admin_document(
                     document_id
                 )
+
+                expediente_id = (
+                    result.get("expediente_id")
+                    or state.get("dialog_expediente_id")
+                    or state.get("editing_id")
+                )
+
+                # La reversión modifica el estado directamente en la BD.
+                # Recargamos el expediente para evitar que los controles
+                # del formulario conserven el estado anterior y lo vuelvan
+                # a escribir al pulsar Guardar.
+                fresh_expediente = (
+                    expedient_service.get_expediente(
+                        expediente_id
+                    )
+                    if expediente_id
+                    else None
+                )
+
+                if fresh_expediente:
+                    load_form(fresh_expediente)
+                    state["dialog_expediente_id"] = int(
+                        fresh_expediente["id"]
+                    )
+
                 delete_admin_document_dialog.open = False
+
                 expediente_dialog.content = (
                     build_expediente_dialog_content(
-                        state.get(
-                            "dialog_expediente_id"
-                        )
+                        expediente_id
                     )
                 )
+
+                # Actualiza también las cards de la vista principal.
+                refresh_table()
+
+                state_change = ""
+
+                if result.get("state_changed"):
+                    state_change = (
+                        "\nEstado administrativo: "
+                        f"{result.get('estado_anterior') or 'SIN ESTADO'}"
+                        " → "
+                        f"{result.get('estado_nuevo') or 'SIN ESTADO'}"
+                    )
+
                 set_message(
                     success_alert(
                         "Documento eliminado de la trazabilidad"
+                        + state_change
                     )
                 )
                 page.update()
