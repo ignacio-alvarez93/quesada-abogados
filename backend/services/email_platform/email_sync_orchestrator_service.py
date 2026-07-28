@@ -3,10 +3,11 @@ Orquestación de sincronizaciones manuales de correo.
 
 Responsabilidades:
 
-- localizar la cuenta IONOS activa;
-- ejecutar una única sincronización incremental;
+- localizar cuentas de entrada activas por proveedor;
+- ejecutar sincronizaciones incrementales;
 - impedir ejecuciones concurrentes dentro del proceso;
-- devolver un resumen estable y apto para la interfaz;
+- devolver un resumen estable para la interfaz;
+- mantener compatibilidad con la API histórica de IONOS;
 - no contener dependencias de Flet.
 """
 
@@ -16,13 +17,33 @@ import threading
 from backend.services.email_platform import (
     email_account_service,
 )
+from backend.services.email_platform.providers.gmail_api_provider import (
+    GmailApiProvider,
+)
 from backend.services.email_platform.providers.ionos_imap_provider import (
     IonosImapProvider,
 )
 
 
-_PROVIDER = "IONOS_IMAP"
-_DEFAULT_CREDENTIAL_KEY = "QUESADA_IONOS"
+PROVIDER_IONOS = "IONOS_IMAP"
+PROVIDER_GMAIL = "GMAIL_API"
+
+_PROVIDER_CONFIG = {
+    PROVIDER_IONOS: {
+        "label": "IONOS",
+        "email_env":
+            "QUESADA_IONOS_ACCOUNT_EMAIL",
+        "provider_class":
+            IonosImapProvider,
+    },
+    PROVIDER_GMAIL: {
+        "label": "Gmail",
+        "email_env":
+            "QUESADA_GMAIL_ACCOUNT_EMAIL",
+        "provider_class":
+            GmailApiProvider,
+    },
+}
 
 _SYNC_LOCK = threading.Lock()
 
@@ -35,14 +56,43 @@ def _normalize_email(value):
     return _text(value).lower()
 
 
+def _normalize_provider(value):
+    provider = _text(value).upper()
+
+    if provider not in _PROVIDER_CONFIG:
+        raise ValueError(
+            "Proveedor de correo no soportado: "
+            f"{provider or '(vacío)'}"
+        )
+
+    return provider
+
+
+def _provider_label(provider):
+    provider = _normalize_provider(provider)
+
+    return _PROVIDER_CONFIG[
+        provider
+    ]["label"]
+
+
 def _load_configured_account(
+    provider,
     *,
     account_email=None,
 ):
+    provider = _normalize_provider(
+        provider
+    )
+
+    config = _PROVIDER_CONFIG[
+        provider
+    ]
+
     requested_email = _normalize_email(
         account_email
         or os.getenv(
-            "QUESADA_IONOS_ACCOUNT_EMAIL",
+            config["email_env"],
             "",
         )
     )
@@ -50,9 +100,11 @@ def _load_configured_account(
     accounts = (
         email_account_service
         .get_active_incoming_accounts(
-            provider=_PROVIDER
+            provider=provider
         )
     )
+
+    label = config["label"]
 
     if requested_email:
         account = next(
@@ -70,8 +122,8 @@ def _load_configured_account(
             return account
 
         raise RuntimeError(
-            "No existe una cuenta IONOS activa "
-            f"para {requested_email}."
+            f"No existe una cuenta {label} "
+            f"activa para {requested_email}."
         )
 
     if len(accounts) == 1:
@@ -79,25 +131,32 @@ def _load_configured_account(
 
     if not accounts:
         raise RuntimeError(
-            "No existe ninguna cuenta IONOS activa "
-            "configurada en el CRM."
+            f"No existe ninguna cuenta {label} "
+            "activa configurada en el CRM."
         )
 
     raise RuntimeError(
-        "Hay varias cuentas IONOS activas. "
-        "Define QUESADA_IONOS_ACCOUNT_EMAIL."
+        f"Hay varias cuentas {label} activas. "
+        f"Define {config['email_env']}."
     )
 
 
-def get_ionos_status(
+def get_provider_status(
+    provider,
     *,
     account_email=None,
 ):
     """
-    Devuelve el estado persistido de la cuenta sin conectarse a IONOS.
+    Devuelve el estado persistido sin conectarse
+    al proveedor.
     """
+    provider = _normalize_provider(
+        provider
+    )
+
     account = _load_configured_account(
-        account_email=account_email
+        provider,
+        account_email=account_email,
     )
 
     return {
@@ -105,7 +164,9 @@ def get_ionos_status(
         "account_email":
             account.get("email_address") or "",
         "provider":
-            account.get("provider") or "",
+            account.get("provider") or provider,
+        "provider_label":
+            _provider_label(provider),
         "last_sync_cursor":
             account.get("last_sync_cursor") or "",
         "last_sync_at":
@@ -126,12 +187,33 @@ def get_ionos_status(
     }
 
 
+def get_ionos_status(
+    *,
+    account_email=None,
+):
+    return get_provider_status(
+        PROVIDER_IONOS,
+        account_email=account_email,
+    )
+
+
+def get_gmail_status(
+    *,
+    account_email=None,
+):
+    return get_provider_status(
+        PROVIDER_GMAIL,
+        account_email=account_email,
+    )
+
+
 def _summarize_provider_result(
     result,
 ):
     processed_rows = list(
         result.get("processed") or []
     )
+
     errors = list(
         result.get("errors") or []
     )
@@ -196,70 +278,118 @@ def _summarize_provider_result(
     }
 
 
-def sync_ionos_extranjeria(
+def _build_provider(
+    provider,
+    account,
+    *,
+    provider_factory=None,
+):
+    if provider_factory:
+        return provider_factory(account)
+
+    provider_class = _PROVIDER_CONFIG[
+        provider
+    ]["provider_class"]
+
+    if provider == PROVIDER_GMAIL:
+        return provider_class(
+            account,
+            interactive_auth=False,
+        )
+
+    return provider_class(account)
+
+
+def _busy_result(provider):
+    label = _provider_label(provider)
+
+    return {
+        "ok": False,
+        "busy": True,
+        "provider": provider,
+        "provider_label": label,
+        "message":
+            "Ya hay una revisión de correo "
+            "en curso.",
+        "uids_found": 0,
+        "processed_count": 0,
+        "applied_count": 0,
+        "review_required_count": 0,
+        "ignored_count": 0,
+        "other_count": 0,
+        "error_count": 0,
+        "errors": [],
+        "expedient_ids": [],
+    }
+
+
+def sync_provider_extranjeria(
+    provider,
     *,
     account_email=None,
     provider_factory=None,
 ):
     """
-    Ejecuta una revisión incremental manual de IONOS.
-
-    Devuelve busy=True cuando otra revisión ya está ejecutándose.
+    Ejecuta una revisión incremental manual
+    del proveedor indicado.
     """
+    provider = _normalize_provider(
+        provider
+    )
+
     acquired = _SYNC_LOCK.acquire(
         blocking=False
     )
 
     if not acquired:
-        return {
-            "ok": False,
-            "busy": True,
-            "message":
-                "Ya hay una revisión de correo "
-                "IONOS en curso.",
-            "uids_found": 0,
-            "processed_count": 0,
-            "applied_count": 0,
-            "review_required_count": 0,
-            "ignored_count": 0,
-            "other_count": 0,
-            "error_count": 0,
-            "errors": [],
-            "expedient_ids": [],
-        }
+        return _busy_result(provider)
 
     try:
         account = _load_configured_account(
-            account_email=account_email
+            provider,
+            account_email=account_email,
         )
 
-        provider_class = (
-            provider_factory
-            or IonosImapProvider
+        email_provider = _build_provider(
+            provider,
+            account,
+            provider_factory=provider_factory,
         )
 
-        provider = provider_class(account)
-        result = provider.sync_incoming()
+        result = (
+            email_provider.sync_incoming()
+        )
 
         summary = _summarize_provider_result(
             result
         )
-        summary["busy"] = False
+
+        summary.update(
+            {
+                "busy": False,
+                "provider": provider,
+                "provider_label":
+                    _provider_label(provider),
+            }
+        )
 
         if summary["error_count"]:
             summary["message"] = (
                 "La revisión terminó con errores."
             )
+
         elif not summary["uids_found"]:
             summary["message"] = (
                 "No hay mensajes nuevos."
             )
+
         elif summary["applied_count"]:
             summary["message"] = (
                 "Revisión completada con "
                 f"{summary['applied_count']} "
                 "expediente(s) actualizado(s)."
             )
+
         elif summary[
             "review_required_count"
         ]:
@@ -267,6 +397,7 @@ def sync_ionos_extranjeria(
                 "Hay mensajes pendientes "
                 "de revisión."
             )
+
         else:
             summary["message"] = (
                 "Revisión completada."
@@ -276,3 +407,27 @@ def sync_ionos_extranjeria(
 
     finally:
         _SYNC_LOCK.release()
+
+
+def sync_ionos_extranjeria(
+    *,
+    account_email=None,
+    provider_factory=None,
+):
+    return sync_provider_extranjeria(
+        PROVIDER_IONOS,
+        account_email=account_email,
+        provider_factory=provider_factory,
+    )
+
+
+def sync_gmail_extranjeria(
+    *,
+    account_email=None,
+    provider_factory=None,
+):
+    return sync_provider_extranjeria(
+        PROVIDER_GMAIL,
+        account_email=account_email,
+        provider_factory=provider_factory,
+    )
