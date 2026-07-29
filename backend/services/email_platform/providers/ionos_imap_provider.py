@@ -385,6 +385,10 @@ class IonosImapProvider(
                         )
                     )
 
+                    normalized["account_id"] = (
+                        account_id
+                    )
+
                     result = (
                         email_expedient_sync_service
                         .process_message(

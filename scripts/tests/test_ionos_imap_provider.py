@@ -212,6 +212,23 @@ class IonosImapProviderTest(
             update_success.call_count,
             2,
         )
+
+        processed_messages = [
+            call.args[0]
+            for call in process_message.mock_calls
+            if call.args
+        ]
+
+        self.assertEqual(
+            len(processed_messages),
+            2,
+        )
+
+        for message in processed_messages:
+            self.assertEqual(
+                message["account_id"],
+                7,
+            )
         self.assertTrue(
             instance.logged_out
         )
