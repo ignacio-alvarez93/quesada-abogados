@@ -1,0 +1,741 @@
+"""
+Persistencia y vinculación provisional de avisos DEHú recibidos por email.
+
+La coincidencia inicial se realiza exclusivamente contra
+expedientes.numero_expediente_extranjeria.
+
+La verificación definitiva exigirá contrastar posteriormente el número
+observado en el portal DEHú.
+"""
+
+import json
+
+from backend.services.email_platform import (
+    email_message_service,
+    schema_service,
+)
+from backend.services.email_platform.processors import (
+    dehu_notification_notice_processor
+    as processor,
+)
+
+
+PORTAL_STATUS_UNKNOWN = "UNKNOWN"
+
+VERIFICATION_EMAIL_ONLY = "EMAIL_ONLY"
+VERIFICATION_MATCHED_PROVISIONAL = (
+    "MATCHED_PROVISIONAL"
+)
+VERIFICATION_EXPEDIENT_NOT_FOUND = (
+    "EXPEDIENT_NOT_FOUND"
+)
+VERIFICATION_MULTIPLE_EXPEDIENTS = (
+    "MULTIPLE_EXPEDIENTS"
+)
+
+DOWNLOAD_NOT_REQUESTED = "NOT_REQUESTED"
+
+
+def _text(value):
+    return str(value or "").strip()
+
+
+def _upper(value):
+    return _text(value).upper()
+
+
+def ensure_dehu_schema(conn=None):
+    with schema_service.connection(conn) as current:
+        current.execute(
+            """
+            CREATE TABLE IF NOT EXISTS
+                dehu_notifications (
+                    id INTEGER PRIMARY KEY
+                        AUTOINCREMENT,
+
+                    dehu_identifier TEXT NOT NULL
+                        UNIQUE,
+                    concept TEXT,
+
+                    email_expedient_number TEXT,
+                    dehu_expedient_number TEXT,
+
+                    expediente_id INTEGER,
+                    cliente_id INTEGER,
+
+                    primary_email_message_id INTEGER,
+
+                    recipient_name TEXT,
+                    recipient_document_masked TEXT,
+
+                    issuer_name TEXT,
+                    issuer_dir3 TEXT,
+                    relationship_type TEXT,
+
+                    deadline_at TEXT,
+
+                    portal_status TEXT NOT NULL
+                        DEFAULT 'UNKNOWN',
+                    verification_status TEXT NOT NULL
+                        DEFAULT 'EMAIL_ONLY',
+                    download_status TEXT NOT NULL
+                        DEFAULT 'NOT_REQUESTED',
+
+                    document_inbox_batch_id INTEGER,
+
+                    first_seen_at TEXT NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TEXT NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+
+                    accepted_at TEXT,
+                    rejected_at TEXT,
+                    downloaded_at TEXT,
+
+                    last_error TEXT,
+
+                    raw_email_data_json TEXT,
+                    raw_dehu_data_json TEXT,
+
+                    created_at TEXT NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+
+                    FOREIGN KEY (expediente_id)
+                        REFERENCES expedientes(id),
+                    FOREIGN KEY (cliente_id)
+                        REFERENCES clientes(id),
+                    FOREIGN KEY (
+                        primary_email_message_id
+                    )
+                        REFERENCES email_messages(id)
+                )
+            """
+        )
+
+        current.execute(
+            """
+            CREATE TABLE IF NOT EXISTS
+                dehu_notification_email_sources (
+                    id INTEGER PRIMARY KEY
+                        AUTOINCREMENT,
+
+                    dehu_notification_id INTEGER
+                        NOT NULL,
+                    email_message_id INTEGER
+                        NOT NULL,
+                    provider TEXT,
+                    account_id INTEGER,
+
+                    detected_at TEXT NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+
+                    FOREIGN KEY (
+                        dehu_notification_id
+                    )
+                        REFERENCES
+                            dehu_notifications(id),
+
+                    FOREIGN KEY (email_message_id)
+                        REFERENCES email_messages(id),
+
+                    UNIQUE(
+                        dehu_notification_id,
+                        email_message_id
+                    )
+                )
+            """
+        )
+
+        current.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_dehu_notification_expedient
+            ON dehu_notifications(expediente_id)
+            """
+        )
+
+        current.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_dehu_notification_number
+            ON dehu_notifications(
+                email_expedient_number
+            )
+            """
+        )
+
+        current.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_dehu_notification_status
+            ON dehu_notifications(
+                portal_status,
+                verification_status,
+                download_status
+            )
+            """
+        )
+
+        current.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_dehu_notification_deadline
+            ON dehu_notifications(deadline_at)
+            """
+        )
+
+
+def _find_expedient_candidates(
+    conn,
+    official_number,
+):
+    official_number = _text(official_number)
+
+    return [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT
+                e.id,
+                e.cliente_id,
+                e.numero_expediente,
+                e.numero_expediente_extranjeria,
+                e.activo,
+
+                c.nombre,
+                c.primer_apellido,
+                c.segundo_apellido
+
+            FROM expedientes e
+
+            JOIN clientes c
+              ON c.id = e.cliente_id
+
+            WHERE e.activo = 1
+              AND TRIM(
+                    COALESCE(
+                        e.numero_expediente_extranjeria,
+                        ''
+                    )
+                  ) = ?
+
+            ORDER BY e.id ASC
+            """,
+            (official_number,),
+        ).fetchall()
+    ]
+
+
+def _upsert_processing_result(
+    conn,
+    *,
+    email_message_id,
+    status,
+    confidence,
+    extracted_data,
+    matched_entity_id=None,
+    action_status="",
+    review_reason="",
+):
+    conn.execute(
+        """
+        INSERT INTO email_processing_results (
+            email_message_id,
+            processor_code,
+            status,
+            confidence,
+            extracted_data_json,
+            matched_entity_type,
+            matched_entity_id,
+            action_code,
+            action_status,
+            review_reason,
+            error_message
+        )
+        VALUES (
+            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ''
+        )
+
+        ON CONFLICT(
+            email_message_id,
+            processor_code
+        )
+        DO UPDATE SET
+            status = excluded.status,
+            confidence = excluded.confidence,
+            extracted_data_json =
+                excluded.extracted_data_json,
+            matched_entity_type =
+                excluded.matched_entity_type,
+            matched_entity_id =
+                excluded.matched_entity_id,
+            action_code =
+                excluded.action_code,
+            action_status =
+                excluded.action_status,
+            review_reason =
+                excluded.review_reason,
+            error_message = '',
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            int(email_message_id),
+            processor.PROCESSOR_CODE,
+            _upper(status),
+            int(confidence or 0),
+            json.dumps(
+                extracted_data or {},
+                ensure_ascii=False,
+            ),
+            (
+                "expedientes"
+                if matched_entity_id
+                else ""
+            ),
+            matched_entity_id,
+            "REGISTER_DEHU_NOTICE",
+            _upper(action_status),
+            _upper(review_reason),
+        ),
+    )
+
+
+def _register_expedient_event(
+    conn,
+    *,
+    notification_id,
+    email_message_id,
+    expediente,
+    extracted,
+):
+    conn.execute(
+        """
+        INSERT INTO expediente_eventos (
+            expediente_id,
+            cliente_id,
+            tipo_evento,
+            titulo,
+            descripcion,
+            estado_anterior,
+            estado_nuevo,
+            entidad_relacionada,
+            entidad_relacionada_id,
+            usuario
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(expediente["id"]),
+            int(expediente["cliente_id"]),
+            "DEHU_NOTIFICATION_NOTICE_RECEIVED",
+            "AVISO DE NOTIFICACIÓN DEHÚ RECIBIDO",
+            (
+                "Se ha recibido un aviso de "
+                "notificación DEHú.\n"
+                "Identificador: "
+                + _text(
+                    extracted.get(
+                        "dehu_identifier"
+                    )
+                )
+                + ".\nConcepto: "
+                + _text(
+                    extracted.get("concept")
+                )
+                + ".\nNúmero de expediente: "
+                + _text(
+                    extracted.get(
+                        "numero_expediente_extranjeria"
+                    )
+                )
+                + ".\nFecha límite: "
+                + _text(
+                    extracted.get("deadline_at")
+                )
+                + ".\n"
+                "Vinculación provisional pendiente "
+                "de contraste en el portal DEHú."
+            ),
+            "",
+            VERIFICATION_MATCHED_PROVISIONAL,
+            "dehu_notifications",
+            int(notification_id),
+            "EMAIL_WATCH",
+        ),
+    )
+
+
+def process_stored_message(
+    *,
+    stored_result,
+):
+    stored = stored_result["message"]
+    normalized = stored_result["normalized"]
+    email_message_id = int(stored["id"])
+
+    extraction_result = processor.extract(
+        normalized
+    )
+
+    if (
+        extraction_result["status"]
+        != "EXTRACTED"
+    ):
+        with schema_service.connection() as conn:
+            ensure_dehu_schema(conn)
+
+            _upsert_processing_result(
+                conn,
+                email_message_id=email_message_id,
+                status="REVIEW_REQUIRED",
+                confidence=0,
+                extracted_data=(
+                    extraction_result[
+                        "extracted_data"
+                    ]
+                ),
+                action_status="NOT_APPLIED",
+                review_reason="|".join(
+                    extraction_result.get(
+                        "missing"
+                    )
+                    or []
+                ),
+            )
+
+            email_message_service.update_processing_status(
+                email_message_id,
+                "REVIEW_REQUIRED",
+                conn=conn,
+            )
+
+        return {
+            "ok": True,
+            "created":
+                stored_result["created"],
+            "email_message_id":
+                email_message_id,
+            "processor_code":
+                processor.PROCESSOR_CODE,
+            "status": "REVIEW_REQUIRED",
+            "reason": "|".join(
+                extraction_result.get("missing")
+                or []
+            ),
+            "extraction": extraction_result,
+        }
+
+    extracted = extraction_result[
+        "extracted_data"
+    ]
+
+    official_number = _text(
+        extracted.get(
+            "numero_expediente_extranjeria"
+        )
+    )
+
+    with schema_service.connection() as conn:
+        ensure_dehu_schema(conn)
+
+        candidates = _find_expedient_candidates(
+            conn,
+            official_number,
+        )
+
+        expediente = None
+        verification_status = (
+            VERIFICATION_EMAIL_ONLY
+        )
+        processing_status = "REVIEW_REQUIRED"
+        action_status = "NOT_APPLIED"
+        review_reason = ""
+
+        if len(candidates) == 0:
+            verification_status = (
+                VERIFICATION_EXPEDIENT_NOT_FOUND
+            )
+            review_reason = (
+                "EXPEDIENTE_NO_ENCONTRADO"
+            )
+
+        elif len(candidates) > 1:
+            verification_status = (
+                VERIFICATION_MULTIPLE_EXPEDIENTS
+            )
+            review_reason = (
+                "MULTIPLES_EXPEDIENTES_COINCIDENTES"
+            )
+
+        else:
+            expediente = candidates[0]
+            verification_status = (
+                VERIFICATION_MATCHED_PROVISIONAL
+            )
+            processing_status = "MATCHED"
+            action_status = "APPLIED"
+
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM dehu_notifications
+            WHERE dehu_identifier = ?
+            """,
+            (
+                _text(
+                    extracted["dehu_identifier"]
+                ),
+            ),
+        ).fetchone()
+
+        previous_expediente_id = (
+            int(existing["expediente_id"])
+            if (
+                existing
+                and existing["expediente_id"]
+            )
+            else None
+        )
+
+        conn.execute(
+            """
+            INSERT INTO dehu_notifications (
+                dehu_identifier,
+                concept,
+                email_expedient_number,
+                expediente_id,
+                cliente_id,
+                primary_email_message_id,
+                recipient_name,
+                recipient_document_masked,
+                issuer_name,
+                issuer_dir3,
+                relationship_type,
+                deadline_at,
+                portal_status,
+                verification_status,
+                download_status,
+                raw_email_data_json
+            )
+            VALUES (
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?,
+                ?, ?, ?,
+                ?
+            )
+
+            ON CONFLICT(dehu_identifier)
+            DO UPDATE SET
+                concept = excluded.concept,
+                email_expedient_number =
+                    excluded.email_expedient_number,
+
+                expediente_id =
+                    COALESCE(
+                        excluded.expediente_id,
+                        dehu_notifications.expediente_id
+                    ),
+
+                cliente_id =
+                    COALESCE(
+                        excluded.cliente_id,
+                        dehu_notifications.cliente_id
+                    ),
+
+                recipient_name =
+                    excluded.recipient_name,
+                recipient_document_masked =
+                    excluded.recipient_document_masked,
+                issuer_name =
+                    excluded.issuer_name,
+                issuer_dir3 =
+                    excluded.issuer_dir3,
+                relationship_type =
+                    excluded.relationship_type,
+                deadline_at =
+                    excluded.deadline_at,
+
+                verification_status =
+                    CASE
+                        WHEN
+                            excluded.verification_status
+                            = 'MATCHED_PROVISIONAL'
+                        THEN
+                            excluded.verification_status
+                        ELSE
+                            dehu_notifications
+                            .verification_status
+                    END,
+
+                raw_email_data_json =
+                    excluded.raw_email_data_json,
+                last_seen_at =
+                    CURRENT_TIMESTAMP,
+                updated_at =
+                    CURRENT_TIMESTAMP
+            """,
+            (
+                _text(
+                    extracted["dehu_identifier"]
+                ),
+                _text(extracted["concept"]),
+                official_number,
+
+                (
+                    int(expediente["id"])
+                    if expediente
+                    else None
+                ),
+                (
+                    int(expediente["cliente_id"])
+                    if expediente
+                    else None
+                ),
+                email_message_id,
+
+                _text(
+                    extracted["recipient_name"]
+                ),
+                _text(
+                    extracted[
+                        "recipient_document_masked"
+                    ]
+                ),
+                _text(extracted["issuer_name"]),
+                _text(extracted["issuer_dir3"]),
+                _text(
+                    extracted["relationship_type"]
+                ),
+                _text(extracted["deadline_at"]),
+
+                PORTAL_STATUS_UNKNOWN,
+                verification_status,
+                DOWNLOAD_NOT_REQUESTED,
+
+                json.dumps(
+                    extracted,
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+
+        notification = conn.execute(
+            """
+            SELECT *
+            FROM dehu_notifications
+            WHERE dehu_identifier = ?
+            """,
+            (
+                _text(
+                    extracted["dehu_identifier"]
+                ),
+            ),
+        ).fetchone()
+
+        notification_id = int(
+            notification["id"]
+        )
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO
+                dehu_notification_email_sources (
+                    dehu_notification_id,
+                    email_message_id,
+                    provider,
+                    account_id
+                )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                notification_id,
+                email_message_id,
+                _upper(stored.get("provider")),
+                stored.get("account_id"),
+            ),
+        )
+
+        matched_entity_id = (
+            int(expediente["id"])
+            if expediente
+            else None
+        )
+
+        _upsert_processing_result(
+            conn,
+            email_message_id=email_message_id,
+            status=processing_status,
+            confidence=(
+                extraction_result["confidence"]
+            ),
+            extracted_data=extracted,
+            matched_entity_id=matched_entity_id,
+            action_status=action_status,
+            review_reason=review_reason,
+        )
+
+        email_message_service.update_processing_status(
+            email_message_id,
+            (
+                "PROCESSED"
+                if expediente
+                else "REVIEW_REQUIRED"
+            ),
+            conn=conn,
+        )
+
+        if (
+            expediente
+            and previous_expediente_id is None
+        ):
+            _register_expedient_event(
+                conn,
+                notification_id=notification_id,
+                email_message_id=email_message_id,
+                expediente=expediente,
+                extracted=extracted,
+            )
+
+    return {
+        "ok": True,
+        "created":
+            stored_result["created"],
+        "email_message_id":
+            email_message_id,
+        "processor_code":
+            processor.PROCESSOR_CODE,
+        "status":
+            (
+                "PROCESSED"
+                if expediente
+                else "REVIEW_REQUIRED"
+            ),
+        "reason": review_reason,
+        "verification_status":
+            verification_status,
+        "dehu_notification_id":
+            notification_id,
+        "dehu_identifier":
+            extracted["dehu_identifier"],
+        "numero_expediente_extranjeria":
+            official_number,
+        "expediente_id":
+            (
+                int(expediente["id"])
+                if expediente
+                else None
+            ),
+        "cliente_id":
+            (
+                int(expediente["cliente_id"])
+                if expediente
+                else None
+            ),
+        "extracted_data": extracted,
+        "candidates": candidates,
+    }
