@@ -1,3 +1,16 @@
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+load_dotenv(
+    PROJECT_ROOT / ".env.local",
+    override=False,
+)
+
+
 import flet as ft
 
 from backend.services.sqlite_runtime_service import configure_sqlite_runtime
