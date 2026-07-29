@@ -400,6 +400,101 @@ class DehuNotificationEmailServiceTest(
             source["source_folder"],
             "INBOX",
         )
+    def test_nationality_reference_waits_for_family(
+        self,
+    ):
+        body = """
+        Está disponible una nueva notificación electrónica.
+
+        Titular: ANA BELEN QUESADA SOLER
+        con NIF/NIE: ***100***
+
+        Organismo emisor:
+        Ministerio de Justicia,
+        con DIR3: EA0000001
+
+        Identificador:
+        98658706a676ee57e143
+
+        Concepto:
+        R619648/2025
+
+        Con vencimiento el día:
+        06/08/2026
+        """
+
+        result = (
+            email_expedient_sync_service
+            .process_message(
+                self._message(
+                    provider_message_id=(
+                        "NACIONALIDAD-1"
+                    ),
+                    body=body,
+                )
+            )
+        )
+
+        self.assertEqual(
+            result["status"],
+            "REVIEW_REQUIRED",
+        )
+        self.assertEqual(
+            result["verification_status"],
+            (
+                "REFERENCE_DETECTED_"
+                "FAMILY_NOT_AVAILABLE"
+            ),
+        )
+        self.assertEqual(
+            result["reason"],
+            (
+                "REFERENCIA_DETECTADA_"
+                "FAMILIA_NO_DISPONIBLE"
+            ),
+        )
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    reference_value,
+                    reference_type,
+                    family_hint,
+                    verification_status,
+                    expediente_id
+                FROM dehu_notifications
+                WHERE dehu_identifier = ?
+                """,
+                (
+                    "98658706a676ee57e143",
+                ),
+            ).fetchone()
+
+        self.assertEqual(
+            row["reference_value"],
+            "R619648/2025",
+        )
+        self.assertEqual(
+            row["reference_type"],
+            "NACIONALIDAD_R",
+        )
+        self.assertEqual(
+            row["family_hint"],
+            "NACIONALIDAD",
+        )
+        self.assertEqual(
+            row["verification_status"],
+            (
+                "REFERENCE_DETECTED_"
+                "FAMILY_NOT_AVAILABLE"
+            ),
+        )
+        self.assertIsNone(
+            row["expediente_id"]
+        )
+
+
 
     def test_unauthorized_sender_is_not_dehu(self):
         message = self._message()
@@ -655,103 +750,6 @@ class DehuCommunicationFormatTest(
 
 
 
-
-class DehuNationalityPendingFamilyTest(
-    DehuNotificationEmailServiceTest
-):
-    def test_nationality_reference_waits_for_family(
-        self,
-    ):
-        body = """
-        Está disponible una nueva notificación electrónica.
-
-        Titular: ANA BELEN QUESADA SOLER
-        con NIF/NIE: ***100***
-
-        Organismo emisor:
-        Ministerio de Justicia,
-        con DIR3: EA0000001
-
-        Identificador:
-        98658706a676ee57e143
-
-        Concepto:
-        R619648/2025
-
-        Con vencimiento el día:
-        06/08/2026
-        """
-
-        result = (
-            email_expedient_sync_service
-            .process_message(
-                self._message(
-                    provider_message_id=(
-                        "NACIONALIDAD-1"
-                    ),
-                    body=body,
-                )
-            )
-        )
-
-        self.assertEqual(
-            result["status"],
-            "REVIEW_REQUIRED",
-        )
-        self.assertEqual(
-            result["verification_status"],
-            (
-                "REFERENCE_DETECTED_"
-                "FAMILY_NOT_AVAILABLE"
-            ),
-        )
-        self.assertEqual(
-            result["reason"],
-            (
-                "REFERENCIA_DETECTADA_"
-                "FAMILIA_NO_DISPONIBLE"
-            ),
-        )
-
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    reference_value,
-                    reference_type,
-                    family_hint,
-                    verification_status,
-                    expediente_id
-                FROM dehu_notifications
-                WHERE dehu_identifier = ?
-                """,
-                (
-                    "98658706a676ee57e143",
-                ),
-            ).fetchone()
-
-        self.assertEqual(
-            row["reference_value"],
-            "R619648/2025",
-        )
-        self.assertEqual(
-            row["reference_type"],
-            "NACIONALIDAD_R",
-        )
-        self.assertEqual(
-            row["family_hint"],
-            "NACIONALIDAD",
-        )
-        self.assertEqual(
-            row["verification_status"],
-            (
-                "REFERENCE_DETECTED_"
-                "FAMILY_NOT_AVAILABLE"
-            ),
-        )
-        self.assertIsNone(
-            row["expediente_id"]
-        )
 
 
 if __name__ == "__main__":
