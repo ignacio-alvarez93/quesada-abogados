@@ -37,9 +37,14 @@ DEHU_SENDER = (
     "no-reply-notifica@correo.gob.es"
 )
 
+DEHU_CURRENT_SENDER = (
+    "noreply.dehu@correo.gob.es"
+)
+
 DEFAULT_OFFICIAL_SENDERS = (
     EXTRANJERIA_SENDER,
     DEHU_SENDER,
+    DEHU_CURRENT_SENDER,
 )
 
 

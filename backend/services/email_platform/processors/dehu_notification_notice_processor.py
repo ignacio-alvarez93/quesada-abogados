@@ -21,6 +21,7 @@ PROCESSOR_CODE = "DEHU_NOTIFICATION_NOTICE"
 
 AUTHORIZED_SENDERS = {
     "no-reply-notifica@correo.gob.es",
+    "noreply.dehu@correo.gob.es",
 }
 
 
@@ -58,8 +59,24 @@ RECIPIENT_PATTERN = re.compile(
     (.+?)
     \s+con
     \s+NIF/NIE
-    \s+
+    \s*:?
+    \s*
     ([^\r\n]+)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+MODERN_RECIPIENT_PATTERN = re.compile(
+    r"""
+    (.+?)
+    \s+con
+    \s+NIF/NIE
+    \s*:\s*
+    ([^\s]+)
+    \s+en
+    \s+calidad
+    \s+de
+    \s+Titular
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -82,7 +99,8 @@ ISSUER_PATTERN = re.compile(
 DIR3_PATTERN = re.compile(
     r"""
     DIR3
-    \s+
+    \s*:?
+    \s*
     ([A-Z]{2}\d{7,12})
     \b
     """,
@@ -98,7 +116,7 @@ RELATIONSHIP_PATTERN = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-DEADLINE_PATTERN = re.compile(
+DEADLINE_WITH_TIME_PATTERN = re.compile(
     r"""
     antes
     \s+de
@@ -108,6 +126,18 @@ DEADLINE_PATTERN = re.compile(
     \s+del
     \s+d[ií]a
     \s+
+    (\d{2}/\d{2}/\d{2,4})
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+DEADLINE_DATE_ONLY_PATTERN = re.compile(
+    r"""
+    con
+    \s+vencimiento
+    \s+el
+    \s+d[ií]a
+    \s*:\s*
     (\d{2}/\d{2}/\d{2,4})
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -189,6 +219,7 @@ def extract(message):
     )
     recipient_match = (
         RECIPIENT_PATTERN.search(body)
+        or MODERN_RECIPIENT_PATTERN.search(body)
     )
     issuer_match = (
         ISSUER_PATTERN.search(body)
@@ -199,16 +230,26 @@ def extract(message):
     relationship_match = (
         RELATIONSHIP_PATTERN.search(body)
     )
-    deadline_match = (
-        DEADLINE_PATTERN.search(body)
+    deadline_with_time_match = (
+        DEADLINE_WITH_TIME_PATTERN.search(body)
+    )
+
+    deadline_date_only_match = (
+        DEADLINE_DATE_ONLY_PATTERN.search(body)
     )
 
     deadline_at = ""
 
-    if deadline_match:
+    if deadline_with_time_match:
         deadline_at = _deadline_iso(
-            deadline_match.group(2),
-            deadline_match.group(1),
+            deadline_with_time_match.group(2),
+            deadline_with_time_match.group(1),
+        )
+
+    elif deadline_date_only_match:
+        deadline_at = _deadline_iso(
+            deadline_date_only_match.group(1),
+            "23:59:59",
         )
 
     extracted = {

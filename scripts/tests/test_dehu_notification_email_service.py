@@ -365,5 +365,71 @@ class DehuNotificationEmailServiceTest(
         )
 
 
+
+
+class DehuCurrentNoticeFormatTest(
+    unittest.TestCase
+):
+    def test_extracts_current_html_notice_format(
+        self,
+    ):
+        message = {
+            "sender_email":
+                "noreply.dehu@correo.gob.es",
+            "body_text": """
+            <p>Te informamos que está disponible una nueva
+            notificación con los siguientes datos:</p>
+
+            <ul>
+              <li>ANA BELEN QUESADA SOLER con NIF/NIE:
+              ***100*** en calidad de Titular</li>
+              <li>Organismo emisor: Oficina de Extranjeria
+              en Santander, con DIR3: EA0040331</li>
+              <li>Identificador:
+              50541956a694b992150f</li>
+              <li>Con vencimiento el día:
+              08/08/2026</li>
+              <li>Concepto:
+              not_390020260004768_21500877_11077896</li>
+            </ul>
+            """,
+        }
+
+        result = (
+            dehu_notification_notice_processor
+            .extract(message)
+        )
+
+        self.assertEqual(
+            result["status"],
+            "EXTRACTED",
+        )
+
+        data = result["extracted_data"]
+
+        self.assertEqual(
+            data["dehu_identifier"],
+            "50541956a694b992150f",
+        )
+        self.assertEqual(
+            data[
+                "numero_expediente_extranjeria"
+            ],
+            "390020260004768",
+        )
+        self.assertEqual(
+            data["deadline_at"],
+            "2026-08-08 23:59:59",
+        )
+        self.assertEqual(
+            data["issuer_dir3"],
+            "EA0040331",
+        )
+        self.assertEqual(
+            data["recipient_document_masked"],
+            "***100***",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
