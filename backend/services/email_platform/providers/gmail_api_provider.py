@@ -33,6 +33,15 @@ EXTRANJERIA_SENDER = (
     "notificaciones.extranjeria@correo.gob.es"
 )
 
+DEHU_SENDER = (
+    "no-reply-notifica@correo.gob.es"
+)
+
+DEFAULT_OFFICIAL_SENDERS = (
+    EXTRANJERIA_SENDER,
+    DEHU_SENDER,
+)
+
 DEFAULT_INITIAL_LOOKBACK_DAYS = 30
 DEFAULT_MAX_RESULTS = 100
 
@@ -46,12 +55,48 @@ def _configuration(account):
     except Exception:
         config = {}
 
+    raw_sender_filters = (
+        config.get("sender_filters")
+    )
+
+    if isinstance(raw_sender_filters, str):
+        raw_sender_filters = [
+            value.strip()
+            for value in raw_sender_filters.split(",")
+            if value.strip()
+        ]
+
+    if not isinstance(
+        raw_sender_filters,
+        (list, tuple, set),
+    ):
+        legacy_sender = str(
+            config.get("sender_filter")
+            or ""
+        ).strip().lower()
+
+        raw_sender_filters = (
+            [legacy_sender]
+            if legacy_sender
+            else list(DEFAULT_OFFICIAL_SENDERS)
+        )
+
+    sender_filters = []
+
+    for value in raw_sender_filters:
+        sender = str(value or "").strip().lower()
+
+        if sender and sender not in sender_filters:
+            sender_filters.append(sender)
+
     return {
+        "sender_filters": sender_filters,
         "sender_filter":
-            str(
-                config.get("sender_filter")
-                or EXTRANJERIA_SENDER
-            ).strip().lower(),
+            (
+                sender_filters[0]
+                if sender_filters
+                else ""
+            ),
         "initial_lookback_days":
             max(
                 1,
@@ -228,9 +273,12 @@ class GmailApiProvider(
         return self._initial_after_millis()
 
     def _build_query(self):
-        sender = self.config[
-            "sender_filter"
-        ]
+        senders = list(
+            self.config.get(
+                "sender_filters"
+            )
+            or []
+        )
 
         cursor_millis = self._cursor_millis()
 
@@ -245,9 +293,19 @@ class GmailApiProvider(
             f"after:{after_seconds}",
         ]
 
-        if sender:
+        if len(senders) == 1:
             query.append(
+                f"from:{senders[0]}"
+            )
+
+        elif len(senders) > 1:
+            sender_query = " ".join(
                 f"from:{sender}"
+                for sender in senders
+            )
+
+            query.append(
+                "{" + sender_query + "}"
             )
 
         return " ".join(query)

@@ -108,8 +108,9 @@ class GmailApiProviderTest(
             "provider": "GMAIL_API",
             "credential_key": "QUESADA_GMAIL",
             "config_json": (
-                '{"sender_filter": '
+                '{"sender_filters": ['
                 '"notificaciones.extranjeria@correo.gob.es", '
+                '"no-reply-notifica@correo.gob.es"], '
                 '"initial_lookback_days": 30, '
                 '"max_results": 100}'
             ),
@@ -183,6 +184,16 @@ class GmailApiProviderTest(
 
         self.assertIn(
             "from:notificaciones.extranjeria@correo.gob.es",
+            list_call["q"],
+        )
+
+        self.assertIn(
+            "from:no-reply-notifica@correo.gob.es",
+            list_call["q"],
+        )
+
+        self.assertIn(
+            "{",
             list_call["q"],
         )
 

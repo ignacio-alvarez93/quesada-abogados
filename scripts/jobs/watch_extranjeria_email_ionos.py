@@ -54,11 +54,16 @@ def main():
                         "QUESADA_IONOS_FOLDER",
                         "INBOX",
                     ),
-                "sender_filter":
+                "sender_filters": [
                     (
                         "notificaciones."
                         "extranjeria@correo.gob.es"
                     ),
+                    (
+                        "no-reply-notifica"
+                        "@correo.gob.es"
+                    ),
+                ],
             },
             incoming_enabled=True,
             outgoing_enabled=False,

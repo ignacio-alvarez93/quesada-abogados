@@ -89,9 +89,11 @@ class IonosImapProviderTest(
                     '{"host":"imap.ionos.es",'
                     '"port":993,'
                     '"folder":"INBOX",'
-                    '"sender_filter":'
+                    '"sender_filters":['
                     '"notificaciones.extranjeria'
-                    '@correo.gob.es"}'
+                    '@correo.gob.es",'
+                    '"no-reply-notifica'
+                    '@correo.gob.es"]}'
                 ),
             "last_sync_cursor": "40",
         }
@@ -165,6 +167,24 @@ class IonosImapProviderTest(
                     (
                         '"notificaciones.'
                         'extranjeria@correo.gob.es"'
+                    ),
+                ),
+            ),
+            uid_calls,
+        )
+
+        self.assertIn(
+            (
+                "uid",
+                "SEARCH",
+                (
+                    None,
+                    "UID",
+                    "41:*",
+                    "FROM",
+                    (
+                        '"no-reply-notifica'
+                        '@correo.gob.es"'
                     ),
                 ),
             ),
