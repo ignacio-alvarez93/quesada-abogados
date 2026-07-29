@@ -431,5 +431,77 @@ class DehuCurrentNoticeFormatTest(
         )
 
 
+
+
+class DehuConceptVariantsTest(
+    unittest.TestCase
+):
+    def _extract(self, concept):
+        return (
+            dehu_notification_notice_processor
+            .extract(
+                {
+                    "sender_email":
+                        "noreply.dehu@correo.gob.es",
+                    "body_text": f"""
+                    Identificador:
+                    38737286a6931935b93e
+                    Con vencimiento el día:
+                    08/08/2026
+                    Concepto: {concept}
+                    """,
+                }
+            )
+        )
+
+    def test_extracts_resolution_concept(self):
+        result = self._extract(
+            "not-resolucion_"
+            "330020260006156_"
+            "21495113_11077538"
+        )
+
+        self.assertEqual(
+            result["status"],
+            "EXTRACTED",
+        )
+
+        data = result["extracted_data"]
+
+        self.assertEqual(
+            data["expedient_reference"],
+            "330020260006156",
+        )
+        self.assertEqual(
+            data["expedient_reference_type"],
+            "EXTRANJERIA_NUMERIC",
+        )
+        self.assertEqual(
+            data["concept_type"],
+            "NOT-RESOLUCION",
+        )
+
+    def test_extracts_nationality_reference(self):
+        result = self._extract(
+            "R619648/2025"
+        )
+
+        self.assertEqual(
+            result["status"],
+            "EXTRACTED",
+        )
+
+        data = result["extracted_data"]
+
+        self.assertEqual(
+            data["expedient_reference"],
+            "R619648/2025",
+        )
+        self.assertEqual(
+            data["expedient_reference_type"],
+            "NACIONALIDAD",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

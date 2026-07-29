@@ -35,12 +35,26 @@ IDENTIFIER_PATTERN = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-CONCEPT_PATTERN = re.compile(
+CONCEPT_FIELD_PATTERN = re.compile(
     r"""
     concepto
     \s*:\s*
+    ([^\r\n<]+)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+EXTRANJERIA_CONCEPT_PATTERN = re.compile(
+    r"""
+    \b
     (
-        not_
+        (?:
+            not
+            (?:-[a-z0-9-]+)?
+            |
+            com
+        )
+        _
         (\d{12,18})
         _
         (\d+)
@@ -51,6 +65,16 @@ CONCEPT_PATTERN = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+
+NACIONALIDAD_REFERENCE_PATTERN = re.compile(
+    r"""
+    \b
+    (R\d{4,12}/\d{4})
+    \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 
 RECIPIENT_PATTERN = re.compile(
     r"""
@@ -214,8 +238,27 @@ def extract(message):
     identifier_match = (
         IDENTIFIER_PATTERN.search(body)
     )
-    concept_match = (
-        CONCEPT_PATTERN.search(body)
+    concept_field_match = (
+        CONCEPT_FIELD_PATTERN.search(body)
+    )
+
+    concept_value = (
+        _clean(concept_field_match.group(1))
+        if concept_field_match
+        else ""
+    )
+
+    extranjeria_concept_match = (
+        EXTRANJERIA_CONCEPT_PATTERN.search(
+            concept_value
+        )
+    )
+
+    nacionalidad_reference_match = (
+        NACIONALIDAD_REFERENCE_PATTERN.search(
+            concept_value
+            or body
+        )
     )
     recipient_match = (
         RECIPIENT_PATTERN.search(body)
@@ -266,30 +309,79 @@ def extract(message):
             ),
 
         "concept":
+            concept_value,
+
+        "concept_type":
             (
-                _clean(concept_match.group(1))
-                if concept_match
-                else ""
+                _upper(
+                    extranjeria_concept_match
+                    .group(1)
+                    .split("_", 1)[0]
+                )
+                if extranjeria_concept_match
+                else (
+                    "NACIONALIDAD"
+                    if nacionalidad_reference_match
+                    else "UNKNOWN"
+                )
             ),
 
+        "expedient_reference":
+            (
+                _clean(
+                    extranjeria_concept_match
+                    .group(2)
+                )
+                if extranjeria_concept_match
+                else (
+                    _upper(
+                        nacionalidad_reference_match
+                        .group(1)
+                    )
+                    if nacionalidad_reference_match
+                    else ""
+                )
+            ),
+
+        "expedient_reference_type":
+            (
+                "EXTRANJERIA_NUMERIC"
+                if extranjeria_concept_match
+                else (
+                    "NACIONALIDAD"
+                    if nacionalidad_reference_match
+                    else "UNKNOWN"
+                )
+            ),
+
+        # Compatibilidad con el servicio actual.
         "numero_expediente_extranjeria":
             (
-                _clean(concept_match.group(2))
-                if concept_match
+                _clean(
+                    extranjeria_concept_match
+                    .group(2)
+                )
+                if extranjeria_concept_match
                 else ""
             ),
 
         "concept_reference_1":
             (
-                _clean(concept_match.group(3))
-                if concept_match
+                _clean(
+                    extranjeria_concept_match
+                    .group(3)
+                )
+                if extranjeria_concept_match
                 else ""
             ),
 
         "concept_reference_2":
             (
-                _clean(concept_match.group(4))
-                if concept_match
+                _clean(
+                    extranjeria_concept_match
+                    .group(4)
+                )
+                if extranjeria_concept_match
                 else ""
             ),
 
@@ -352,10 +444,10 @@ def extract(message):
         )
 
     if not extracted[
-        "numero_expediente_extranjeria"
+        "expedient_reference"
     ]:
         missing.append(
-            "NUMERO_EXPEDIENTE_NO_DETECTADO"
+            "REFERENCIA_EXPEDIENTE_NO_DETECTADA"
         )
 
     if not extracted["deadline_at"]:
