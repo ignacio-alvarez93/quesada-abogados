@@ -496,6 +496,97 @@ class DehuNotificationEmailServiceTest(
 
 
 
+    def test_reprocessing_updates_verification_status(
+        self,
+    ):
+        body = """
+        Está disponible una nueva notificación electrónica.
+
+        Titular: ANA BELEN QUESADA SOLER
+        con NIF/NIE: ***100***
+
+        Organismo emisor:
+        Ministerio de Justicia,
+        con DIR3: EA0000001
+
+        Identificador:
+        98658706a676ee57e143
+
+        Concepto:
+        R619648/2025
+
+        Con vencimiento el día:
+        06/08/2026
+        """
+
+        message = self._message(
+            provider_message_id=(
+                "NACIONALIDAD-REPROCESS-1"
+            ),
+            body=body,
+        )
+
+        first = (
+            email_expedient_sync_service
+            .process_message(message)
+        )
+
+        self.assertEqual(
+            first["verification_status"],
+            (
+                "REFERENCE_DETECTED_"
+                "FAMILY_NOT_AVAILABLE"
+            ),
+        )
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE dehu_notifications
+                SET verification_status =
+                    'MULTIPLE_EXPEDIENTS'
+                WHERE dehu_identifier = ?
+                """,
+                (
+                    "98658706a676ee57e143",
+                ),
+            )
+
+        second = (
+            email_expedient_sync_service
+            .process_message(message)
+        )
+
+        self.assertEqual(
+            second["verification_status"],
+            (
+                "REFERENCE_DETECTED_"
+                "FAMILY_NOT_AVAILABLE"
+            ),
+        )
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT verification_status
+                FROM dehu_notifications
+                WHERE dehu_identifier = ?
+                """,
+                (
+                    "98658706a676ee57e143",
+                ),
+            ).fetchone()
+
+        self.assertEqual(
+            row["verification_status"],
+            (
+                "REFERENCE_DETECTED_"
+                "FAMILY_NOT_AVAILABLE"
+            ),
+        )
+
+
+
     def test_unauthorized_sender_is_not_dehu(self):
         message = self._message()
         message["sender_email"] = (

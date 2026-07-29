@@ -818,16 +818,7 @@ def process_stored_message(
                     excluded.deadline_at,
 
                 verification_status =
-                    CASE
-                        WHEN
-                            excluded.verification_status
-                            = 'MATCHED_PROVISIONAL'
-                        THEN
-                            excluded.verification_status
-                        ELSE
-                            dehu_notifications
-                            .verification_status
-                    END,
+                    excluded.verification_status,
 
                 raw_email_data_json =
                     excluded.raw_email_data_json,
