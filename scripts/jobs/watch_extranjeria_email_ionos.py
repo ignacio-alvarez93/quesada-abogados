@@ -8,6 +8,18 @@ por el scheduler del CRM, el PC bot o el Programador de tareas.
 import json
 import os
 import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+load_dotenv(
+    PROJECT_ROOT / ".env.local",
+    override=False,
+)
+
 
 from backend.services.email_platform import (
     email_account_service,
@@ -54,11 +66,20 @@ def main():
                         "QUESADA_IONOS_FOLDER",
                         "INBOX",
                     ),
-                "sender_filter":
+                "sender_filters": [
                     (
                         "notificaciones."
                         "extranjeria@correo.gob.es"
                     ),
+                    (
+                        "no-reply-notifica"
+                        "@correo.gob.es"
+                    ),
+                    (
+                        "noreply.dehu"
+                        "@correo.gob.es"
+                    ),
+                ],
             },
             incoming_enabled=True,
             outgoing_enabled=False,

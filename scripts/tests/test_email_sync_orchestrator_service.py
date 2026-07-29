@@ -7,13 +7,26 @@ from backend.services.email_platform import (
 )
 
 
-ACCOUNT = {
+IONOS_ACCOUNT = {
     "id": 1,
     "email_address":
         "quesada@abogados-extranjeria.com",
     "provider": "IONOS_IMAP",
     "incoming_enabled": 1,
     "last_sync_cursor": "100",
+    "last_sync_at": "",
+    "last_sync_status": "OK",
+    "last_sync_error": "",
+}
+
+GMAIL_ACCOUNT = {
+    "id": 6,
+    "email_address":
+        "quesadaabogadosextranjeria@gmail.com",
+    "provider": "GMAIL_API",
+    "incoming_enabled": 1,
+    "last_sync_cursor":
+        "1785147296000",
     "last_sync_at": "",
     "last_sync_status": "OK",
     "last_sync_error": "",
@@ -27,9 +40,12 @@ class FakeProvider:
     def sync_incoming(self):
         return {
             "ok": True,
-            "account_id": 1,
+            "account_id":
+                self.account["id"],
             "account_email":
-                ACCOUNT["email_address"],
+                self.account[
+                    "email_address"
+                ],
             "uids_found": 4,
             "processed": [
                 {
@@ -39,7 +55,8 @@ class FakeProvider:
                 },
                 {
                     "uid": 102,
-                    "status": "REVIEW_REQUIRED",
+                    "status":
+                        "REVIEW_REQUIRED",
                     "expediente_id": None,
                 },
                 {
@@ -66,9 +83,9 @@ class EmailSyncOrchestratorTest(
         "email_sync_orchestrator_service."
         "email_account_service."
         "get_active_incoming_accounts",
-        return_value=[ACCOUNT],
+        return_value=[IONOS_ACCOUNT],
     )
-    def test_status_uses_configured_account(
+    def test_ionos_status_compatibility(
         self,
         mocked_accounts,
     ):
@@ -81,19 +98,61 @@ class EmailSyncOrchestratorTest(
             1,
         )
         self.assertEqual(
+            result["provider"],
+            "IONOS_IMAP",
+        )
+        self.assertEqual(
             result["last_sync_cursor"],
             "100",
         )
-        mocked_accounts.assert_called_once()
+
+        mocked_accounts.assert_called_once_with(
+            provider="IONOS_IMAP"
+        )
 
     @patch(
         "backend.services.email_platform."
         "email_sync_orchestrator_service."
         "email_account_service."
         "get_active_incoming_accounts",
-        return_value=[ACCOUNT],
+        return_value=[GMAIL_ACCOUNT],
     )
-    def test_sync_returns_ui_summary(
+    def test_generic_gmail_status(
+        self,
+        mocked_accounts,
+    ):
+        result = (
+            orchestrator
+            .get_provider_status(
+                "GMAIL_API"
+            )
+        )
+
+        self.assertEqual(
+            result["account_id"],
+            6,
+        )
+        self.assertEqual(
+            result["provider_label"],
+            "Gmail",
+        )
+        self.assertEqual(
+            result["last_sync_cursor"],
+            "1785147296000",
+        )
+
+        mocked_accounts.assert_called_once_with(
+            provider="GMAIL_API"
+        )
+
+    @patch(
+        "backend.services.email_platform."
+        "email_sync_orchestrator_service."
+        "email_account_service."
+        "get_active_incoming_accounts",
+        return_value=[IONOS_ACCOUNT],
+    )
+    def test_ionos_sync_returns_summary(
         self,
         mocked_accounts,
     ):
@@ -107,8 +166,8 @@ class EmailSyncOrchestratorTest(
         self.assertTrue(result["ok"])
         self.assertFalse(result["busy"])
         self.assertEqual(
-            result["uids_found"],
-            4,
+            result["provider"],
+            "IONOS_IMAP",
         )
         self.assertEqual(
             result["applied_count"],
@@ -128,12 +187,46 @@ class EmailSyncOrchestratorTest(
             result["expedient_ids"],
             [20, 21],
         )
-        self.assertEqual(
-            result["last_cursor"],
-            "104",
+
+    @patch(
+        "backend.services.email_platform."
+        "email_sync_orchestrator_service."
+        "email_account_service."
+        "get_active_incoming_accounts",
+        return_value=[GMAIL_ACCOUNT],
+    )
+    def test_gmail_sync_returns_summary(
+        self,
+        mocked_accounts,
+    ):
+        result = (
+            orchestrator
+            .sync_gmail_extranjeria(
+                provider_factory=FakeProvider
+            )
         )
 
-    def test_busy_guard(self):
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            result["provider"],
+            "GMAIL_API",
+        )
+        self.assertEqual(
+            result["provider_label"],
+            "Gmail",
+        )
+        self.assertEqual(
+            result["uids_found"],
+            4,
+        )
+        self.assertEqual(
+            result["applied_count"],
+            2,
+        )
+
+    def test_busy_guard_is_shared(
+        self,
+    ):
         acquired = (
             orchestrator._SYNC_LOCK.acquire(
                 blocking=False
@@ -145,7 +238,9 @@ class EmailSyncOrchestratorTest(
         try:
             result = (
                 orchestrator
-                .sync_ionos_extranjeria()
+                .sync_provider_extranjeria(
+                    "GMAIL_API"
+                )
             )
 
             self.assertTrue(
@@ -154,8 +249,23 @@ class EmailSyncOrchestratorTest(
             self.assertFalse(
                 result["ok"]
             )
+            self.assertEqual(
+                result["provider"],
+                "GMAIL_API",
+            )
+
         finally:
             orchestrator._SYNC_LOCK.release()
+
+    def test_unknown_provider_is_rejected(
+        self,
+    ):
+        with self.assertRaises(
+            ValueError
+        ):
+            orchestrator.get_provider_status(
+                "UNKNOWN"
+            )
 
 
 if __name__ == "__main__":

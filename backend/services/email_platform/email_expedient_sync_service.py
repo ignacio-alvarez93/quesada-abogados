@@ -15,10 +15,12 @@ from backend.services import (
     notification_tracking_service,
 )
 from backend.services.email_platform import (
+    dehu_notification_service,
     email_message_service,
     schema_service,
 )
 from backend.services.email_platform.processors import (
+    dehu_notification_notice_processor,
     extranjeria_expedient_number_processor
     as processor,
 )
@@ -361,6 +363,19 @@ def process_message(message):
     stored = stored_result["message"]
     normalized = stored_result["normalized"]
     email_message_id = int(stored["id"])
+
+    # El aviso DEHú tiene un procesador independiente.
+    # No se mezcla con la asignación del número Mercurio.
+    if (
+        dehu_notification_notice_processor
+        .can_process(normalized)
+    ):
+        return (
+            dehu_notification_service
+            .process_stored_message(
+                stored_result=stored_result,
+            )
+        )
 
     extraction_result = processor.extract(
         normalized

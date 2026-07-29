@@ -22,6 +22,72 @@ Reciba un cordial saludo.
 class ExtranjeriaEmailProcessorTest(
     unittest.TestCase
 ):
+    def test_extracts_e_mercurio_identifier(self):
+        message = {
+            "sender_email":
+                "notificaciones.extranjeria@correo.gob.es",
+            "body_text": (
+                "Número de Expediente asignado a su solicitud "
+                "de Mercurio con ID E33202601328072 "
+                "para el/la interesado/a con nombre "
+                "ALEXANDER NEFTALI MENDEZ GUERRERO, "
+                "ha sido asignado el número de expediente "
+                "337020260013597."
+            ),
+        }
+
+        result = processor.extract(message)
+
+        self.assertEqual(
+            result["status"],
+            "EXTRACTED",
+        )
+        self.assertEqual(
+            result["extracted_data"][
+                "numero_presentacion_registro"
+            ],
+            "E33202601328072",
+        )
+        self.assertEqual(
+            result["extracted_data"][
+                "numero_expediente_extranjeria"
+            ],
+            "337020260013597",
+        )
+
+    def test_extracts_r_mercurio_identifier(self):
+        message = {
+            "sender_email":
+                "notificaciones.extranjeria@correo.gob.es",
+            "body_text": (
+                "Número de Expediente asignado a su solicitud "
+                "de Mercurio con ID R33202601219869 "
+                "para el/la interesado/a con nombre "
+                "NOELIA CONCEPCION CRISTALDO VEGA, "
+                "ha sido asignado el número de expediente "
+                "339920260003031."
+            ),
+        }
+
+        result = processor.extract(message)
+
+        self.assertEqual(
+            result["status"],
+            "EXTRACTED",
+        )
+        self.assertEqual(
+            result["extracted_data"][
+                "numero_presentacion_registro"
+            ],
+            "R33202601219869",
+        )
+        self.assertEqual(
+            result["extracted_data"][
+                "numero_expediente_extranjeria"
+            ],
+            "339920260003031",
+        )
+
     def test_extracts_real_email_fields(self):
         result = processor.extract(
             {

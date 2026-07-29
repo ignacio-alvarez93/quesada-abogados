@@ -109,8 +109,8 @@ def notifications_view(
         "page": 1,
         "page_size": 10,
         "message": None,
-        "syncing": False,
-        "account_status": None,
+        "syncing_provider": "",
+        "account_statuses": {},
     }
 
     content_area = ft.Container(
@@ -185,20 +185,34 @@ def notifications_view(
     def set_message(control):
         state["message"] = control
 
-    def load_account_status():
-        try:
-            state["account_status"] = (
-                email_sync_orchestrator_service
-                .get_ionos_status()
-            )
-        except Exception as exc:
-            state["account_status"] = {
-                "last_sync_status": "ERROR",
-                "last_sync_error": str(exc),
-                "last_sync_cursor": "",
-                "last_sync_at": "",
-                "account_email": "",
-            }
+    def load_account_statuses():
+        statuses = {}
+
+        for provider in (
+            "IONOS_IMAP",
+            "GMAIL_API",
+        ):
+            try:
+                statuses[provider] = (
+                    email_sync_orchestrator_service
+                    .get_provider_status(
+                        provider
+                    )
+                )
+
+            except Exception as exc:
+                statuses[provider] = {
+                    "provider": provider,
+                    "last_sync_status": "ERROR",
+                    "last_sync_error": str(exc),
+                    "last_sync_cursor": "",
+                    "last_sync_at": "",
+                    "account_email": "",
+                }
+
+        state["account_statuses"] = (
+            statuses
+        )
 
     def load_tracking():
         items = (
@@ -237,7 +251,7 @@ def notifications_view(
 
     def load():
         load_tracking()
-        load_account_status()
+        load_account_statuses()
 
     def refresh(e=None):
         load()
@@ -286,11 +300,16 @@ def notifications_view(
             f"{result.get('error_count', 0)}."
         )
 
-    def sync_worker():
+    def sync_worker(
+        provider,
+        provider_label,
+    ):
         try:
             result = (
                 email_sync_orchestrator_service
-                .sync_ionos_extranjeria()
+                .sync_provider_extranjeria(
+                    provider
+                )
             )
 
             if result.get("busy"):
@@ -307,7 +326,9 @@ def notifications_view(
             elif result.get("ok"):
                 set_message(
                     success_alert(
-                        format_sync_summary(
+                        provider_label
+                        + "\n"
+                        + format_sync_summary(
                             result
                         )
                     )
@@ -322,24 +343,34 @@ def notifications_view(
                 )
 
                 set_message(
-                    error_alert(detail)
+                    error_alert(
+                        provider_label
+                        + ": "
+                        + detail
+                    )
                 )
 
         except Exception as exc:
             set_message(
                 error_alert(
-                    "No se pudo revisar IONOS: "
-                    f"{exc}"
+                    "No se pudo revisar "
+                    f"{provider_label}: {exc}"
                 )
             )
 
         finally:
-            state["syncing"] = False
+            state[
+                "syncing_provider"
+            ] = ""
+
             load()
             safe_update()
 
-    def start_ionos_sync(e=None):
-        if state["syncing"]:
+    def start_provider_sync(
+        provider,
+        provider_label,
+    ):
+        if state["syncing_provider"]:
             set_message(
                 warning_alert(
                     "Ya hay una revisión de "
@@ -349,18 +380,37 @@ def notifications_view(
             safe_update()
             return
 
-        state["syncing"] = True
+        state[
+            "syncing_provider"
+        ] = provider
+
         set_message(
             warning_alert(
-                "Revisando correo IONOS. "
+                f"Revisando correo "
+                f"{provider_label}. "
                 "La vista se actualizará "
                 "al finalizar."
             )
         )
+
         safe_update()
 
         start_background_worker(
-            sync_worker
+            sync_worker,
+            provider,
+            provider_label,
+        )
+
+    def start_ionos_sync(e=None):
+        start_provider_sync(
+            "IONOS_IMAP",
+            "IONOS",
+        )
+
+    def start_gmail_sync(e=None):
+        start_provider_sync(
+            "GMAIL_API",
+            "Gmail",
         )
 
     def tracking_card(item):
@@ -570,10 +620,19 @@ def notifications_view(
             ),
         )
 
-    def account_panel():
+    def account_panel(
+        provider,
+        title,
+        cursor_label,
+    ):
         account = (
-            state.get("account_status")
+            state.get(
+                "account_statuses"
+            )
             or {}
+        ).get(
+            provider,
+            {},
         )
 
         status = (
@@ -593,7 +652,7 @@ def notifications_view(
 
         controls = [
             ft.Text(
-                "Vigilancia IONOS",
+                title,
                 size=14,
                 weight=ft.FontWeight.BOLD,
                 color=Q_PRIMARY_DARK,
@@ -628,7 +687,8 @@ def notifications_view(
                         color=Q_MUTED,
                     ),
                     ft.Text(
-                        "Último UID: "
+                        cursor_label
+                        + ": "
                         + str(
                             account.get(
                                 "last_sync_cursor"
@@ -659,6 +719,7 @@ def notifications_view(
             )
 
         return ft.Container(
+            width=520,
             content=ft.Column(
                 controls=controls,
                 spacing=4,
@@ -676,16 +737,36 @@ def notifications_view(
         counts = state.get("counts") or {}
         items = state.get("items") or []
 
-        sync_button = primary_button(
+        syncing_provider = state.get(
+            "syncing_provider"
+        ) or ""
+
+        ionos_sync_button = primary_button(
             (
-                "Revisando correo..."
-                if state["syncing"]
-                else "Revisar correo IONOS"
+                "Revisando IONOS..."
+                if syncing_provider
+                == "IONOS_IMAP"
+                else "Revisar IONOS"
             ),
             start_ionos_sync,
         )
-        sync_button.disabled = bool(
-            state["syncing"]
+
+        gmail_sync_button = secondary_button(
+            (
+                "Revisando Gmail..."
+                if syncing_provider
+                == "GMAIL_API"
+                else "Revisar Gmail"
+            ),
+            start_gmail_sync,
+        )
+
+        ionos_sync_button.disabled = bool(
+            syncing_provider
+        )
+
+        gmail_sync_button.disabled = bool(
+            syncing_provider
         )
 
         controls = [
@@ -713,7 +794,8 @@ def notifications_view(
                     ),
                     ft.Row(
                         controls=[
-                            sync_button,
+                            ionos_sync_button,
+                            gmail_sync_button,
                             secondary_button(
                                 "Actualizar",
                                 refresh,
@@ -728,7 +810,22 @@ def notifications_view(
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            account_panel(),
+            ft.Row(
+                controls=[
+                    account_panel(
+                        "IONOS_IMAP",
+                        "Vigilancia IONOS",
+                        "Último UID",
+                    ),
+                    account_panel(
+                        "GMAIL_API",
+                        "Vigilancia Gmail",
+                        "Cursor Gmail",
+                    ),
+                ],
+                spacing=12,
+                wrap=True,
+            ),
             ft.Row(
                 controls=[
                     metric_card(

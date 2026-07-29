@@ -19,7 +19,7 @@ AUTHORIZED_SENDERS = {
 }
 
 MERCURIO_PATTERN = re.compile(
-    r"\bID\s+(I\d{12,20})\b",
+    r"\bID\s+([EIR]\d{12,20})\b",
     re.IGNORECASE,
 )
 

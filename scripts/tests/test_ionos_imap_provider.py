@@ -89,9 +89,11 @@ class IonosImapProviderTest(
                     '{"host":"imap.ionos.es",'
                     '"port":993,'
                     '"folder":"INBOX",'
-                    '"sender_filter":'
+                    '"sender_filters":['
                     '"notificaciones.extranjeria'
-                    '@correo.gob.es"}'
+                    '@correo.gob.es",'
+                    '"no-reply-notifica'
+                    '@correo.gob.es"]}'
                 ),
             "last_sync_cursor": "40",
         }
@@ -131,7 +133,7 @@ class IonosImapProviderTest(
                     "expediente_id": 11,
                 },
             ],
-        ), patch(
+        ) as process_message, patch(
             "backend.services.email_platform."
             "providers.ionos_imap_provider."
             "email_account_service."
@@ -171,6 +173,24 @@ class IonosImapProviderTest(
             uid_calls,
         )
 
+        self.assertIn(
+            (
+                "uid",
+                "SEARCH",
+                (
+                    None,
+                    "UID",
+                    "41:*",
+                    "FROM",
+                    (
+                        '"no-reply-notifica'
+                        '@correo.gob.es"'
+                    ),
+                ),
+            ),
+            uid_calls,
+        )
+
         fetch_calls = [
             call
             for call in uid_calls
@@ -192,6 +212,23 @@ class IonosImapProviderTest(
             update_success.call_count,
             2,
         )
+
+        processed_messages = [
+            call.args[0]
+            for call in process_message.mock_calls
+            if call.args
+        ]
+
+        self.assertEqual(
+            len(processed_messages),
+            2,
+        )
+
+        for message in processed_messages:
+            self.assertEqual(
+                message["account_id"],
+                7,
+            )
         self.assertTrue(
             instance.logged_out
         )

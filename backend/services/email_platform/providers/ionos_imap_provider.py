@@ -33,6 +33,20 @@ EXTRANJERIA_SENDER = (
     "notificaciones.extranjeria@correo.gob.es"
 )
 
+DEHU_SENDER = (
+    "no-reply-notifica@correo.gob.es"
+)
+
+DEHU_CURRENT_SENDER = (
+    "noreply.dehu@correo.gob.es"
+)
+
+DEFAULT_OFFICIAL_SENDERS = (
+    EXTRANJERIA_SENDER,
+    DEHU_SENDER,
+    DEHU_CURRENT_SENDER,
+)
+
 
 def _configuration(account):
     try:
@@ -47,6 +61,40 @@ def _configuration(account):
         account.get("credential_key")
         or "QUESADA_IONOS"
     ).strip().upper()
+
+    raw_sender_filters = (
+        config.get("sender_filters")
+    )
+
+    if isinstance(raw_sender_filters, str):
+        raw_sender_filters = [
+            value.strip()
+            for value in raw_sender_filters.split(",")
+            if value.strip()
+        ]
+
+    if not isinstance(
+        raw_sender_filters,
+        (list, tuple, set),
+    ):
+        legacy_sender = str(
+            config.get("sender_filter")
+            or ""
+        ).strip().lower()
+
+        raw_sender_filters = (
+            [legacy_sender]
+            if legacy_sender
+            else list(DEFAULT_OFFICIAL_SENDERS)
+        )
+
+    sender_filters = []
+
+    for value in raw_sender_filters:
+        sender = str(value or "").strip().lower()
+
+        if sender and sender not in sender_filters:
+            sender_filters.append(sender)
 
     return {
         "host":
@@ -64,11 +112,13 @@ def _configuration(account):
                 config.get("folder")
                 or DEFAULT_FOLDER
             ).strip(),
+        "sender_filters": sender_filters,
         "sender_filter":
-            str(
-                config.get("sender_filter")
-                or EXTRANJERIA_SENDER
-            ).strip().lower(),
+            (
+                sender_filters[0]
+                if sender_filters
+                else ""
+            ),
         "username":
             os.getenv(
                 credential_key + "_USERNAME",
@@ -184,67 +234,84 @@ class IonosImapProvider(
             or ""
         ).strip()
 
-        criteria = []
+        base_criteria = []
 
         if last_cursor.isdigit():
-            criteria.extend(
+            base_criteria.extend(
                 [
                     "UID",
                     f"{int(last_cursor) + 1}:*",
                 ]
             )
 
-        sender_filter = self.config[
-            "sender_filter"
-        ]
-
-        if sender_filter:
-            criteria.extend(
-                [
-                    "FROM",
-                    f'"{sender_filter}"',
-                ]
+        senders = list(
+            self.config.get(
+                "sender_filters"
             )
-
-        if not criteria:
-            criteria = ["ALL"]
-
-        status, data = client.uid(
-            "SEARCH",
-            None,
-            *criteria,
+            or []
         )
 
-        if status != "OK":
-            raise RuntimeError(
-                "IONOS no pudo ejecutar "
-                "la búsqueda IMAP"
-            )
-
-        raw = (
-            data[0]
-            if data
-            else b""
+        searches = (
+            senders
+            if senders
+            else [""]
         )
 
-        if isinstance(raw, bytes):
-            values = raw.split()
-        else:
-            values = str(raw).split()
+        found_uids = set()
 
-        uids = []
+        for sender in searches:
+            criteria = list(base_criteria)
 
-        for value in values:
-            decoded = (
-                value.decode("ascii")
-                if isinstance(value, bytes)
-                else str(value)
+            if sender:
+                criteria.extend(
+                    [
+                        "FROM",
+                        f'"{sender}"',
+                    ]
+                )
+
+            if not criteria:
+                criteria = ["ALL"]
+
+            status, data = client.uid(
+                "SEARCH",
+                None,
+                *criteria,
             )
 
-            if decoded.isdigit():
-                uids.append(int(decoded))
+            if status != "OK":
+                raise RuntimeError(
+                    "IONOS no pudo ejecutar "
+                    "la búsqueda IMAP"
+                )
 
-        return sorted(set(uids))
+            raw = (
+                data[0]
+                if data
+                else b""
+            )
+
+            if isinstance(raw, bytes):
+                values = raw.split()
+            else:
+                values = str(raw).split()
+
+            for value in values:
+                if isinstance(value, bytes):
+                    value = value.decode(
+                        "ascii",
+                        errors="ignore",
+                    )
+
+                uid = str(value or "").strip()
+
+                if uid.isdigit():
+                    found_uids.add(uid)
+
+        return sorted(
+            found_uids,
+            key=int,
+        )
 
     def _fetch_raw_message(
         self,
@@ -316,6 +383,10 @@ class IonosImapProvider(
                                 "folder"
                             ],
                         )
+                    )
+
+                    normalized["account_id"] = (
+                        account_id
                     )
 
                     result = (
