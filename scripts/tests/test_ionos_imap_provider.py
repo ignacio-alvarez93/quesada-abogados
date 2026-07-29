@@ -133,7 +133,7 @@ class IonosImapProviderTest(
                     "expediente_id": 11,
                 },
             ],
-        ), patch(
+        ) as process_message, patch(
             "backend.services.email_platform."
             "providers.ionos_imap_provider."
             "email_account_service."
