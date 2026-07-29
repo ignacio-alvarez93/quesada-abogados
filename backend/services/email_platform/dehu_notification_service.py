@@ -12,6 +12,7 @@ import json
 
 from backend.services.email_platform import (
     email_message_service,
+    official_reference_resolver,
     schema_service,
 )
 from backend.services.email_platform.processors import (
@@ -31,6 +32,10 @@ VERIFICATION_EXPEDIENT_NOT_FOUND = (
 )
 VERIFICATION_MULTIPLE_EXPEDIENTS = (
     "MULTIPLE_EXPEDIENTS"
+)
+
+VERIFICATION_REFERENCE_DETECTED_FAMILY_NOT_AVAILABLE = (
+    "REFERENCE_DETECTED_FAMILY_NOT_AVAILABLE"
 )
 
 DOWNLOAD_NOT_REQUESTED = "NOT_REQUESTED"
@@ -336,47 +341,6 @@ def ensure_dehu_schema(conn=None):
         )
 
 
-def _find_expedient_candidates(
-    conn,
-    official_number,
-):
-    official_number = _text(official_number)
-
-    return [
-        dict(row)
-        for row in conn.execute(
-            """
-            SELECT
-                e.id,
-                e.cliente_id,
-                e.numero_expediente,
-                e.numero_expediente_extranjeria,
-                e.activo,
-
-                c.nombre,
-                c.primer_apellido,
-                c.segundo_apellido
-
-            FROM expedientes e
-
-            JOIN clientes c
-              ON c.id = e.cliente_id
-
-            WHERE e.activo = 1
-              AND TRIM(
-                    COALESCE(
-                        e.numero_expediente_extranjeria,
-                        ''
-                    )
-                  ) = ?
-
-            ORDER BY e.id ASC
-            """,
-            (official_number,),
-        ).fetchall()
-    ]
-
-
 def _upsert_processing_result(
     conn,
     *,
@@ -626,9 +590,28 @@ def process_stored_message(
     with schema_service.connection() as conn:
         ensure_dehu_schema(conn)
 
-        candidates = _find_expedient_candidates(
-            conn,
-            official_number,
+        resolution = (
+            official_reference_resolver.resolve(
+                conn,
+                reference_value=_text(
+                    extracted.get(
+                        "expedient_reference"
+                    )
+                ),
+                reference_type=_upper(
+                    extracted.get(
+                        "expedient_reference_type"
+                    )
+                ),
+                family_hint=_upper(
+                    extracted.get("family_hint")
+                ),
+            )
+        )
+
+        candidates = (
+            resolution.get("candidates")
+            or []
         )
 
         expediente = None
@@ -639,7 +622,39 @@ def process_stored_message(
         action_status = "NOT_APPLIED"
         review_reason = ""
 
-        if len(candidates) == 0:
+        resolution_status = (
+            resolution.get("status")
+        )
+
+        if (
+            resolution_status
+            == official_reference_resolver
+            .STATUS_FAMILY_NOT_AVAILABLE
+        ):
+            verification_status = (
+                VERIFICATION_REFERENCE_DETECTED_FAMILY_NOT_AVAILABLE
+            )
+            review_reason = (
+                "REFERENCIA_DETECTADA_FAMILIA_NO_DISPONIBLE"
+            )
+
+        elif (
+            resolution_status
+            == official_reference_resolver
+            .STATUS_REFERENCE_NOT_DETECTED
+        ):
+            verification_status = (
+                VERIFICATION_EMAIL_ONLY
+            )
+            review_reason = (
+                "REFERENCIA_EXPEDIENTE_NO_DETECTADA"
+            )
+
+        elif (
+            resolution_status
+            == official_reference_resolver
+            .STATUS_NOT_FOUND
+        ):
             verification_status = (
                 VERIFICATION_EXPEDIENT_NOT_FOUND
             )
@@ -647,7 +662,11 @@ def process_stored_message(
                 "EXPEDIENTE_NO_ENCONTRADO"
             )
 
-        elif len(candidates) > 1:
+        elif (
+            resolution_status
+            == official_reference_resolver
+            .STATUS_MULTIPLE
+        ):
             verification_status = (
                 VERIFICATION_MULTIPLE_EXPEDIENTS
             )
@@ -655,7 +674,11 @@ def process_stored_message(
                 "MULTIPLES_EXPEDIENTES_COINCIDENTES"
             )
 
-        else:
+        elif (
+            resolution_status
+            == official_reference_resolver
+            .STATUS_MATCHED
+        ):
             expediente = candidates[0]
             verification_status = (
                 VERIFICATION_MATCHED_PROVISIONAL
