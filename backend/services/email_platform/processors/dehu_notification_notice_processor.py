@@ -75,6 +75,46 @@ NACIONALIDAD_REFERENCE_PATTERN = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+NOTIFICATION_TEXT_PATTERN = re.compile(
+    r"""
+    nueva
+    \s+
+    notificaci[oó]n
+    (?:\s+electr[oó]nica)?
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+COMMUNICATION_TEXT_PATTERN = re.compile(
+    r"""
+    nueva
+    \s+
+    comunicaci[oó]n
+    (?:\s+electr[oó]nica)?
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+DIRECT_ACCESS_URL_PATTERN = re.compile(
+    r"""
+    (
+        https://dehu\.redsara\.es/
+        (?:
+            es/
+        )?
+        (?:
+            notifications/pending/
+            [a-zA-Z0-9]+
+            /aceptar
+            |
+            communications
+        )
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 
 RECIPIENT_PATTERN = re.compile(
     r"""
@@ -260,6 +300,42 @@ def extract(message):
             or body
         )
     )
+
+    direct_access_url_match = (
+        DIRECT_ACCESS_URL_PATTERN.search(body)
+    )
+
+    concept_prefix = (
+        _upper(
+            extranjeria_concept_match
+            .group(1)
+            .split("_", 1)[0]
+        )
+        if extranjeria_concept_match
+        else ""
+    )
+
+    if (
+        concept_prefix == "COM"
+        or COMMUNICATION_TEXT_PATTERN.search(body)
+    ):
+        item_type = "COMMUNICATION"
+
+    elif (
+        concept_prefix.startswith("NOT")
+        or NOTIFICATION_TEXT_PATTERN.search(body)
+    ):
+        item_type = "NOTIFICATION"
+
+    else:
+        item_type = "UNKNOWN"
+
+    if extranjeria_concept_match:
+        family_hint = "EXTRANJERIA"
+    elif nacionalidad_reference_match:
+        family_hint = "NACIONALIDAD"
+    else:
+        family_hint = "UNKNOWN"
     recipient_match = (
         RECIPIENT_PATTERN.search(body)
         or MODERN_RECIPIENT_PATTERN.search(body)
@@ -311,16 +387,15 @@ def extract(message):
         "concept":
             concept_value,
 
+        "item_type":
+            item_type,
+
         "concept_type":
             (
-                _upper(
-                    extranjeria_concept_match
-                    .group(1)
-                    .split("_", 1)[0]
-                )
-                if extranjeria_concept_match
+                concept_prefix
+                if concept_prefix
                 else (
-                    "NACIONALIDAD"
+                    "NACIONALIDAD_REFERENCE"
                     if nacionalidad_reference_match
                     else "UNKNOWN"
                 )
@@ -348,10 +423,22 @@ def extract(message):
                 "EXTRANJERIA_NUMERIC"
                 if extranjeria_concept_match
                 else (
-                    "NACIONALIDAD"
+                    "NACIONALIDAD_R"
                     if nacionalidad_reference_match
                     else "UNKNOWN"
                 )
+            ),
+
+        "family_hint":
+            family_hint,
+
+        "direct_access_url":
+            (
+                _clean(
+                    direct_access_url_match.group(0)
+                )
+                if direct_access_url_match
+                else ""
             ),
 
         # Compatibilidad con el servicio actual.
@@ -450,7 +537,10 @@ def extract(message):
             "REFERENCIA_EXPEDIENTE_NO_DETECTADA"
         )
 
-    if not extracted["deadline_at"]:
+    if (
+        extracted["item_type"] == "NOTIFICATION"
+        and not extracted["deadline_at"]
+    ):
         missing.append(
             "FECHA_LIMITE_NO_DETECTADA"
         )

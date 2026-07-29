@@ -158,6 +158,7 @@ class DehuNotificationEmailServiceTest(
         provider="GMAIL_API",
         provider_message_id="DEHU-001",
         body=SAMPLE_BODY,
+        folder="INBOX",
     ):
         return {
             "provider": provider,
@@ -165,6 +166,8 @@ class DehuNotificationEmailServiceTest(
                 "buzon@despacho.test",
             "provider_message_id":
                 provider_message_id,
+            "folder":
+                folder,
             "internet_message_id":
                 (
                     f"<{provider}-"
@@ -326,6 +329,28 @@ class DehuNotificationEmailServiceTest(
         )
 
         with self._connect() as conn:
+            notification = conn.execute(
+                """
+                SELECT
+                    item_type,
+                    concept_type,
+                    reference_value,
+                    reference_type,
+                    family_hint
+                FROM dehu_notifications
+                LIMIT 1
+                """
+            ).fetchone()
+
+            source = conn.execute(
+                """
+                SELECT source_folder
+                FROM dehu_notification_email_sources
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+
             notification_count = conn.execute(
                 """
                 SELECT COUNT(*)
@@ -352,6 +377,29 @@ class DehuNotificationEmailServiceTest(
         self.assertEqual(notification_count, 1)
         self.assertEqual(source_count, 2)
         self.assertEqual(event_count, 1)
+
+        self.assertEqual(
+            notification["item_type"],
+            "NOTIFICATION",
+        )
+        self.assertEqual(
+            notification["reference_value"],
+            "337020260010359",
+        )
+        self.assertEqual(
+            notification["reference_type"],
+            "EXTRANJERIA_NUMERIC",
+        )
+        self.assertEqual(
+            notification["family_hint"],
+            "EXTRANJERIA",
+        )
+
+        self.assertIsNotNone(source)
+        self.assertEqual(
+            source["source_folder"],
+            "INBOX",
+        )
 
     def test_unauthorized_sender_is_not_dehu(self):
         message = self._message()
@@ -444,6 +492,9 @@ class DehuConceptVariantsTest(
                     "sender_email":
                         "noreply.dehu@correo.gob.es",
                     "body_text": f"""
+                    Está disponible una nueva
+                    notificación electrónica.
+
                     Identificador:
                     38737286a6931935b93e
                     Con vencimiento el día:
@@ -480,6 +531,14 @@ class DehuConceptVariantsTest(
             data["concept_type"],
             "NOT-RESOLUCION",
         )
+        self.assertEqual(
+            data["item_type"],
+            "NOTIFICATION",
+        )
+        self.assertEqual(
+            data["family_hint"],
+            "EXTRANJERIA",
+        )
 
     def test_extracts_nationality_reference(self):
         result = self._extract(
@@ -499,7 +558,99 @@ class DehuConceptVariantsTest(
         )
         self.assertEqual(
             data["expedient_reference_type"],
+            "NACIONALIDAD_R",
+        )
+        self.assertEqual(
+            data["item_type"],
+            "NOTIFICATION",
+        )
+        self.assertEqual(
+            data["family_hint"],
             "NACIONALIDAD",
+        )
+
+
+
+
+class DehuCommunicationFormatTest(
+    unittest.TestCase
+):
+    def test_extracts_communication_without_deadline(
+        self,
+    ):
+        message = {
+            "sender_email":
+                "noreply.dehu@correo.gob.es",
+            "subject":
+                (
+                    "Aviso de cortesía de una nueva "
+                    "comunicación electrónica"
+                ),
+            "body_text": """
+            Te informamos que está disponible una nueva
+            comunicación electrónica con los siguientes
+            datos:
+
+            ANA BELEN QUESADA SOLER con NIF/NIE:
+            ***100*** en calidad de Titular
+
+            Organismo emisor:
+            Oficina de Extranjeria en Oviedo,
+            con DIR3: EA0040290
+
+            Identificador:
+            98695446a689d215174c
+
+            Concepto:
+            com_330020260008192_21496683_11073178
+
+            Para tu comodidad, te facilitamos un enlace:
+            https://dehu.redsara.es/es/communications
+            """,
+        }
+
+        result = (
+            dehu_notification_notice_processor
+            .extract(message)
+        )
+
+        self.assertEqual(
+            result["status"],
+            "EXTRACTED",
+        )
+
+        data = result["extracted_data"]
+
+        self.assertEqual(
+            data["item_type"],
+            "COMMUNICATION",
+        )
+        self.assertEqual(
+            data["concept_type"],
+            "COM",
+        )
+        self.assertEqual(
+            data["expedient_reference"],
+            "330020260008192",
+        )
+        self.assertEqual(
+            data["expedient_reference_type"],
+            "EXTRANJERIA_NUMERIC",
+        )
+        self.assertEqual(
+            data["family_hint"],
+            "EXTRANJERIA",
+        )
+        self.assertEqual(
+            data["deadline_at"],
+            "",
+        )
+        self.assertEqual(
+            data["direct_access_url"],
+            (
+                "https://dehu.redsara.es/"
+                "es/communications"
+            ),
         )
 
 

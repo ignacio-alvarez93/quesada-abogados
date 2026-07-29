@@ -44,6 +44,40 @@ def _upper(value):
     return _text(value).upper()
 
 
+def _table_columns(conn, table_name):
+    return {
+        str(row["name"])
+        for row in conn.execute(
+            f"PRAGMA table_info({table_name})"
+        ).fetchall()
+    }
+
+
+def _ensure_column(
+    conn,
+    *,
+    table_name,
+    column_name,
+    definition,
+):
+    columns = _table_columns(
+        conn,
+        table_name,
+    )
+
+    if column_name in columns:
+        return False
+
+    conn.execute(
+        f"""
+        ALTER TABLE {table_name}
+        ADD COLUMN {column_name} {definition}
+        """
+    )
+
+    return True
+
+
 def ensure_dehu_schema(conn=None):
     with schema_service.connection(conn) as current:
         current.execute(
@@ -56,6 +90,19 @@ def ensure_dehu_schema(conn=None):
                     dehu_identifier TEXT NOT NULL
                         UNIQUE,
                     concept TEXT,
+
+                    item_type TEXT NOT NULL
+                        DEFAULT 'UNKNOWN',
+                    concept_type TEXT NOT NULL
+                        DEFAULT 'UNKNOWN',
+
+                    reference_value TEXT,
+                    reference_type TEXT NOT NULL
+                        DEFAULT 'UNKNOWN',
+                    family_hint TEXT NOT NULL
+                        DEFAULT 'UNKNOWN',
+
+                    direct_access_url TEXT,
 
                     email_expedient_number TEXT,
                     dehu_expedient_number TEXT,
@@ -127,6 +174,7 @@ def ensure_dehu_schema(conn=None):
                         NOT NULL,
                     provider TEXT,
                     account_id INTEGER,
+                    source_folder TEXT,
 
                     detected_at TEXT NOT NULL
                         DEFAULT CURRENT_TIMESTAMP,
@@ -145,6 +193,107 @@ def ensure_dehu_schema(conn=None):
                         email_message_id
                     )
                 )
+            """
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="item_type",
+            definition=(
+                "TEXT NOT NULL DEFAULT 'UNKNOWN'"
+            ),
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="concept_type",
+            definition=(
+                "TEXT NOT NULL DEFAULT 'UNKNOWN'"
+            ),
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="reference_value",
+            definition="TEXT",
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="reference_type",
+            definition=(
+                "TEXT NOT NULL DEFAULT 'UNKNOWN'"
+            ),
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="family_hint",
+            definition=(
+                "TEXT NOT NULL DEFAULT 'UNKNOWN'"
+            ),
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="direct_access_url",
+            definition="TEXT",
+        )
+
+        _ensure_column(
+            current,
+            table_name=(
+                "dehu_notification_email_sources"
+            ),
+            column_name="source_folder",
+            definition="TEXT",
+        )
+
+        current.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_dehu_notification_item_type
+            ON dehu_notifications(item_type)
+            """
+        )
+
+        current.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_dehu_notification_reference
+            ON dehu_notifications(
+                reference_type,
+                reference_value
+            )
+            """
+        )
+
+        current.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_dehu_notification_family
+            ON dehu_notifications(
+                family_hint,
+                verification_status
+            )
+            """
+        )
+
+        current.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_dehu_source_origin
+            ON dehu_notification_email_sources(
+                provider,
+                account_id,
+                source_folder
+            )
             """
         )
 
@@ -296,7 +445,15 @@ def _upsert_processing_result(
                 else ""
             ),
             matched_entity_id,
-            "REGISTER_DEHU_NOTICE",
+            (
+                "REGISTER_DEHU_COMMUNICATION"
+                if _upper(
+                    (extracted_data or {}).get(
+                        "item_type"
+                    )
+                ) == "COMMUNICATION"
+                else "REGISTER_DEHU_NOTIFICATION"
+            ),
             _upper(action_status),
             _upper(review_reason),
         ),
@@ -311,6 +468,33 @@ def _register_expedient_event(
     expediente,
     extracted,
 ):
+    item_type = _upper(
+        extracted.get("item_type")
+        or "UNKNOWN"
+    )
+
+    is_communication = (
+        item_type == "COMMUNICATION"
+    )
+
+    event_type = (
+        "DEHU_COMMUNICATION_NOTICE_RECEIVED"
+        if is_communication
+        else "DEHU_NOTIFICATION_NOTICE_RECEIVED"
+    )
+
+    event_title = (
+        "AVISO DE COMUNICACIÓN DEHÚ RECIBIDO"
+        if is_communication
+        else "AVISO DE NOTIFICACIÓN DEHÚ RECIBIDO"
+    )
+
+    item_label = (
+        "comunicación"
+        if is_communication
+        else "notificación"
+    )
+
     conn.execute(
         """
         INSERT INTO expediente_eventos (
@@ -330,11 +514,12 @@ def _register_expedient_event(
         (
             int(expediente["id"]),
             int(expediente["cliente_id"]),
-            "DEHU_NOTIFICATION_NOTICE_RECEIVED",
-            "AVISO DE NOTIFICACIÓN DEHÚ RECIBIDO",
+            event_type,
+            event_title,
             (
                 "Se ha recibido un aviso de "
-                "notificación DEHú.\n"
+                + item_label
+                + " DEHú.\n"
                 "Identificador: "
                 + _text(
                     extracted.get(
@@ -505,25 +690,42 @@ def process_stored_message(
             INSERT INTO dehu_notifications (
                 dehu_identifier,
                 concept,
+
+                item_type,
+                concept_type,
+                reference_value,
+                reference_type,
+                family_hint,
+                direct_access_url,
+
                 email_expedient_number,
+
                 expediente_id,
                 cliente_id,
                 primary_email_message_id,
+
                 recipient_name,
                 recipient_document_masked,
+
                 issuer_name,
                 issuer_dir3,
                 relationship_type,
+
                 deadline_at,
+
                 portal_status,
                 verification_status,
                 download_status,
+
                 raw_email_data_json
             )
             VALUES (
+                ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?,
                 ?, ?, ?,
+                ?, ?,
                 ?, ?, ?,
-                ?, ?, ?, ?, ?,
                 ?,
                 ?, ?, ?,
                 ?
@@ -531,7 +733,34 @@ def process_stored_message(
 
             ON CONFLICT(dehu_identifier)
             DO UPDATE SET
-                concept = excluded.concept,
+                concept =
+                    excluded.concept,
+
+                item_type =
+                    excluded.item_type,
+
+                concept_type =
+                    excluded.concept_type,
+
+                reference_value =
+                    excluded.reference_value,
+
+                reference_type =
+                    excluded.reference_type,
+
+                family_hint =
+                    excluded.family_hint,
+
+                direct_access_url =
+                    COALESCE(
+                        NULLIF(
+                            excluded.direct_access_url,
+                            ''
+                        ),
+                        dehu_notifications
+                        .direct_access_url
+                    ),
+
                 email_expedient_number =
                     excluded.email_expedient_number,
 
@@ -549,14 +778,19 @@ def process_stored_message(
 
                 recipient_name =
                     excluded.recipient_name,
+
                 recipient_document_masked =
                     excluded.recipient_document_masked,
+
                 issuer_name =
                     excluded.issuer_name,
+
                 issuer_dir3 =
                     excluded.issuer_dir3,
+
                 relationship_type =
                     excluded.relationship_type,
+
                 deadline_at =
                     excluded.deadline_at,
 
@@ -574,8 +808,10 @@ def process_stored_message(
 
                 raw_email_data_json =
                     excluded.raw_email_data_json,
+
                 last_seen_at =
                     CURRENT_TIMESTAMP,
+
                 updated_at =
                     CURRENT_TIMESTAMP
             """,
@@ -583,7 +819,39 @@ def process_stored_message(
                 _text(
                     extracted["dehu_identifier"]
                 ),
-                _text(extracted["concept"]),
+                _text(
+                    extracted["concept"]
+                ),
+
+                _upper(
+                    extracted.get("item_type")
+                    or "UNKNOWN"
+                ),
+                _upper(
+                    extracted.get("concept_type")
+                    or "UNKNOWN"
+                ),
+                _text(
+                    extracted.get(
+                        "expedient_reference"
+                    )
+                ),
+                _upper(
+                    extracted.get(
+                        "expedient_reference_type"
+                    )
+                    or "UNKNOWN"
+                ),
+                _upper(
+                    extracted.get("family_hint")
+                    or "UNKNOWN"
+                ),
+                _text(
+                    extracted.get(
+                        "direct_access_url"
+                    )
+                ),
+
                 official_number,
 
                 (
@@ -606,12 +874,20 @@ def process_stored_message(
                         "recipient_document_masked"
                     ]
                 ),
-                _text(extracted["issuer_name"]),
-                _text(extracted["issuer_dir3"]),
+
+                _text(
+                    extracted["issuer_name"]
+                ),
+                _text(
+                    extracted["issuer_dir3"]
+                ),
                 _text(
                     extracted["relationship_type"]
                 ),
-                _text(extracted["deadline_at"]),
+
+                _text(
+                    extracted["deadline_at"]
+                ),
 
                 PORTAL_STATUS_UNKNOWN,
                 verification_status,
@@ -648,15 +924,21 @@ def process_stored_message(
                     dehu_notification_id,
                     email_message_id,
                     provider,
-                    account_id
+                    account_id,
+                    source_folder
                 )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 notification_id,
                 email_message_id,
-                _upper(stored.get("provider")),
+                _upper(
+                    stored.get("provider")
+                ),
                 stored.get("account_id"),
+                _text(
+                    stored.get("folder")
+                ),
             ),
         )
 
