@@ -2502,6 +2502,95 @@ def create_admin_document_event(data):
         usuario=_raw(data.get("usuario") or "ERP"),
     )
 
+    dehu_confirmation = None
+
+    dehu_receipt_file = (
+        data.get("dehu_receipt_file")
+        or None
+    )
+
+    dehu_receipt_extraction = (
+        data.get("dehu_receipt_extraction")
+        or None
+    )
+
+    dehu_notification = (
+        data.get("dehu_notification")
+        or None
+    )
+
+    if dehu_receipt_extraction:
+        try:
+            from backend.services.email_platform import (
+                dehu_notification_service,
+            )
+
+            extracted_identifier = (
+                dehu_receipt_extraction.get(
+                    "dehu_identifier"
+                )
+                or ""
+            )
+
+            notification_identifier = (
+                (
+                    dehu_notification
+                    or {}
+                ).get(
+                    "dehu_identifier"
+                )
+                or ""
+            )
+
+            if (
+                notification_identifier
+                and
+                str(extracted_identifier)
+                .strip()
+                .lower()
+                !=
+                str(notification_identifier)
+                .strip()
+                .lower()
+            ):
+                raise ValueError(
+                    "El identificador del resguardo "
+                    "no coincide con el aviso DEHú"
+                )
+
+            dehu_confirmation = (
+                dehu_notification_service
+                .confirm_notification_from_traceability(
+                    dehu_identifier=(
+                        extracted_identifier
+                    ),
+                    expediente_id=expediente_id,
+                    cliente_id=(
+                        expediente["cliente_id"]
+                    ),
+                    event_code=event_code,
+                    event_id=evento_id,
+                    justificante_id=justificante_id,
+                    receipt_file=(
+                        dehu_receipt_file
+                    ),
+                    receipt_extraction=(
+                        dehu_receipt_extraction
+                    ),
+                    usuario=_raw(
+                        data.get("usuario")
+                        or "ERP"
+                    ),
+                )
+            )
+
+        except Exception as exc:
+            dehu_confirmation = {
+                "ok": False,
+                "changed": False,
+                "error": str(exc),
+            }
+
     notification_tracking = None
 
     try:
@@ -2544,6 +2633,8 @@ def create_admin_document_event(data):
         "queue_completion": queue_completion,
         "notification_tracking":
             notification_tracking,
+        "dehu_confirmation":
+            dehu_confirmation,
         "residence_expiry_update":
             residence_expiry_update,
         "presentation_extraction":
@@ -3311,3 +3402,18 @@ def persist_admission_data(
 
     finally:
         connection.close()
+
+
+def extract_admin_dehu_receipt(file_path):
+    """
+    Extrae los datos técnicos de un resguardo DEHú.
+
+    El identificador DEHú es la clave funcional que
+    permite asociar el resguardo con una notificación
+    concreta.
+    """
+    from backend.services.dehu_receipt_extraction_service import (
+        extract_dehu_receipt,
+    )
+
+    return extract_dehu_receipt(file_path)

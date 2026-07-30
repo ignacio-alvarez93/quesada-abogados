@@ -18,10 +18,14 @@ import flet as ft
 from backend.services.email_platform import (
     dehu_inbox_service,
 )
-from frontend.components.app_card import metric_card
 from frontend.components.app_empty_state import empty_state
 from frontend.components.listing import (
     compact_pagination_bar,
+    counter_chips,
+)
+from frontend.components.period_filter import (
+    PERIOD_ALL,
+    build_period_filter,
 )
 
 
@@ -65,6 +69,8 @@ ORIGIN_COLORS = {
 }
 
 VERIFICATION_LABELS = {
+    "CONFIRMED_BY_TRACEABILITY":
+        "Confirmada desde Trazabilidad",
     "MATCHED_PROVISIONAL":
         "Vinculada provisionalmente",
     "EXPEDIENT_NOT_FOUND":
@@ -78,6 +84,10 @@ VERIFICATION_LABELS = {
 }
 
 VERIFICATION_COLORS = {
+    "CONFIRMED_BY_TRACEABILITY": (
+        "#ECFDF3",
+        "#027A48",
+    ),
     "MATCHED_PROVISIONAL": (
         "#ECFDF3",
         "#027A48",
@@ -99,6 +109,25 @@ VERIFICATION_COLORS = {
         "#475467",
     ),
 }
+
+QUICK_FILTER_STATUS_MAP = {
+    "PENDING_REVIEW": (
+        "Pendientes de localizar",
+        "#FFF7E6",
+        "#B54708",
+    ),
+    "PENDING_CLASSIFICATION": (
+        "Pendientes de clasificar",
+        "#F4F3FF",
+        "#5925DC",
+    ),
+    "CONFIRMED_BY_TRACEABILITY": (
+        "Confirmadas",
+        "#ECFDF3",
+        "#027A48",
+    ),
+}
+
 
 PORTAL_LABELS = {
     "UNKNOWN": "Pendiente de comprobar",
@@ -219,6 +248,9 @@ def build_dehu_inbox_panel(
         "verification_status": "",
         "portal_status": "",
         "deadline_filter": "",
+        "period_value": PERIOD_ALL,
+        "detected_from": "",
+        "detected_to": "",
         "loading": False,
     }
 
@@ -294,8 +326,20 @@ def build_dehu_inbox_panel(
                 text="Todos los estados",
             ),
             ft.dropdown.Option(
+                key="PENDING_REVIEW",
+                text="Pendientes de localizar",
+            ),
+            ft.dropdown.Option(
+                key="PENDING_CLASSIFICATION",
+                text="Pendientes de clasificar",
+            ),
+            ft.dropdown.Option(
+                key="CONFIRMED_BY_TRACEABILITY",
+                text="Confirmadas por Trazabilidad",
+            ),
+            ft.dropdown.Option(
                 key="MATCHED_PROVISIONAL",
-                text="Vinculadas",
+                text="Vinculadas provisionalmente",
             ),
             ft.dropdown.Option(
                 key="EXPEDIENT_NOT_FOUND",
@@ -369,6 +413,32 @@ def build_dehu_inbox_panel(
         ],
     )
 
+    def handle_period_change(result):
+        state["period_value"] = (
+            result.get("value")
+            or PERIOD_ALL
+        )
+        state["detected_from"] = (
+            result.get("date_from")
+            or ""
+        )
+        state["detected_to"] = (
+            result.get("date_to")
+            or ""
+        )
+        state["page"] = 1
+
+        load_data()
+        rebuild()
+
+    period_dropdown = build_period_filter(
+        page,
+        initial_value=PERIOD_ALL,
+        on_change=handle_period_change,
+        width=215,
+        label="Fecha de detección",
+    )
+
     def notify(control):
         if callable(on_message):
             on_message(control)
@@ -405,6 +475,12 @@ def build_dehu_inbox_panel(
                     deadline_filter=(
                         state["deadline_filter"]
                     ),
+                    detected_from=(
+                        state["detected_from"]
+                    ),
+                    detected_to=(
+                        state["detected_to"]
+                    ),
                     page=state["page"],
                     page_size=state["page_size"],
                 )
@@ -424,6 +500,7 @@ def build_dehu_inbox_panel(
             )
 
         except Exception as exc:
+            state["summary"] = {}
             state["items"] = []
             state["total"] = 0
 
@@ -453,6 +530,22 @@ def build_dehu_inbox_panel(
         safe_page_update()
 
     def refresh(e=None):
+        load_data()
+        rebuild()
+
+    def set_quick_filter(value):
+        selected = _text(value)
+
+        if (
+            state["verification_status"]
+            == selected
+        ):
+            selected = ""
+
+        state["verification_status"] = selected
+        status_dropdown.value = selected
+        state["page"] = 1
+
         load_data()
         rebuild()
 
@@ -487,6 +580,10 @@ def build_dehu_inbox_panel(
         status_dropdown.value = ""
         portal_status_dropdown.value = ""
         deadline_dropdown.value = ""
+        period_dropdown.set_period_value(
+            PERIOD_ALL,
+            update=False,
+        )
 
         state["search"] = ""
         state["item_type"] = ""
@@ -494,6 +591,9 @@ def build_dehu_inbox_panel(
         state["verification_status"] = ""
         state["portal_status"] = ""
         state["deadline_filter"] = ""
+        state["period_value"] = PERIOD_ALL
+        state["detected_from"] = ""
+        state["detected_to"] = ""
         state["page"] = 1
 
         load_data()
@@ -742,6 +842,16 @@ def build_dehu_inbox_panel(
                                     ),
                                 ),
                                 _field_block(
+                                    "Clasificación procesal",
+                                    (
+                                        detail.get(
+                                            "procedural_event_label"
+                                        )
+                                        or "Sin clasificar"
+                                    ),
+                                    width=270,
+                                ),
+                                _field_block(
                                     "Familia",
                                     detail.get(
                                         "family_hint"
@@ -863,6 +973,21 @@ def build_dehu_inbox_panel(
                 ),
             ),
             actions=[
+                *(
+                    [
+                        ft.TextButton(
+                            "Abrir expediente",
+                            icon=ft.Icons.FOLDER_OPEN,
+                            on_click=lambda e: (
+                                open_expedient(detail)
+                            ),
+                        ),
+                    ]
+                    if detail.get(
+                        "expediente_id"
+                    )
+                    else []
+                ),
                 ft.TextButton(
                     "Abrir DEHú",
                     on_click=lambda e: (
@@ -895,6 +1020,12 @@ def build_dehu_inbox_panel(
         portal_status = _text(
             item.get("portal_status")
         ) or "UNKNOWN"
+
+        procedural_label = _text(
+            item.get(
+                "procedural_event_label"
+            )
+        )
 
         origin_bg, origin_fg = (
             ORIGIN_COLORS.get(
@@ -974,12 +1105,23 @@ def build_dehu_inbox_panel(
                         wrap=True,
                         controls=[
                             _badge(
-                                ITEM_TYPE_LABELS.get(
-                                    item_type,
-                                    item_type,
+                                (
+                                    procedural_label
+                                    or ITEM_TYPE_LABELS.get(
+                                        item_type,
+                                        item_type,
+                                    )
                                 ),
-                                "#EEF4FF",
-                                "#3538CD",
+                                (
+                                    "#ECFDF3"
+                                    if procedural_label
+                                    else "#EEF4FF"
+                                ),
+                                (
+                                    "#027A48"
+                                    if procedural_label
+                                    else "#3538CD"
+                                ),
                             ),
                             _badge(
                                 item.get(
@@ -1018,13 +1160,29 @@ def build_dehu_inbox_panel(
                                     spacing=3,
                                     controls=[
                                         ft.Text(
-                                            reference,
+                                            (
+                                                procedural_label
+                                                or reference
+                                            ),
                                             size=16,
                                             weight=(
                                                 ft.FontWeight.BOLD
                                             ),
                                             color=Q_PRIMARY_DARK,
                                             selectable=True,
+                                        ),
+                                        (
+                                            ft.Text(
+                                                "Referencia: "
+                                                + reference,
+                                                size=11,
+                                                color=Q_MUTED,
+                                                selectable=True,
+                                            )
+                                            if procedural_label
+                                            else ft.Container(
+                                                visible=False
+                                            )
                                         ),
                                         ft.Text(
                                             "Identificador: "
@@ -1183,10 +1341,39 @@ def build_dehu_inbox_panel(
         )
 
     def build_content():
-        summary = state.get(
-            "summary"
-        ) or {}
         items = state.get("items") or []
+        summary = state.get("summary") or {}
+
+        quick_counts = {
+            "": int(
+                summary.get(
+                    "total",
+                    0,
+                )
+                or 0
+            ),
+            "PENDING_REVIEW": int(
+                summary.get(
+                    "pending_review",
+                    0,
+                )
+                or 0
+            ),
+            "PENDING_CLASSIFICATION": int(
+                summary.get(
+                    "pending_classification",
+                    0,
+                )
+                or 0
+            ),
+            "CONFIRMED_BY_TRACEABILITY": int(
+                summary.get(
+                    "confirmed_by_traceability",
+                    0,
+                )
+                or 0
+            ),
+        }
 
         controls = [
             ft.Row(
@@ -1224,53 +1411,33 @@ def build_dehu_inbox_panel(
                     ),
                 ],
             ),
-            ft.Row(
-                spacing=10,
-                wrap=True,
-                controls=[
-                    metric_card(
-                        "Total",
-                        summary.get(
-                            "total",
-                            0,
-                        ),
+            counter_chips(
+                options=[
+                    (
+                        "PENDING_REVIEW",
+                        "Pendientes de localizar",
                     ),
-                    metric_card(
-                        "Notificaciones",
-                        summary.get(
-                            "notifications",
-                            0,
-                        ),
+                    (
+                        "PENDING_CLASSIFICATION",
+                        "Pendientes de clasificar",
                     ),
-                    metric_card(
-                        "Comunicaciones",
-                        summary.get(
-                            "communications",
-                            0,
-                        ),
-                    ),
-                    metric_card(
-                        "Vinculadas",
-                        summary.get(
-                            "linked",
-                            0,
-                        ),
-                    ),
-                    metric_card(
-                        "Próximos 7 días",
-                        summary.get(
-                            "upcoming_7_days",
-                            0,
-                        ),
-                    ),
-                    metric_card(
-                        "Detectadas en portal",
-                        summary.get(
-                            "portal_detected",
-                            0,
-                        ),
+                    (
+                        "CONFIRMED_BY_TRACEABILITY",
+                        "Confirmadas",
                     ),
                 ],
+                counts=quick_counts,
+                active_value=(
+                    state["verification_status"]
+                ),
+                on_select=set_quick_filter,
+                include_all=True,
+                all_label="Todos",
+                all_value="",
+                status_map=(
+                    QUICK_FILTER_STATUS_MAP
+                ),
+                bordered_status=True,
             ),
             ft.Container(
                 bgcolor="#FFFFFF",
@@ -1308,6 +1475,7 @@ def build_dehu_inbox_panel(
                                 status_dropdown,
                                 portal_status_dropdown,
                                 deadline_dropdown,
+                                period_dropdown.control,
                             ],
                         ),
                     ],

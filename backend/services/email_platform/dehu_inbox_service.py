@@ -162,6 +162,8 @@ def _build_where(
     verification_status="",
     portal_status="",
     deadline_filter="",
+    detected_from="",
+    detected_to="",
 ):
     clauses = ["1 = 1"]
     params = []
@@ -212,7 +214,47 @@ def _build_where(
         verification_status
     )
 
-    if verification_status:
+    if verification_status == "PENDING_REVIEW":
+        clauses.append(
+            """
+            COALESCE(
+                NULLIF(
+                    TRIM(
+                        dn.verification_status
+                    ),
+                    ''
+                ),
+                'EMAIL_ONLY'
+            ) IN (
+                'EMAIL_ONLY',
+                'EXPEDIENT_NOT_FOUND',
+                'MULTIPLE_EXPEDIENTS',
+                'REFERENCE_DETECTED_FAMILY_NOT_AVAILABLE'
+            )
+            """
+        )
+
+    elif (
+        verification_status
+        == "PENDING_CLASSIFICATION"
+    ):
+        clauses.append(
+            """
+            dn.verification_status =
+                'MATCHED_PROVISIONAL'
+            AND COALESCE(
+                NULLIF(
+                    TRIM(
+                        dn.classification_status
+                    ),
+                    ''
+                ),
+                'UNCLASSIFIED'
+            ) != 'CONFIRMED'
+            """
+        )
+
+    elif verification_status:
         clauses.append(
             "dn.verification_status = ?"
         )
@@ -295,6 +337,32 @@ def _build_where(
             """
         )
 
+    detected_from = _text(
+        detected_from
+    )
+
+    if detected_from:
+        clauses.append(
+            """
+            datetime(dn.first_seen_at)
+                >= datetime(?)
+            """
+        )
+        params.append(detected_from)
+
+    detected_to = _text(
+        detected_to
+    )
+
+    if detected_to:
+        clauses.append(
+            """
+            datetime(dn.first_seen_at)
+                <= datetime(?)
+            """
+        )
+        params.append(detected_to)
+
     return clauses, params
 
 
@@ -357,6 +425,64 @@ def get_summary(conn=None):
                         ELSE 0
                     END
                 ) AS family_unavailable,
+
+                SUM(
+                    CASE
+                        WHEN COALESCE(
+                            NULLIF(
+                                TRIM(
+                                    dn.verification_status
+                                ),
+                                ''
+                            ),
+                            'EMAIL_ONLY'
+                        ) IN (
+                            'EMAIL_ONLY',
+                            'EXPEDIENT_NOT_FOUND',
+                            'MULTIPLE_EXPEDIENTS',
+                            'REFERENCE_DETECTED_'
+                                || 'FAMILY_NOT_AVAILABLE'
+                        )
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS pending_review,
+
+                SUM(
+                    CASE
+                        WHEN dn.verification_status =
+                            'MATCHED_PROVISIONAL'
+                        AND COALESCE(
+                            NULLIF(
+                                TRIM(
+                                    dn.classification_status
+                                ),
+                                ''
+                            ),
+                            'UNCLASSIFIED'
+                        ) != 'CONFIRMED'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS pending_classification,
+
+                SUM(
+                    CASE
+                        WHEN dn.verification_status =
+                            'CONFIRMED_BY_TRACEABILITY'
+                        AND COALESCE(
+                            NULLIF(
+                                TRIM(
+                                    dn.classification_status
+                                ),
+                                ''
+                            ),
+                            'UNCLASSIFIED'
+                        ) = 'CONFIRMED'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS confirmed_by_traceability,
 
                 SUM(
                     CASE
@@ -440,6 +566,9 @@ def get_summary(conn=None):
             "linked",
             "unlinked",
             "family_unavailable",
+            "pending_review",
+            "pending_classification",
+            "confirmed_by_traceability",
             "expired",
             "upcoming_7_days",
             "email_only",
@@ -477,6 +606,8 @@ def list_items(
     verification_status="",
     portal_status="",
     deadline_filter="",
+    detected_from="",
+    detected_to="",
     page=1,
     page_size=DEFAULT_PAGE_SIZE,
     conn=None,
@@ -495,6 +626,8 @@ def list_items(
         ),
         portal_status=portal_status,
         deadline_filter=deadline_filter,
+        detected_from=detected_from,
+        detected_to=detected_to,
     )
 
     where_sql = "\nAND ".join(clauses)
@@ -567,6 +700,15 @@ def list_items(
                 dn.portal_status,
                 dn.verification_status,
                 dn.download_status,
+
+                dn.procedural_event_code,
+                dn.procedural_event_label,
+                dn.classification_status,
+                dn.classification_source,
+                dn.confirmed_event_id,
+                dn.confirmed_justificante_id,
+                dn.classification_confirmed_at,
+                dn.classification_confirmed_by,
 
                 dn.expediente_id,
                 dn.cliente_id,
@@ -655,13 +797,91 @@ def list_items(
                         NULLIF(
                             TRIM(dn.deadline_at),
                             ''
-                        ) IS NULL
+                        ) IS NOT NULL
+                    AND datetime(
+                        dn.deadline_at
+                    ) < datetime(
+                        'now',
+                        'localtime'
+                    )
                     THEN 1
-                    ELSE 0
+
+                    WHEN
+                        NULLIF(
+                            TRIM(dn.deadline_at),
+                            ''
+                        ) IS NOT NULL
+                    AND datetime(
+                        dn.deadline_at
+                    ) <= datetime(
+                        'now',
+                        'localtime',
+                        '+7 days'
+                    )
+                    THEN 2
+
+                    WHEN
+                        dn.verification_status =
+                            'MATCHED_PROVISIONAL'
+                    AND COALESCE(
+                        NULLIF(
+                            TRIM(
+                                dn.classification_status
+                            ),
+                            ''
+                        ),
+                        'UNCLASSIFIED'
+                    ) != 'CONFIRMED'
+                    THEN 3
+
+                    WHEN COALESCE(
+                        NULLIF(
+                            TRIM(
+                                dn.verification_status
+                            ),
+                            ''
+                        ),
+                        'EMAIL_ONLY'
+                    ) IN (
+                        'EMAIL_ONLY',
+                        'EXPEDIENT_NOT_FOUND',
+                        'MULTIPLE_EXPEDIENTS',
+                        'REFERENCE_DETECTED_'
+                            || 'FAMILY_NOT_AVAILABLE'
+                    )
+                    THEN 4
+
+                    ELSE 5
                 END ASC,
 
-                datetime(dn.deadline_at) ASC,
-                datetime(dn.last_seen_at) DESC,
+                CASE
+                    WHEN
+                        NULLIF(
+                            TRIM(dn.deadline_at),
+                            ''
+                        ) IS NOT NULL
+                    THEN datetime(
+                        dn.deadline_at
+                    )
+                    ELSE NULL
+                END ASC,
+
+                CASE
+                    WHEN
+                        NULLIF(
+                            TRIM(dn.deadline_at),
+                            ''
+                        ) IS NULL
+                    THEN datetime(
+                        COALESCE(
+                            dn.last_seen_at,
+                            dn.first_seen_at,
+                            dn.updated_at
+                        )
+                    )
+                    ELSE NULL
+                END DESC,
+
                 dn.id DESC
 
             LIMIT ?
@@ -771,3 +991,64 @@ def get_item_detail(
         ]
 
         return result
+
+
+def get_item_by_identifier(
+    dehu_identifier,
+    conn=None,
+):
+    """
+    Devuelve una notificación DEHú mediante su identificador único.
+
+    El número oficial del expediente no identifica una notificación:
+    un mismo expediente puede recibir varios avisos. La búsqueda se
+    realiza exclusivamente por dehu_identifier.
+    """
+    identifier = _text(
+        dehu_identifier
+    ).lower()
+
+    if not identifier:
+        return None
+
+    with schema_service.connection(conn) as current:
+        dehu_notification_service.ensure_dehu_schema(
+            current
+        )
+
+        row = current.execute(
+            """
+            SELECT
+                dn.*,
+
+                e.numero_expediente,
+                e.numero_expediente_extranjeria,
+
+                c.nombre AS cliente_nombre,
+                c.primer_apellido
+                    AS cliente_primer_apellido,
+                c.segundo_apellido
+                    AS cliente_segundo_apellido
+
+            FROM dehu_notifications dn
+
+            LEFT JOIN expedientes e
+              ON e.id = dn.expediente_id
+
+            LEFT JOIN clientes c
+              ON c.id = dn.cliente_id
+
+            WHERE LOWER(
+                TRIM(dn.dehu_identifier)
+            ) = ?
+
+            LIMIT 1
+            """,
+            (identifier,),
+        ).fetchone()
+
+        return (
+            dict(row)
+            if row is not None
+            else None
+        )

@@ -27,6 +27,10 @@ from frontend.components.listing import (
     compact_pagination_bar,
     counter_chips,
 )
+from frontend.components.period_filter import (
+    PERIOD_ALL,
+    build_period_filter,
+)
 
 
 Q_PRIMARY_DARK = "#003B7A"
@@ -115,6 +119,9 @@ def notifications_view(
         "account_statuses": {},
         "active_mode": "TRACKING",
         "dehu_panel": None,
+        "tracking_period_value": PERIOD_ALL,
+        "tracking_started_from": "",
+        "tracking_started_to": "",
     }
 
     content_area = ft.Container(
@@ -221,7 +228,18 @@ def notifications_view(
     def load_tracking():
         items = (
             notification_tracking_service
-            .list_active_tracking()
+            .list_active_tracking(
+                started_from=(
+                    state[
+                        "tracking_started_from"
+                    ]
+                ),
+                started_to=(
+                    state[
+                        "tracking_started_to"
+                    ]
+                ),
+            )
             or []
         )
 
@@ -459,6 +477,38 @@ def notifications_view(
 
         return panel
 
+    def handle_tracking_period_change(
+        result,
+    ):
+        state["tracking_period_value"] = (
+            result.get("value")
+            or PERIOD_ALL
+        )
+        state["tracking_started_from"] = (
+            result.get("date_from")
+            or ""
+        )
+        state["tracking_started_to"] = (
+            result.get("date_to")
+            or ""
+        )
+        state["page"] = 1
+
+        load_tracking()
+        safe_update()
+
+    tracking_period_dropdown = (
+        build_period_filter(
+            page,
+            initial_value=PERIOD_ALL,
+            on_change=(
+                handle_tracking_period_change
+            ),
+            width=215,
+            label="Fecha de inicio",
+        )
+    )
+
     def tracking_card(item):
         expediente_id = int(
             item["expediente_id"]
@@ -500,13 +550,7 @@ def notifications_view(
 
         wait_started_at = (
             item.get(
-                "fecha_inicio_espera_numero"
-            )
-            or item.get(
-                "fecha_inicio_espera_admision"
-            )
-            or item.get(
-                "fecha_inicio_espera_resolucion"
+                "current_wait_started_at"
             )
             or "-"
         )
@@ -986,29 +1030,42 @@ def notifications_view(
             )
 
         controls.append(
-            counter_chips(
-                options=[
-                    (
-                        "ESPERA_NUMERO_EXPEDIENTE",
-                        "Espera número",
+            ft.Row(
+                alignment=(
+                    ft.MainAxisAlignment.SPACE_BETWEEN
+                ),
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+                spacing=12,
+                wrap=True,
+                controls=[
+                    counter_chips(
+                        options=[
+                            (
+                                "ESPERA_NUMERO_EXPEDIENTE",
+                                "Espera número",
+                            ),
+                            (
+                                "ESPERA_ADMISION_TRAMITE",
+                                "Espera admisión",
+                            ),
+                            (
+                                "ESPERA_RESOLUCION",
+                                "Espera resolución",
+                            ),
+                        ],
+                        counts=counts,
+                        active_value=state["filter"],
+                        on_select=set_filter,
+                        include_all=True,
+                        all_label="Todos",
+                        all_value="TODOS",
+                        status_map=STATUS_MAP,
+                        bordered_status=True,
                     ),
-                    (
-                        "ESPERA_ADMISION_TRAMITE",
-                        "Espera admisión",
-                    ),
-                    (
-                        "ESPERA_RESOLUCION",
-                        "Espera resolución",
-                    ),
+                    tracking_period_dropdown.control,
                 ],
-                counts=counts,
-                active_value=state["filter"],
-                on_select=set_filter,
-                include_all=True,
-                all_label="Todos",
-                all_value="TODOS",
-                status_map=STATUS_MAP,
-                bordered_status=True,
             )
         )
 

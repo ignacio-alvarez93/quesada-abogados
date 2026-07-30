@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from backend.services.email_platform import (
     dehu_inbox_service,
+    dehu_notification_service,
     schema_service,
 )
 
@@ -572,6 +573,346 @@ class DehuInboxServiceTest(
         self.assertEqual(
             no_deadline["total"],
             1,
+        )
+
+    def test_filters_by_detection_date(self):
+        self.conn.execute(
+            """
+            UPDATE dehu_notifications
+            SET first_seen_at =
+                '2026-07-01 10:00:00'
+            WHERE id = 1
+            """
+        )
+
+        self.conn.execute(
+            """
+            UPDATE dehu_notifications
+            SET first_seen_at =
+                '2026-07-15 10:00:00'
+            WHERE id = 2
+            """
+        )
+
+        self.conn.execute(
+            """
+            UPDATE dehu_notifications
+            SET first_seen_at =
+                '2026-07-30 10:00:00'
+            WHERE id IN (3, 4)
+            """
+        )
+
+        self.conn.commit()
+
+        today = (
+            dehu_inbox_service.list_items(
+                detected_from=(
+                    "2026-07-30 00:00:00"
+                ),
+                detected_to=(
+                    "2026-07-30 23:59:59"
+                ),
+                conn=self.conn,
+            )
+        )
+
+        range_result = (
+            dehu_inbox_service.list_items(
+                detected_from=(
+                    "2026-07-10 00:00:00"
+                ),
+                detected_to=(
+                    "2026-07-20 23:59:59"
+                ),
+                conn=self.conn,
+            )
+        )
+
+        from_only = (
+            dehu_inbox_service.list_items(
+                detected_from=(
+                    "2026-07-15 00:00:00"
+                ),
+                conn=self.conn,
+            )
+        )
+
+        self.assertEqual(
+            today["total"],
+            2,
+        )
+        self.assertEqual(
+            range_result["total"],
+            1,
+        )
+        self.assertEqual(
+            from_only["total"],
+            3,
+        )
+
+    def test_pending_review_virtual_filter(self):
+        clauses, params = (
+            dehu_inbox_service._build_where(
+                verification_status=(
+                    "PENDING_REVIEW"
+                ),
+            )
+        )
+
+        sql = "\n".join(clauses)
+
+        self.assertIn(
+            "EXPEDIENT_NOT_FOUND",
+            sql,
+        )
+        self.assertIn(
+            "MULTIPLE_EXPEDIENTS",
+            sql,
+        )
+        self.assertIn(
+            (
+                "REFERENCE_DETECTED_"
+                "FAMILY_NOT_AVAILABLE"
+            ),
+            sql,
+        )
+        self.assertIn(
+            "EMAIL_ONLY",
+            sql,
+        )
+        self.assertEqual(
+            params,
+            [],
+        )
+
+    def test_pending_classification_virtual_filter(
+        self,
+    ):
+        clauses, params = (
+            dehu_inbox_service._build_where(
+                verification_status=(
+                    "PENDING_CLASSIFICATION"
+                ),
+            )
+        )
+
+        sql = "\n".join(clauses)
+
+        self.assertIn(
+            "MATCHED_PROVISIONAL",
+            sql,
+        )
+        self.assertIn(
+            "classification_status",
+            sql,
+        )
+        self.assertIn(
+            "CONFIRMED",
+            sql,
+        )
+        self.assertEqual(
+            params,
+            [],
+        )
+
+    def test_summary_includes_operational_counts(
+        self,
+    ):
+        summary = (
+            dehu_inbox_service.get_summary(
+                conn=self.conn,
+            )
+        )
+
+        self.assertIn(
+            "pending_review",
+            summary,
+        )
+        self.assertIn(
+            "pending_classification",
+            summary,
+        )
+        self.assertIn(
+            "confirmed_by_traceability",
+            summary,
+        )
+
+        expected_review = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM dehu_notifications
+            WHERE COALESCE(
+                NULLIF(
+                    TRIM(
+                        verification_status
+                    ),
+                    ''
+                ),
+                'EMAIL_ONLY'
+            ) IN (
+                'EMAIL_ONLY',
+                'EXPEDIENT_NOT_FOUND',
+                'MULTIPLE_EXPEDIENTS',
+                'REFERENCE_DETECTED_'
+                    || 'FAMILY_NOT_AVAILABLE'
+            )
+            """
+        ).fetchone()[0]
+
+        expected_classification = (
+            self.conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM dehu_notifications
+                WHERE verification_status =
+                    'MATCHED_PROVISIONAL'
+                  AND COALESCE(
+                    NULLIF(
+                        TRIM(
+                            classification_status
+                        ),
+                        ''
+                    ),
+                    'UNCLASSIFIED'
+                  ) != 'CONFIRMED'
+                """
+            ).fetchone()[0]
+        )
+
+        expected_confirmed = (
+            self.conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM dehu_notifications
+                WHERE verification_status =
+                    'CONFIRMED_BY_TRACEABILITY'
+                  AND COALESCE(
+                    NULLIF(
+                        TRIM(
+                            classification_status
+                        ),
+                        ''
+                    ),
+                    'UNCLASSIFIED'
+                  ) = 'CONFIRMED'
+                """
+            ).fetchone()[0]
+        )
+
+        self.assertEqual(
+            summary["pending_review"],
+            expected_review,
+        )
+        self.assertEqual(
+            summary["pending_classification"],
+            expected_classification,
+        )
+        self.assertEqual(
+            summary[
+                "confirmed_by_traceability"
+            ],
+            expected_confirmed,
+        )
+
+    def test_orders_items_by_operational_urgency(
+        self,
+    ):
+        dehu_notification_service.ensure_dehu_schema(
+            self.conn
+        )
+
+        self.conn.execute(
+            """
+            UPDATE dehu_notifications
+            SET
+                deadline_at =
+                    '2000-01-01 00:00:00',
+                verification_status =
+                    'EXPEDIENT_NOT_FOUND',
+                classification_status =
+                    'UNCLASSIFIED'
+            WHERE id = 1
+            """
+        )
+
+        self.conn.execute(
+            """
+            UPDATE dehu_notifications
+            SET
+                deadline_at =
+                    datetime(
+                        'now',
+                        'localtime',
+                        '+1 day'
+                    ),
+                verification_status =
+                    'EXPEDIENT_NOT_FOUND',
+                classification_status =
+                    'UNCLASSIFIED'
+            WHERE id = 2
+            """
+        )
+
+        self.conn.execute(
+            """
+            UPDATE dehu_notifications
+            SET
+                deadline_at = NULL,
+                verification_status =
+                    'MATCHED_PROVISIONAL',
+                classification_status =
+                    'UNCLASSIFIED',
+                last_seen_at =
+                    '2026-01-03 10:00:00'
+            WHERE id = 3
+            """
+        )
+
+        self.conn.execute(
+            """
+            UPDATE dehu_notifications
+            SET
+                deadline_at = NULL,
+                verification_status =
+                    'EXPEDIENT_NOT_FOUND',
+                classification_status =
+                    'UNCLASSIFIED',
+                last_seen_at =
+                    '2026-01-02 10:00:00'
+            WHERE id = 4
+            """
+        )
+
+        self.conn.commit()
+
+        result = (
+            dehu_inbox_service.list_items(
+                page=1,
+                page_size=100,
+                conn=self.conn,
+            )
+        )
+
+        ordered_ids = [
+            item["id"]
+            for item in result["items"]
+            if item["id"] in (
+                1,
+                2,
+                3,
+                4,
+            )
+        ]
+
+        self.assertEqual(
+            ordered_ids,
+            [
+                1,
+                2,
+                3,
+                4,
+            ],
         )
 
     def test_paginates(self):
