@@ -160,6 +160,7 @@ def _build_where(
     item_type="",
     family_hint="",
     verification_status="",
+    portal_status="",
     deadline_filter="",
 ):
     clauses = ["1 = 1"]
@@ -218,6 +219,32 @@ def _build_where(
         params.append(
             verification_status
         )
+
+    portal_status = _upper(
+        portal_status
+    )
+
+    if portal_status == "PENDING":
+        clauses.append(
+            """
+            COALESCE(
+                NULLIF(
+                    TRIM(dn.portal_status),
+                    ''
+                ),
+                'UNKNOWN'
+            ) IN (
+                'UNKNOWN',
+                'PENDING_VERIFICATION'
+            )
+            """
+        )
+
+    elif portal_status:
+        clauses.append(
+            "dn.portal_status = ?"
+        )
+        params.append(portal_status)
 
     deadline_filter = _upper(
         deadline_filter
@@ -448,6 +475,7 @@ def list_items(
     item_type="",
     family_hint="",
     verification_status="",
+    portal_status="",
     deadline_filter="",
     page=1,
     page_size=DEFAULT_PAGE_SIZE,
@@ -465,6 +493,7 @@ def list_items(
         verification_status=(
             verification_status
         ),
+        portal_status=portal_status,
         deadline_filter=deadline_filter,
     )
 

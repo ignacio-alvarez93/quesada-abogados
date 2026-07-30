@@ -299,6 +299,22 @@ class DehuInboxServiceTest(
 
         self.conn.execute(
             """
+            UPDATE dehu_notifications
+            SET portal_status = 'ACCEPTED'
+            WHERE id = 1
+            """
+        )
+
+        self.conn.execute(
+            """
+            UPDATE dehu_notifications
+            SET portal_status = 'REJECTED'
+            WHERE id = 3
+            """
+        )
+
+        self.conn.execute(
+            """
             INSERT INTO email_messages (
                 id,
                 account_email,
@@ -381,19 +397,19 @@ class DehuInboxServiceTest(
         )
         self.assertEqual(
             summary["email_only"],
-            1,
-        )
-        self.assertEqual(
-            summary["portal_only"],
-            1,
-        )
-        self.assertEqual(
-            summary["email_and_portal"],
             0,
         )
         self.assertEqual(
-            summary["origin_unknown"],
+            summary["portal_only"],
             2,
+        )
+        self.assertEqual(
+            summary["email_and_portal"],
+            1,
+        )
+        self.assertEqual(
+            summary["origin_unknown"],
+            1,
         )
         self.assertEqual(
             summary["email_detected"],
@@ -401,7 +417,7 @@ class DehuInboxServiceTest(
         )
         self.assertEqual(
             summary["portal_detected"],
-            1,
+            3,
         )
 
     def test_filters_by_family(self):
@@ -464,6 +480,61 @@ class DehuInboxServiceTest(
         self.assertEqual(
             by_issuer["total"],
             1,
+        )
+
+    def test_filters_by_portal_status(self):
+        accepted = (
+            dehu_inbox_service.list_items(
+                portal_status="ACCEPTED",
+                conn=self.conn,
+            )
+        )
+
+        rejected = (
+            dehu_inbox_service.list_items(
+                portal_status="REJECTED",
+                conn=self.conn,
+            )
+        )
+
+        pending = (
+            dehu_inbox_service.list_items(
+                portal_status="PENDING",
+                conn=self.conn,
+            )
+        )
+
+        self.assertEqual(
+            accepted["total"],
+            1,
+        )
+        self.assertEqual(
+            accepted["items"][0][
+                "portal_status"
+            ],
+            "ACCEPTED",
+        )
+
+        self.assertEqual(
+            rejected["total"],
+            1,
+        )
+        self.assertEqual(
+            rejected["items"][0][
+                "portal_status"
+            ],
+            "REJECTED",
+        )
+
+        self.assertEqual(
+            pending["total"],
+            1,
+        )
+        self.assertEqual(
+            pending["items"][0][
+                "portal_status"
+            ],
+            "UNKNOWN",
         )
 
     def test_deadline_filters(self):
@@ -553,7 +624,7 @@ class DehuInboxServiceTest(
 
         self.assertEqual(
             origins[1],
-            "EMAIL_ONLY",
+            "EMAIL_AND_PORTAL",
         )
         self.assertEqual(
             origins[4],
@@ -565,7 +636,7 @@ class DehuInboxServiceTest(
         )
         self.assertEqual(
             origins[3],
-            "UNKNOWN",
+            "PORTAL_ONLY",
         )
 
     def test_item_detail_contains_sources(self):

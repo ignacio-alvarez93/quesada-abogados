@@ -17,9 +17,11 @@ from frontend.components.app_button import (
     primary_button,
     secondary_button,
 )
-from frontend.components.app_card import metric_card
 from frontend.components.app_empty_state import (
     empty_state,
+)
+from frontend.components.dehu_inbox_panel import (
+    build_dehu_inbox_panel,
 )
 from frontend.components.listing import (
     compact_pagination_bar,
@@ -111,6 +113,8 @@ def notifications_view(
         "message": None,
         "syncing_provider": "",
         "account_statuses": {},
+        "active_mode": "TRACKING",
+        "dehu_panel": None,
     }
 
     content_area = ft.Container(
@@ -412,6 +416,48 @@ def notifications_view(
             "GMAIL_API",
             "Gmail",
         )
+
+    def set_active_mode(value):
+        normalized = str(
+            value or "TRACKING"
+        ).strip().upper()
+
+        if normalized not in (
+            "TRACKING",
+            "DEHU",
+        ):
+            normalized = "TRACKING"
+
+        state["active_mode"] = normalized
+        safe_update()
+
+    def show_tracking(e=None):
+        set_active_mode("TRACKING")
+
+    def show_dehu(e=None):
+        set_active_mode("DEHU")
+
+    def set_dehu_message(control):
+        state["message"] = control
+        safe_update()
+
+    def get_dehu_panel():
+        panel = state.get("dehu_panel")
+
+        if panel is None:
+            panel = build_dehu_inbox_panel(
+                page,
+                on_open_expediente=(
+                    open_expediente
+                ),
+                on_message=(
+                    set_dehu_message
+                ),
+            )
+
+            state["dehu_panel"] = panel
+
+        return panel
 
     def tracking_card(item):
         expediente_id = int(
@@ -769,6 +815,97 @@ def notifications_view(
             syncing_provider
         )
 
+        active_mode = (
+            state.get("active_mode")
+            or "TRACKING"
+        )
+
+        mode_selector = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(
+                1,
+                "#D0D5DD",
+            ),
+            border_radius=12,
+            padding=4,
+            content=ft.Row(
+                spacing=4,
+                tight=True,
+                controls=[
+                    ft.Container(
+                        padding=ft.padding.symmetric(
+                            horizontal=14,
+                            vertical=8,
+                        ),
+                        border_radius=9,
+                        bgcolor=(
+                            "#FFFFFF"
+                            if active_mode
+                            == "TRACKING"
+                            else None
+                        ),
+                        border=(
+                            ft.border.all(
+                                1,
+                                "#D8E2EE",
+                            )
+                            if active_mode
+                            == "TRACKING"
+                            else None
+                        ),
+                        ink=True,
+                        on_click=show_tracking,
+                        content=ft.Text(
+                            "Seguimiento",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=(
+                                Q_PRIMARY_DARK
+                                if active_mode
+                                == "TRACKING"
+                                else Q_MUTED
+                            ),
+                        ),
+                    ),
+                    ft.Container(
+                        padding=ft.padding.symmetric(
+                            horizontal=14,
+                            vertical=8,
+                        ),
+                        border_radius=9,
+                        bgcolor=(
+                            "#FFFFFF"
+                            if active_mode
+                            == "DEHU"
+                            else None
+                        ),
+                        border=(
+                            ft.border.all(
+                                1,
+                                "#D8E2EE",
+                            )
+                            if active_mode
+                            == "DEHU"
+                            else None
+                        ),
+                        ink=True,
+                        on_click=show_dehu,
+                        content=ft.Text(
+                            "Bandeja DEHú",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=(
+                                Q_PRIMARY_DARK
+                                if active_mode
+                                == "DEHU"
+                                else Q_MUTED
+                            ),
+                        ),
+                    ),
+                ],
+            ),
+        )
+
         controls = [
             ft.Row(
                 controls=[
@@ -810,6 +947,7 @@ def notifications_view(
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
+            mode_selector,
             ft.Row(
                 controls=[
                     account_panel(
@@ -826,40 +964,28 @@ def notifications_view(
                 spacing=12,
                 wrap=True,
             ),
-            ft.Row(
-                controls=[
-                    metric_card(
-                        "Espera número",
-                        counts.get(
-                            "ESPERA_NUMERO_EXPEDIENTE",
-                            0,
-                        ),
-                    ),
-                    metric_card(
-                        "Espera admisión",
-                        counts.get(
-                            "ESPERA_ADMISION_TRAMITE",
-                            0,
-                        ),
-                    ),
-                    metric_card(
-                        "Espera resolución",
-                        counts.get(
-                            "ESPERA_RESOLUCION",
-                            0,
-                        ),
-                    ),
-                    metric_card(
-                        "Total activo",
-                        counts.get(
-                            "TODOS",
-                            0,
-                        ),
-                    ),
-                ],
-                spacing=12,
-                wrap=True,
-            ),
+        ]
+
+        if state.get("message"):
+            controls.append(
+                state["message"]
+            )
+
+        if active_mode == "DEHU":
+            controls.append(
+                ft.Container(
+                    expand=True,
+                    content=get_dehu_panel(),
+                )
+            )
+
+            return ft.Column(
+                controls=controls,
+                spacing=14,
+                expand=True,
+            )
+
+        controls.append(
             counter_chips(
                 options=[
                     (
@@ -883,13 +1009,8 @@ def notifications_view(
                 all_value="TODOS",
                 status_map=STATUS_MAP,
                 bordered_status=True,
-            ),
-        ]
-
-        if state.get("message"):
-            controls.append(
-                state["message"]
             )
+        )
 
         total_items = len(items)
         page_size = int(
