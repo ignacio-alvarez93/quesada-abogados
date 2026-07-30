@@ -941,16 +941,41 @@ def reconcile_all_applicable_expedients(
     return results
 
 
-def list_active_tracking(estado=None):
+
+def list_active_tracking(
+    estado=None,
+    started_from="",
+    started_to="",
+):
     ensure_notification_tracking_schema()
 
-    sql = """
+    current_start_expression = """
+        CASE nt.estado
+            WHEN 'ESPERA_NUMERO_EXPEDIENTE'
+            THEN nt.fecha_inicio_espera_numero
+
+            WHEN 'ESPERA_ADMISION_TRAMITE'
+            THEN nt.fecha_inicio_espera_admision
+
+            WHEN 'ESPERA_RESOLUCION'
+            THEN nt.fecha_inicio_espera_resolucion
+
+            ELSE nt.updated_at
+        END
+    """
+
+    sql = f"""
         SELECT
             nt.*,
 
+            {current_start_expression}
+                AS current_wait_started_at,
+
             c.nombre AS cliente_nombre,
-            c.primer_apellido AS cliente_primer_apellido,
-            c.segundo_apellido AS cliente_segundo_apellido,
+            c.primer_apellido
+                AS cliente_primer_apellido,
+            c.segundo_apellido
+                AS cliente_segundo_apellido,
             c.nie AS cliente_nie,
 
             t.nombre AS tipo_expediente_nombre
@@ -975,6 +1000,26 @@ def list_active_tracking(estado=None):
         sql += " AND nt.estado = ?"
         params.append(_text(estado))
 
+    started_from = _text(started_from)
+
+    if started_from:
+        sql += f"""
+            AND datetime(
+                {current_start_expression}
+            ) >= datetime(?)
+        """
+        params.append(started_from)
+
+    started_to = _text(started_to)
+
+    if started_to:
+        sql += f"""
+            AND datetime(
+                {current_start_expression}
+            ) <= datetime(?)
+        """
+        params.append(started_to)
+
     sql += """
         ORDER BY
             CASE nt.estado
@@ -986,7 +1031,7 @@ def list_active_tracking(estado=None):
                     THEN 30
                 ELSE 99
             END,
-            nt.updated_at ASC,
+            current_wait_started_at ASC,
             nt.id ASC
     """
 

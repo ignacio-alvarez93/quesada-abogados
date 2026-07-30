@@ -11,6 +11,7 @@ from backend.services import expedient_service
 from backend.services import box_watch_service
 from backend.services import document_viewer_service
 from backend.services import document_inbox_service
+from backend.services.email_platform import dehu_inbox_service
 from backend.services import expedient_document_state_service as document_state_service
 from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
@@ -443,6 +444,127 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             spacing=10,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
+    )
+
+    admin_document_dehu_receipt_file = text_input(
+        "Resguardo DEHú seleccionado",
+        width=610,
+    )
+    admin_document_dehu_receipt_file.read_only = True
+
+    admin_document_dehu_identifier = text_input(
+        "Identificador DEHú",
+        width=350,
+    )
+    admin_document_dehu_identifier.read_only = True
+
+    admin_document_dehu_reference = text_input(
+        "Expediente oficial",
+        width=240,
+    )
+    admin_document_dehu_reference.read_only = True
+
+    admin_document_dehu_concept = text_input(
+        "Concepto",
+        width=610,
+    )
+    admin_document_dehu_concept.read_only = True
+
+    admin_document_dehu_issuer = text_input(
+        "Emisor",
+        width=400,
+    )
+    admin_document_dehu_issuer.read_only = True
+
+    admin_document_dehu_accessed_at = text_input(
+        "Fecha de acceso",
+        width=210,
+    )
+    admin_document_dehu_accessed_at.read_only = True
+
+    admin_document_dehu_match_message = ft.Column(
+        controls=[],
+        spacing=6,
+        visible=False,
+    )
+
+    admin_document_dehu_section = ft.Container(
+        bgcolor="#F8FAFC",
+        border=ft.border.all(
+            1,
+            Q_BORDER,
+        ),
+        border_radius=12,
+        padding=14,
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.MARK_EMAIL_READ_OUTLINED,
+                            color=Q_PRIMARY,
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Notificación DEHú",
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    "Adjunta el resguardo de acceso "
+                                    "para identificar el aviso concreto.",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=10,
+                ),
+                ft.Row(
+                    controls=[
+                        admin_document_dehu_receipt_file,
+                        secondary_button(
+                            "Seleccionar resguardo DEHú",
+                            lambda e: page.run_task(
+                                pick_admin_document_dehu_receipt,
+                                e,
+                            ),
+                        ),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        admin_document_dehu_identifier,
+                        admin_document_dehu_reference,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                admin_document_dehu_concept,
+                ft.Row(
+                    controls=[
+                        admin_document_dehu_issuer,
+                        admin_document_dehu_accessed_at,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                admin_document_dehu_match_message,
+            ],
+            spacing=10,
+        ),
+    )
+
+    admin_document_dehu_wrapper = ft.Container(
+        visible=False,
+        content=admin_document_dehu_section,
     )
 
     admin_document_observaciones = multiline_input(
@@ -8396,6 +8518,340 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         page.update()
 
 
+    DEHU_RECEIVED_DOCUMENT_CODES = {
+        "ADMISION_TRAMITE",
+        "ADMISION_TRAMITE_TASA",
+        "INADMISION_TRAMITE",
+        "REQUERIMIENTO",
+        "RESOLUCION_FAVORABLE",
+        "RESOLUCION_DENEGATORIA",
+        "OTRO",
+    }
+
+
+    def _clear_admin_document_dehu_receipt():
+        state[
+            "admin_document_dehu_receipt_file"
+        ] = None
+
+        state[
+            "admin_document_dehu_receipt_extraction"
+        ] = None
+
+        state[
+            "admin_document_dehu_notification"
+        ] = None
+
+        admin_document_dehu_receipt_file.value = ""
+        admin_document_dehu_identifier.value = ""
+        admin_document_dehu_reference.value = ""
+        admin_document_dehu_concept.value = ""
+        admin_document_dehu_issuer.value = ""
+        admin_document_dehu_accessed_at.value = ""
+
+        admin_document_dehu_match_message.controls.clear()
+        admin_document_dehu_match_message.visible = False
+
+
+    def _set_admin_document_dehu_visible(
+        event_code,
+    ):
+        normalized = (
+            _normalize_admin_document_event_code(
+                event_code
+            )
+        )
+
+        visible = (
+            normalized
+            in DEHU_RECEIVED_DOCUMENT_CODES
+        )
+
+        admin_document_dehu_wrapper.visible = visible
+
+        if not visible:
+            _clear_admin_document_dehu_receipt()
+
+
+    def _dehu_match_alert(
+        message,
+        *,
+        level="success",
+    ):
+        if level == "error":
+            return error_alert(message)
+
+        if level == "warning":
+            return warning_alert(message)
+
+        return success_alert(message)
+
+
+    def _populate_admin_document_dehu_receipt(
+        extraction,
+        notification,
+        expediente_id,
+    ):
+        extraction = extraction or {}
+        notification = notification or {}
+
+        state[
+            "admin_document_dehu_notification"
+        ] = None
+
+        identifier = str(
+            extraction.get("dehu_identifier")
+            or ""
+        ).strip()
+
+        reference = str(
+            extraction.get("reference_value")
+            or ""
+        ).strip()
+
+        admin_document_dehu_identifier.value = identifier
+        admin_document_dehu_reference.value = reference
+        admin_document_dehu_concept.value = (
+            extraction.get("concept")
+            or ""
+        )
+        admin_document_dehu_issuer.value = (
+            extraction.get("issuer")
+            or ""
+        )
+        admin_document_dehu_accessed_at.value = (
+            extraction.get("accessed_at")
+            or ""
+        )
+
+        admin_document_dehu_match_message.controls.clear()
+        admin_document_dehu_match_message.visible = True
+
+        if not identifier:
+            admin_document_dehu_match_message.controls.append(
+                _dehu_match_alert(
+                    "No se detectó el identificador DEHú. "
+                    "El resguardo no puede vincularse "
+                    "automáticamente.",
+                    level="error",
+                )
+            )
+            return
+
+        if not notification:
+            admin_document_dehu_match_message.controls.append(
+                _dehu_match_alert(
+                    "El identificador se extrajo correctamente, "
+                    "pero todavía no existe un aviso DEHú con "
+                    "ese identificador en el CRM.",
+                    level="warning",
+                )
+            )
+            return
+
+        notification_identifier = str(
+            notification.get("dehu_identifier")
+            or ""
+        ).strip().lower()
+
+        if notification_identifier != identifier.lower():
+            admin_document_dehu_match_message.controls.append(
+                _dehu_match_alert(
+                    "El aviso encontrado no coincide con "
+                    "el identificador extraído.",
+                    level="error",
+                )
+            )
+            return
+
+        notification_expediente_id = (
+            notification.get("expediente_id")
+        )
+
+        if (
+            notification_expediente_id
+            and int(notification_expediente_id)
+            != int(expediente_id)
+        ):
+            admin_document_dehu_match_message.controls.append(
+                _dehu_match_alert(
+                    "CONFLICTO: este aviso DEHú está vinculado "
+                    f"al expediente CRM #{notification_expediente_id}, "
+                    f"no al expediente abierto #{expediente_id}.",
+                    level="error",
+                )
+            )
+            return
+
+        expediente = (
+            trace_service.get_expediente_basic(
+                expediente_id
+            )
+            or {}
+        )
+
+        expediente_reference = str(
+            expediente.get(
+                "numero_expediente_extranjeria"
+            )
+            or expediente.get(
+                "numero_expediente_mercurio"
+            )
+            or ""
+        ).strip()
+
+        if (
+            reference
+            and expediente_reference
+            and reference != expediente_reference
+        ):
+            admin_document_dehu_match_message.controls.append(
+                _dehu_match_alert(
+                    "Aviso localizado por identificador, pero "
+                    "el número oficial del resguardo no coincide "
+                    "con el expediente abierto.\n"
+                    f"Resguardo: {reference}\n"
+                    f"Expediente: {expediente_reference}",
+                    level="warning",
+                )
+            )
+            return
+
+        state[
+            "admin_document_dehu_notification"
+        ] = notification
+
+        admin_document_dehu_match_message.controls.append(
+            _dehu_match_alert(
+                "Aviso DEHú localizado correctamente.\n"
+                f"Identificador: {identifier}\n"
+                f"Estado actual: "
+                f"{notification.get('verification_status') or '-'}\n"
+                f"Expediente CRM: "
+                f"#{notification.get('expediente_id') or expediente_id}"
+            )
+        )
+
+
+    async def pick_admin_document_dehu_receipt(
+        e=None,
+    ):
+        expediente_id = (
+            state.get(
+                "admin_document_expediente_id"
+            )
+            or state.get(
+                "dialog_expediente_id"
+            )
+            or state.get(
+                "editing_id"
+            )
+        )
+
+        if not expediente_id:
+            show_form_error(
+                "No hay expediente activo"
+            )
+            return
+
+        try:
+            files = await ft.FilePicker().pick_files(
+                allow_multiple=False,
+                allowed_extensions=["pdf"],
+            )
+        except Exception as exc:
+            show_form_error(str(exc))
+            return
+
+        if not files:
+            return
+
+        selected = files[0]
+
+        file_path = (
+            getattr(selected, "path", "")
+            or getattr(selected, "name", "")
+        )
+
+        file_name = (
+            getattr(selected, "name", "")
+            or Path(str(file_path)).name
+        )
+
+        if not file_path:
+            show_form_error(
+                "No se pudo obtener la ruta "
+                "del resguardo DEHú"
+            )
+            return
+
+        try:
+            extraction = (
+                trace_service
+                .extract_admin_dehu_receipt(
+                    str(file_path)
+                )
+            )
+
+            identifier = (
+                extraction.get(
+                    "dehu_identifier"
+                )
+                or ""
+            )
+
+            notification = None
+
+            if identifier:
+                notification = (
+                    dehu_inbox_service
+                    .get_item_by_identifier(
+                        identifier
+                    )
+                )
+
+            state[
+                "admin_document_dehu_receipt_file"
+            ] = {
+                "path": str(file_path),
+                "name": str(file_name),
+                "source": "LOCAL_FILE",
+            }
+
+            state[
+                "admin_document_dehu_receipt_extraction"
+            ] = extraction
+
+            state[
+                "admin_document_dehu_notification"
+            ] = notification
+
+            admin_document_dehu_receipt_file.value = (
+                str(file_path)
+            )
+
+            _populate_admin_document_dehu_receipt(
+                extraction,
+                notification,
+                int(expediente_id),
+            )
+
+            page.update()
+
+        except Exception as exc:
+            _clear_admin_document_dehu_receipt()
+
+            admin_document_dehu_match_message.controls.append(
+                error_alert(
+                    "No se pudo leer el resguardo DEHú:\n"
+                    + str(exc)
+                )
+            )
+
+            admin_document_dehu_match_message.visible = True
+            page.update()
+
+
     def select_admin_document_type(event_code):
         event_code = (
             _normalize_admin_document_event_code(
@@ -8436,6 +8892,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         admin_document_observaciones.value = ""
 
         _set_admin_document_type_summary(event_code)
+        _set_admin_document_dehu_visible(event_code)
+        _clear_admin_document_dehu_receipt()
         _clear_presentation_preview()
         _clear_admission_preview()
         _clear_tax_submission_preview()
@@ -8787,6 +9245,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         state["admin_document_event_code"] = None
         admin_document_selected_file.value = ""
         admin_document_observaciones.value = ""
+        _clear_admin_document_dehu_receipt()
+        admin_document_dehu_wrapper.visible = False
         _clear_presentation_preview()
         _clear_admission_preview()
         _clear_tax_submission_preview()
@@ -8919,6 +9379,21 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     favorable_resolution_extraction,
                 "denial_resolution_extraction":
                     denial_resolution_extraction,
+
+                "dehu_receipt_file":
+                    state.get(
+                        "admin_document_dehu_receipt_file"
+                    ),
+
+                "dehu_receipt_extraction":
+                    state.get(
+                        "admin_document_dehu_receipt_extraction"
+                    ),
+
+                "dehu_notification":
+                    state.get(
+                        "admin_document_dehu_notification"
+                    ),
             })
 
             admission_result = None
@@ -9071,8 +9546,54 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 and admission_result.get("conflicts")
             )
 
+            dehu_confirmation = (
+                result.get("dehu_confirmation")
+            )
+
+            has_dehu_error = bool(
+                dehu_confirmation
+                and not dehu_confirmation.get("ok")
+            )
+
             if not has_admission_conflicts:
-                if queue_completion.get("changed"):
+                if has_dehu_error:
+                    set_message(
+                        warning_alert(
+                            f"Documento anexado: "
+                            f"{result.get('event_label') or 'evento administrativo'}\n"
+                            "No se pudo confirmar la "
+                            "notificación DEHú:\n"
+                            + str(
+                                dehu_confirmation.get(
+                                    "error"
+                                )
+                                or "Error no determinado"
+                            )
+                        )
+                    )
+
+                elif (
+                    dehu_confirmation
+                    and dehu_confirmation.get("ok")
+                ):
+                    set_message(
+                        success_alert(
+                            f"Documento anexado: "
+                            f"{result.get('event_label') or 'evento administrativo'}\n"
+                            "Notificación DEHú confirmada como: "
+                            + str(
+                                dehu_confirmation.get(
+                                    "procedural_event_label"
+                                )
+                                or result.get(
+                                    "event_label"
+                                )
+                                or "-"
+                            )
+                        )
+                    )
+
+                elif queue_completion.get("changed"):
                     set_message(
                         success_alert(
                             f"Documento anexado: "
@@ -9081,6 +9602,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             "como presentada."
                         )
                     )
+
                 else:
                     set_message(
                         success_alert(
@@ -13842,6 +14364,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     spacing=10,
                     wrap=True,
                 ),
+                admin_document_dehu_wrapper,
                 admin_document_observaciones,
                 ft.Divider(
                     height=1,

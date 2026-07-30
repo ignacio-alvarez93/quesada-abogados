@@ -251,6 +251,86 @@ def ensure_dehu_schema(conn=None):
             definition="TEXT",
         )
 
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="procedural_event_code",
+            definition="TEXT",
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="procedural_event_label",
+            definition="TEXT",
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="classification_status",
+            definition=(
+                "TEXT NOT NULL DEFAULT 'UNCLASSIFIED'"
+            ),
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="classification_source",
+            definition="TEXT",
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="confirmed_event_id",
+            definition="INTEGER",
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="confirmed_justificante_id",
+            definition="INTEGER",
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="classification_confirmed_at",
+            definition="TEXT",
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="classification_confirmed_by",
+            definition="TEXT",
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="dehu_receipt_path",
+            definition="TEXT",
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="dehu_receipt_name",
+            definition="TEXT",
+        )
+
+        _ensure_column(
+            current,
+            table_name="dehu_notifications",
+            column_name="dehu_receipt_metadata_json",
+            definition="TEXT",
+        )
+
         _ensure_column(
             current,
             table_name=(
@@ -1035,3 +1115,400 @@ def process_stored_message(
         "extracted_data": extracted,
         "candidates": candidates,
     }
+
+
+PROCEDURAL_EVENT_LABELS = {
+    "ADMISION_TRAMITE":
+        "Admisión a trámite",
+    "ADMISION_TRAMITE_TASA":
+        "Admisión a trámite y tasa",
+    "INADMISION_TRAMITE":
+        "Inadmisión a trámite",
+    "REQUERIMIENTO":
+        "Requerimiento",
+    "RESOLUCION_FAVORABLE":
+        "Resolución favorable",
+    "RESOLUCION_DENEGATORIA":
+        "Resolución denegatoria",
+    "OTRO":
+        "Otro documento administrativo",
+}
+
+
+def confirm_notification_from_traceability(
+    *,
+    dehu_identifier,
+    expediente_id,
+    cliente_id,
+    event_code,
+    event_id,
+    justificante_id,
+    receipt_file=None,
+    receipt_extraction=None,
+    usuario="ERP",
+    conn=None,
+):
+    """
+    Confirma jurídicamente una notificación DEHú desde Trazabilidad.
+
+    La clave de enlace es dehu_identifier. El número oficial del
+    expediente solo se utiliza como comprobación complementaria.
+    """
+    import json
+
+    identifier = _text(
+        dehu_identifier
+    ).lower()
+
+    if not identifier:
+        raise ValueError(
+            "No se indicó el identificador DEHú"
+        )
+
+    expediente_id = int(expediente_id)
+    cliente_id = int(cliente_id)
+    event_id = int(event_id)
+    justificante_id = int(justificante_id)
+    event_code = _upper(event_code)
+
+    event_label = (
+        PROCEDURAL_EVENT_LABELS.get(
+            event_code
+        )
+        or event_code.replace("_", " ").title()
+    )
+
+    receipt_file = receipt_file or {}
+    receipt_extraction = (
+        receipt_extraction or {}
+    )
+
+    extracted_identifier = _text(
+        receipt_extraction.get(
+            "dehu_identifier"
+        )
+    ).lower()
+
+    if (
+        extracted_identifier
+        and extracted_identifier != identifier
+    ):
+        raise ValueError(
+            "El identificador del resguardo no coincide "
+            "con la notificación DEHú"
+        )
+
+    with schema_service.connection(conn) as current:
+        ensure_dehu_schema(current)
+
+        notification = current.execute(
+            """
+            SELECT *
+            FROM dehu_notifications
+            WHERE LOWER(
+                TRIM(dehu_identifier)
+            ) = ?
+            """,
+            (identifier,),
+        ).fetchone()
+
+        if notification is None:
+            receipt_concept = _text(
+                receipt_extraction.get(
+                    "concept"
+                )
+            )
+
+            receipt_reference = _text(
+                receipt_extraction.get(
+                    "reference_value"
+                )
+            )
+
+            receipt_issuer = _text(
+                receipt_extraction.get(
+                    "issuer"
+                )
+            )
+
+            receipt_recipient = _text(
+                receipt_extraction.get(
+                    "interested_party_name"
+                )
+            )
+
+            receipt_document = _text(
+                receipt_extraction.get(
+                    "interested_party_document"
+                )
+            )
+
+            receipt_accessed_at = _text(
+                receipt_extraction.get(
+                    "accessed_at"
+                )
+            )
+
+            current.execute(
+                """
+                INSERT INTO dehu_notifications (
+                    dehu_identifier,
+                    concept,
+
+                    item_type,
+                    concept_type,
+
+                    reference_value,
+                    reference_type,
+                    family_hint,
+
+                    dehu_expedient_number,
+
+                    expediente_id,
+                    cliente_id,
+
+                    recipient_name,
+                    recipient_document_masked,
+
+                    issuer_name,
+                    relationship_type,
+
+                    portal_status,
+                    verification_status,
+                    download_status,
+
+                    accepted_at,
+                    raw_dehu_data_json,
+
+                    first_seen_at,
+                    last_seen_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    ?, ?,
+
+                    'NOTIFICATION',
+                    'UNKNOWN',
+
+                    ?,
+                    'EXPEDIENT_NUMBER',
+                    'EXTRANJERIA',
+
+                    ?,
+
+                    ?,
+                    ?,
+
+                    ?,
+                    ?,
+
+                    ?,
+                    ?,
+
+                    'ACCEPTED',
+                    'MATCHED_PROVISIONAL',
+                    'DOWNLOADED',
+
+                    ?,
+                    ?,
+
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP
+                )
+                """,
+                (
+                    identifier,
+                    receipt_concept,
+
+                    receipt_reference,
+                    receipt_reference,
+
+                    expediente_id,
+                    cliente_id,
+
+                    receipt_recipient,
+                    receipt_document,
+
+                    receipt_issuer,
+                    _text(
+                        receipt_extraction.get(
+                            "relationship_role"
+                        )
+                    ),
+
+                    receipt_accessed_at or None,
+                    json.dumps(
+                        receipt_extraction,
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                ),
+            )
+
+            notification = current.execute(
+                """
+                SELECT *
+                FROM dehu_notifications
+                WHERE LOWER(
+                    TRIM(dehu_identifier)
+                ) = ?
+                """,
+                (identifier,),
+            ).fetchone()
+
+        current_expediente_id = (
+            int(notification["expediente_id"])
+            if notification["expediente_id"]
+            else None
+        )
+
+        if (
+            current_expediente_id is not None
+            and current_expediente_id
+            != expediente_id
+        ):
+            raise ValueError(
+                "La notificación DEHú está vinculada "
+                f"al expediente CRM #{current_expediente_id}, "
+                f"no al expediente #{expediente_id}"
+            )
+
+        existing_event_id = (
+            int(notification["confirmed_event_id"])
+            if notification["confirmed_event_id"]
+            else None
+        )
+
+        existing_justificante_id = (
+            int(
+                notification[
+                    "confirmed_justificante_id"
+                ]
+            )
+            if notification[
+                "confirmed_justificante_id"
+            ]
+            else None
+        )
+
+        # Reintento idempotente de la misma confirmación.
+        if (
+            existing_event_id == event_id
+            and existing_justificante_id
+            == justificante_id
+            and _upper(
+                notification[
+                    "procedural_event_code"
+                ]
+            ) == event_code
+        ):
+            return {
+                "ok": True,
+                "changed": False,
+                "idempotent": True,
+                "notification_id":
+                    int(notification["id"]),
+                "dehu_identifier":
+                    notification[
+                        "dehu_identifier"
+                    ],
+                "procedural_event_code":
+                    event_code,
+                "procedural_event_label":
+                    event_label,
+                "verification_status":
+                    notification[
+                        "verification_status"
+                    ],
+            }
+
+        # Una clasificación definitiva previa distinta
+        # no se sobrescribe silenciosamente.
+        if (
+            _upper(
+                notification[
+                    "classification_status"
+                ]
+            ) == "CONFIRMED"
+            and (
+                existing_event_id != event_id
+                or existing_justificante_id
+                != justificante_id
+            )
+        ):
+            raise ValueError(
+                "La notificación DEHú ya tiene una "
+                "clasificación definitiva diferente"
+            )
+
+        current.execute(
+            """
+            UPDATE dehu_notifications
+            SET
+                expediente_id = ?,
+                cliente_id = ?,
+
+                procedural_event_code = ?,
+                procedural_event_label = ?,
+
+                classification_status =
+                    'CONFIRMED',
+                classification_source =
+                    'TRACEABILITY',
+
+                confirmed_event_id = ?,
+                confirmed_justificante_id = ?,
+                classification_confirmed_at =
+                    CURRENT_TIMESTAMP,
+                classification_confirmed_by = ?,
+
+                verification_status =
+                    'CONFIRMED_BY_TRACEABILITY',
+
+                dehu_receipt_path = ?,
+                dehu_receipt_name = ?,
+                dehu_receipt_metadata_json = ?,
+
+                updated_at = CURRENT_TIMESTAMP
+
+            WHERE id = ?
+            """,
+            (
+                expediente_id,
+                cliente_id,
+                event_code,
+                event_label,
+                event_id,
+                justificante_id,
+                _text(usuario) or "ERP",
+                _text(receipt_file.get("path")),
+                _text(receipt_file.get("name")),
+                json.dumps(
+                    receipt_extraction,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                int(notification["id"]),
+            ),
+        )
+
+        current.commit()
+
+        return {
+            "ok": True,
+            "changed": True,
+            "idempotent": False,
+            "notification_id":
+                int(notification["id"]),
+            "dehu_identifier":
+                notification["dehu_identifier"],
+            "procedural_event_code":
+                event_code,
+            "procedural_event_label":
+                event_label,
+            "verification_status":
+                "CONFIRMED_BY_TRACEABILITY",
+        }
