@@ -13,14 +13,14 @@ from backend.services import (
 )
 
 
-class ExpedientDocumentStateSemanticBridgeTest(
+class CanonicalNomenclatureDetectionTest(
     unittest.TestCase
 ):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = (
             Path(self.temp_dir.name)
-            / "semantic_bridge.db"
+            / "canonical_nomenclature_detection.db"
         )
 
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -81,12 +81,12 @@ class ExpedientDocumentStateSemanticBridgeTest(
 
                 CREATE TABLE config_nomenclaturas_documentales (
                     id INTEGER PRIMARY KEY,
-                    documento_id INTEGER NOT NULL,
                     tipo_expediente_id INTEGER NOT NULL,
-                    subtipo_expediente_id INTEGER,
+                    documento_id INTEGER NOT NULL,
                     patron_nombre TEXT NOT NULL,
                     extension_permitida TEXT,
-                    activo INTEGER NOT NULL DEFAULT 1
+                    activo INTEGER NOT NULL DEFAULT 1,
+                    subtipo_expediente_id INTEGER
                 );
 
                 CREATE TABLE config_documentos_catalogo (
@@ -95,6 +95,19 @@ class ExpedientDocumentStateSemanticBridgeTest(
                     nombre TEXT NOT NULL,
                     categoria TEXT,
                     activo INTEGER NOT NULL DEFAULT 1
+                );
+
+                CREATE TABLE config_nomenclaturas_catalogo (
+                    id INTEGER PRIMARY KEY,
+                    documento_catalogo_id INTEGER NOT NULL,
+                    tipo_expediente_id INTEGER NOT NULL,
+                    subtipo_expediente_id INTEGER,
+                    rol_documental TEXT,
+                    patron_nombre TEXT NOT NULL,
+                    extension_permitida TEXT NOT NULL,
+                    prioridad INTEGER NOT NULL DEFAULT 100,
+                    activo INTEGER NOT NULL DEFAULT 1,
+                    origen_legacy_id INTEGER
                 );
 
                 CREATE TABLE config_grupos_requisitos_documentales (
@@ -186,17 +199,8 @@ class ExpedientDocumentStateSemanticBridgeTest(
                 VALUES
                     (
                         1,
-                        'CLIENTES/EXPEDIENTE_100/PASAPORTE.pdf',
-                        'PASAPORTE.pdf',
-                        'pdf',
-                        'PASAPORTE',
-                        'OK',
-                        1
-                    ),
-                    (
-                        2,
-                        'CLIENTES/EXPEDIENTE_100/NIE_CLIENTE.pdf',
-                        'NIE_CLIENTE.pdf',
+                        'CLIENTES/EXPEDIENTE_100/PASAPORTE_REAGRUPANTE.pdf',
+                        'PASAPORTE_REAGRUPANTE.pdf',
                         'pdf',
                         'SIN CLASIFICAR',
                         'OK',
@@ -218,41 +222,31 @@ class ExpedientDocumentStateSemanticBridgeTest(
                         10,
                         14,
                         8,
-                        'PASAPORTE',
-                        'PASAPORTE',
+                        'PASAPORTE_REAGRUPANTE',
+                        'PASAPORTE REAGRUPANTE',
                         1,
                         10,
-                        1
-                    ),
-                    (
-                        20,
-                        14,
-                        8,
-                        'NIE',
-                        'NIE',
-                        1,
-                        20,
                         1
                     );
 
                 INSERT INTO config_nomenclaturas_documentales (
                     id,
-                    documento_id,
                     tipo_expediente_id,
-                    subtipo_expediente_id,
+                    documento_id,
                     patron_nombre,
                     extension_permitida,
-                    activo
+                    activo,
+                    subtipo_expediente_id
                 )
                 VALUES
                     (
-                        1,
-                        20,
+                        50,
                         14,
-                        8,
-                        'NIE',
+                        10,
+                        'PASAPORTE_REAGRUPANTE',
                         'pdf',
-                        1
+                        1,
+                        8
                     );
 
                 INSERT INTO config_documentos_catalogo (
@@ -269,13 +263,32 @@ class ExpedientDocumentStateSemanticBridgeTest(
                         'PASAPORTE',
                         'IDENTIDAD',
                         1
-                    ),
+                    );
+
+                INSERT INTO config_nomenclaturas_catalogo (
+                    id,
+                    documento_catalogo_id,
+                    tipo_expediente_id,
+                    subtipo_expediente_id,
+                    rol_documental,
+                    patron_nombre,
+                    extension_permitida,
+                    prioridad,
+                    activo,
+                    origen_legacy_id
+                )
+                VALUES
                     (
-                        2,
-                        'NIE',
-                        'NIE',
-                        'IDENTIDAD',
-                        1
+                        60,
+                        1,
+                        14,
+                        8,
+                        'REAGRUPANTE',
+                        'PASAPORTE_REAGRUPANTE',
+                        'pdf',
+                        10,
+                        1,
+                        50
                     );
 
                 INSERT INTO config_grupos_requisitos_documentales (
@@ -291,11 +304,11 @@ class ExpedientDocumentStateSemanticBridgeTest(
                 )
                 VALUES
                     (
-                        30,
+                        70,
                         14,
                         8,
-                        'IDENTIDAD_PARTES',
-                        'IDENTIDAD DE LAS PARTES',
+                        'IDENTIDAD_REAGRUPANTE',
+                        'IDENTIDAD DEL REAGRUPANTE',
                         'ALL',
                         1,
                         10,
@@ -313,21 +326,12 @@ class ExpedientDocumentStateSemanticBridgeTest(
                 )
                 VALUES
                     (
-                        31,
-                        30,
+                        80,
+                        70,
                         1,
                         'REAGRUPANTE',
                         'Pasaporte del reagrupante',
                         10,
-                        1
-                    ),
-                    (
-                        32,
-                        30,
-                        2,
-                        NULL,
-                        'NIE',
-                        20,
                         1
                     );
                 """
@@ -353,124 +357,112 @@ class ExpedientDocumentStateSemanticBridgeTest(
         self.doc_state_patch.stop()
         self.temp_dir.cleanup()
 
-    def test_bridge_preserves_detection_origins(self):
-        detections = doc_state._build_semantic_detections(
-            [
-                {
-                    "codigo": "PASAPORTE",
-                    "archivo": "PASAPORTE.pdf",
-                    "ruta": "A/PASAPORTE.pdf",
-                    "estado": "OK",
-                },
-                {
-                    "codigo": "NIE",
-                    "archivo": "NIE.pdf",
-                    "ruta": "A/NIE.pdf",
-                    "patron": "NIE",
-                    "origen": "nomenclatura_configurada",
-                },
-            ]
-        )
+    def test_canonical_nomenclature_has_priority(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
 
-        self.assertEqual(len(detections), 2)
+            expediente = {
+                "tipo_expediente_id": 14,
+                "subtipo_expediente_id": 8,
+            }
+
+            rules = doc_state._get_nomenclatures(
+                conn,
+                expediente,
+            )
+
+        self.assertEqual(len(rules), 1)
         self.assertEqual(
-            detections[0]["origen"],
-            "box_classifier",
+            rules[0]["fuente_nomenclatura"],
+            "CANONICAL",
         )
         self.assertEqual(
-            detections[1]["origen"],
-            "nomenclatura_configurada",
+            rules[0]["codigo_documento"],
+            "PASAPORTE",
+        )
+        self.assertEqual(
+            rules[0]["rol_documental"],
+            "REAGRUPANTE",
         )
 
-    def test_semantic_result_is_parallel_and_non_binding(self):
+    def test_migrated_legacy_rule_is_not_duplicated(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            rules = doc_state._get_nomenclatures(
+                conn,
+                {
+                    "tipo_expediente_id": 14,
+                    "subtipo_expediente_id": 8,
+                },
+            )
+
+        sources = [
+            rule["fuente_nomenclatura"]
+            for rule in rules
+        ]
+
+        self.assertEqual(sources, ["CANONICAL"])
+
+    def test_canonical_detection_preserves_role(self):
         result = (
             doc_state
             .diagnose_expediente_document_state(100)
         )
 
-        self.assertEqual(
-            result["estado_sugerido"],
-            doc_state.ESTADO_COMPLETO_SIN_PRESENTAR,
-        )
-        self.assertEqual(result["faltantes"], [])
-
         semantic = result["semantic_readiness"]
 
         self.assertTrue(semantic["disponible"])
-        self.assertEqual(
-            semantic["modo"],
-            "PARALELO_NO_VINCULANTE",
-        )
-        self.assertFalse(semantic["completo"])
+        self.assertTrue(semantic["completo"])
         self.assertEqual(
             semantic["grupos_bloqueantes"],
-            1,
+            0,
+        )
+
+        detections = semantic["detecciones"]
+
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(
+            detections[0]["codigo"],
+            "PASAPORTE",
         )
         self.assertEqual(
-            len(
-                semantic[
-                    "opciones_ambiguas_por_rol"
-                ]
-            ),
-            1,
+            detections[0]["rol_documental"],
+            "REAGRUPANTE",
         )
-
-        origins = {
-            detection["origen"]
-            for detection in semantic["detecciones"]
-        }
-
         self.assertEqual(
-            origins,
-            {
-                "box_classifier",
-                "nomenclatura_legacy",
-            },
+            detections[0]["origen"],
+            "nomenclatura_canónica",
         )
 
-    def test_semantic_failure_does_not_break_legacy(self):
-        with patch.object(
-            readiness,
-            "evaluate_semantic_requirement_readiness",
-            side_effect=RuntimeError(
-                "fallo semántico controlado"
-            ),
-        ):
-            result = (
-                doc_state
-                .diagnose_expediente_document_state(100)
+    def test_legacy_is_used_when_canonical_table_is_absent(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                DROP TABLE config_nomenclaturas_catalogo
+                """
+            )
+            conn.commit()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            rules = doc_state._get_nomenclatures(
+                conn,
+                {
+                    "tipo_expediente_id": 14,
+                    "subtipo_expediente_id": 8,
+                },
             )
 
+        self.assertEqual(len(rules), 1)
         self.assertEqual(
-            result["estado_sugerido"],
-            doc_state.ESTADO_COMPLETO_SIN_PRESENTAR,
-        )
-        self.assertFalse(
-            result["semantic_readiness"]["disponible"]
-        )
-        self.assertIn(
-            "fallo semántico controlado",
-            result["semantic_readiness"]["error"],
-        )
-
-
-    def test_repeated_diagnosis_releases_connections(self):
-        first = (
-            doc_state
-            .diagnose_expediente_document_state(100)
-        )
-        second = (
-            doc_state
-            .diagnose_expediente_document_state(100)
-        )
-
-        self.assertEqual(
-            first["estado_sugerido"],
-            second["estado_sugerido"],
+            rules[0]["fuente_nomenclatura"],
+            "LEGACY",
         )
         self.assertEqual(
-            first["semantic_readiness"]["completo"],
-            second["semantic_readiness"]["completo"],
+            rules[0]["codigo_documento"],
+            "PASAPORTE_REAGRUPANTE",
         )
 
 

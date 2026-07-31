@@ -200,15 +200,18 @@ def _get_required_documents(conn, expediente):
 
 
 
-def _get_nomenclatures(conn, expediente):
+def _get_legacy_nomenclatures(
+    conn,
+    expediente,
+):
     """
-    Patrones configurados para documentos requeridos.
-
-    Se usan como segunda capa de detección:
-    - si tipo_detectado no coincide;
-    - pero el nombre del archivo sí cumple una nomenclatura configurada.
+    Carga nomenclaturas legacy todavía no sustituidas por una
+    nomenclatura canónica vinculada mediante origen_legacy_id.
     """
-    if not _table_exists(conn, "config_nomenclaturas_documentales"):
+    if not _table_exists(
+        conn,
+        "config_nomenclaturas_documentales",
+    ):
         return []
 
     tipo_id = expediente.get("tipo_expediente_id")
@@ -217,40 +220,165 @@ def _get_nomenclatures(conn, expediente):
     if not tipo_id:
         return []
 
-    has_subtipo_col = _column_exists(conn, "config_nomenclaturas_documentales", "subtipo_expediente_id")
+    migrated_legacy_ids = set()
+
+    if _table_exists(
+        conn,
+        "config_nomenclaturas_catalogo",
+    ):
+        migrated_legacy_ids = {
+            int(row["origen_legacy_id"])
+            for row in conn.execute(
+                """
+                SELECT origen_legacy_id
+                FROM config_nomenclaturas_catalogo
+                WHERE origen_legacy_id IS NOT NULL
+                  AND COALESCE(activo, 1) = 1
+                """
+            ).fetchall()
+        }
+
+    has_subtipo_col = _column_exists(
+        conn,
+        "config_nomenclaturas_documentales",
+        "subtipo_expediente_id",
+    )
 
     if has_subtipo_col:
         sql = """
             SELECT
                 n.*,
                 d.codigo_documento,
-                d.nombre_documento
+                d.nombre_documento,
+                NULL AS rol_documental,
+                'LEGACY' AS fuente_nomenclatura,
+                1000 AS prioridad
             FROM config_nomenclaturas_documentales n
-            JOIN config_documentos_requeridos d ON d.id = n.documento_id
+            JOIN config_documentos_requeridos d
+              ON d.id = n.documento_id
             WHERE n.tipo_expediente_id = ?
               AND COALESCE(n.activo, 1) = 1
               AND COALESCE(d.activo, 1) = 1
               AND (
                     n.subtipo_expediente_id IS NULL
                     OR n.subtipo_expediente_id = ?
-                  )
+              )
+            ORDER BY n.id
         """
-        params = (int(tipo_id), int(subtipo_id) if subtipo_id else -1)
+        params = (
+            int(tipo_id),
+            int(subtipo_id) if subtipo_id else -1,
+        )
     else:
         sql = """
             SELECT
                 n.*,
                 d.codigo_documento,
-                d.nombre_documento
+                d.nombre_documento,
+                NULL AS rol_documental,
+                'LEGACY' AS fuente_nomenclatura,
+                1000 AS prioridad
             FROM config_nomenclaturas_documentales n
-            JOIN config_documentos_requeridos d ON d.id = n.documento_id
+            JOIN config_documentos_requeridos d
+              ON d.id = n.documento_id
             WHERE n.tipo_expediente_id = ?
               AND COALESCE(n.activo, 1) = 1
               AND COALESCE(d.activo, 1) = 1
+            ORDER BY n.id
         """
         params = (int(tipo_id),)
 
-    return [_dict(r) for r in conn.execute(sql, params).fetchall()]
+    rows = []
+
+    for row in conn.execute(sql, params).fetchall():
+        data = _dict(row)
+
+        if int(data["id"]) in migrated_legacy_ids:
+            continue
+
+        rows.append(data)
+
+    return rows
+
+
+def _get_canonical_nomenclatures(
+    conn,
+    expediente,
+):
+    """
+    Carga nomenclaturas vinculadas al catálogo documental canónico.
+    """
+    if not _table_exists(
+        conn,
+        "config_nomenclaturas_catalogo",
+    ):
+        return []
+
+    tipo_id = expediente.get("tipo_expediente_id")
+    subtipo_id = expediente.get("subtipo_expediente_id")
+
+    if not tipo_id:
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT
+            n.id,
+            n.tipo_expediente_id,
+            n.subtipo_expediente_id,
+            n.documento_catalogo_id,
+            n.rol_documental,
+            n.patron_nombre,
+            n.extension_permitida,
+            n.prioridad,
+            n.activo,
+            n.origen_legacy_id,
+            d.codigo AS codigo_documento,
+            d.nombre AS nombre_documento,
+            'CANONICAL' AS fuente_nomenclatura
+        FROM config_nomenclaturas_catalogo n
+        JOIN config_documentos_catalogo d
+          ON d.id = n.documento_catalogo_id
+        WHERE n.tipo_expediente_id = ?
+          AND COALESCE(n.activo, 1) = 1
+          AND COALESCE(d.activo, 1) = 1
+          AND (
+                n.subtipo_expediente_id IS NULL
+                OR n.subtipo_expediente_id = ?
+          )
+        ORDER BY
+            COALESCE(n.prioridad, 100),
+            n.id
+        """,
+        (
+            int(tipo_id),
+            int(subtipo_id) if subtipo_id else -1,
+        ),
+    ).fetchall()
+
+    return [_dict(row) for row in rows]
+
+
+def _get_nomenclatures(conn, expediente):
+    """
+    Devuelve nomenclaturas canónicas y legacy de respaldo.
+
+    Prioridad:
+    - primero nomenclaturas canónicas;
+    - después nomenclaturas legacy que todavía no tengan migración
+      canónica activa.
+    """
+    canonical = _get_canonical_nomenclatures(
+        conn,
+        expediente,
+    )
+    legacy = _get_legacy_nomenclatures(
+        conn,
+        expediente,
+    )
+
+    return canonical + legacy
+
 
 
 def _norm_filename(value):
@@ -316,13 +444,33 @@ def _doc_codes_from_nomenclatures(items, nomenclatures):
                     continue
 
                 codes.add(code)
+                source = _norm(
+                    rule.get("fuente_nomenclatura")
+                )
+
                 detected.append(
                     {
                         "codigo": code,
+                        "rol_documental": (
+                            _norm(
+                                rule.get(
+                                    "rol_documental"
+                                )
+                            )
+                            or None
+                        ),
                         "archivo": filename,
                         "ruta": item.get("ruta"),
                         "patron": pattern,
-                        "origen": "nomenclatura_configurada",
+                        "nomenclatura_id": rule.get("id"),
+                        "fuente_nomenclatura": (
+                            source or "LEGACY"
+                        ),
+                        "origen": (
+                            "nomenclatura_canónica"
+                            if source == "CANONICAL"
+                            else "nomenclatura_legacy"
+                        ),
                     }
                 )
 
