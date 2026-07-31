@@ -22,8 +22,13 @@ Uso:
 """
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from datetime import datetime
+
+from backend.services import (
+    document_requirement_readiness_service as semantic_readiness_service,
+)
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
@@ -726,6 +731,107 @@ def _confidence(base, required_docs, faltantes, signals):
     return round(min(0.98, max(0.10, value)), 2)
 
 
+def _build_semantic_detections(detected_documents):
+    """
+    Convierte las detecciones actuales del diagnóstico en entradas
+    estructuradas para el evaluador semántico.
+
+    No infiere roles. Si la detección no contiene rol_documental,
+    el evaluador podrá marcarla como ambigua.
+    """
+    normalized = []
+    seen = set()
+
+    for detection in detected_documents or []:
+        code = _norm(detection.get("codigo"))
+        if not code:
+            continue
+
+        role = _norm(
+            detection.get("rol_documental")
+        ) or None
+
+        origin = (
+            detection.get("origen")
+            or (
+                "nomenclatura_configurada"
+                if detection.get("patron")
+                else "box_classifier"
+            )
+        )
+
+        structured = {
+            "codigo": code,
+            "rol_documental": role,
+            "archivo": detection.get("archivo"),
+            "ruta": detection.get("ruta"),
+            "origen": origin,
+        }
+
+        if detection.get("patron"):
+            structured["patron"] = detection.get(
+                "patron"
+            )
+
+        if detection.get("estado"):
+            structured["estado"] = detection.get(
+                "estado"
+            )
+
+        identity = (
+            structured["codigo"],
+            structured["rol_documental"],
+            structured.get("archivo"),
+            structured.get("ruta"),
+            structured["origen"],
+        )
+
+        if identity in seen:
+            continue
+
+        seen.add(identity)
+        normalized.append(structured)
+
+    return normalized
+
+
+def _evaluate_semantic_readiness_safe(
+    expediente,
+    detections,
+):
+    """
+    Ejecuta el motor semántico sin permitir que sus errores rompan
+    el diagnóstico documental legacy.
+    """
+    try:
+        result = (
+            semantic_readiness_service
+            .evaluate_semantic_requirement_readiness(
+                expediente.get("tipo_expediente_id"),
+                expediente.get("subtipo_expediente_id"),
+                detections,
+            )
+        )
+
+        return {
+            "disponible": True,
+            "modo": "PARALELO_NO_VINCULANTE",
+            **result,
+        }
+
+    except Exception as exc:
+        return {
+            "disponible": False,
+            "modo": "PARALELO_NO_VINCULANTE",
+            "completo": None,
+            "grupos": [],
+            "grupos_bloqueantes": None,
+            "opciones_ambiguas_por_rol": [],
+            "detecciones": detections,
+            "error": str(exc),
+        }
+
+
 def diagnose_expediente_document_state(expediente_id):
     """
     Diagnóstico principal.
@@ -742,13 +848,20 @@ def diagnose_expediente_document_state(expediente_id):
         resumen
     }
     """
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         expediente = _get_expediente(conn, expediente_id)
         if not expediente:
             raise ValueError("Expediente no encontrado")
 
         root = expediente.get("box_folder_path")
         if not root:
+            semantic_result = (
+                _evaluate_semantic_readiness_safe(
+                    expediente,
+                    [],
+                )
+            )
+
             return {
                 "estado_sugerido": ESTADO_SIN_DIAGNOSTICO,
                 "confianza": 0.10,
@@ -757,6 +870,7 @@ def diagnose_expediente_document_state(expediente_id):
                 "obligatorios": [],
                 "detectados": [],
                 "faltantes": [],
+                "semantic_readiness": semantic_result,
                 "senales": ["El expediente no tiene ruta Box vinculada"],
                 "resumen": {
                     "total_archivos": 0,
@@ -774,7 +888,18 @@ def diagnose_expediente_document_state(expediente_id):
     doc_codes, detected_docs = _doc_codes_from_items(items)
     nomenclature_codes, detected_by_nomenclature = _doc_codes_from_nomenclatures(items, nomenclatures)
     doc_codes = set(doc_codes) | set(nomenclature_codes)
-    detected_docs = list(detected_docs or []) + list(detected_by_nomenclature or [])
+    detected_docs = (
+        list(detected_docs or [])
+        + list(detected_by_nomenclature or [])
+    )
+
+    semantic_detections = _build_semantic_detections(
+        detected_docs
+    )
+    semantic_result = _evaluate_semantic_readiness_safe(
+        expediente,
+        semantic_detections,
+    )
 
     folder_codes, detected_folders = _folder_codes_from_folders(folders)
     encontrados, faltantes = _match_required_documents(required_docs, doc_codes, items=items)
@@ -845,6 +970,7 @@ def diagnose_expediente_document_state(expediente_id):
         "encontrados": encontrados,
         "detectados": detectados,
         "nomenclaturas_usadas": len(nomenclatures),
+        "semantic_readiness": semantic_result,
         "faltantes": faltantes,
         "senales": senales,
         "resumen": {
@@ -863,7 +989,7 @@ def diagnose_many_expedientes(expediente_ids):
 
 
 def diagnose_all_active_expedientes(limit=200):
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = conn.execute(
             """
             SELECT id
