@@ -42,6 +42,66 @@ def _normalize_expedient_ids(values):
     return result
 
 
+def get_affected_expedient_ids(
+    scan_run_id,
+    *,
+    conn=None,
+    db_path=None,
+):
+    """
+    Obtiene los expedientes observados por un scan run.
+
+    Usa el inventario ya actualizado y no accede al sistema
+    de archivos.
+    """
+    try:
+        run_id = int(scan_run_id or 0)
+    except (TypeError, ValueError):
+        run_id = 0
+
+    if run_id <= 0:
+        return []
+
+    owns_connection = conn is None
+    connection = (
+        conn
+        or event_repository.open_connection(
+            db_path
+        )
+    )
+
+    try:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT expediente_id
+            FROM (
+                SELECT expediente_id
+                FROM box_watch_items
+                WHERE last_seen_scan_id = ?
+                  AND expediente_id IS NOT NULL
+
+                UNION
+
+                SELECT expediente_id
+                FROM box_watch_folders
+                WHERE last_seen_scan_id = ?
+                  AND expediente_id IS NOT NULL
+            )
+            WHERE expediente_id > 0
+            ORDER BY expediente_id
+            """,
+            (run_id, run_id),
+        ).fetchall()
+
+        return [
+            int(row["expediente_id"])
+            for row in rows
+        ]
+    finally:
+        if owns_connection:
+            connection.close()
+
+
 def process_scanned_expedients(
     expedient_ids,
     *,

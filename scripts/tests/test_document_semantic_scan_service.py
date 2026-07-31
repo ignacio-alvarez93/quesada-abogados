@@ -110,6 +110,18 @@ class DocumentSemanticScanServiceTest(
                 id INTEGER PRIMARY KEY
             );
 
+            CREATE TABLE box_watch_items (
+                id INTEGER PRIMARY KEY,
+                expediente_id INTEGER,
+                last_seen_scan_id INTEGER
+            );
+
+            CREATE TABLE box_watch_folders (
+                id INTEGER PRIMARY KEY,
+                expediente_id INTEGER,
+                last_seen_scan_id INTEGER
+            );
+
             INSERT INTO clientes (id)
             VALUES
                 (201),
@@ -142,6 +154,97 @@ class DocumentSemanticScanServiceTest(
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_affected_ids_are_loaded_from_items_and_folders(self):
+        conn = sqlite3.connect(
+            self.db_path
+        )
+        conn.executescript(
+            """
+            INSERT INTO box_watch_items (
+                id,
+                expediente_id,
+                last_seen_scan_id
+            )
+            VALUES
+                (1, 1, 10),
+                (2, 2, 10),
+                (3, 2, 10),
+                (4, 3, 99),
+                (5, NULL, 10);
+
+            INSERT INTO box_watch_folders (
+                id,
+                expediente_id,
+                last_seen_scan_id
+            )
+            VALUES
+                (1, 2, 10),
+                (2, 3, 10),
+                (3, 1, 99);
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        result = (
+            scan_service
+            .get_affected_expedient_ids(
+                10,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            result,
+            [1, 2, 3],
+        )
+
+    def test_invalid_scan_run_returns_empty_list(self):
+        self.assertEqual(
+            scan_service
+            .get_affected_expedient_ids(
+                None,
+                db_path=self.db_path,
+            ),
+            [],
+        )
+        self.assertEqual(
+            scan_service
+            .get_affected_expedient_ids(
+                "invalid",
+                db_path=self.db_path,
+            ),
+            [],
+        )
+
+    def test_other_scan_runs_are_excluded(self):
+        conn = sqlite3.connect(
+            self.db_path
+        )
+        conn.execute(
+            """
+            INSERT INTO box_watch_items (
+                id,
+                expediente_id,
+                last_seen_scan_id
+            )
+            VALUES (?, ?, ?)
+            """,
+            (1, 1, 99),
+        )
+        conn.commit()
+        conn.close()
+
+        result = (
+            scan_service
+            .get_affected_expedient_ids(
+                10,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(result, [])
 
     def test_ids_are_normalized_and_deduplicated(self):
         calls = []
