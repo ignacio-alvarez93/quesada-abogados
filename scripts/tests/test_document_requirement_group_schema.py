@@ -267,6 +267,237 @@ class DocumentRequirementGroupSchemaTest(unittest.TestCase):
         self.assertEqual(validation["documentos_activos"], 2)
         self.assertEqual(validation["errores"], [])
 
+    def test_update_document_catalog(self):
+        document_id = requirement_service.create_document_catalog(
+            {
+                "codigo": "PASAPORTE",
+                "nombre": "Pasaporte",
+            }
+        )
+
+        requirement_service.update_document_catalog(
+            document_id,
+            {
+                "codigo": "PASAPORTE_COMPLETO",
+                "nombre": "Pasaporte completo",
+                "categoria": "IDENTIDAD",
+                "activo": 1,
+            },
+        )
+
+        document = requirement_service.get_document_catalog(
+            document_id
+        )
+
+        self.assertEqual(
+            document["codigo"],
+            "PASAPORTE_COMPLETO",
+        )
+        self.assertEqual(
+            document["nombre"],
+            "PASAPORTE COMPLETO",
+        )
+        self.assertEqual(
+            document["categoria"],
+            "IDENTIDAD",
+        )
+
+    def test_cannot_delete_document_used_by_group(self):
+        document_id = requirement_service.create_document_catalog(
+            {
+                "codigo": "PASAPORTE",
+                "nombre": "Pasaporte",
+            }
+        )
+
+        group_id = requirement_service.create_requirement_group(
+            {
+                "tipo_expediente_id": 10,
+                "subtipo_expediente_id": 100,
+                "codigo": "IDENTIDAD",
+                "nombre": "Identidad",
+                "regla_cumplimiento": "ALL",
+            }
+        )
+
+        requirement_service.add_document_to_group(
+            group_id,
+            document_id,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "vinculado",
+        ):
+            requirement_service.delete_document_catalog(
+                document_id
+            )
+
+    def test_remove_document_then_delete_catalog(self):
+        document_id = requirement_service.create_document_catalog(
+            {
+                "codigo": "PASAPORTE",
+                "nombre": "Pasaporte",
+            }
+        )
+
+        group_id = requirement_service.create_requirement_group(
+            {
+                "tipo_expediente_id": 10,
+                "subtipo_expediente_id": 100,
+                "codigo": "IDENTIDAD",
+                "nombre": "Identidad",
+                "regla_cumplimiento": "ALL",
+            }
+        )
+
+        requirement_service.add_document_to_group(
+            group_id,
+            document_id,
+        )
+
+        requirement_service.remove_document_from_group(
+            group_id,
+            document_id,
+        )
+        requirement_service.delete_document_catalog(
+            document_id
+        )
+
+        self.assertIsNone(
+            requirement_service.get_document_catalog(
+                document_id
+            )
+        )
+
+    def test_update_requirement_group(self):
+        group_id = requirement_service.create_requirement_group(
+            {
+                "tipo_expediente_id": 10,
+                "subtipo_expediente_id": 100,
+                "codigo": "VINCULO",
+                "nombre": "Vínculo",
+                "regla_cumplimiento": "ANY",
+            }
+        )
+
+        requirement_service.update_requirement_group(
+            group_id,
+            {
+                "tipo_expediente_id": 10,
+                "subtipo_expediente_id": 100,
+                "codigo": "VINCULO_FAMILIAR",
+                "nombre": "Vínculo familiar",
+                "regla_cumplimiento": "AT_LEAST",
+                "minimo_documentos": 2,
+                "orden": 20,
+                "activo": 1,
+            },
+        )
+
+        group = requirement_service.get_requirement_group(
+            group_id
+        )
+
+        self.assertEqual(
+            group["codigo"],
+            "VINCULO_FAMILIAR",
+        )
+        self.assertEqual(
+            group["regla_cumplimiento"],
+            "AT_LEAST",
+        )
+        self.assertEqual(
+            group["minimo_documentos"],
+            2,
+        )
+
+    def test_delete_group_cascades_options(self):
+        document_id = requirement_service.create_document_catalog(
+            {
+                "codigo": "PASAPORTE",
+                "nombre": "Pasaporte",
+            }
+        )
+
+        group_id = requirement_service.create_requirement_group(
+            {
+                "tipo_expediente_id": 10,
+                "subtipo_expediente_id": 100,
+                "codigo": "IDENTIDAD",
+                "nombre": "Identidad",
+                "regla_cumplimiento": "ALL",
+            }
+        )
+
+        requirement_service.add_document_to_group(
+            group_id,
+            document_id,
+        )
+
+        requirement_service.delete_requirement_group(
+            group_id
+        )
+
+        options = (
+            requirement_service
+            .list_group_document_options(group_id)
+        )
+
+        self.assertEqual(options, [])
+
+    def test_deactivate_option_affects_readiness(self):
+        document_id = requirement_service.create_document_catalog(
+            {
+                "codigo": "MATRIMONIO",
+                "nombre": "Certificado de matrimonio",
+            }
+        )
+
+        group_id = requirement_service.create_requirement_group(
+            {
+                "tipo_expediente_id": 10,
+                "subtipo_expediente_id": 100,
+                "codigo": "VINCULO",
+                "nombre": "Vínculo",
+                "regla_cumplimiento": "ANY",
+            }
+        )
+
+        option_id = requirement_service.add_document_to_group(
+            group_id,
+            document_id,
+        )
+
+        requirement_service.update_group_document_option(
+            option_id,
+            activo=0,
+        )
+
+        validation = (
+            requirement_service
+            .validate_requirement_group_readiness(group_id)
+        )
+
+        self.assertFalse(validation["valido"])
+        self.assertEqual(
+            validation["documentos_activos"],
+            0,
+        )
+
+    def test_invalid_active_value_is_rejected(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "activo",
+        ):
+            requirement_service.create_document_catalog(
+                {
+                    "codigo": "INVALIDO",
+                    "nombre": "Inválido",
+                    "activo": 7,
+                }
+            )
+
     def test_duplicate_document_in_group_is_rejected(self):
         document_id = requirement_service.create_document_catalog(
             {

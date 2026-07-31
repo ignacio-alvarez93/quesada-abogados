@@ -199,7 +199,7 @@ def create_document_catalog(data):
     name = _normalize_name(data.get("nombre"))
     description = str(data.get("descripcion") or "").strip()
     category = _normalize_code(data.get("categoria"))
-    active = int(data.get("activo", 1))
+    active = _normalize_active(data.get("activo", 1))
 
     if not code:
         raise ValueError("El código documental es obligatorio")
@@ -231,8 +231,6 @@ def create_document_catalog(data):
 
 
 def list_document_catalog(active_only=False):
-    initialize_document_requirement_group_schema()
-
     sql = """
         SELECT *
         FROM config_documentos_catalogo
@@ -269,7 +267,7 @@ def create_requirement_group(data):
         data.get("minimo_documentos"),
     )
     order = int(data.get("orden") or 0)
-    active = int(data.get("activo", 1))
+    active = _normalize_active(data.get("activo", 1))
 
     if not code:
         raise ValueError("El código del grupo es obligatorio")
@@ -371,7 +369,7 @@ def add_document_to_group(
                 int(grupo_id),
                 int(documento_catalogo_id),
                 int(orden or 0),
-                int(activo),
+                _normalize_active(activo),
             ),
         )
         return cursor.lastrowid
@@ -382,8 +380,6 @@ def list_requirement_groups(
     subtipo_expediente_id=None,
     active_only=False,
 ):
-    initialize_document_requirement_group_schema()
-
     sql = """
         SELECT
             g.*,
@@ -442,8 +438,6 @@ def list_requirement_groups(
 
 
 def get_requirement_group(group_id):
-    initialize_document_requirement_group_schema()
-
     with _connection() as conn:
         group = _dict(
             conn.execute(
@@ -496,8 +490,6 @@ def validate_requirement_group_readiness(group_id):
     Debe utilizarse antes de activar el nuevo motor documental o
     publicar una configuración para expedientes.
     """
-    initialize_document_requirement_group_schema()
-
     with _connection() as conn:
         group = conn.execute(
             """
@@ -557,3 +549,367 @@ def validate_requirement_group_readiness(group_id):
             "valido": not errors,
             "errores": errors,
         }
+
+
+def _normalize_active(value):
+    active = int(value)
+    if active not in (0, 1):
+        raise ValueError("El estado activo debe ser 0 o 1")
+    return active
+
+
+def get_document_catalog(document_id):
+    with _connection() as conn:
+        return _dict(
+            conn.execute(
+                """
+                SELECT
+                    d.*,
+                    COUNT(o.id) AS total_grupos,
+                    SUM(
+                        CASE
+                            WHEN o.activo = 1 THEN 1
+                            ELSE 0
+                        END
+                    ) AS grupos_activos
+                FROM config_documentos_catalogo d
+                LEFT JOIN config_grupo_requisito_documentos o
+                  ON o.documento_catalogo_id = d.id
+                WHERE d.id = ?
+                GROUP BY d.id
+                """,
+                (int(document_id),),
+            ).fetchone()
+        )
+
+
+def update_document_catalog(document_id, data):
+    document_id = int(document_id)
+    code = _normalize_code(
+        data.get("codigo") or data.get("nombre")
+    )
+    name = _normalize_name(data.get("nombre"))
+    description = str(data.get("descripcion") or "").strip()
+    category = _normalize_code(data.get("categoria"))
+    active = _normalize_active(data.get("activo", 1))
+
+    if not code:
+        raise ValueError("El código documental es obligatorio")
+
+    if not name:
+        raise ValueError("El nombre documental es obligatorio")
+
+    with _connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM config_documentos_catalogo
+            WHERE id = ?
+            """,
+            (document_id,),
+        ).fetchone()
+
+        if not existing:
+            raise ValueError(
+                "El documento de catálogo seleccionado no existe"
+            )
+
+        conn.execute(
+            """
+            UPDATE config_documentos_catalogo
+            SET
+                codigo = ?,
+                nombre = ?,
+                descripcion = ?,
+                categoria = ?,
+                activo = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                code,
+                name,
+                description,
+                category or None,
+                active,
+                document_id,
+            ),
+        )
+
+
+def deactivate_document_catalog(document_id):
+    document_id = int(document_id)
+
+    with _connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM config_documentos_catalogo
+            WHERE id = ?
+            """,
+            (document_id,),
+        ).fetchone()
+
+        if not existing:
+            raise ValueError(
+                "El documento de catálogo seleccionado no existe"
+            )
+
+        conn.execute(
+            """
+            UPDATE config_documentos_catalogo
+            SET
+                activo = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (document_id,),
+        )
+
+
+def delete_document_catalog(document_id):
+    document_id = int(document_id)
+
+    with _connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM config_documentos_catalogo
+            WHERE id = ?
+            """,
+            (document_id,),
+        ).fetchone()
+
+        if not existing:
+            raise ValueError(
+                "El documento de catálogo seleccionado no existe"
+            )
+
+        dependency_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM config_grupo_requisito_documentos
+            WHERE documento_catalogo_id = ?
+            """,
+            (document_id,),
+        ).fetchone()[0]
+
+        if dependency_count:
+            raise ValueError(
+                "No se puede eliminar el documento porque está "
+                "vinculado a uno o más grupos"
+            )
+
+        conn.execute(
+            """
+            DELETE FROM config_documentos_catalogo
+            WHERE id = ?
+            """,
+            (document_id,),
+        )
+
+
+def update_requirement_group(group_id, data):
+    group_id = int(group_id)
+    tipo_id = _int_or_none(data.get("tipo_expediente_id"))
+    subtipo_id = _int_or_none(
+        data.get("subtipo_expediente_id")
+    )
+    code = _normalize_code(
+        data.get("codigo") or data.get("nombre")
+    )
+    name = _normalize_name(data.get("nombre"))
+    description = str(data.get("descripcion") or "").strip()
+    rule, minimum = _normalize_rule(
+        data.get("regla_cumplimiento"),
+        data.get("minimo_documentos"),
+    )
+    order = int(data.get("orden") or 0)
+    active = _normalize_active(data.get("activo", 1))
+
+    if not code:
+        raise ValueError("El código del grupo es obligatorio")
+
+    if not name:
+        raise ValueError("El nombre del grupo es obligatorio")
+
+    with _connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM config_grupos_requisitos_documentales
+            WHERE id = ?
+            """,
+            (group_id,),
+        ).fetchone()
+
+        if not existing:
+            raise ValueError(
+                "El grupo documental seleccionado no existe"
+            )
+
+        _validate_type_and_subtype(
+            conn,
+            tipo_id,
+            subtipo_id,
+        )
+
+        conn.execute(
+            """
+            UPDATE config_grupos_requisitos_documentales
+            SET
+                tipo_expediente_id = ?,
+                subtipo_expediente_id = ?,
+                codigo = ?,
+                nombre = ?,
+                descripcion = ?,
+                regla_cumplimiento = ?,
+                minimo_documentos = ?,
+                orden = ?,
+                activo = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                tipo_id,
+                subtipo_id,
+                code,
+                name,
+                description,
+                rule,
+                minimum,
+                order,
+                active,
+                group_id,
+            ),
+        )
+
+
+def delete_requirement_group(group_id):
+    group_id = int(group_id)
+
+    with _connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM config_grupos_requisitos_documentales
+            WHERE id = ?
+            """,
+            (group_id,),
+        ).fetchone()
+
+        if not existing:
+            raise ValueError(
+                "El grupo documental seleccionado no existe"
+            )
+
+        conn.execute(
+            """
+            DELETE FROM config_grupos_requisitos_documentales
+            WHERE id = ?
+            """,
+            (group_id,),
+        )
+
+
+def update_group_document_option(
+    option_id,
+    *,
+    orden=0,
+    activo=1,
+):
+    option_id = int(option_id)
+    active = _normalize_active(activo)
+
+    with _connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM config_grupo_requisito_documentos
+            WHERE id = ?
+            """,
+            (option_id,),
+        ).fetchone()
+
+        if not existing:
+            raise ValueError(
+                "La opción documental seleccionada no existe"
+            )
+
+        conn.execute(
+            """
+            UPDATE config_grupo_requisito_documentos
+            SET
+                orden = ?,
+                activo = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(orden or 0),
+                active,
+                option_id,
+            ),
+        )
+
+
+def remove_document_from_group(
+    grupo_id,
+    documento_catalogo_id,
+):
+    with _connection() as conn:
+        cursor = conn.execute(
+            """
+            DELETE FROM config_grupo_requisito_documentos
+            WHERE grupo_id = ?
+              AND documento_catalogo_id = ?
+            """,
+            (
+                int(grupo_id),
+                int(documento_catalogo_id),
+            ),
+        )
+
+        if cursor.rowcount == 0:
+            raise ValueError(
+                "El documento no está vinculado al grupo seleccionado"
+            )
+
+
+def list_group_document_options(
+    group_id,
+    active_only=False,
+):
+    sql = """
+        SELECT
+            o.*,
+            d.codigo AS documento_codigo,
+            d.nombre AS documento_nombre,
+            d.descripcion AS documento_descripcion,
+            d.categoria AS documento_categoria,
+            d.activo AS documento_activo
+        FROM config_grupo_requisito_documentos o
+        JOIN config_documentos_catalogo d
+          ON d.id = o.documento_catalogo_id
+        WHERE o.grupo_id = ?
+    """
+    params = [int(group_id)]
+
+    if active_only:
+        sql += """
+          AND o.activo = 1
+          AND d.activo = 1
+        """
+
+    sql += """
+        ORDER BY
+            o.orden ASC,
+            d.nombre ASC,
+            o.id ASC
+    """
+
+    with _connection() as conn:
+        return [
+            _dict(row)
+            for row in conn.execute(sql, params).fetchall()
+        ]
