@@ -1126,6 +1126,16 @@ def diagnose_expediente_document_state(expediente_id):
                 )
             )
 
+            estado_documental_semantico = (
+                semantic_state_service
+                .semantic_document_completeness(
+                    semantic_result
+                )
+            )
+            estado_procesal_detectado = (
+                semantic_state_service
+                .process_state_from_signals()
+            )
             decision_semantica = (
                 semantic_state_service
                 .semantic_document_state(
@@ -1143,6 +1153,12 @@ def diagnose_expediente_document_state(expediente_id):
             return {
                 "estado_sugerido": ESTADO_SIN_DIAGNOSTICO,
                 "motor_estado_activo": "LEGACY",
+                "estado_documental_semantico": (
+                    estado_documental_semantico
+                ),
+                "estado_procesal_detectado": (
+                    estado_procesal_detectado
+                ),
                 "decision_semantica": decision_semantica,
                 "comparacion_motores": comparacion_motores,
                 "confianza": 0.10,
@@ -1209,6 +1225,21 @@ def diagnose_expediente_document_state(expediente_id):
     if motivo_presentado:
         senales.append(motivo_presentado)
 
+    estado_documental_semantico = (
+        semantic_state_service
+        .semantic_document_completeness(
+            semantic_result
+        )
+    )
+    estado_procesal_detectado = (
+        semantic_state_service
+        .process_state_from_signals(
+            has_presentacion=hay_presentado,
+            has_requerimiento=hay_req,
+            has_concesion=hay_concedido,
+            has_denegacion=hay_denegado,
+        )
+    )
     decision_semantica = (
         semantic_state_service
         .semantic_document_state(
@@ -1272,6 +1303,12 @@ def diagnose_expediente_document_state(expediente_id):
     return {
         "estado_sugerido": estado,
         "motor_estado_activo": "LEGACY",
+        "estado_documental_semantico": (
+            estado_documental_semantico
+        ),
+        "estado_procesal_detectado": (
+            estado_procesal_detectado
+        ),
         "decision_semantica": decision_semantica,
         "comparacion_motores": comparacion_motores,
         "confianza": _confidence(base_conf, required_docs, faltantes, senales),

@@ -162,5 +162,169 @@ class DocumentSemanticStateIntegrationTest(
         )
 
 
+    def test_process_and_document_states_are_independent(self):
+        readiness = {
+            "disponible": True,
+            "completo": False,
+            "grupos_bloqueantes": 2,
+            "grupos": [
+                {
+                    "codigo": "IDENTIDAD",
+                    "activo": True,
+                    "cumplido": False,
+                    "bloquea_completitud": True,
+                }
+            ],
+        }
+
+        documentary = (
+            semantic_state
+            .semantic_document_completeness(
+                readiness
+            )
+        )
+        process = (
+            semantic_state
+            .process_state_from_signals(
+                has_concesion=True
+            )
+        )
+        combined = (
+            semantic_state
+            .semantic_document_state(
+                readiness,
+                has_concesion=True,
+            )
+        )
+
+        self.assertEqual(
+            documentary["estado_documental"],
+            "PENDIENTE_DOCUMENTACION",
+        )
+        self.assertEqual(
+            process["estado_procesal"],
+            "CONCEDIDO",
+        )
+        self.assertEqual(
+            combined["estado_sugerido"],
+            "CONCEDIDO",
+        )
+
+    def test_without_process_signal_combined_uses_document_state(self):
+        readiness = {
+            "disponible": True,
+            "completo": True,
+            "grupos_bloqueantes": 0,
+            "grupos": [
+                {
+                    "codigo": "IDENTIDAD",
+                    "activo": True,
+                    "cumplido": True,
+                    "bloquea_completitud": False,
+                }
+            ],
+        }
+
+        documentary = (
+            semantic_state
+            .semantic_document_completeness(
+                readiness
+            )
+        )
+        process = (
+            semantic_state
+            .process_state_from_signals()
+        )
+        combined = (
+            semantic_state
+            .semantic_document_state(
+                readiness
+            )
+        )
+
+        self.assertEqual(
+            documentary["estado_documental"],
+            "COMPLETO_SIN_PRESENTAR",
+        )
+        self.assertFalse(process["detectado"])
+        self.assertEqual(
+            combined["estado_sugerido"],
+            "COMPLETO_SIN_PRESENTAR",
+        )
+
+    def test_combined_state_preserves_process_without_groups(self):
+        readiness = {
+            "disponible": True,
+            "completo": False,
+            "grupos_bloqueantes": 0,
+            "grupos": [],
+        }
+
+        documentary = (
+            semantic_state
+            .semantic_document_completeness(
+                readiness
+            )
+        )
+        process = (
+            semantic_state
+            .process_state_from_signals(
+                has_concesion=True
+            )
+        )
+        combined = (
+            semantic_state
+            .semantic_document_state(
+                readiness,
+                has_concesion=True,
+            )
+        )
+
+        self.assertFalse(
+            documentary["aplicable"]
+        )
+        self.assertEqual(
+            documentary["estado_documental"],
+            "SIN_DIAGNOSTICO",
+        )
+        self.assertEqual(
+            process["estado_procesal"],
+            "CONCEDIDO",
+        )
+        self.assertTrue(
+            combined["aplicable"]
+        )
+        self.assertFalse(
+            combined["aplicable_documental"]
+        )
+        self.assertEqual(
+            combined["estado_sugerido"],
+            "CONCEDIDO",
+        )
+
+    def test_unavailable_documentary_state_is_explicit(self):
+        documentary = (
+            semantic_state
+            .semantic_document_completeness(
+                {
+                    "disponible": False,
+                }
+            )
+        )
+        process = (
+            semantic_state
+            .process_state_from_signals()
+        )
+
+        self.assertFalse(
+            documentary["aplicable"]
+        )
+        self.assertEqual(
+            documentary["estado_documental"],
+            "SIN_DIAGNOSTICO",
+        )
+        self.assertFalse(process["detectado"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -205,5 +205,120 @@ class DocumentSemanticStateTest(unittest.TestCase):
         self.assertTrue(result["divergencia"])
 
 
+    def test_document_completeness_ignores_concession(self):
+        readiness = {
+            "disponible": True,
+            "completo": False,
+            "grupos_bloqueantes": 2,
+            "grupos": [
+                {
+                    "codigo": "IDENTIDAD",
+                    "activo": True,
+                    "cumplido": False,
+                    "bloquea_completitud": True,
+                }
+            ],
+        }
+
+        documentary = (
+            semantic_state
+            .semantic_document_completeness(
+                readiness
+            )
+        )
+        process = (
+            semantic_state
+            .process_state_from_signals(
+                has_concesion=True
+            )
+        )
+
+        self.assertEqual(
+            documentary["estado_documental"],
+            "PENDIENTE_DOCUMENTACION",
+        )
+        self.assertEqual(
+            process["estado_procesal"],
+            "CONCEDIDO",
+        )
+
+    def test_complete_documentation_without_process_state(self):
+        documentary = (
+            semantic_state
+            .semantic_document_completeness(
+                {
+                    "disponible": True,
+                    "completo": True,
+                    "grupos_bloqueantes": 0,
+                    "grupos": [
+                        {
+                            "codigo": "IDENTIDAD",
+                            "activo": True,
+                            "cumplido": True,
+                            "bloquea_completitud": False,
+                        }
+                    ],
+                }
+            )
+        )
+        process = (
+            semantic_state
+            .process_state_from_signals()
+        )
+
+        self.assertEqual(
+            documentary["estado_documental"],
+            "COMPLETO_SIN_PRESENTAR",
+        )
+        self.assertFalse(process["detectado"])
+        self.assertIsNone(
+            process["estado_procesal"]
+        )
+
+    def test_process_state_survives_without_semantic_groups(self):
+        result = semantic_state.semantic_document_state(
+            {
+                "disponible": True,
+                "completo": False,
+                "grupos": [],
+                "grupos_bloqueantes": 0,
+            },
+            has_concesion=True,
+        )
+
+        self.assertTrue(result["aplicable"])
+        self.assertFalse(
+            result["aplicable_documental"]
+        )
+        self.assertEqual(
+            result["estado_sugerido"],
+            "CONCEDIDO",
+        )
+        self.assertEqual(
+            result["estado_procesal"],
+            "CONCEDIDO",
+        )
+        self.assertEqual(
+            result["estado_documental"],
+            "SIN_DIAGNOSTICO",
+        )
+
+    def test_process_signal_priority_is_preserved(self):
+        process = (
+            semantic_state
+            .process_state_from_signals(
+                has_presentacion=True,
+                has_requerimiento=True,
+                has_concesion=True,
+                has_denegacion=True,
+            )
+        )
+
+        self.assertEqual(
+            process["estado_procesal"],
+            "DENEGADO",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
