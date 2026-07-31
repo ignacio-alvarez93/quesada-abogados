@@ -138,7 +138,10 @@ class DocumentSemanticScanServiceTest(
                 (3, 203);
 
             INSERT INTO box_watch_scan_runs (id)
-            VALUES (10);
+            VALUES
+                (10),
+                (20),
+                (30);
 
             INSERT INTO box_watch_scan_jobs (id)
             VALUES (20);
@@ -154,6 +157,286 @@ class DocumentSemanticScanServiceTest(
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_extracts_run_ids_from_normal_results(self):
+        result = (
+            scan_service
+            .extract_scan_run_ids(
+                [
+                    {
+                        "run_id": 10,
+                        "scan_mode": "NORMAL",
+                    },
+                    {
+                        "run_id": 20,
+                        "scan_mode": "NORMAL",
+                    },
+                ]
+            )
+        )
+
+        self.assertEqual(
+            result,
+            [10, 20],
+        )
+
+    def test_extracts_run_ids_from_massive_results(self):
+        result = (
+            scan_service
+            .extract_scan_run_ids(
+                [
+                    {
+                        "scan_mode": (
+                            "BATCH_MASSIVE_ROOT"
+                        ),
+                        "batches": [
+                            {
+                                "results": [
+                                    {
+                                        "run_id": 10,
+                                        "batch_status": "OK",
+                                    },
+                                    {
+                                        "run_id": 20,
+                                        "batch_status": "OK",
+                                    },
+                                ]
+                            },
+                            {
+                                "results": [
+                                    {
+                                        "run_id": 30,
+                                        "batch_status": "OK",
+                                    }
+                                ]
+                            },
+                        ],
+                    }
+                ]
+            )
+        )
+
+        self.assertEqual(
+            result,
+            [10, 20, 30],
+        )
+
+    def test_scan_run_ids_are_deduplicated(self):
+        result = (
+            scan_service
+            .extract_scan_run_ids(
+                {
+                    "run_id": 10,
+                    "results": [
+                        {"run_id": 10},
+                        {"run_id": "20"},
+                        {"run_id": None},
+                        {"run_id": "invalid"},
+                    ],
+                }
+            )
+        )
+
+        self.assertEqual(
+            result,
+            [10, 20],
+        )
+
+    def test_disabled_result_processing_does_not_read_runs(self):
+        result = (
+            scan_service
+            .process_box_scan_results(
+                [
+                    {"run_id": 10},
+                    {"run_id": 20},
+                ],
+                source_scan_job_id=99,
+                environ={},
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertFalse(
+            result["enabled"]
+        )
+        self.assertEqual(
+            result["scan_runs_detected"],
+            0,
+        )
+        self.assertEqual(
+            result["processed"],
+            0,
+        )
+
+    def test_enabled_result_processing_handles_normal_and_massive_runs(self):
+        conn = sqlite3.connect(
+            self.db_path
+        )
+        conn.executescript(
+            """
+            INSERT INTO box_watch_items (
+                id,
+                expediente_id,
+                last_seen_scan_id
+            )
+            VALUES
+                (1, 1, 10),
+                (2, 2, 20);
+
+            INSERT INTO box_watch_folders (
+                id,
+                expediente_id,
+                last_seen_scan_id
+            )
+            VALUES
+                (1, 3, 30);
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        results = [
+            {
+                "run_id": 10,
+                "scan_mode": "NORMAL",
+            },
+            {
+                "scan_mode": (
+                    "BATCH_MASSIVE_ROOT"
+                ),
+                "batches": [
+                    {
+                        "results": [
+                            {"run_id": 20},
+                            {"run_id": 30},
+                        ]
+                    }
+                ],
+            },
+        ]
+
+        result = (
+            scan_service
+            .process_box_scan_results(
+                results,
+                source_scan_job_id=20,
+                diagnosis_provider=(
+                    lambda expediente_id:
+                    diagnosis(expediente_id)
+                ),
+                environ={
+                    (
+                        "DOCUMENT_SEMANTIC_"
+                        "SCAN_EVENTS_ENABLED"
+                    ): "1"
+                },
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertTrue(
+            result["enabled"]
+        )
+        self.assertEqual(
+            result["scan_runs_detected"],
+            3,
+        )
+        self.assertEqual(
+            result["scan_runs_processed"],
+            3,
+        )
+        self.assertEqual(
+            result["affected_expedients"],
+            3,
+        )
+        self.assertEqual(
+            result["processed"],
+            3,
+        )
+
+    def test_failure_of_one_run_does_not_stop_other_runs(self):
+        conn = sqlite3.connect(
+            self.db_path
+        )
+        conn.execute(
+            """
+            INSERT INTO box_watch_items (
+                id,
+                expediente_id,
+                last_seen_scan_id
+            )
+            VALUES (?, ?, ?)
+            """,
+            (1, 1, 10),
+        )
+        conn.commit()
+        conn.close()
+
+        original = (
+            scan_service
+            .process_box_scan_run
+        )
+
+        def process_run(
+            run_id,
+            *args,
+            **kwargs,
+        ):
+            if int(run_id) == 20:
+                raise RuntimeError(
+                    "Fallo semántico simulado"
+                )
+
+            return original(
+                run_id,
+                *args,
+                **kwargs,
+            )
+
+        with patch.object(
+            scan_service,
+            "process_box_scan_run",
+            side_effect=process_run,
+        ):
+            result = (
+                scan_service
+                .process_box_scan_results(
+                    [
+                        {"run_id": 10},
+                        {"run_id": 20},
+                    ],
+                    diagnosis_provider=(
+                        lambda expediente_id:
+                        diagnosis(expediente_id)
+                    ),
+                    environ={
+                        (
+                            "DOCUMENT_SEMANTIC_"
+                            "SCAN_EVENTS_ENABLED"
+                        ): "1"
+                    },
+                    db_path=self.db_path,
+                )
+            )
+
+        self.assertEqual(
+            result["scan_runs_detected"],
+            2,
+        )
+        self.assertEqual(
+            result["scan_runs_processed"],
+            1,
+        )
+        self.assertEqual(
+            result["errors"],
+            1,
+        )
+        self.assertTrue(
+            result["run_results"][0]["ok"]
+        )
+        self.assertFalse(
+            result["run_results"][1]["ok"]
+        )
 
     def test_semantic_scan_events_are_disabled_by_default(self):
         self.assertFalse(

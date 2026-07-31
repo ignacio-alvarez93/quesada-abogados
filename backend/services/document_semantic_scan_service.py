@@ -358,3 +358,177 @@ def process_box_scan_run(
         ),
         **result,
     }
+
+
+def extract_scan_run_ids(results):
+    """
+    Extrae recursivamente los scan run IDs de resultados Box.
+
+    Soporta:
+    - resultado normal con run_id;
+    - resultado de lote con results;
+    - raíz masiva con batches;
+    - listas y estructuras anidadas.
+
+    No abre SQLite ni accede a Box.
+    """
+    collected = []
+
+    def visit(value):
+        if isinstance(value, dict):
+            run_id = value.get("run_id")
+
+            try:
+                run_id = int(run_id or 0)
+            except (TypeError, ValueError):
+                run_id = 0
+
+            if (
+                run_id > 0
+                and run_id not in collected
+            ):
+                collected.append(run_id)
+
+            for key in (
+                "results",
+                "batches",
+            ):
+                nested = value.get(key)
+
+                if nested is not None:
+                    visit(nested)
+
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+
+    visit(results)
+
+    return collected
+
+
+def process_box_scan_results(
+    results,
+    *,
+    source_scan_job_id=None,
+    diagnosis_provider=None,
+    create_initial_events=False,
+    db_path=None,
+    environ=None,
+):
+    """
+    Procesa todos los scan runs incluidos en el resultado
+    de un job Box Watch.
+
+    Los errores semánticos se incluyen en el resumen, pero
+    nunca se propagan al runner de Box Watch.
+    """
+    enabled = semantic_scan_events_enabled(
+        environ
+    )
+
+    summary = {
+        "enabled": enabled,
+        "source_scan_job_id": (
+            source_scan_job_id
+        ),
+        "scan_runs_detected": 0,
+        "scan_runs_processed": 0,
+        "affected_expedients": 0,
+        "processed": 0,
+        "changed": 0,
+        "unchanged": 0,
+        "events_created": 0,
+        "events_skipped": 0,
+        "errors": 0,
+        "run_results": [],
+    }
+
+    if not enabled:
+        return summary
+
+    run_ids = extract_scan_run_ids(results)
+
+    summary["scan_runs_detected"] = len(
+        run_ids
+    )
+
+    for run_id in run_ids:
+        try:
+            run_result = process_box_scan_run(
+                run_id,
+                source_scan_job_id=(
+                    source_scan_job_id
+                ),
+                diagnosis_provider=(
+                    diagnosis_provider
+                ),
+                create_initial_events=(
+                    create_initial_events
+                ),
+                db_path=db_path,
+                environ=environ,
+            )
+
+            summary[
+                "scan_runs_processed"
+            ] += 1
+            summary[
+                "affected_expedients"
+            ] += int(
+                run_result.get(
+                    "affected_expedients"
+                )
+                or 0
+            )
+            summary["processed"] += int(
+                run_result.get("processed")
+                or 0
+            )
+            summary["changed"] += int(
+                run_result.get("changed")
+                or 0
+            )
+            summary["unchanged"] += int(
+                run_result.get("unchanged")
+                or 0
+            )
+            summary[
+                "events_created"
+            ] += int(
+                run_result.get(
+                    "events_created"
+                )
+                or 0
+            )
+            summary[
+                "events_skipped"
+            ] += int(
+                run_result.get(
+                    "events_skipped"
+                )
+                or 0
+            )
+            summary["errors"] += int(
+                run_result.get("errors")
+                or 0
+            )
+
+            summary["run_results"].append(
+                {
+                    "run_id": run_id,
+                    "ok": True,
+                    "result": run_result,
+                }
+            )
+        except Exception as exc:
+            summary["errors"] += 1
+            summary["run_results"].append(
+                {
+                    "run_id": run_id,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+
+    return summary
