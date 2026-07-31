@@ -447,6 +447,10 @@ def process_box_scan_results(
     if not enabled:
         return summary
 
+    event_repository.ensure_schema(
+        db_path=db_path
+    )
+
     run_ids = extract_scan_run_ids(results)
 
     summary["scan_runs_detected"] = len(

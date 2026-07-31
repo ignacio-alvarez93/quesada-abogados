@@ -242,6 +242,60 @@ class DocumentSemanticScanServiceTest(
             [10, 20],
         )
 
+    def test_disabled_result_processing_does_not_create_schema(self):
+        conn = sqlite3.connect(
+            self.db_path
+        )
+        conn.execute(
+            """
+            DROP TABLE document_semantic_events
+            """
+        )
+        conn.execute(
+            """
+            DROP TABLE document_semantic_snapshots
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        result = (
+            scan_service
+            .process_box_scan_results(
+                [{"run_id": 10}],
+                environ={},
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertFalse(
+            result["enabled"]
+        )
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+        tables = {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                """
+            ).fetchall()
+        }
+        conn.close()
+
+        self.assertNotIn(
+            "document_semantic_snapshots",
+            tables,
+        )
+        self.assertNotIn(
+            "document_semantic_events",
+            tables,
+        )
+
     def test_disabled_result_processing_does_not_read_runs(self):
         result = (
             scan_service
@@ -266,6 +320,65 @@ class DocumentSemanticScanServiceTest(
         self.assertEqual(
             result["processed"],
             0,
+        )
+
+    def test_enabled_result_processing_ensures_schema(self):
+        conn = sqlite3.connect(
+            self.db_path
+        )
+        conn.execute(
+            """
+            DROP TABLE document_semantic_events
+            """
+        )
+        conn.execute(
+            """
+            DROP TABLE document_semantic_snapshots
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        result = (
+            scan_service
+            .process_box_scan_results(
+                [],
+                environ={
+                    (
+                        "DOCUMENT_SEMANTIC_"
+                        "SCAN_EVENTS_ENABLED"
+                    ): "1"
+                },
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertTrue(
+            result["enabled"]
+        )
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+        tables = {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                """
+            ).fetchall()
+        }
+        conn.close()
+
+        self.assertIn(
+            "document_semantic_snapshots",
+            tables,
+        )
+        self.assertIn(
+            "document_semantic_events",
+            tables,
         )
 
     def test_enabled_result_processing_handles_normal_and_massive_runs(self):
