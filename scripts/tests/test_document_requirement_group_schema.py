@@ -523,13 +523,26 @@ class DocumentRequirementGroupSchemaTest(unittest.TestCase):
             etiqueta_requisito="Pasaporte del reagrupante",
         )
 
-        with self.assertRaises(sqlite3.IntegrityError):
-            requirement_service.add_document_to_group(
-                group_id,
-                passport_id,
-                rol_documental="reagrupado",
-                etiqueta_requisito="Pasaporte del reagrupado",
-            )
+        requirement_service.add_document_to_group(
+            group_id,
+            passport_id,
+            rol_documental="reagrupado",
+            etiqueta_requisito="Pasaporte del reagrupado",
+        )
+
+        options = (
+            requirement_service
+            .list_group_document_options(group_id)
+        )
+
+        self.assertEqual(len(options), 2)
+        self.assertEqual(
+            {
+                option["rol_documental"]
+                for option in options
+            },
+            {"REAGRUPANTE", "REAGRUPADO"},
+        )
 
     def test_option_context_is_stored_and_updated(self):
         passport_id = requirement_service.create_document_catalog(
@@ -622,6 +635,66 @@ class DocumentRequirementGroupSchemaTest(unittest.TestCase):
         self.assertIn("rol_documental", columns)
         self.assertIn("etiqueta_requisito", columns)
         self.assertIn("descripcion_requisito", columns)
+
+    def test_same_document_and_role_is_rejected(self):
+        passport_id = requirement_service.create_document_catalog(
+            {
+                "codigo": "PASAPORTE",
+                "nombre": "Pasaporte",
+            }
+        )
+
+        group_id = requirement_service.create_requirement_group(
+            {
+                "tipo_expediente_id": 10,
+                "subtipo_expediente_id": 100,
+                "codigo": "IDENTIDAD",
+                "nombre": "Identidad",
+                "regla_cumplimiento": "ALL",
+            }
+        )
+
+        requirement_service.add_document_to_group(
+            group_id,
+            passport_id,
+            rol_documental="titular",
+        )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            requirement_service.add_document_to_group(
+                group_id,
+                passport_id,
+                rol_documental="titular",
+            )
+
+    def test_same_document_without_role_is_rejected(self):
+        passport_id = requirement_service.create_document_catalog(
+            {
+                "codigo": "PASAPORTE",
+                "nombre": "Pasaporte",
+            }
+        )
+
+        group_id = requirement_service.create_requirement_group(
+            {
+                "tipo_expediente_id": 10,
+                "subtipo_expediente_id": 100,
+                "codigo": "IDENTIDAD",
+                "nombre": "Identidad",
+                "regla_cumplimiento": "ALL",
+            }
+        )
+
+        requirement_service.add_document_to_group(
+            group_id,
+            passport_id,
+        )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            requirement_service.add_document_to_group(
+                group_id,
+                passport_id,
+            )
 
     def test_duplicate_document_in_group_is_rejected(self):
         document_id = requirement_service.create_document_catalog(

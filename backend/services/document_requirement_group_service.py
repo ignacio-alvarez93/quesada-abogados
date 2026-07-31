@@ -84,6 +84,19 @@ def _normalize_name(value):
     return str(value or "").strip().upper()
 
 
+def _table_exists(conn, table_name):
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = ?
+        """,
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 def _column_exists(conn, table_name, column_name):
     rows = conn.execute(
         f"PRAGMA table_info({table_name})"
@@ -91,6 +104,169 @@ def _column_exists(conn, table_name, column_name):
     return any(
         row["name"] == column_name
         for row in rows
+    )
+
+
+def _option_table_requires_role_rebuild(conn):
+    """
+    Detecta la restricción legacy:
+        UNIQUE (grupo_id, documento_catalogo_id)
+
+    La nueva tabla debe permitir el mismo documento con roles distintos.
+    """
+    indexes = conn.execute(
+        """
+        PRAGMA index_list(
+            config_grupo_requisito_documentos
+        )
+        """
+    ).fetchall()
+
+    for index in indexes:
+        if not int(index["unique"] or 0):
+            continue
+
+        name = index["name"]
+        columns = conn.execute(
+            f"PRAGMA index_info({name})"
+        ).fetchall()
+
+        column_names = [
+            row["name"]
+            for row in columns
+        ]
+
+        if column_names == [
+            "grupo_id",
+            "documento_catalogo_id",
+        ]:
+            return True
+
+    return False
+
+
+def _rebuild_option_table_for_role_uniqueness(conn):
+    """
+    Reconstruye la tabla conservando datos y claves primarias.
+
+    Se ejecuta solo cuando se detecta la restricción legacy.
+    """
+    conn.execute(
+        """
+        CREATE TABLE
+        config_grupo_requisito_documentos_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            grupo_id INTEGER NOT NULL,
+            documento_catalogo_id INTEGER NOT NULL,
+            rol_documental TEXT,
+            etiqueta_requisito TEXT,
+            descripcion_requisito TEXT,
+            orden INTEGER NOT NULL DEFAULT 0,
+            activo INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+            FOREIGN KEY (grupo_id)
+                REFERENCES config_grupos_requisitos_documentales(id)
+                ON DELETE CASCADE,
+
+            FOREIGN KEY (documento_catalogo_id)
+                REFERENCES config_documentos_catalogo(id),
+
+            CHECK (activo IN (0, 1))
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO config_grupo_requisito_documentos_new (
+            id,
+            grupo_id,
+            documento_catalogo_id,
+            rol_documental,
+            etiqueta_requisito,
+            descripcion_requisito,
+            orden,
+            activo,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            grupo_id,
+            documento_catalogo_id,
+            rol_documental,
+            etiqueta_requisito,
+            descripcion_requisito,
+            orden,
+            activo,
+            created_at,
+            updated_at
+        FROM config_grupo_requisito_documentos
+        """
+    )
+
+    conn.execute(
+        """
+        DROP TABLE config_grupo_requisito_documentos
+        """
+    )
+
+    conn.execute(
+        """
+        ALTER TABLE
+        config_grupo_requisito_documentos_new
+        RENAME TO config_grupo_requisito_documentos
+        """
+    )
+
+
+def _ensure_option_indexes(conn):
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS
+        idx_grupo_requisito_documento_rol_unique
+        ON config_grupo_requisito_documentos (
+            grupo_id,
+            documento_catalogo_id,
+            COALESCE(rol_documental, '')
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_grupo_requisito_documentos_grupo
+        ON config_grupo_requisito_documentos (
+            grupo_id,
+            activo,
+            orden
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_grupo_requisito_documentos_catalogo
+        ON config_grupo_requisito_documentos (
+            documento_catalogo_id
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_grupo_requisito_documentos_rol
+        ON config_grupo_requisito_documentos (
+            grupo_id,
+            rol_documental,
+            activo
+        )
+        """
     )
 
 
@@ -112,17 +288,10 @@ def _ensure_option_context_schema(conn):
                 """
             )
 
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS
-        idx_grupo_requisito_documentos_rol
-        ON config_grupo_requisito_documentos (
-            grupo_id,
-            rol_documental,
-            activo
-        )
-        """
-    )
+    if _option_table_requires_role_rebuild(conn):
+        _rebuild_option_table_for_role_uniqueness(conn)
+
+    _ensure_option_indexes(conn)
 
 
 def initialize_document_requirement_group_schema():
@@ -132,9 +301,37 @@ def initialize_document_requirement_group_schema():
         )
 
     with _connection() as conn:
+        option_table = (
+            "config_grupo_requisito_documentos"
+        )
+
+        # Una base antigua puede tener la tabla, pero no las
+        # columnas de contexto. Deben añadirse antes de ejecutar
+        # el esquema, porque este crea índices que las utilizan.
+        if _table_exists(conn, option_table):
+            columns = {
+                "rol_documental": "TEXT",
+                "etiqueta_requisito": "TEXT",
+                "descripcion_requisito": "TEXT",
+            }
+
+            for column, definition in columns.items():
+                if not _column_exists(
+                    conn,
+                    option_table,
+                    column,
+                ):
+                    conn.execute(
+                        f"""
+                        ALTER TABLE {option_table}
+                        ADD COLUMN {column} {definition}
+                        """
+                    )
+
         conn.executescript(
             SCHEMA_PATH.read_text(encoding="utf-8")
         )
+
         _ensure_option_context_schema(conn)
 
 

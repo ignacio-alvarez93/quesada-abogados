@@ -135,8 +135,16 @@ CREATE TABLE IF NOT EXISTS config_grupo_requisito_documentos (
     FOREIGN KEY (documento_catalogo_id)
         REFERENCES config_documentos_catalogo(id),
 
-    UNIQUE (grupo_id, documento_catalogo_id),
     CHECK (activo IN (0, 1))
+);
+
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+idx_grupo_requisito_documento_rol_unique
+ON config_grupo_requisito_documentos (
+    grupo_id,
+    documento_catalogo_id,
+    COALESCE(rol_documental, '')
 );
 
 
