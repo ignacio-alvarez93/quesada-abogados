@@ -155,6 +155,113 @@ class DocumentSemanticScanServiceTest(
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_semantic_scan_events_are_disabled_by_default(self):
+        self.assertFalse(
+            scan_service
+            .semantic_scan_events_enabled({})
+        )
+
+    def test_semantic_scan_events_accept_enabled_values(self):
+        for value in [
+            "1",
+            "true",
+            "TRUE",
+            "yes",
+            "on",
+        ]:
+            with self.subTest(value=value):
+                self.assertTrue(
+                    scan_service
+                    .semantic_scan_events_enabled(
+                        {
+                            (
+                                "DOCUMENT_SEMANTIC_"
+                                "SCAN_EVENTS_ENABLED"
+                            ): value
+                        }
+                    )
+                )
+
+    def test_disabled_box_scan_run_does_nothing(self):
+        result = (
+            scan_service
+            .process_box_scan_run(
+                10,
+                environ={},
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertFalse(
+            result["enabled"]
+        )
+        self.assertEqual(
+            result["processed"],
+            0,
+        )
+
+        snapshot = repository.get_snapshot(
+            1,
+            db_path=self.db_path,
+        )
+
+        self.assertIsNone(snapshot)
+
+    def test_enabled_box_scan_run_processes_affected_expedients(self):
+        conn = sqlite3.connect(
+            self.db_path
+        )
+        conn.execute(
+            """
+            INSERT INTO box_watch_items (
+                id,
+                expediente_id,
+                last_seen_scan_id
+            )
+            VALUES (?, ?, ?)
+            """,
+            (1, 1, 10),
+        )
+        conn.commit()
+        conn.close()
+
+        result = (
+            scan_service
+            .process_box_scan_run(
+                10,
+                diagnosis_provider=(
+                    lambda expediente_id:
+                    diagnosis(expediente_id)
+                ),
+                environ={
+                    (
+                        "DOCUMENT_SEMANTIC_"
+                        "SCAN_EVENTS_ENABLED"
+                    ): "1"
+                },
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertTrue(
+            result["enabled"]
+        )
+        self.assertEqual(
+            result["affected_expedients"],
+            1,
+        )
+        self.assertEqual(
+            result["processed"],
+            1,
+        )
+
+        snapshot = repository.get_snapshot(
+            1,
+            db_path=self.db_path,
+        )
+
+        self.assertIsNotNone(snapshot)
+
     def test_affected_ids_are_loaded_from_items_and_folders(self):
         conn = sqlite3.connect(
             self.db_path

@@ -274,3 +274,87 @@ def process_scanned_expedients(
     finally:
         if owns_connection:
             connection.close()
+
+
+def semantic_scan_events_enabled(environ=None):
+    """
+    Indica si está habilitada la integración automática
+    posterior a escaneos Box.
+
+    Por defecto permanece desactivada.
+    """
+    import os
+
+    source = environ if environ is not None else os.environ
+
+    value = str(
+        source.get(
+            "DOCUMENT_SEMANTIC_SCAN_EVENTS_ENABLED",
+            "",
+        )
+        or ""
+    ).strip().lower()
+
+    return value in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def process_box_scan_run(
+    scan_run_id,
+    *,
+    source_scan_job_id=None,
+    diagnosis_provider=None,
+    create_initial_events=False,
+    conn=None,
+    db_path=None,
+    environ=None,
+):
+    """
+    Punto de entrada seguro para Box Watch.
+
+    Si la integración está desactivada, no realiza ninguna
+    escritura ni diagnóstico.
+    """
+    if not semantic_scan_events_enabled(
+        environ
+    ):
+        return {
+            "enabled": False,
+            "scan_run_id": scan_run_id,
+            "affected_expedients": 0,
+            "processed": 0,
+            "changed": 0,
+            "events_created": 0,
+            "events_skipped": 0,
+            "errors": 0,
+            "results": [],
+        }
+
+    affected_ids = get_affected_expedient_ids(
+        scan_run_id,
+        conn=conn,
+        db_path=db_path,
+    )
+
+    result = process_scanned_expedients(
+        affected_ids,
+        source_scan_run_id=scan_run_id,
+        source_scan_job_id=source_scan_job_id,
+        diagnosis_provider=diagnosis_provider,
+        create_initial_events=create_initial_events,
+        conn=conn,
+        db_path=db_path,
+    )
+
+    return {
+        "enabled": True,
+        "scan_run_id": scan_run_id,
+        "affected_expedients": len(
+            affected_ids
+        ),
+        **result,
+    }
