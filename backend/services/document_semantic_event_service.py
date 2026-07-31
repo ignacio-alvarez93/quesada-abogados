@@ -286,4 +286,3 @@ def process_diagnosis(
         raise
     finally:
         connection.close()
-
