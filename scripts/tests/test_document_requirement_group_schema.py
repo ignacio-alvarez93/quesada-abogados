@@ -498,6 +498,131 @@ class DocumentRequirementGroupSchemaTest(unittest.TestCase):
                 }
             )
 
+    def test_same_document_can_have_different_roles(self):
+        passport_id = requirement_service.create_document_catalog(
+            {
+                "codigo": "PASAPORTE",
+                "nombre": "Pasaporte",
+            }
+        )
+
+        group_id = requirement_service.create_requirement_group(
+            {
+                "tipo_expediente_id": 10,
+                "subtipo_expediente_id": 100,
+                "codigo": "IDENTIDAD",
+                "nombre": "Identidad",
+                "regla_cumplimiento": "ALL",
+            }
+        )
+
+        requirement_service.add_document_to_group(
+            group_id,
+            passport_id,
+            rol_documental="reagrupante",
+            etiqueta_requisito="Pasaporte del reagrupante",
+        )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            requirement_service.add_document_to_group(
+                group_id,
+                passport_id,
+                rol_documental="reagrupado",
+                etiqueta_requisito="Pasaporte del reagrupado",
+            )
+
+    def test_option_context_is_stored_and_updated(self):
+        passport_id = requirement_service.create_document_catalog(
+            {
+                "codigo": "PASAPORTE",
+                "nombre": "Pasaporte",
+            }
+        )
+
+        group_id = requirement_service.create_requirement_group(
+            {
+                "tipo_expediente_id": 10,
+                "subtipo_expediente_id": 100,
+                "codigo": "IDENTIDAD",
+                "nombre": "Identidad",
+                "regla_cumplimiento": "ALL",
+            }
+        )
+
+        option_id = requirement_service.add_document_to_group(
+            group_id,
+            passport_id,
+            rol_documental="reagrupante",
+            etiqueta_requisito="Pasaporte del reagrupante",
+            descripcion_requisito=(
+                "Documento completo y en vigor"
+            ),
+            orden=10,
+        )
+
+        options = (
+            requirement_service
+            .list_group_document_options(group_id)
+        )
+
+        self.assertEqual(len(options), 1)
+        self.assertEqual(
+            options[0]["rol_documental"],
+            "REAGRUPANTE",
+        )
+        self.assertEqual(
+            options[0]["etiqueta_requisito"],
+            "Pasaporte del reagrupante",
+        )
+
+        requirement_service.update_group_document_option(
+            option_id,
+            rol_documental="reagrupado",
+            etiqueta_requisito="Pasaporte del reagrupado",
+            descripcion_requisito="Copia completa",
+            orden=20,
+            activo=1,
+        )
+
+        updated = (
+            requirement_service
+            .list_group_document_options(group_id)
+        )[0]
+
+        self.assertEqual(
+            updated["rol_documental"],
+            "REAGRUPADO",
+        )
+        self.assertEqual(
+            updated["etiqueta_requisito"],
+            "Pasaporte del reagrupado",
+        )
+        self.assertEqual(
+            updated["descripcion_requisito"],
+            "Copia completa",
+        )
+        self.assertEqual(updated["orden"], 20)
+
+    def test_context_schema_upgrade_is_idempotent(self):
+        requirement_service.initialize_document_requirement_group_schema()
+        requirement_service.initialize_document_requirement_group_schema()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            columns = {
+                row[1]
+                for row in conn.execute(
+                    """
+                    PRAGMA table_info(
+                        config_grupo_requisito_documentos
+                    )
+                    """
+                ).fetchall()
+            }
+
+        self.assertIn("rol_documental", columns)
+        self.assertIn("etiqueta_requisito", columns)
+        self.assertIn("descripcion_requisito", columns)
+
     def test_duplicate_document_in_group_is_rejected(self):
         document_id = requirement_service.create_document_catalog(
             {

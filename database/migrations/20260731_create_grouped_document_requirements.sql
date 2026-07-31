@@ -120,6 +120,9 @@ CREATE TABLE IF NOT EXISTS config_grupo_requisito_documentos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     grupo_id INTEGER NOT NULL,
     documento_catalogo_id INTEGER NOT NULL,
+    rol_documental TEXT,
+    etiqueta_requisito TEXT,
+    descripcion_requisito TEXT,
     orden INTEGER NOT NULL DEFAULT 0,
     activo INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -150,4 +153,13 @@ CREATE INDEX IF NOT EXISTS
 idx_grupo_requisito_documentos_catalogo
 ON config_grupo_requisito_documentos (
     documento_catalogo_id
+);
+
+
+CREATE INDEX IF NOT EXISTS
+idx_grupo_requisito_documentos_rol
+ON config_grupo_requisito_documentos (
+    grupo_id,
+    rol_documental,
+    activo
 );

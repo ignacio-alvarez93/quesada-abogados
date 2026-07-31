@@ -84,6 +84,47 @@ def _normalize_name(value):
     return str(value or "").strip().upper()
 
 
+def _column_exists(conn, table_name, column_name):
+    rows = conn.execute(
+        f"PRAGMA table_info({table_name})"
+    ).fetchall()
+    return any(
+        row["name"] == column_name
+        for row in rows
+    )
+
+
+def _ensure_option_context_schema(conn):
+    table = "config_grupo_requisito_documentos"
+
+    columns = {
+        "rol_documental": "TEXT",
+        "etiqueta_requisito": "TEXT",
+        "descripcion_requisito": "TEXT",
+    }
+
+    for column, definition in columns.items():
+        if not _column_exists(conn, table, column):
+            conn.execute(
+                f"""
+                ALTER TABLE {table}
+                ADD COLUMN {column} {definition}
+                """
+            )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_grupo_requisito_documentos_rol
+        ON config_grupo_requisito_documentos (
+            grupo_id,
+            rol_documental,
+            activo
+        )
+        """
+    )
+
+
 def initialize_document_requirement_group_schema():
     if not SCHEMA_PATH.exists():
         raise FileNotFoundError(
@@ -94,6 +135,7 @@ def initialize_document_requirement_group_schema():
         conn.executescript(
             SCHEMA_PATH.read_text(encoding="utf-8")
         )
+        _ensure_option_context_schema(conn)
 
 
 def _validate_type_and_subtype(
@@ -316,6 +358,9 @@ def add_document_to_group(
     grupo_id,
     documento_catalogo_id,
     *,
+    rol_documental=None,
+    etiqueta_requisito=None,
+    descripcion_requisito=None,
     orden=0,
     activo=1,
 ):
@@ -360,14 +405,20 @@ def add_document_to_group(
             INSERT INTO config_grupo_requisito_documentos (
                 grupo_id,
                 documento_catalogo_id,
+                rol_documental,
+                etiqueta_requisito,
+                descripcion_requisito,
                 orden,
                 activo
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(grupo_id),
                 int(documento_catalogo_id),
+                _normalize_role(rol_documental),
+                str(etiqueta_requisito or "").strip() or None,
+                str(descripcion_requisito or "").strip() or None,
                 int(orden or 0),
                 _normalize_active(activo),
             ),
@@ -549,6 +600,10 @@ def validate_requirement_group_readiness(group_id):
             "valido": not errors,
             "errores": errors,
         }
+
+
+def _normalize_role(value):
+    return _normalize_code(value) or None
 
 
 def _normalize_active(value):
@@ -815,6 +870,9 @@ def delete_requirement_group(group_id):
 def update_group_document_option(
     option_id,
     *,
+    rol_documental=None,
+    etiqueta_requisito=None,
+    descripcion_requisito=None,
     orden=0,
     activo=1,
 ):
@@ -840,12 +898,18 @@ def update_group_document_option(
             """
             UPDATE config_grupo_requisito_documentos
             SET
+                rol_documental = ?,
+                etiqueta_requisito = ?,
+                descripcion_requisito = ?,
                 orden = ?,
                 activo = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
             (
+                _normalize_role(rol_documental),
+                str(etiqueta_requisito or "").strip() or None,
+                str(descripcion_requisito or "").strip() or None,
                 int(orden or 0),
                 active,
                 option_id,
