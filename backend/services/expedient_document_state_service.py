@@ -29,6 +29,9 @@ from datetime import datetime
 from backend.services import (
     document_requirement_readiness_service as semantic_readiness_service,
 )
+from backend.services import (
+    document_role_inference_service as role_inference_service,
+)
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
@@ -881,23 +884,43 @@ def _confidence(base, required_docs, faltantes, signals):
 
 def _build_semantic_detections(detected_documents):
     """
-    Convierte las detecciones actuales del diagnóstico en entradas
-    estructuradas para el evaluador semántico.
+    Convierte las detecciones actuales en entradas estructuradas
+    para el evaluador semántico.
 
-    No infiere roles. Si la detección no contiene rol_documental,
-    el evaluador podrá marcarla como ambigua.
+    El rol se obtiene de forma conservadora:
+    - rol explícito de la nomenclatura;
+    - nombre del archivo;
+    - ruta;
+    - patrón de nomenclatura.
+
+    Las inferencias ambiguas no asignan rol.
     """
     normalized = []
     seen = set()
 
     for detection in detected_documents or []:
         code = _norm(detection.get("codigo"))
+
         if not code:
             continue
 
-        role = _norm(
-            detection.get("rol_documental")
-        ) or None
+        inference = (
+            role_inference_service
+            .infer_document_role(
+                explicit_role=detection.get(
+                    "rol_documental"
+                ),
+                filename=detection.get("archivo"),
+                path=detection.get("ruta"),
+                nomenclature_pattern=detection.get(
+                    "patron"
+                ),
+            )
+        )
+
+        role = inference.get(
+            "rol_documental"
+        )
 
         origin = (
             detection.get("origen")
@@ -911,6 +934,17 @@ def _build_semantic_detections(detected_documents):
         structured = {
             "codigo": code,
             "rol_documental": role,
+            "estado_inferencia_rol": inference.get(
+                "estado"
+            ),
+            "evidencias_rol": inference.get(
+                "evidencias",
+                [],
+            ),
+            "roles_candidatos": inference.get(
+                "roles_candidatos",
+                [],
+            ),
             "archivo": detection.get("archivo"),
             "ruta": detection.get("ruta"),
             "origen": origin,
@@ -924,6 +958,20 @@ def _build_semantic_detections(detected_documents):
         if detection.get("estado"):
             structured["estado"] = detection.get(
                 "estado"
+            )
+
+        if detection.get("nomenclatura_id"):
+            structured["nomenclatura_id"] = (
+                detection.get("nomenclatura_id")
+            )
+
+        if detection.get(
+            "fuente_nomenclatura"
+        ):
+            structured["fuente_nomenclatura"] = (
+                detection.get(
+                    "fuente_nomenclatura"
+                )
             )
 
         identity = (
@@ -941,6 +989,71 @@ def _build_semantic_detections(detected_documents):
         normalized.append(structured)
 
     return normalized
+
+
+
+def _summarize_role_inferences(detections):
+    """
+    Resume los resultados de inferencia de rol sin afectar
+    al estado legacy del expediente.
+    """
+    summary = {
+        "total_detecciones": len(detections or []),
+        "roles_explicitos": 0,
+        "roles_inferidos": 0,
+        "sin_evidencia": 0,
+        "ambiguos": 0,
+        "con_rol": 0,
+        "sin_rol": 0,
+        "por_rol": {},
+        "detecciones_ambiguas": [],
+    }
+
+    for detection in detections or []:
+        status = (
+            detection.get("estado_inferencia_rol")
+            or "SIN_EVIDENCIA"
+        )
+        role = detection.get("rol_documental")
+
+        if status == "EXPLICITO":
+            summary["roles_explicitos"] += 1
+        elif status == "INFERIDO":
+            summary["roles_inferidos"] += 1
+        elif status == "AMBIGUO":
+            summary["ambiguos"] += 1
+            summary["detecciones_ambiguas"].append(
+                {
+                    "codigo": detection.get("codigo"),
+                    "archivo": detection.get("archivo"),
+                    "ruta": detection.get("ruta"),
+                    "roles_candidatos": detection.get(
+                        "roles_candidatos",
+                        [],
+                    ),
+                    "evidencias_rol": detection.get(
+                        "evidencias_rol",
+                        [],
+                    ),
+                }
+            )
+        else:
+            summary["sin_evidencia"] += 1
+
+        if role:
+            summary["con_rol"] += 1
+            summary["por_rol"][role] = (
+                summary["por_rol"].get(role, 0)
+                + 1
+            )
+        else:
+            summary["sin_rol"] += 1
+
+    summary["por_rol"] = dict(
+        sorted(summary["por_rol"].items())
+    )
+
+    return summary
 
 
 def _evaluate_semantic_readiness_safe(
@@ -1019,6 +1132,9 @@ def diagnose_expediente_document_state(expediente_id):
                 "detectados": [],
                 "faltantes": [],
                 "semantic_readiness": semantic_result,
+                "resumen_inferencia_roles": (
+                    _summarize_role_inferences([])
+                ),
                 "senales": ["El expediente no tiene ruta Box vinculada"],
                 "resumen": {
                     "total_archivos": 0,
@@ -1047,6 +1163,11 @@ def diagnose_expediente_document_state(expediente_id):
     semantic_result = _evaluate_semantic_readiness_safe(
         expediente,
         semantic_detections,
+    )
+    role_inference_summary = (
+        _summarize_role_inferences(
+            semantic_detections
+        )
     )
 
     folder_codes, detected_folders = _folder_codes_from_folders(folders)
@@ -1119,6 +1240,9 @@ def diagnose_expediente_document_state(expediente_id):
         "detectados": detectados,
         "nomenclaturas_usadas": len(nomenclatures),
         "semantic_readiness": semantic_result,
+        "resumen_inferencia_roles": (
+            role_inference_summary
+        ),
         "faltantes": faltantes,
         "senales": senales,
         "resumen": {

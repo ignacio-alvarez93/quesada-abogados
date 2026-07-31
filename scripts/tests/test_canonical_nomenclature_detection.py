@@ -466,5 +466,64 @@ class CanonicalNomenclatureDetectionTest(
         )
 
 
+    def test_inferred_role_can_complete_semantic_group(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                UPDATE config_nomenclaturas_catalogo
+                SET
+                    rol_documental = NULL,
+                    patron_nombre = 'PASAPORTE'
+                WHERE id = 60
+                """
+            )
+            conn.commit()
+
+        result = (
+            doc_state
+            .diagnose_expediente_document_state(100)
+        )
+
+        semantic = result["semantic_readiness"]
+        summary = result[
+            "resumen_inferencia_roles"
+        ]
+
+        self.assertTrue(semantic["disponible"])
+        self.assertTrue(semantic["completo"])
+        self.assertEqual(
+            semantic["grupos_bloqueantes"],
+            0,
+        )
+
+        self.assertEqual(
+            summary["roles_inferidos"],
+            1,
+        )
+        self.assertEqual(
+            summary["roles_explicitos"],
+            0,
+        )
+        self.assertEqual(
+            summary["por_rol"],
+            {
+                "REAGRUPANTE": 1,
+            },
+        )
+
+        detection = semantic["detecciones"][0]
+
+        self.assertEqual(
+            detection["rol_documental"],
+            "REAGRUPANTE",
+        )
+        self.assertEqual(
+            detection[
+                "estado_inferencia_rol"
+            ],
+            "INFERIDO",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
