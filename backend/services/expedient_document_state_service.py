@@ -35,6 +35,9 @@ from backend.services import (
 from backend.services import (
     document_semantic_state_service as semantic_state_service,
 )
+from backend.services import (
+    document_state_engine_policy_service as engine_policy_service,
+)
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
@@ -65,6 +68,60 @@ def _norm(value):
 
 def _norm_path(value):
     return str(value or "").replace("\\", "/").rstrip("/")
+
+
+def _get_expedient_scope_codes(
+    conn,
+    expediente,
+):
+    """
+    Obtiene los códigos canónicos del tipo y subtipo.
+
+    Es una operación de solo lectura.
+    """
+    tipo_id = expediente.get(
+        "tipo_expediente_id"
+    )
+    subtipo_id = expediente.get(
+        "subtipo_expediente_id"
+    )
+
+    tipo_codigo = None
+    subtipo_codigo = None
+
+    if tipo_id:
+        row = conn.execute(
+            """
+            SELECT codigo
+            FROM config_tipos_expediente
+            WHERE id = ?
+            """,
+            (tipo_id,),
+        ).fetchone()
+
+        if row:
+            tipo_codigo = row["codigo"]
+
+    if subtipo_id:
+        row = conn.execute(
+            """
+            SELECT codigo
+            FROM config_subtipos_expediente
+            WHERE id = ?
+            """,
+            (subtipo_id,),
+        ).fetchone()
+
+        if row:
+            subtipo_codigo = row["codigo"]
+
+    return {
+        "tipo_codigo": _norm(tipo_codigo),
+        "subtipo_codigo": (
+            _norm(subtipo_codigo)
+            or "GENERAL"
+        ),
+    }
 
 
 def _table_exists(conn, table_name):
@@ -1117,6 +1174,11 @@ def diagnose_expediente_document_state(expediente_id):
         if not expediente:
             raise ValueError("Expediente no encontrado")
 
+        scope_codes = _get_expedient_scope_codes(
+            conn,
+            expediente,
+        )
+
         root = expediente.get("box_folder_path")
         if not root:
             semantic_result = (
@@ -1142,6 +1204,26 @@ def diagnose_expediente_document_state(expediente_id):
                     semantic_result
                 )
             )
+            politica_motor_estado = (
+                engine_policy_service
+                .select_document_state_engine(
+                    mode=(
+                        engine_policy_service
+                        .get_configured_mode()
+                    ),
+                    legacy_state=(
+                        ESTADO_SIN_DIAGNOSTICO
+                    ),
+                    tipo_codigo=scope_codes.get(
+                        "tipo_codigo"
+                    ),
+                    subtipo_codigo=scope_codes.get(
+                        "subtipo_codigo"
+                    ),
+                    semantic_readiness=semantic_result,
+                    semantic_decision=decision_semantica,
+                )
+            )
             comparacion_motores = (
                 semantic_state_service
                 .compare_document_states(
@@ -1151,8 +1233,23 @@ def diagnose_expediente_document_state(expediente_id):
             )
 
             return {
-                "estado_sugerido": ESTADO_SIN_DIAGNOSTICO,
-                "motor_estado_activo": "LEGACY",
+                "estado_sugerido": (
+                    politica_motor_estado[
+                        "estado_seleccionado"
+                    ]
+                ),
+                "estado_sugerido_legacy": (
+                    ESTADO_SIN_DIAGNOSTICO
+                ),
+                "motor_estado_activo": (
+                    politica_motor_estado[
+                        "motor_activo"
+                    ]
+                ),
+                "politica_motor_estado": (
+                    politica_motor_estado
+                ),
+                "ambito_documental": scope_codes,
                 "estado_documental_semantico": (
                     estado_documental_semantico
                 ),
@@ -1284,6 +1381,30 @@ def diagnose_expediente_document_state(expediente_id):
         base_conf = 0.20
         senales.append("No hay archivos inventariados bajo la ruta Box vinculada")
 
+    politica_motor_estado = (
+        engine_policy_service
+        .select_document_state_engine(
+            mode=(
+                engine_policy_service
+                .get_configured_mode()
+            ),
+            legacy_state=estado,
+            tipo_codigo=scope_codes.get(
+                "tipo_codigo"
+            ),
+            subtipo_codigo=scope_codes.get(
+                "subtipo_codigo"
+            ),
+            semantic_readiness=semantic_result,
+            semantic_decision=decision_semantica,
+        )
+    )
+    estado_seleccionado = (
+        politica_motor_estado[
+            "estado_seleccionado"
+        ]
+    )
+
     comparacion_motores = (
         semantic_state_service
         .compare_document_states(
@@ -1301,8 +1422,17 @@ def diagnose_expediente_document_state(expediente_id):
     }
 
     return {
-        "estado_sugerido": estado,
-        "motor_estado_activo": "LEGACY",
+        "estado_sugerido": estado_seleccionado,
+        "estado_sugerido_legacy": estado,
+        "motor_estado_activo": (
+            politica_motor_estado[
+                "motor_activo"
+            ]
+        ),
+        "politica_motor_estado": (
+            politica_motor_estado
+        ),
+        "ambito_documental": scope_codes,
         "estado_documental_semantico": (
             estado_documental_semantico
         ),
