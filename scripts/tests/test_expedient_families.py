@@ -96,6 +96,40 @@ class ExpedientFamiliesTest(unittest.TestCase):
         self.assertEqual(assigned["NACIONALIDAD"], "NACIONALIDAD")
         self.assertEqual(assigned["FUTURO_VISADO"], "OTROS")
 
+    def test_read_does_not_modify_family_timestamps(self):
+        expedient_family_service.initialize_expedient_families()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                UPDATE config_familias_expediente
+                SET updated_at = '2026-01-01 00:00:00'
+                """
+            )
+            conn.commit()
+
+        families = expedient_family_service.get_expedient_families(
+            active_only=True
+        )
+
+        self.assertEqual(len(families), 7)
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            timestamps = {
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT updated_at
+                    FROM config_familias_expediente
+                    """
+                ).fetchall()
+            }
+
+        self.assertEqual(
+            timestamps,
+            {"2026-01-01 00:00:00"},
+        )
+
     def test_initialization_is_idempotent(self):
         expedient_family_service.initialize_expedient_families()
         expedient_family_service.initialize_expedient_families()

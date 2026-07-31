@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.services.sqlite_runtime_service import configure_sqlite_runtime  # noqa: E402
 from backend.services import box_watch_job_service, box_watch_service  # noqa: E402
+from backend.services import document_semantic_scan_service  # noqa: E402
 
 
 def _progress_adapter(job_id, totals):
@@ -120,7 +121,42 @@ def run_job(job_id):
         )
         totals["total_errores"] = total_errores
 
-        box_watch_job_service.finish_job(job_id, results)
+        try:
+            semantic_summary = (
+                document_semantic_scan_service
+                .process_box_scan_results(
+                    results,
+                    source_scan_job_id=job_id,
+                )
+            )
+        except Exception as semantic_exc:
+            semantic_summary = {
+                "enabled": True,
+                "source_scan_job_id": job_id,
+                "scan_runs_detected": 0,
+                "scan_runs_processed": 0,
+                "affected_expedients": 0,
+                "processed": 0,
+                "changed": 0,
+                "unchanged": 0,
+                "events_created": 0,
+                "events_skipped": 0,
+                "errors": 1,
+                "runner_error": str(
+                    semantic_exc
+                ),
+                "run_results": [],
+            }
+
+        if results:
+            results[0][
+                "semantic_processing"
+            ] = semantic_summary
+
+        box_watch_job_service.finish_job(
+            job_id,
+            results,
+        )
         print(f"OK job #{job_id}: {len(results)} ruta(s), errores={total_errores}")
         return 0
 

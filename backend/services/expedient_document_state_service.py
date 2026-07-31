@@ -22,8 +22,22 @@ Uso:
 """
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from datetime import datetime
+
+from backend.services import (
+    document_requirement_readiness_service as semantic_readiness_service,
+)
+from backend.services import (
+    document_role_inference_service as role_inference_service,
+)
+from backend.services import (
+    document_semantic_state_service as semantic_state_service,
+)
+from backend.services import (
+    document_state_engine_policy_service as engine_policy_service,
+)
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
@@ -54,6 +68,60 @@ def _norm(value):
 
 def _norm_path(value):
     return str(value or "").replace("\\", "/").rstrip("/")
+
+
+def _get_expedient_scope_codes(
+    conn,
+    expediente,
+):
+    """
+    Obtiene los códigos canónicos del tipo y subtipo.
+
+    Es una operación de solo lectura.
+    """
+    tipo_id = expediente.get(
+        "tipo_expediente_id"
+    )
+    subtipo_id = expediente.get(
+        "subtipo_expediente_id"
+    )
+
+    tipo_codigo = None
+    subtipo_codigo = None
+
+    if tipo_id:
+        row = conn.execute(
+            """
+            SELECT codigo
+            FROM config_tipos_expediente
+            WHERE id = ?
+            """,
+            (tipo_id,),
+        ).fetchone()
+
+        if row:
+            tipo_codigo = row["codigo"]
+
+    if subtipo_id:
+        row = conn.execute(
+            """
+            SELECT codigo
+            FROM config_subtipos_expediente
+            WHERE id = ?
+            """,
+            (subtipo_id,),
+        ).fetchone()
+
+        if row:
+            subtipo_codigo = row["codigo"]
+
+    return {
+        "tipo_codigo": _norm(tipo_codigo),
+        "subtipo_codigo": (
+            _norm(subtipo_codigo)
+            or "GENERAL"
+        ),
+    }
 
 
 def _table_exists(conn, table_name):
@@ -195,15 +263,18 @@ def _get_required_documents(conn, expediente):
 
 
 
-def _get_nomenclatures(conn, expediente):
+def _get_legacy_nomenclatures(
+    conn,
+    expediente,
+):
     """
-    Patrones configurados para documentos requeridos.
-
-    Se usan como segunda capa de detección:
-    - si tipo_detectado no coincide;
-    - pero el nombre del archivo sí cumple una nomenclatura configurada.
+    Carga nomenclaturas legacy todavía no sustituidas por una
+    nomenclatura canónica vinculada mediante origen_legacy_id.
     """
-    if not _table_exists(conn, "config_nomenclaturas_documentales"):
+    if not _table_exists(
+        conn,
+        "config_nomenclaturas_documentales",
+    ):
         return []
 
     tipo_id = expediente.get("tipo_expediente_id")
@@ -212,40 +283,165 @@ def _get_nomenclatures(conn, expediente):
     if not tipo_id:
         return []
 
-    has_subtipo_col = _column_exists(conn, "config_nomenclaturas_documentales", "subtipo_expediente_id")
+    migrated_legacy_ids = set()
+
+    if _table_exists(
+        conn,
+        "config_nomenclaturas_catalogo",
+    ):
+        migrated_legacy_ids = {
+            int(row["origen_legacy_id"])
+            for row in conn.execute(
+                """
+                SELECT origen_legacy_id
+                FROM config_nomenclaturas_catalogo
+                WHERE origen_legacy_id IS NOT NULL
+                  AND COALESCE(activo, 1) = 1
+                """
+            ).fetchall()
+        }
+
+    has_subtipo_col = _column_exists(
+        conn,
+        "config_nomenclaturas_documentales",
+        "subtipo_expediente_id",
+    )
 
     if has_subtipo_col:
         sql = """
             SELECT
                 n.*,
                 d.codigo_documento,
-                d.nombre_documento
+                d.nombre_documento,
+                NULL AS rol_documental,
+                'LEGACY' AS fuente_nomenclatura,
+                1000 AS prioridad
             FROM config_nomenclaturas_documentales n
-            JOIN config_documentos_requeridos d ON d.id = n.documento_id
+            JOIN config_documentos_requeridos d
+              ON d.id = n.documento_id
             WHERE n.tipo_expediente_id = ?
               AND COALESCE(n.activo, 1) = 1
               AND COALESCE(d.activo, 1) = 1
               AND (
                     n.subtipo_expediente_id IS NULL
                     OR n.subtipo_expediente_id = ?
-                  )
+              )
+            ORDER BY n.id
         """
-        params = (int(tipo_id), int(subtipo_id) if subtipo_id else -1)
+        params = (
+            int(tipo_id),
+            int(subtipo_id) if subtipo_id else -1,
+        )
     else:
         sql = """
             SELECT
                 n.*,
                 d.codigo_documento,
-                d.nombre_documento
+                d.nombre_documento,
+                NULL AS rol_documental,
+                'LEGACY' AS fuente_nomenclatura,
+                1000 AS prioridad
             FROM config_nomenclaturas_documentales n
-            JOIN config_documentos_requeridos d ON d.id = n.documento_id
+            JOIN config_documentos_requeridos d
+              ON d.id = n.documento_id
             WHERE n.tipo_expediente_id = ?
               AND COALESCE(n.activo, 1) = 1
               AND COALESCE(d.activo, 1) = 1
+            ORDER BY n.id
         """
         params = (int(tipo_id),)
 
-    return [_dict(r) for r in conn.execute(sql, params).fetchall()]
+    rows = []
+
+    for row in conn.execute(sql, params).fetchall():
+        data = _dict(row)
+
+        if int(data["id"]) in migrated_legacy_ids:
+            continue
+
+        rows.append(data)
+
+    return rows
+
+
+def _get_canonical_nomenclatures(
+    conn,
+    expediente,
+):
+    """
+    Carga nomenclaturas vinculadas al catálogo documental canónico.
+    """
+    if not _table_exists(
+        conn,
+        "config_nomenclaturas_catalogo",
+    ):
+        return []
+
+    tipo_id = expediente.get("tipo_expediente_id")
+    subtipo_id = expediente.get("subtipo_expediente_id")
+
+    if not tipo_id:
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT
+            n.id,
+            n.tipo_expediente_id,
+            n.subtipo_expediente_id,
+            n.documento_catalogo_id,
+            n.rol_documental,
+            n.patron_nombre,
+            n.extension_permitida,
+            n.prioridad,
+            n.activo,
+            n.origen_legacy_id,
+            d.codigo AS codigo_documento,
+            d.nombre AS nombre_documento,
+            'CANONICAL' AS fuente_nomenclatura
+        FROM config_nomenclaturas_catalogo n
+        JOIN config_documentos_catalogo d
+          ON d.id = n.documento_catalogo_id
+        WHERE n.tipo_expediente_id = ?
+          AND COALESCE(n.activo, 1) = 1
+          AND COALESCE(d.activo, 1) = 1
+          AND (
+                n.subtipo_expediente_id IS NULL
+                OR n.subtipo_expediente_id = ?
+          )
+        ORDER BY
+            COALESCE(n.prioridad, 100),
+            n.id
+        """,
+        (
+            int(tipo_id),
+            int(subtipo_id) if subtipo_id else -1,
+        ),
+    ).fetchall()
+
+    return [_dict(row) for row in rows]
+
+
+def _get_nomenclatures(conn, expediente):
+    """
+    Devuelve nomenclaturas canónicas y legacy de respaldo.
+
+    Prioridad:
+    - primero nomenclaturas canónicas;
+    - después nomenclaturas legacy que todavía no tengan migración
+      canónica activa.
+    """
+    canonical = _get_canonical_nomenclatures(
+        conn,
+        expediente,
+    )
+    legacy = _get_legacy_nomenclatures(
+        conn,
+        expediente,
+    )
+
+    return canonical + legacy
+
 
 
 def _norm_filename(value):
@@ -311,13 +507,33 @@ def _doc_codes_from_nomenclatures(items, nomenclatures):
                     continue
 
                 codes.add(code)
+                source = _norm(
+                    rule.get("fuente_nomenclatura")
+                )
+
                 detected.append(
                     {
                         "codigo": code,
+                        "rol_documental": (
+                            _norm(
+                                rule.get(
+                                    "rol_documental"
+                                )
+                            )
+                            or None
+                        ),
                         "archivo": filename,
                         "ruta": item.get("ruta"),
                         "patron": pattern,
-                        "origen": "nomenclatura_configurada",
+                        "nomenclatura_id": rule.get("id"),
+                        "fuente_nomenclatura": (
+                            source or "LEGACY"
+                        ),
+                        "origen": (
+                            "nomenclatura_canónica"
+                            if source == "CANONICAL"
+                            else "nomenclatura_legacy"
+                        ),
                     }
                 )
 
@@ -726,6 +942,217 @@ def _confidence(base, required_docs, faltantes, signals):
     return round(min(0.98, max(0.10, value)), 2)
 
 
+def _build_semantic_detections(detected_documents):
+    """
+    Convierte las detecciones actuales en entradas estructuradas
+    para el evaluador semántico.
+
+    El rol se obtiene de forma conservadora:
+    - rol explícito de la nomenclatura;
+    - nombre del archivo;
+    - ruta;
+    - patrón de nomenclatura.
+
+    Las inferencias ambiguas no asignan rol.
+    """
+    normalized = []
+    seen = set()
+
+    for detection in detected_documents or []:
+        code = _norm(detection.get("codigo"))
+
+        if not code:
+            continue
+
+        inference = (
+            role_inference_service
+            .infer_document_role(
+                explicit_role=detection.get(
+                    "rol_documental"
+                ),
+                filename=detection.get("archivo"),
+                path=detection.get("ruta"),
+                nomenclature_pattern=detection.get(
+                    "patron"
+                ),
+            )
+        )
+
+        role = inference.get(
+            "rol_documental"
+        )
+
+        origin = (
+            detection.get("origen")
+            or (
+                "nomenclatura_configurada"
+                if detection.get("patron")
+                else "box_classifier"
+            )
+        )
+
+        structured = {
+            "codigo": code,
+            "rol_documental": role,
+            "estado_inferencia_rol": inference.get(
+                "estado"
+            ),
+            "evidencias_rol": inference.get(
+                "evidencias",
+                [],
+            ),
+            "roles_candidatos": inference.get(
+                "roles_candidatos",
+                [],
+            ),
+            "archivo": detection.get("archivo"),
+            "ruta": detection.get("ruta"),
+            "origen": origin,
+        }
+
+        if detection.get("patron"):
+            structured["patron"] = detection.get(
+                "patron"
+            )
+
+        if detection.get("estado"):
+            structured["estado"] = detection.get(
+                "estado"
+            )
+
+        if detection.get("nomenclatura_id"):
+            structured["nomenclatura_id"] = (
+                detection.get("nomenclatura_id")
+            )
+
+        if detection.get(
+            "fuente_nomenclatura"
+        ):
+            structured["fuente_nomenclatura"] = (
+                detection.get(
+                    "fuente_nomenclatura"
+                )
+            )
+
+        identity = (
+            structured["codigo"],
+            structured["rol_documental"],
+            structured.get("archivo"),
+            structured.get("ruta"),
+            structured["origen"],
+        )
+
+        if identity in seen:
+            continue
+
+        seen.add(identity)
+        normalized.append(structured)
+
+    return normalized
+
+
+
+def _summarize_role_inferences(detections):
+    """
+    Resume los resultados de inferencia de rol sin afectar
+    al estado legacy del expediente.
+    """
+    summary = {
+        "total_detecciones": len(detections or []),
+        "roles_explicitos": 0,
+        "roles_inferidos": 0,
+        "sin_evidencia": 0,
+        "ambiguos": 0,
+        "con_rol": 0,
+        "sin_rol": 0,
+        "por_rol": {},
+        "detecciones_ambiguas": [],
+    }
+
+    for detection in detections or []:
+        status = (
+            detection.get("estado_inferencia_rol")
+            or "SIN_EVIDENCIA"
+        )
+        role = detection.get("rol_documental")
+
+        if status == "EXPLICITO":
+            summary["roles_explicitos"] += 1
+        elif status == "INFERIDO":
+            summary["roles_inferidos"] += 1
+        elif status == "AMBIGUO":
+            summary["ambiguos"] += 1
+            summary["detecciones_ambiguas"].append(
+                {
+                    "codigo": detection.get("codigo"),
+                    "archivo": detection.get("archivo"),
+                    "ruta": detection.get("ruta"),
+                    "roles_candidatos": detection.get(
+                        "roles_candidatos",
+                        [],
+                    ),
+                    "evidencias_rol": detection.get(
+                        "evidencias_rol",
+                        [],
+                    ),
+                }
+            )
+        else:
+            summary["sin_evidencia"] += 1
+
+        if role:
+            summary["con_rol"] += 1
+            summary["por_rol"][role] = (
+                summary["por_rol"].get(role, 0)
+                + 1
+            )
+        else:
+            summary["sin_rol"] += 1
+
+    summary["por_rol"] = dict(
+        sorted(summary["por_rol"].items())
+    )
+
+    return summary
+
+
+def _evaluate_semantic_readiness_safe(
+    expediente,
+    detections,
+):
+    """
+    Ejecuta el motor semántico sin permitir que sus errores rompan
+    el diagnóstico documental legacy.
+    """
+    try:
+        result = (
+            semantic_readiness_service
+            .evaluate_semantic_requirement_readiness(
+                expediente.get("tipo_expediente_id"),
+                expediente.get("subtipo_expediente_id"),
+                detections,
+            )
+        )
+
+        return {
+            "disponible": True,
+            "modo": "PARALELO_NO_VINCULANTE",
+            **result,
+        }
+
+    except Exception as exc:
+        return {
+            "disponible": False,
+            "modo": "PARALELO_NO_VINCULANTE",
+            "completo": None,
+            "grupos": [],
+            "grupos_bloqueantes": None,
+            "opciones_ambiguas_por_rol": [],
+            "detecciones": detections,
+            "error": str(exc),
+        }
+
+
 def diagnose_expediente_document_state(expediente_id):
     """
     Diagnóstico principal.
@@ -742,21 +1169,105 @@ def diagnose_expediente_document_state(expediente_id):
         resumen
     }
     """
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         expediente = _get_expediente(conn, expediente_id)
         if not expediente:
             raise ValueError("Expediente no encontrado")
 
+        scope_codes = _get_expedient_scope_codes(
+            conn,
+            expediente,
+        )
+
         root = expediente.get("box_folder_path")
         if not root:
+            semantic_result = (
+                _evaluate_semantic_readiness_safe(
+                    expediente,
+                    [],
+                )
+            )
+
+            estado_documental_semantico = (
+                semantic_state_service
+                .semantic_document_completeness(
+                    semantic_result
+                )
+            )
+            estado_procesal_detectado = (
+                semantic_state_service
+                .process_state_from_signals()
+            )
+            decision_semantica = (
+                semantic_state_service
+                .semantic_document_state(
+                    semantic_result
+                )
+            )
+            politica_motor_estado = (
+                engine_policy_service
+                .select_document_state_engine(
+                    mode=(
+                        engine_policy_service
+                        .get_configured_mode()
+                    ),
+                    legacy_state=(
+                        ESTADO_SIN_DIAGNOSTICO
+                    ),
+                    tipo_codigo=scope_codes.get(
+                        "tipo_codigo"
+                    ),
+                    subtipo_codigo=scope_codes.get(
+                        "subtipo_codigo"
+                    ),
+                    semantic_readiness=semantic_result,
+                    semantic_decision=decision_semantica,
+                )
+            )
+            comparacion_motores = (
+                semantic_state_service
+                .compare_document_states(
+                    ESTADO_SIN_DIAGNOSTICO,
+                    decision_semantica,
+                )
+            )
+
             return {
-                "estado_sugerido": ESTADO_SIN_DIAGNOSTICO,
+                "estado_sugerido": (
+                    politica_motor_estado[
+                        "estado_seleccionado"
+                    ]
+                ),
+                "estado_sugerido_legacy": (
+                    ESTADO_SIN_DIAGNOSTICO
+                ),
+                "motor_estado_activo": (
+                    politica_motor_estado[
+                        "motor_activo"
+                    ]
+                ),
+                "politica_motor_estado": (
+                    politica_motor_estado
+                ),
+                "ambito_documental": scope_codes,
+                "estado_documental_semantico": (
+                    estado_documental_semantico
+                ),
+                "estado_procesal_detectado": (
+                    estado_procesal_detectado
+                ),
+                "decision_semantica": decision_semantica,
+                "comparacion_motores": comparacion_motores,
                 "confianza": 0.10,
                 "expediente_id": int(expediente_id),
                 "expediente": expediente,
                 "obligatorios": [],
                 "detectados": [],
                 "faltantes": [],
+                "semantic_readiness": semantic_result,
+                "resumen_inferencia_roles": (
+                    _summarize_role_inferences([])
+                ),
                 "senales": ["El expediente no tiene ruta Box vinculada"],
                 "resumen": {
                     "total_archivos": 0,
@@ -774,7 +1285,23 @@ def diagnose_expediente_document_state(expediente_id):
     doc_codes, detected_docs = _doc_codes_from_items(items)
     nomenclature_codes, detected_by_nomenclature = _doc_codes_from_nomenclatures(items, nomenclatures)
     doc_codes = set(doc_codes) | set(nomenclature_codes)
-    detected_docs = list(detected_docs or []) + list(detected_by_nomenclature or [])
+    detected_docs = (
+        list(detected_docs or [])
+        + list(detected_by_nomenclature or [])
+    )
+
+    semantic_detections = _build_semantic_detections(
+        detected_docs
+    )
+    semantic_result = _evaluate_semantic_readiness_safe(
+        expediente,
+        semantic_detections,
+    )
+    role_inference_summary = (
+        _summarize_role_inferences(
+            semantic_detections
+        )
+    )
 
     folder_codes, detected_folders = _folder_codes_from_folders(folders)
     encontrados, faltantes = _match_required_documents(required_docs, doc_codes, items=items)
@@ -794,6 +1321,32 @@ def diagnose_expediente_document_state(expediente_id):
         senales.append(motivo_req)
     if motivo_presentado:
         senales.append(motivo_presentado)
+
+    estado_documental_semantico = (
+        semantic_state_service
+        .semantic_document_completeness(
+            semantic_result
+        )
+    )
+    estado_procesal_detectado = (
+        semantic_state_service
+        .process_state_from_signals(
+            has_presentacion=hay_presentado,
+            has_requerimiento=hay_req,
+            has_concesion=hay_concedido,
+            has_denegacion=hay_denegado,
+        )
+    )
+    decision_semantica = (
+        semantic_state_service
+        .semantic_document_state(
+            semantic_result,
+            has_presentacion=hay_presentado,
+            has_requerimiento=hay_req,
+            has_concesion=hay_concedido,
+            has_denegacion=hay_denegado,
+        )
+    )
 
     if not required_docs:
         senales.append("No hay documentos obligatorios configurados para este tipo/subtipo")
@@ -828,6 +1381,38 @@ def diagnose_expediente_document_state(expediente_id):
         base_conf = 0.20
         senales.append("No hay archivos inventariados bajo la ruta Box vinculada")
 
+    politica_motor_estado = (
+        engine_policy_service
+        .select_document_state_engine(
+            mode=(
+                engine_policy_service
+                .get_configured_mode()
+            ),
+            legacy_state=estado,
+            tipo_codigo=scope_codes.get(
+                "tipo_codigo"
+            ),
+            subtipo_codigo=scope_codes.get(
+                "subtipo_codigo"
+            ),
+            semantic_readiness=semantic_result,
+            semantic_decision=decision_semantica,
+        )
+    )
+    estado_seleccionado = (
+        politica_motor_estado[
+            "estado_seleccionado"
+        ]
+    )
+
+    comparacion_motores = (
+        semantic_state_service
+        .compare_document_states(
+            estado,
+            decision_semantica,
+        )
+    )
+
     detectados = {
         "documentos": detected_docs,
         "carpetas": detected_folders,
@@ -837,7 +1422,25 @@ def diagnose_expediente_document_state(expediente_id):
     }
 
     return {
-        "estado_sugerido": estado,
+        "estado_sugerido": estado_seleccionado,
+        "estado_sugerido_legacy": estado,
+        "motor_estado_activo": (
+            politica_motor_estado[
+                "motor_activo"
+            ]
+        ),
+        "politica_motor_estado": (
+            politica_motor_estado
+        ),
+        "ambito_documental": scope_codes,
+        "estado_documental_semantico": (
+            estado_documental_semantico
+        ),
+        "estado_procesal_detectado": (
+            estado_procesal_detectado
+        ),
+        "decision_semantica": decision_semantica,
+        "comparacion_motores": comparacion_motores,
         "confianza": _confidence(base_conf, required_docs, faltantes, senales),
         "expediente_id": int(expediente_id),
         "expediente": expediente,
@@ -845,6 +1448,10 @@ def diagnose_expediente_document_state(expediente_id):
         "encontrados": encontrados,
         "detectados": detectados,
         "nomenclaturas_usadas": len(nomenclatures),
+        "semantic_readiness": semantic_result,
+        "resumen_inferencia_roles": (
+            role_inference_summary
+        ),
         "faltantes": faltantes,
         "senales": senales,
         "resumen": {
@@ -863,7 +1470,7 @@ def diagnose_many_expedientes(expediente_ids):
 
 
 def diagnose_all_active_expedientes(limit=200):
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = conn.execute(
             """
             SELECT id

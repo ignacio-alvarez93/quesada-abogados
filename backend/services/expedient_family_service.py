@@ -259,8 +259,6 @@ def initialize_expedient_families():
 
 
 def get_expedient_families(active_only=True):
-    initialize_expedient_families()
-
     sql = """
         SELECT *
         FROM config_familias_expediente
@@ -281,8 +279,6 @@ def get_expedient_families(active_only=True):
 
 
 def get_expedient_family(family_id):
-    initialize_expedient_families()
-
     with _connection() as conn:
         return _dict(
             conn.execute(
@@ -297,8 +293,6 @@ def get_expedient_family(family_id):
 
 
 def get_family_for_expedient_type(tipo_expediente_id):
-    initialize_expedient_families()
-
     with _connection() as conn:
         return _dict(
             conn.execute(

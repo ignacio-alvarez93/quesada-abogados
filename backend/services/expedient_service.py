@@ -271,6 +271,63 @@ def get_clientes_for_select():
     return result
 
 
+def _resolve_expedient_type_and_subtype(
+    conn,
+    tipo_expediente_id,
+    subtipo_expediente_id=None,
+):
+    tipo_id = _int_or_none(tipo_expediente_id)
+    subtipo_id = _int_or_none(subtipo_expediente_id)
+
+    if tipo_id is None:
+        raise ValueError("Selecciona un tipo de expediente")
+
+    tipo = conn.execute(
+        """
+        SELECT id, codigo, nombre, activo
+        FROM config_tipos_expediente
+        WHERE id = ?
+        """,
+        (int(tipo_id),),
+    ).fetchone()
+
+    if not tipo:
+        raise ValueError("El tipo de expediente seleccionado no existe")
+
+    if int(tipo["activo"] or 0) != 1:
+        raise ValueError("El tipo de expediente seleccionado está inactivo")
+
+    if subtipo_id is None:
+        return dict(tipo), None
+
+    subtipo = conn.execute(
+        """
+        SELECT
+            id,
+            tipo_expediente_id,
+            codigo,
+            nombre,
+            activo
+        FROM config_subtipos_expediente
+        WHERE id = ?
+        """,
+        (int(subtipo_id),),
+    ).fetchone()
+
+    if not subtipo:
+        raise ValueError("El subtipo de expediente seleccionado no existe")
+
+    if int(subtipo["activo"] or 0) != 1:
+        raise ValueError("El subtipo de expediente seleccionado está inactivo")
+
+    if int(subtipo["tipo_expediente_id"]) != int(tipo["id"]):
+        raise ValueError(
+            "El subtipo seleccionado no pertenece al tipo de expediente"
+        )
+
+    return dict(tipo), dict(subtipo)
+
+
 def _next_numero_expediente():
     year = date.today().year
     prefix = f"EXP-{year}-"
@@ -313,6 +370,18 @@ def create_expediente(data):
     )
 
     with _connect() as conn:
+        tipo, subtipo = _resolve_expedient_type_and_subtype(
+            conn,
+            data.get("tipo_expediente_id"),
+            data.get("subtipo_expediente_id"),
+        )
+
+        subtipo_legacy = (
+            _normalize_text(subtipo.get("nombre"))
+            if subtipo
+            else _normalize_text(data.get("subtipo_expediente"))
+        )
+
         cur = conn.execute(
             """
             INSERT INTO expedientes (
@@ -351,9 +420,9 @@ def create_expediente(data):
                 id_presentacion,
                 id_presentacion,
                 numero_extranjeria,
-                _int_or_none(data.get("tipo_expediente_id")),
-                _int_or_none(data.get("subtipo_expediente_id")),
-                _normalize_text(data.get("subtipo_expediente")),
+                int(tipo["id"]),
+                int(subtipo["id"]) if subtipo else None,
+                subtipo_legacy,
                 _int_or_none(data.get("estado_documental_id")),
                 _int_or_none(data.get("estado_administrativo_id")),
                 _normalize_text(data.get("estado_presentacion") or "NO PRESENTADO"),
@@ -386,6 +455,18 @@ def update_expediente(expediente_id, data):
     )
 
     with _connect() as conn:
+        tipo, subtipo = _resolve_expedient_type_and_subtype(
+            conn,
+            data.get("tipo_expediente_id"),
+            data.get("subtipo_expediente_id"),
+        )
+
+        subtipo_legacy = (
+            _normalize_text(subtipo.get("nombre"))
+            if subtipo
+            else _normalize_text(data.get("subtipo_expediente"))
+        )
+
         conn.execute(
             """
             UPDATE expedientes
@@ -421,9 +502,9 @@ def update_expediente(expediente_id, data):
                 id_presentacion,
                 id_presentacion,
                 numero_extranjeria,
-                _int_or_none(data.get("tipo_expediente_id")),
-                _int_or_none(data.get("subtipo_expediente_id")),
-                _normalize_text(data.get("subtipo_expediente")),
+                int(tipo["id"]),
+                int(subtipo["id"]) if subtipo else None,
+                subtipo_legacy,
                 _int_or_none(data.get("estado_documental_id")),
                 _int_or_none(data.get("estado_administrativo_id")),
                 _normalize_text(data.get("estado_presentacion") or "NO PRESENTADO"),
