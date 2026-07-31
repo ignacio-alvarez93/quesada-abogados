@@ -42,6 +42,17 @@ def _connect(db_path=None):
     return conn
 
 
+def open_connection(db_path=None):
+    """
+    Abre una conexión preparada para participar en una
+    transacción coordinada por otro servicio.
+
+    La persona llamante es responsable de commit, rollback
+    y cierre.
+    """
+    return _connect(db_path)
+
+
 def _dict(row):
     return dict(row) if row else None
 
