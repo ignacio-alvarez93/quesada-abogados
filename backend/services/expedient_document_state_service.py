@@ -32,6 +32,9 @@ from backend.services import (
 from backend.services import (
     document_role_inference_service as role_inference_service,
 )
+from backend.services import (
+    document_semantic_state_service as semantic_state_service,
+)
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
@@ -1123,8 +1126,25 @@ def diagnose_expediente_document_state(expediente_id):
                 )
             )
 
+            decision_semantica = (
+                semantic_state_service
+                .semantic_document_state(
+                    semantic_result
+                )
+            )
+            comparacion_motores = (
+                semantic_state_service
+                .compare_document_states(
+                    ESTADO_SIN_DIAGNOSTICO,
+                    decision_semantica,
+                )
+            )
+
             return {
                 "estado_sugerido": ESTADO_SIN_DIAGNOSTICO,
+                "motor_estado_activo": "LEGACY",
+                "decision_semantica": decision_semantica,
+                "comparacion_motores": comparacion_motores,
                 "confianza": 0.10,
                 "expediente_id": int(expediente_id),
                 "expediente": expediente,
@@ -1189,6 +1209,17 @@ def diagnose_expediente_document_state(expediente_id):
     if motivo_presentado:
         senales.append(motivo_presentado)
 
+    decision_semantica = (
+        semantic_state_service
+        .semantic_document_state(
+            semantic_result,
+            has_presentacion=hay_presentado,
+            has_requerimiento=hay_req,
+            has_concesion=hay_concedido,
+            has_denegacion=hay_denegado,
+        )
+    )
+
     if not required_docs:
         senales.append("No hay documentos obligatorios configurados para este tipo/subtipo")
 
@@ -1222,6 +1253,14 @@ def diagnose_expediente_document_state(expediente_id):
         base_conf = 0.20
         senales.append("No hay archivos inventariados bajo la ruta Box vinculada")
 
+    comparacion_motores = (
+        semantic_state_service
+        .compare_document_states(
+            estado,
+            decision_semantica,
+        )
+    )
+
     detectados = {
         "documentos": detected_docs,
         "carpetas": detected_folders,
@@ -1232,6 +1271,9 @@ def diagnose_expediente_document_state(expediente_id):
 
     return {
         "estado_sugerido": estado,
+        "motor_estado_activo": "LEGACY",
+        "decision_semantica": decision_semantica,
+        "comparacion_motores": comparacion_motores,
         "confianza": _confidence(base_conf, required_docs, faltantes, senales),
         "expediente_id": int(expediente_id),
         "expediente": expediente,
