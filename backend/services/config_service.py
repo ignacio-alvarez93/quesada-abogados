@@ -404,24 +404,139 @@ def get_tipos_expediente(active_only=False, familia_id=None):
 
 
 
+def _validate_expedient_type(conn, tipo_expediente_id):
+    tipo_id = _int_or_none(tipo_expediente_id)
+    if tipo_id is None:
+        raise ValueError("Selecciona un tipo de expediente")
+
+    row = conn.execute(
+        """
+        SELECT id, codigo, nombre, activo
+        FROM config_tipos_expediente
+        WHERE id = ?
+        """,
+        (int(tipo_id),),
+    ).fetchone()
+
+    if not row:
+        raise ValueError("El tipo de expediente seleccionado no existe")
+
+    if int(row["activo"] or 0) != 1:
+        raise ValueError("El tipo de expediente seleccionado está inactivo")
+
+    return dict(row)
+
+
+def _validate_subtype_for_type(
+    conn,
+    tipo_expediente_id,
+    subtipo_expediente_id,
+    *,
+    required=False,
+):
+    tipo = _validate_expedient_type(conn, tipo_expediente_id)
+    subtipo_id = _int_or_none(subtipo_expediente_id)
+
+    if subtipo_id is None:
+        if required:
+            raise ValueError("Selecciona un subtipo de expediente")
+        return tipo, None
+
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            tipo_expediente_id,
+            codigo,
+            nombre,
+            activo
+        FROM config_subtipos_expediente
+        WHERE id = ?
+        """,
+        (int(subtipo_id),),
+    ).fetchone()
+
+    if not row:
+        raise ValueError("El subtipo de expediente seleccionado no existe")
+
+    if int(row["activo"] or 0) != 1:
+        raise ValueError("El subtipo de expediente seleccionado está inactivo")
+
+    if int(row["tipo_expediente_id"]) != int(tipo["id"]):
+        raise ValueError(
+            "El subtipo seleccionado no pertenece al tipo de expediente"
+        )
+
+    return tipo, dict(row)
+
+
+def _validate_required_document_for_nomenclature(
+    conn,
+    documento_id,
+    tipo_expediente_id,
+    subtipo_expediente_id=None,
+):
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            tipo_expediente_id,
+            subtipo_expediente_id,
+            nombre_documento,
+            activo
+        FROM config_documentos_requeridos
+        WHERE id = ?
+        """,
+        (int(documento_id),),
+    ).fetchone()
+
+    if not row:
+        raise ValueError("El documento requerido seleccionado no existe")
+
+    if int(row["activo"] or 0) != 1:
+        raise ValueError("El documento requerido seleccionado está inactivo")
+
+    if int(row["tipo_expediente_id"]) != int(tipo_expediente_id):
+        raise ValueError(
+            "El documento requerido no pertenece al tipo de expediente"
+        )
+
+    document_subtype_id = _int_or_none(row["subtipo_expediente_id"])
+    nomenclature_subtype_id = _int_or_none(subtipo_expediente_id)
+
+    if (
+        document_subtype_id is not None
+        and document_subtype_id != nomenclature_subtype_id
+    ):
+        raise ValueError(
+            "El documento requerido no pertenece al subtipo seleccionado"
+        )
+
+    return dict(row)
+
+
 def create_subtipo_expediente(data):
     ensure_config_runtime_schema()
-    tipo_id = int(data.get("tipo_expediente_id"))
+    tipo_id = _int_or_none(data.get("tipo_expediente_id"))
     codigo = _normalize_code(data.get("codigo") or data.get("nombre"))
     nombre = _normalize_text(data.get("nombre"))
     descripcion = (data.get("descripcion") or "").strip()
     orden = int(data.get("orden") or 0)
     activo = int(data.get("activo", 1))
+
     if not nombre:
         raise ValueError("El nombre del subtipo es obligatorio")
+
     with _connect() as conn:
+        _validate_expedient_type(conn, tipo_id)
+
         cur = conn.execute(
             """
             INSERT INTO config_subtipos_expediente
             (tipo_expediente_id, codigo, nombre, descripcion, orden, activo)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (tipo_id, codigo, nombre, descripcion, orden, activo),
+            (int(tipo_id), codigo, nombre, descripcion, orden, activo),
         )
         conn.commit()
         return cur.lastrowid
@@ -429,15 +544,76 @@ def create_subtipo_expediente(data):
 
 def update_subtipo_expediente(record_id, data):
     ensure_config_runtime_schema()
-    tipo_id = int(data.get("tipo_expediente_id"))
+    tipo_id = _int_or_none(data.get("tipo_expediente_id"))
     codigo = _normalize_code(data.get("codigo") or data.get("nombre"))
     nombre = _normalize_text(data.get("nombre"))
     descripcion = (data.get("descripcion") or "").strip()
     orden = int(data.get("orden") or 0)
     activo = int(data.get("activo", 1))
+
     if not nombre:
         raise ValueError("El nombre del subtipo es obligatorio")
+
     with _connect() as conn:
+        _validate_expedient_type(conn, tipo_id)
+
+        current = conn.execute(
+            """
+            SELECT id, tipo_expediente_id
+            FROM config_subtipos_expediente
+            WHERE id = ?
+            """,
+            (int(record_id),),
+        ).fetchone()
+
+        if not current:
+            raise ValueError("Subtipo de expediente no encontrado")
+
+        current_tipo_id = int(current["tipo_expediente_id"])
+        target_tipo_id = int(tipo_id)
+
+        if current_tipo_id != target_tipo_id:
+            usages = {
+                "expedientes": conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM expedientes
+                    WHERE subtipo_expediente_id = ?
+                    """,
+                    (int(record_id),),
+                ).fetchone()[0],
+                "documentos requeridos": conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM config_documentos_requeridos
+                    WHERE subtipo_expediente_id = ?
+                    """,
+                    (int(record_id),),
+                ).fetchone()[0],
+                "nomenclaturas": conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM config_nomenclaturas_documentales
+                    WHERE subtipo_expediente_id = ?
+                    """,
+                    (int(record_id),),
+                ).fetchone()[0],
+            }
+
+            active_usages = [
+                f"{label}: {total}"
+                for label, total in usages.items()
+                if int(total or 0) > 0
+            ]
+
+            if active_usages:
+                raise ValueError(
+                    "No se puede cambiar el tipo del subtipo porque "
+                    "tiene elementos vinculados (" +
+                    ", ".join(active_usages) +
+                    ")"
+                )
+
         conn.execute(
             """
             UPDATE config_subtipos_expediente
@@ -450,7 +626,15 @@ def update_subtipo_expediente(record_id, data):
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (tipo_id, codigo, nombre, descripcion, orden, activo, int(record_id)),
+            (
+                int(tipo_id),
+                codigo,
+                nombre,
+                descripcion,
+                orden,
+                activo,
+                int(record_id),
+            ),
         )
         conn.commit()
 
@@ -477,18 +661,42 @@ def get_subtipos_expediente(tipo_expediente_id=None, active_only=False):
 
 
 def create_documento_requerido(data):
-    codigo = _normalize_code(data.get("codigo_documento") or data.get("nombre_documento"))
+    ensure_config_runtime_schema()
+
+    tipo_id = _int_or_none(data.get("tipo_expediente_id"))
+    subtipo_id = _int_or_none(data.get("subtipo_expediente_id"))
+    codigo = _normalize_code(
+        data.get("codigo_documento") or data.get("nombre_documento")
+    )
     nombre = _normalize_text(data.get("nombre_documento"))
+
+    if not nombre:
+        raise ValueError("El nombre del documento es obligatorio")
+
     with _connect() as conn:
+        _validate_subtype_for_type(
+            conn,
+            tipo_id,
+            subtipo_id,
+        )
+
         cur = conn.execute(
             """
             INSERT INTO config_documentos_requeridos
-            (tipo_expediente_id, subtipo_expediente_id, codigo_documento, nombre_documento, obligatorio, orden, activo)
+            (
+                tipo_expediente_id,
+                subtipo_expediente_id,
+                codigo_documento,
+                nombre_documento,
+                obligatorio,
+                orden,
+                activo
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                int(data.get("tipo_expediente_id")),
-                _int_or_none(data.get("subtipo_expediente_id")),
+                int(tipo_id),
+                subtipo_id,
                 codigo,
                 nombre,
                 int(data.get("obligatorio", 1)),
@@ -501,25 +709,58 @@ def create_documento_requerido(data):
 
 
 def update_documento_requerido(record_id, data):
-    codigo = _normalize_code(data.get("codigo_documento") or data.get("nombre_documento"))
+    ensure_config_runtime_schema()
+
+    tipo_id = _int_or_none(data.get("tipo_expediente_id"))
+    subtipo_id = _int_or_none(data.get("subtipo_expediente_id"))
+    codigo = _normalize_code(
+        data.get("codigo_documento") or data.get("nombre_documento")
+    )
     nombre = _normalize_text(data.get("nombre_documento"))
+
+    if not nombre:
+        raise ValueError("El nombre del documento es obligatorio")
+
     with _connect() as conn:
+        _validate_subtype_for_type(
+            conn,
+            tipo_id,
+            subtipo_id,
+        )
+
+        current = conn.execute(
+            """
+            SELECT id
+            FROM config_documentos_requeridos
+            WHERE id = ?
+            """,
+            (int(record_id),),
+        ).fetchone()
+
+        if not current:
+            raise ValueError("Documento requerido no encontrado")
+
         conn.execute(
             """
             UPDATE config_documentos_requeridos
-            SET tipo_expediente_id = ?, subtipo_expediente_id = ?, codigo_documento = ?, nombre_documento = ?,
-                obligatorio = ?, orden = ?, activo = ?
+            SET tipo_expediente_id = ?,
+                subtipo_expediente_id = ?,
+                codigo_documento = ?,
+                nombre_documento = ?,
+                obligatorio = ?,
+                orden = ?,
+                activo = ?
             WHERE id = ?
             """,
             (
-                int(data.get("tipo_expediente_id")),
-                _int_or_none(data.get("subtipo_expediente_id")),
+                int(tipo_id),
+                subtipo_id,
                 codigo,
                 nombre,
                 int(data.get("obligatorio", 1)),
                 int(data.get("orden") or 0),
                 int(data.get("activo", 1)),
-                record_id,
+                int(record_id),
             ),
         )
         conn.commit()
@@ -677,18 +918,54 @@ def get_box_ruta(record_id, include_resolved=True):
 
 
 def create_nomenclatura(data):
+    ensure_config_runtime_schema()
+
+    tipo_id = _int_or_none(data.get("tipo_expediente_id"))
+    subtipo_id = _int_or_none(data.get("subtipo_expediente_id"))
+    documento_id = _int_or_none(data.get("documento_id"))
+    patron = (data.get("patron_nombre") or "").strip().upper()
+
+    if documento_id is None:
+        raise ValueError("Selecciona un documento requerido")
+
+    if not patron:
+        raise ValueError("El patrón de nombre es obligatorio")
+
     with _connect() as conn:
+        _validate_subtype_for_type(
+            conn,
+            tipo_id,
+            subtipo_id,
+        )
+        _validate_required_document_for_nomenclature(
+            conn,
+            documento_id,
+            int(tipo_id),
+            subtipo_id,
+        )
+
         cur = conn.execute(
             """
             INSERT INTO config_nomenclaturas_documentales
-            (tipo_expediente_id, documento_id, patron_nombre, extension_permitida, activo)
-            VALUES (?, ?, ?, ?, ?)
+            (
+                tipo_expediente_id,
+                subtipo_expediente_id,
+                documento_id,
+                patron_nombre,
+                extension_permitida,
+                activo
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                int(data.get("tipo_expediente_id")),
-                int(data.get("documento_id")),
-                (data.get("patron_nombre") or "").strip().upper(),
-                (data.get("extension_permitida") or "pdf,jpg,jpeg,png").strip().lower(),
+                int(tipo_id),
+                subtipo_id,
+                int(documento_id),
+                patron,
+                (
+                    data.get("extension_permitida")
+                    or "pdf,jpg,jpeg,png"
+                ).strip().lower(),
                 int(data.get("activo", 1)),
             ),
         )
@@ -697,32 +974,87 @@ def create_nomenclatura(data):
 
 
 def update_nomenclatura(record_id, data):
+    ensure_config_runtime_schema()
+
+    tipo_id = _int_or_none(data.get("tipo_expediente_id"))
+    subtipo_id = _int_or_none(data.get("subtipo_expediente_id"))
+    documento_id = _int_or_none(data.get("documento_id"))
+    patron = (data.get("patron_nombre") or "").strip().upper()
+
+    if documento_id is None:
+        raise ValueError("Selecciona un documento requerido")
+
+    if not patron:
+        raise ValueError("El patrón de nombre es obligatorio")
+
     with _connect() as conn:
+        _validate_subtype_for_type(
+            conn,
+            tipo_id,
+            subtipo_id,
+        )
+        _validate_required_document_for_nomenclature(
+            conn,
+            documento_id,
+            int(tipo_id),
+            subtipo_id,
+        )
+
+        current = conn.execute(
+            """
+            SELECT id
+            FROM config_nomenclaturas_documentales
+            WHERE id = ?
+            """,
+            (int(record_id),),
+        ).fetchone()
+
+        if not current:
+            raise ValueError("Nomenclatura documental no encontrada")
+
         conn.execute(
             """
             UPDATE config_nomenclaturas_documentales
-            SET tipo_expediente_id = ?, documento_id = ?, patron_nombre = ?,
-                extension_permitida = ?, activo = ?
+            SET tipo_expediente_id = ?,
+                subtipo_expediente_id = ?,
+                documento_id = ?,
+                patron_nombre = ?,
+                extension_permitida = ?,
+                activo = ?
             WHERE id = ?
             """,
             (
-                int(data.get("tipo_expediente_id")),
-                int(data.get("documento_id")),
-                (data.get("patron_nombre") or "").strip().upper(),
-                (data.get("extension_permitida") or "pdf,jpg,jpeg,png").strip().lower(),
+                int(tipo_id),
+                subtipo_id,
+                int(documento_id),
+                patron,
+                (
+                    data.get("extension_permitida")
+                    or "pdf,jpg,jpeg,png"
+                ).strip().lower(),
                 int(data.get("activo", 1)),
-                record_id,
+                int(record_id),
             ),
         )
         conn.commit()
 
 
 def get_nomenclaturas(active_only=False):
+    ensure_config_runtime_schema()
+
     sql = """
-        SELECT n.*, t.nombre AS tipo_expediente_nombre, d.nombre_documento
+        SELECT
+            n.*,
+            t.nombre AS tipo_expediente_nombre,
+            s.nombre AS subtipo_expediente_nombre,
+            d.nombre_documento
         FROM config_nomenclaturas_documentales n
-        JOIN config_tipos_expediente t ON t.id = n.tipo_expediente_id
-        JOIN config_documentos_requeridos d ON d.id = n.documento_id
+        JOIN config_tipos_expediente t
+          ON t.id = n.tipo_expediente_id
+        LEFT JOIN config_subtipos_expediente s
+          ON s.id = n.subtipo_expediente_id
+        JOIN config_documentos_requeridos d
+          ON d.id = n.documento_id
     """
     if active_only:
         sql += " WHERE n.activo = 1"
