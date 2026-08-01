@@ -736,6 +736,404 @@ class CanonicalNomenclatureDetectionTest(
         self.assertFalse(housing["cumplido"])
         self.assertTrue(housing["bloquea_completitud"])
 
+    def test_specific_housing_request_wins_over_report(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO config_nomenclaturas_catalogo (
+                    id,
+                    documento_catalogo_id,
+                    tipo_expediente_id,
+                    subtipo_expediente_id,
+                    rol_documental,
+                    patron_nombre,
+                    extension_permitida,
+                    prioridad,
+                    activo,
+                    origen_legacy_id
+                )
+                VALUES (
+                    64,
+                    3,
+                    14,
+                    8,
+                    NULL,
+                    'JUSTIFICANTE SOLICITUD INFORME DE VIVIENDA',
+                    'pdf,jpg,jpeg,png',
+                    10,
+                    1,
+                    NULL
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET
+                    ruta = ?,
+                    nombre_archivo = ?,
+                    extension = 'pdf',
+                    activo = 1
+                WHERE id = 1
+                """,
+                (
+                    (
+                        "CLIENTES/EXPEDIENTE_100/"
+                        "JUSTIFICANTE SOLICITUD "
+                        "INFORME DE VIVIENDA.pdf"
+                    ),
+                    (
+                        "JUSTIFICANTE SOLICITUD "
+                        "INFORME DE VIVIENDA.pdf"
+                    ),
+                ),
+            )
+
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET activo = 0
+                WHERE id = 2
+                """
+            )
+
+            conn.commit()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            _, items = doc_state._get_box_inventory(
+                conn,
+                "CLIENTES/EXPEDIENTE_100",
+            )
+
+            rules = doc_state._get_nomenclatures(
+                conn,
+                {
+                    "tipo_expediente_id": 14,
+                    "subtipo_expediente_id": 8,
+                },
+            )
+
+            codes, detections = (
+                doc_state
+                ._doc_codes_from_nomenclatures(
+                    items,
+                    rules,
+                )
+            )
+
+        self.assertIn(
+            (
+                "JUSTIFICANTE_SOLICITUD_"
+                "INFORME_VIVIENDA"
+            ),
+            codes,
+        )
+        self.assertNotIn(
+            "INFORME_DE_VIVIENDA",
+            codes,
+        )
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(
+            detections[0]["coincidencias_descartadas"],
+            1,
+        )
+
+    def test_short_token_does_not_match_inside_word(self):
+        self.assertTrue(
+            doc_state._pattern_matches_filename(
+                "NIE",
+                "NIE REAGRUPANTE.pdf",
+            )
+        )
+        self.assertFalse(
+            doc_state._pattern_matches_filename(
+                "NIE",
+                "INFORME PSICOLOGICO DEL NIETO.pdf",
+            )
+        )
+        self.assertFalse(
+            doc_state._pattern_matches_filename(
+                "TIE",
+                "DOCUMENTO DEL CLIENTE.pdf",
+            )
+        )
+
+    def test_compound_file_has_single_detection(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO config_documentos_catalogo (
+                    id,
+                    codigo,
+                    nombre,
+                    categoria,
+                    activo
+                )
+                VALUES (
+                    4,
+                    'CERTIFICADO_MATRIMONIO',
+                    'CERTIFICADO MATRIMONIO',
+                    'ESTADO_CIVIL',
+                    1
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                INSERT INTO config_nomenclaturas_catalogo (
+                    id,
+                    documento_catalogo_id,
+                    tipo_expediente_id,
+                    subtipo_expediente_id,
+                    rol_documental,
+                    patron_nombre,
+                    extension_permitida,
+                    prioridad,
+                    activo,
+                    origen_legacy_id
+                )
+                VALUES (
+                    65,
+                    4,
+                    14,
+                    8,
+                    NULL,
+                    'ACTA DE MATRIMONIO',
+                    'pdf',
+                    10,
+                    1,
+                    NULL
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET
+                    ruta = ?,
+                    nombre_archivo = ?,
+                    extension = 'pdf',
+                    activo = 1
+                WHERE id = 1
+                """,
+                (
+                    (
+                        "CLIENTES/EXPEDIENTE_100/"
+                        "ACTA DE MATRIMONIO Y "
+                        "PASAPORTE_REAGRUPANTE.pdf"
+                    ),
+                    (
+                        "ACTA DE MATRIMONIO Y "
+                        "PASAPORTE_REAGRUPANTE.pdf"
+                    ),
+                ),
+            )
+
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET activo = 0
+                WHERE id = 2
+                """
+            )
+
+            conn.commit()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            _, items = doc_state._get_box_inventory(
+                conn,
+                "CLIENTES/EXPEDIENTE_100",
+            )
+
+            rules = doc_state._get_nomenclatures(
+                conn,
+                {
+                    "tipo_expediente_id": 14,
+                    "subtipo_expediente_id": 8,
+                },
+            )
+
+            codes, detections = (
+                doc_state
+                ._doc_codes_from_nomenclatures(
+                    items,
+                    rules,
+                )
+            )
+
+        self.assertEqual(len(codes), 0)
+        self.assertEqual(len(detections), 1)
+
+        ambiguity = detections[0]
+
+        self.assertEqual(
+            ambiguity["estado_clasificacion"],
+            "AMBIGUA",
+        )
+        self.assertEqual(
+            ambiguity["origen"],
+            "nomenclatura_ambigua",
+        )
+        self.assertEqual(
+            ambiguity["codigo"],
+            "",
+        )
+        self.assertEqual(
+            set(ambiguity["codigos_candidatos"]),
+            {
+                "CERTIFICADO_MATRIMONIO",
+                "PASAPORTE",
+            },
+        )
+        self.assertEqual(
+            ambiguity["coincidencias_descartadas"],
+            2,
+        )
+
+    def test_document_ambiguity_is_exposed_in_diagnosis(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO config_documentos_catalogo (
+                    id,
+                    codigo,
+                    nombre,
+                    categoria,
+                    activo
+                )
+                VALUES (
+                    4,
+                    'CERTIFICADO_MATRIMONIO',
+                    'CERTIFICADO MATRIMONIO',
+                    'ESTADO_CIVIL',
+                    1
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                INSERT INTO config_nomenclaturas_catalogo (
+                    id,
+                    documento_catalogo_id,
+                    tipo_expediente_id,
+                    subtipo_expediente_id,
+                    rol_documental,
+                    patron_nombre,
+                    extension_permitida,
+                    prioridad,
+                    activo,
+                    origen_legacy_id
+                )
+                VALUES (
+                    65,
+                    4,
+                    14,
+                    8,
+                    NULL,
+                    'ACTA DE MATRIMONIO',
+                    'pdf',
+                    10,
+                    1,
+                    NULL
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET
+                    ruta = ?,
+                    nombre_archivo = ?,
+                    extension = 'pdf',
+                    activo = 1
+                WHERE id = 1
+                """,
+                (
+                    (
+                        "CLIENTES/EXPEDIENTE_100/"
+                        "ACTA DE MATRIMONIO Y "
+                        "PASAPORTE_REAGRUPANTE.pdf"
+                    ),
+                    (
+                        "ACTA DE MATRIMONIO Y "
+                        "PASAPORTE_REAGRUPANTE.pdf"
+                    ),
+                ),
+            )
+
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET activo = 0
+                WHERE id = 2
+                """
+            )
+
+            conn.commit()
+
+        result = (
+            doc_state
+            .diagnose_expediente_document_state(100)
+        )
+
+        ambiguities = result[
+            "ambiguedades_documentales"
+        ]
+
+        self.assertEqual(len(ambiguities), 1)
+
+        ambiguity = ambiguities[0]
+
+        self.assertEqual(
+            ambiguity["estado"],
+            "AMBIGUA",
+        )
+        self.assertTrue(
+            ambiguity["requiere_revision"]
+        )
+        self.assertEqual(
+            set(ambiguity["codigos_candidatos"]),
+            {
+                "CERTIFICADO_MATRIMONIO",
+                "PASAPORTE",
+            },
+        )
+
+        semantic_codes = {
+            detection["codigo"]
+            for detection in result[
+                "semantic_readiness"
+            ]["detecciones"]
+        }
+
+        self.assertNotIn(
+            "CERTIFICADO_MATRIMONIO",
+            semantic_codes,
+        )
+        self.assertNotIn(
+            "PASAPORTE",
+            semantic_codes,
+        )
+
+        self.assertTrue(
+            any(
+                (
+                    "clasificación documental ambigua"
+                    in signal
+                )
+                for signal in result["senales"]
+            )
+        )
+
     def test_legacy_is_used_when_canonical_table_is_absent(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(

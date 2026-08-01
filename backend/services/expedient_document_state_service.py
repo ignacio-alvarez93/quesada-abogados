@@ -460,82 +460,300 @@ def _norm_filename(value):
 
 
 def _pattern_matches_filename(pattern, filename):
+    import re
+
     pattern = _norm_filename(pattern)
     filename = _norm_filename(filename)
 
     if not pattern or not filename:
         return False
 
-    # Coincidencia directa.
-    if pattern in filename:
-        return True
+    pattern = re.sub(r"\\s+", " ", pattern).strip()
+    filename = re.sub(r"\\s+", " ", filename).strip()
 
-    # Permitir patrones con * de forma simple.
     if "*" in pattern:
-        import re
-        regex = "^" + re.escape(pattern).replace("\\*", ".*") + "$"
+        escaped = re.escape(pattern)
+        wildcard = escaped.replace(r"\\*", ".*")
+        regex = rf"(?<![A-Z0-9]){wildcard}(?![A-Z0-9])"
         return re.search(regex, filename) is not None
 
-    return False
+    regex = (
+        rf"(?<![A-Z0-9])"
+        rf"{re.escape(pattern)}"
+        rf"(?![A-Z0-9])"
+    )
+
+    return re.search(regex, filename) is not None
+
+
+def _nomenclature_match_rank(rule):
+    source = _norm(
+        rule.get("fuente_nomenclatura")
+    )
+
+    source_rank = (
+        0
+        if source == "CANONICAL"
+        else 1
+    )
+
+    try:
+        priority = int(
+            rule.get("prioridad")
+            if rule.get("prioridad") is not None
+            else 100
+        )
+    except (TypeError, ValueError):
+        priority = 100
+
+    normalized_pattern = _norm_filename(
+        rule.get("patron_nombre")
+    )
+
+    pattern_length_rank = -len(
+        normalized_pattern
+    )
+
+    try:
+        nomenclature_id = int(
+            rule.get("id") or 0
+        )
+    except (TypeError, ValueError):
+        nomenclature_id = 0
+
+    return (
+        source_rank,
+        priority,
+        pattern_length_rank,
+        nomenclature_id,
+    )
+
+
+def _select_nomenclature_candidate(candidates):
+    """
+    Selecciona una detección automática segura.
+
+    Si existen candidatos de códigos distintos:
+    - permite escoger el patrón específico cuando contiene
+      completamente al patrón general;
+    - considera ambiguos los patrones independientes.
+
+    Un archivo compuesto no debe satisfacer automáticamente varios
+    requisitos documentales.
+    """
+    if not candidates:
+        return None, []
+
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (
+            _nomenclature_match_rank(
+                candidate["rule"]
+            )
+        ),
+    )
+
+    distinct_codes = {
+        candidate["code"]
+        for candidate in ordered
+    }
+
+    if len(distinct_codes) == 1:
+        return ordered[0], ordered[1:]
+
+    normalized_patterns = {
+        id(candidate): _norm_filename(
+            candidate["pattern"]
+        )
+        for candidate in ordered
+    }
+
+    for candidate in ordered:
+        candidate_pattern = normalized_patterns[
+            id(candidate)
+        ]
+
+        other_patterns = [
+            normalized_patterns[id(other)]
+            for other in ordered
+            if other is not candidate
+        ]
+
+        if (
+            other_patterns
+            and all(
+                other_pattern in candidate_pattern
+                for other_pattern in other_patterns
+            )
+        ):
+            return (
+                candidate,
+                [
+                    other
+                    for other in ordered
+                    if other is not candidate
+                ],
+            )
+
+    return None, ordered
 
 
 def _doc_codes_from_nomenclatures(items, nomenclatures):
     """
-    Segunda capa de detección por patrones configurados.
+    Detecta como máximo una nomenclatura por archivo.
 
-    Recorre TODOS los archivos bajo la ruta del expediente, estén en raíz,
-    PARA PRESENTAR, APORTAR, REQ o cualquier subdirectorio.
+    Preferencia:
+    - canónica frente a legacy;
+    - menor prioridad;
+    - patrón más específico;
+    - ID como desempate estable.
     """
     codes = set()
     detected = []
 
     for item in items or []:
-        filename = item.get("nombre_archivo") or ""
-        extension = _norm(item.get("extension")).lower().lstrip(".")
+        filename = item.get(
+            "nombre_archivo"
+        ) or ""
+
+        extension = _norm(
+            item.get("extension")
+        ).lower().lstrip(".")
+
+        candidates = []
 
         for rule in nomenclatures or []:
-            pattern = rule.get("patron_nombre") or ""
-            allowed_raw = str(rule.get("extension_permitida") or "").lower().replace(";", ",")
-            allowed = {x.strip().lstrip(".") for x in allowed_raw.split(",") if x.strip()}
+            pattern = (
+                rule.get("patron_nombre")
+                or ""
+            )
 
-            if allowed and extension and extension not in allowed:
+            allowed_raw = str(
+                rule.get(
+                    "extension_permitida"
+                )
+                or ""
+            ).lower().replace(";", ",")
+
+            allowed = {
+                value.strip().lstrip(".")
+                for value in allowed_raw.split(",")
+                if value.strip()
+            }
+
+            if (
+                allowed
+                and extension
+                and extension not in allowed
+            ):
                 continue
 
-            if _pattern_matches_filename(pattern, filename):
-                code = _norm(rule.get("codigo_documento"))
-                if not code:
-                    continue
+            if not _pattern_matches_filename(
+                pattern,
+                filename,
+            ):
+                continue
 
-                codes.add(code)
-                source = _norm(
-                    rule.get("fuente_nomenclatura")
-                )
+            code = _norm(
+                rule.get("codigo_documento")
+            )
 
-                detected.append(
-                    {
-                        "codigo": code,
-                        "rol_documental": (
-                            _norm(
-                                rule.get(
-                                    "rol_documental"
-                                )
-                            )
-                            or None
-                        ),
-                        "archivo": filename,
-                        "ruta": item.get("ruta"),
-                        "patron": pattern,
-                        "nomenclatura_id": rule.get("id"),
-                        "fuente_nomenclatura": (
-                            source or "LEGACY"
-                        ),
-                        "origen": (
-                            "nomenclatura_canónica"
-                            if source == "CANONICAL"
-                            else "nomenclatura_legacy"
-                        ),
-                    }
-                )
+            if not code:
+                continue
+
+            candidates.append(
+                {
+                    "rule": rule,
+                    "code": code,
+                    "pattern": pattern,
+                }
+            )
+
+        if not candidates:
+            continue
+
+        winner, discarded = (
+            _select_nomenclature_candidate(
+                candidates
+            )
+        )
+
+        if winner is None:
+            detected.append(
+                {
+                    "codigo": "",
+                    "rol_documental": None,
+                    "archivo": filename,
+                    "ruta": item.get("ruta"),
+                    "patron": None,
+                    "nomenclatura_id": None,
+                    "fuente_nomenclatura": None,
+                    "origen": (
+                        "nomenclatura_ambigua"
+                    ),
+                    "estado_clasificacion": (
+                        "AMBIGUA"
+                    ),
+                    "codigos_candidatos": sorted(
+                        {
+                            candidate["code"]
+                            for candidate in discarded
+                        }
+                    ),
+                    "patrones_candidatos": [
+                        candidate["pattern"]
+                        for candidate in discarded
+                    ],
+                    "coincidencias_descartadas": (
+                        len(discarded)
+                    ),
+                }
+            )
+            continue
+
+        rule = winner["rule"]
+        code = winner["code"]
+        pattern = winner["pattern"]
+
+        codes.add(code)
+
+        source = _norm(
+            rule.get("fuente_nomenclatura")
+        )
+
+        detected.append(
+            {
+                "codigo": code,
+                "rol_documental": (
+                    _norm(
+                        rule.get(
+                            "rol_documental"
+                        )
+                    )
+                    or None
+                ),
+                "archivo": filename,
+                "ruta": item.get("ruta"),
+                "patron": pattern,
+                "nomenclatura_id": (
+                    rule.get("id")
+                ),
+                "fuente_nomenclatura": (
+                    source or "LEGACY"
+                ),
+                "origen": (
+                    "nomenclatura_canónica"
+                    if source == "CANONICAL"
+                    else "nomenclatura_legacy"
+                ),
+                "coincidencias_descartadas": (
+                    len(discarded)
+                ),
+                "estado_clasificacion": (
+                    "AUTOMATICA"
+                ),
+            }
+        )
 
     return codes, detected
 
@@ -942,6 +1160,61 @@ def _confidence(base, required_docs, faltantes, signals):
     return round(min(0.98, max(0.10, value)), 2)
 
 
+def _extract_document_classification_ambiguities(
+    detected_documents,
+):
+    """
+    Extrae archivos que no pueden clasificarse automáticamente
+    porque coinciden con nomenclaturas independientes.
+
+    Estas entradas:
+    - no aportan códigos documentales;
+    - no completan requisitos;
+    - deben resolverse desde la bandeja documental.
+    """
+    ambiguities = []
+
+    for detection in detected_documents or []:
+        if (
+            detection.get("estado_clasificacion")
+            != "AMBIGUA"
+        ):
+            continue
+
+        ambiguities.append(
+            {
+                "archivo": detection.get("archivo"),
+                "ruta": detection.get("ruta"),
+                "estado": "AMBIGUA",
+                "origen": detection.get(
+                    "origen"
+                ),
+                "codigos_candidatos": list(
+                    detection.get(
+                        "codigos_candidatos",
+                        [],
+                    )
+                ),
+                "patrones_candidatos": list(
+                    detection.get(
+                        "patrones_candidatos",
+                        [],
+                    )
+                ),
+                "coincidencias": int(
+                    detection.get(
+                        "coincidencias_descartadas",
+                        0,
+                    )
+                    or 0
+                ),
+                "requiere_revision": True,
+            }
+        )
+
+    return ambiguities
+
+
 def _build_semantic_detections(detected_documents):
     """
     Convierte las detecciones actuales en entradas estructuradas
@@ -1263,6 +1536,7 @@ def diagnose_expediente_document_state(expediente_id):
                 "expediente": expediente,
                 "obligatorios": [],
                 "detectados": [],
+                "ambiguedades_documentales": [],
                 "faltantes": [],
                 "semantic_readiness": semantic_result,
                 "resumen_inferencia_roles": (
@@ -1290,6 +1564,12 @@ def diagnose_expediente_document_state(expediente_id):
         + list(detected_by_nomenclature or [])
     )
 
+    document_classification_ambiguities = (
+        _extract_document_classification_ambiguities(
+            detected_by_nomenclature
+        )
+    )
+
     semantic_detections = _build_semantic_detections(
         detected_docs
     )
@@ -1307,6 +1587,15 @@ def diagnose_expediente_document_state(expediente_id):
     encontrados, faltantes = _match_required_documents(required_docs, doc_codes, items=items)
 
     senales = []
+
+    if document_classification_ambiguities:
+        senales.append(
+            (
+                "Hay "
+                f"{len(document_classification_ambiguities)} "
+                "archivo(s) con clasificación documental ambigua"
+            )
+        )
 
     hay_denegado, motivo_denegado = _hay_denegacion(doc_codes, folder_codes, folders, items)
     hay_concedido, motivo_concedido = _hay_concesion(doc_codes, folder_codes, folders, items)
@@ -1447,6 +1736,9 @@ def diagnose_expediente_document_state(expediente_id):
         "obligatorios": required_docs,
         "encontrados": encontrados,
         "detectados": detectados,
+        "ambiguedades_documentales": (
+            document_classification_ambiguities
+        ),
         "nomenclaturas_usadas": len(nomenclatures),
         "semantic_readiness": semantic_result,
         "resumen_inferencia_roles": (
