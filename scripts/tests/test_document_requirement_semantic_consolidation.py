@@ -54,6 +54,16 @@ class SemanticDocumentRequirementConsolidationTest(
                     activo INTEGER NOT NULL DEFAULT 1
                 );
 
+                CREATE TABLE config_nomenclaturas_documentales (
+                    id INTEGER PRIMARY KEY,
+                    tipo_expediente_id INTEGER NOT NULL,
+                    documento_id INTEGER NOT NULL,
+                    patron_nombre TEXT NOT NULL,
+                    extension_permitida TEXT,
+                    activo INTEGER NOT NULL DEFAULT 1,
+                    subtipo_expediente_id INTEGER
+                );
+
                 INSERT INTO config_tipos_expediente
                     (id, codigo, nombre, activo)
                 VALUES
@@ -461,6 +471,47 @@ class SemanticDocumentRequirementConsolidationTest(
 
         self.assertEqual(active_legacy, 0)
         self.assertEqual(provenance, 31)
+
+    def test_housing_request_nomenclatures_are_created(self):
+        first = consolidation.consolidate_semantic_groups()
+        second = consolidation.consolidate_semantic_groups()
+
+        self.assertEqual(first["nomenclatures_created"], 4)
+        self.assertEqual(second["nomenclatures_created"], 0)
+        self.assertEqual(second["nomenclatures_reused"], 4)
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    d.codigo,
+                    n.patron_nombre,
+                    n.extension_permitida,
+                    n.prioridad,
+                    n.origen_legacy_id
+                FROM config_nomenclaturas_catalogo n
+                JOIN config_documentos_catalogo d
+                  ON d.id = n.documento_catalogo_id
+                WHERE d.codigo =
+                    'JUSTIFICANTE_SOLICITUD_INFORME_VIVIENDA'
+                ORDER BY n.prioridad, n.patron_nombre
+                """
+            ).fetchall()
+
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(
+            all(
+                row[0]
+                == "JUSTIFICANTE_SOLICITUD_INFORME_VIVIENDA"
+                for row in rows
+            )
+        )
+        self.assertTrue(
+            all(row[2] == "pdf,jpg,jpeg,png" for row in rows)
+        )
+        self.assertTrue(
+            all(row[4] is None for row in rows)
+        )
 
     def test_consolidation_is_idempotent(self):
         first = consolidation.consolidate_semantic_groups()

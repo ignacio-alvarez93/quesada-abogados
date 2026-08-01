@@ -205,6 +205,15 @@ class CanonicalNomenclatureDetectionTest(
                         'SIN CLASIFICAR',
                         'OK',
                         1
+                    ),
+                    (
+                        2,
+                        'CLIENTES/EXPEDIENTE_100/INFORME DE VIVIENDA.pdf',
+                        'INFORME DE VIVIENDA.pdf',
+                        'pdf',
+                        'SIN CLASIFICAR',
+                        'OK',
+                        1
                     );
 
                 INSERT INTO config_documentos_requeridos (
@@ -263,6 +272,20 @@ class CanonicalNomenclatureDetectionTest(
                         'PASAPORTE',
                         'IDENTIDAD',
                         1
+                    ),
+                    (
+                        2,
+                        'INFORME_DE_VIVIENDA',
+                        'INFORME DE VIVIENDA',
+                        'VIVIENDA',
+                        1
+                    ),
+                    (
+                        3,
+                        'JUSTIFICANTE_SOLICITUD_INFORME_VIVIENDA',
+                        'JUSTIFICANTE DE SOLICITUD DEL INFORME DE VIVIENDA',
+                        'VIVIENDA',
+                        1
                     );
 
                 INSERT INTO config_nomenclaturas_catalogo (
@@ -289,6 +312,42 @@ class CanonicalNomenclatureDetectionTest(
                         10,
                         1,
                         50
+                    ),
+                    (
+                        61,
+                        2,
+                        14,
+                        8,
+                        NULL,
+                        'INFORME DE VIVIENDA',
+                        'pdf,jpg,jpeg,png',
+                        10,
+                        1,
+                        NULL
+                    ),
+                    (
+                        62,
+                        3,
+                        14,
+                        8,
+                        NULL,
+                        'RESGUARDO SOLICITUD INFORME VIVIENDA',
+                        'pdf,jpg,jpeg,png',
+                        10,
+                        1,
+                        NULL
+                    ),
+                    (
+                        63,
+                        3,
+                        14,
+                        8,
+                        NULL,
+                        'JUSTIFICANTE SOLICITUD ADECUACION VIVIENDA',
+                        'pdf,jpg,jpeg,png',
+                        20,
+                        1,
+                        NULL
                     );
 
                 INSERT INTO config_grupos_requisitos_documentales (
@@ -313,6 +372,17 @@ class CanonicalNomenclatureDetectionTest(
                         1,
                         10,
                         1
+                    ),
+                    (
+                        71,
+                        14,
+                        8,
+                        'VIVIENDA',
+                        'ADECUACIÓN DE LA VIVIENDA',
+                        'ANY',
+                        1,
+                        20,
+                        1
                     );
 
                 INSERT INTO config_grupo_requisito_documentos (
@@ -332,6 +402,24 @@ class CanonicalNomenclatureDetectionTest(
                         'REAGRUPANTE',
                         'Pasaporte del reagrupante',
                         10,
+                        1
+                    ),
+                    (
+                        81,
+                        71,
+                        2,
+                        NULL,
+                        'Informe de vivienda',
+                        10,
+                        1
+                    ),
+                    (
+                        82,
+                        71,
+                        3,
+                        NULL,
+                        'Justificante de solicitud del informe',
+                        20,
                         1
                     );
                 """
@@ -371,18 +459,23 @@ class CanonicalNomenclatureDetectionTest(
                 expediente,
             )
 
-        self.assertEqual(len(rules), 1)
+        passport_rule = next(
+            rule
+            for rule in rules
+            if rule["codigo_documento"] == "PASAPORTE"
+        )
+
         self.assertEqual(
-            rules[0]["fuente_nomenclatura"],
+            passport_rule["fuente_nomenclatura"],
             "CANONICAL",
         )
         self.assertEqual(
-            rules[0]["codigo_documento"],
-            "PASAPORTE",
+            passport_rule["rol_documental"],
+            "REAGRUPANTE",
         )
         self.assertEqual(
-            rules[0]["rol_documental"],
-            "REAGRUPANTE",
+            passport_rule["patron_nombre"],
+            "PASAPORTE_REAGRUPANTE",
         )
 
     def test_migrated_legacy_rule_is_not_duplicated(self):
@@ -397,12 +490,25 @@ class CanonicalNomenclatureDetectionTest(
                 },
             )
 
-        sources = [
-            rule["fuente_nomenclatura"]
+        passport_rules = [
+            rule
             for rule in rules
+            if (
+                rule["codigo_documento"] == "PASAPORTE"
+                or rule["codigo_documento"]
+                == "PASAPORTE_REAGRUPANTE"
+            )
         ]
 
-        self.assertEqual(sources, ["CANONICAL"])
+        self.assertEqual(len(passport_rules), 1)
+        self.assertEqual(
+            passport_rules[0]["fuente_nomenclatura"],
+            "CANONICAL",
+        )
+        self.assertEqual(
+            passport_rules[0]["codigo_documento"],
+            "PASAPORTE",
+        )
 
     def test_canonical_detection_preserves_role(self):
         result = (
@@ -421,19 +527,214 @@ class CanonicalNomenclatureDetectionTest(
 
         detections = semantic["detecciones"]
 
-        self.assertEqual(len(detections), 1)
-        self.assertEqual(
-            detections[0]["codigo"],
-            "PASAPORTE",
+        passport_detection = next(
+            detection
+            for detection in detections
+            if detection["codigo"] == "PASAPORTE"
         )
+
         self.assertEqual(
-            detections[0]["rol_documental"],
+            passport_detection["rol_documental"],
             "REAGRUPANTE",
         )
         self.assertEqual(
-            detections[0]["origen"],
+            passport_detection["origen"],
             "nomenclatura_canónica",
         )
+
+        housing_detection = next(
+            detection
+            for detection in detections
+            if detection["codigo"] == "INFORME_DE_VIVIENDA"
+        )
+
+        self.assertEqual(
+            housing_detection["origen"],
+            "nomenclatura_canónica",
+        )
+
+    def test_housing_request_receipt_completes_housing_group(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET
+                    ruta = ?,
+                    nombre_archivo = ?,
+                    extension = 'pdf'
+                WHERE id = 1
+                """,
+                (
+                    (
+                        "CLIENTES/EXPEDIENTE_100/"
+                        "RESGUARDO SOLICITUD "
+                        "INFORME VIVIENDA.pdf"
+                    ),
+                    (
+                        "RESGUARDO SOLICITUD "
+                        "INFORME VIVIENDA.pdf"
+                    ),
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET activo = 0
+                WHERE id = 2
+                """
+            )
+            conn.commit()
+
+        result = (
+            doc_state
+            .diagnose_expediente_document_state(100)
+        )
+
+        semantic = result["semantic_readiness"]
+
+        housing = next(
+            group
+            for group in semantic["grupos"]
+            if group["codigo"] == "VIVIENDA"
+        )
+
+        detection = next(
+            detection
+            for detection in semantic["detecciones"]
+            if detection["codigo"]
+            == (
+                "JUSTIFICANTE_SOLICITUD_"
+                "INFORME_VIVIENDA"
+            )
+        )
+
+        self.assertEqual(housing["estado"], "CUMPLIDO")
+        self.assertTrue(housing["cumplido"])
+        self.assertFalse(housing["bloquea_completitud"])
+
+        self.assertEqual(
+            detection["codigo"],
+            (
+                "JUSTIFICANTE_SOLICITUD_"
+                "INFORME_VIVIENDA"
+            ),
+        )
+        self.assertEqual(
+            detection["origen"],
+            "nomenclatura_canónica",
+        )
+
+    def test_housing_report_completes_housing_group(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET
+                    ruta = ?,
+                    nombre_archivo = ?,
+                    extension = 'pdf'
+                WHERE id = 1
+                """,
+                (
+                    (
+                        "CLIENTES/EXPEDIENTE_100/"
+                        "INFORME DE VIVIENDA.pdf"
+                    ),
+                    "INFORME DE VIVIENDA.pdf",
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET activo = 0
+                WHERE id = 2
+                """
+            )
+            conn.commit()
+
+        result = (
+            doc_state
+            .diagnose_expediente_document_state(100)
+        )
+
+        semantic = result["semantic_readiness"]
+
+        housing = next(
+            group
+            for group in semantic["grupos"]
+            if group["codigo"] == "VIVIENDA"
+        )
+
+        detection = next(
+            detection
+            for detection in semantic["detecciones"]
+            if detection["codigo"] == "INFORME_DE_VIVIENDA"
+        )
+
+        self.assertEqual(housing["estado"], "CUMPLIDO")
+        self.assertTrue(housing["cumplido"])
+        self.assertFalse(housing["bloquea_completitud"])
+        self.assertEqual(
+            detection["origen"],
+            "nomenclatura_canónica",
+        )
+
+    def test_generic_request_does_not_match_housing_receipt(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET
+                    ruta = ?,
+                    nombre_archivo = ?,
+                    extension = 'pdf'
+                WHERE id = 1
+                """,
+                (
+                    (
+                        "CLIENTES/EXPEDIENTE_100/"
+                        "SOLICITUD GENERAL.pdf"
+                    ),
+                    "SOLICITUD GENERAL.pdf",
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET activo = 0
+                WHERE id = 2
+                """
+            )
+            conn.commit()
+
+        result = (
+            doc_state
+            .diagnose_expediente_document_state(100)
+        )
+
+        semantic = result["semantic_readiness"]
+
+        housing = next(
+            group
+            for group in semantic["grupos"]
+            if group["codigo"] == "VIVIENDA"
+        )
+
+        codes = {
+            detection["codigo"]
+            for detection in semantic["detecciones"]
+        }
+
+        self.assertNotIn(
+            (
+                "JUSTIFICANTE_SOLICITUD_"
+                "INFORME_VIVIENDA"
+            ),
+            codes,
+        )
+        self.assertEqual(housing["estado"], "PENDIENTE")
+        self.assertFalse(housing["cumplido"])
+        self.assertTrue(housing["bloquea_completitud"])
 
     def test_legacy_is_used_when_canonical_table_is_absent(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -511,7 +812,11 @@ class CanonicalNomenclatureDetectionTest(
             },
         )
 
-        detection = semantic["detecciones"][0]
+        detection = next(
+            detection
+            for detection in semantic["detecciones"]
+            if detection["codigo"] == "PASAPORTE"
+        )
 
         self.assertEqual(
             detection["rol_documental"],

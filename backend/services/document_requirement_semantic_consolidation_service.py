@@ -29,6 +29,13 @@ PROVENANCE_SCHEMA_PATH = (
     / "20260731_create_semantic_requirement_provenance.sql"
 )
 
+NOMENCLATURE_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "database"
+    / "migrations"
+    / "20260731_create_canonical_document_nomenclatures.sql"
+)
+
 
 SEMANTIC_PLAN = [
     # --------------------------------------------------------
@@ -296,6 +303,48 @@ SEMANTIC_PLAN = [
                     "de adecuación de vivienda está pendiente."
                 ),
                 "orden": 20,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "JUSTIFICANTE SOLICITUD "
+                            "INFORME VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "RESGUARDO SOLICITUD "
+                            "INFORME VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "SOLICITUD INFORME "
+                            "ADECUACION VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": (
+                            "JUSTIFICANTE SOLICITUD "
+                            "ADECUACION VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                ],
             },
         ],
     },
@@ -679,15 +728,164 @@ def _get_or_create_catalog_document(
     return int(cursor.lastrowid), True
 
 
+def _normalize_extensions(value):
+    raw = str(
+        value or "pdf,jpg,jpeg,png"
+    ).lower().replace(";", ",")
+
+    extensions = []
+
+    for item in raw.split(","):
+        extension = item.strip().lstrip(".")
+
+        if extension and extension not in extensions:
+            extensions.append(extension)
+
+    return ",".join(extensions) or "pdf,jpg,jpeg,png"
+
+
+def _add_extra_nomenclatures(
+    conn,
+    *,
+    document_id,
+    tipo_id,
+    subtipo_id,
+    role,
+    option_definition,
+):
+    created = 0
+    reused = 0
+    updated = 0
+
+    for nomenclature in (
+        option_definition.get("nomenclatures") or []
+    ):
+        pattern = str(
+            nomenclature.get("patron_nombre") or ""
+        ).strip().upper()
+
+        if not pattern:
+            raise ValueError(
+                "La nomenclatura adicional no tiene patrón"
+            )
+
+        extensions = _normalize_extensions(
+            nomenclature.get("extension_permitida")
+        )
+        priority = int(
+            nomenclature.get("prioridad") or 100
+        )
+        active = int(
+            nomenclature.get("activo", 1) or 0
+        )
+
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM config_nomenclaturas_catalogo
+            WHERE documento_catalogo_id = ?
+              AND tipo_expediente_id = ?
+              AND COALESCE(subtipo_expediente_id, -1) =
+                  COALESCE(?, -1)
+              AND COALESCE(rol_documental, '') =
+                  COALESCE(?, '')
+              AND UPPER(TRIM(patron_nombre)) = ?
+              AND LOWER(TRIM(extension_permitida)) = ?
+            """,
+            (
+                int(document_id),
+                int(tipo_id),
+                subtipo_id,
+                role,
+                pattern,
+                extensions,
+            ),
+        ).fetchone()
+
+        values = (
+            priority,
+            active,
+        )
+
+        if existing:
+            changed = any(
+                [
+                    int(existing["prioridad"] or 100)
+                    != priority,
+                    int(existing["activo"] or 0)
+                    != active,
+                ]
+            )
+
+            conn.execute(
+                """
+                UPDATE config_nomenclaturas_catalogo
+                SET
+                    prioridad = ?,
+                    activo = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                values + (int(existing["id"]),),
+            )
+
+            if changed:
+                updated += 1
+            else:
+                reused += 1
+
+            continue
+
+        conn.execute(
+            """
+            INSERT INTO config_nomenclaturas_catalogo (
+                documento_catalogo_id,
+                tipo_expediente_id,
+                subtipo_expediente_id,
+                rol_documental,
+                patron_nombre,
+                extension_permitida,
+                prioridad,
+                activo,
+                origen_legacy_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                int(document_id),
+                int(tipo_id),
+                subtipo_id,
+                role,
+                pattern,
+                extensions,
+                priority,
+                active,
+            ),
+        )
+
+        created += 1
+
+    return {
+        "created": created,
+        "reused": reused,
+        "updated": updated,
+    }
+
+
 def _add_extra_options(
     conn,
     semantic_group_id,
+    tipo_id,
+    subtipo_id,
     definition,
 ):
     created = 0
     reused = 0
     catalog_created = 0
     catalog_reused = 0
+    nomenclatures_created = 0
+    nomenclatures_reused = 0
+    nomenclatures_updated = 0
 
     for option in definition.get("extra_options") or []:
         document_id, document_created = (
@@ -705,6 +903,25 @@ def _add_extra_options(
         role = str(
             option.get("rol_documental") or ""
         ).strip().upper() or None
+
+        nomenclature_summary = _add_extra_nomenclatures(
+            conn,
+            document_id=document_id,
+            tipo_id=tipo_id,
+            subtipo_id=subtipo_id,
+            role=role,
+            option_definition=option,
+        )
+
+        nomenclatures_created += (
+            nomenclature_summary["created"]
+        )
+        nomenclatures_reused += (
+            nomenclature_summary["reused"]
+        )
+        nomenclatures_updated += (
+            nomenclature_summary["updated"]
+        )
 
         row = conn.execute(
             """
@@ -777,6 +994,9 @@ def _add_extra_options(
         "options_reused": reused,
         "catalog_created": catalog_created,
         "catalog_reused": catalog_reused,
+        "nomenclatures_created": nomenclatures_created,
+        "nomenclatures_reused": nomenclatures_reused,
+        "nomenclatures_updated": nomenclatures_updated,
     }
 
 
@@ -789,11 +1009,22 @@ def consolidate_semantic_groups(
             "No existe el esquema de trazabilidad semántica"
         )
 
+    if not NOMENCLATURE_SCHEMA_PATH.exists():
+        raise FileNotFoundError(
+            "No existe el esquema de nomenclaturas canónicas"
+        )
+
     conn = _connect()
 
     try:
         conn.executescript(
             PROVENANCE_SCHEMA_PATH.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        conn.executescript(
+            NOMENCLATURE_SCHEMA_PATH.read_text(
                 encoding="utf-8"
             )
         )
@@ -806,6 +1037,9 @@ def consolidate_semantic_groups(
             "options_reused": 0,
             "catalog_documents_created": 0,
             "catalog_documents_reused": 0,
+            "nomenclatures_created": 0,
+            "nomenclatures_reused": 0,
+            "nomenclatures_updated": 0,
             "provenance_created": 0,
             "provenance_reused": 0,
             "legacy_groups_deactivated": 0,
@@ -891,6 +1125,8 @@ def consolidate_semantic_groups(
             extra_summary = _add_extra_options(
                 conn,
                 semantic_group_id,
+                tipo_id,
+                subtipo_id,
                 definition,
             )
 
@@ -905,6 +1141,15 @@ def consolidate_semantic_groups(
             )
             summary["catalog_documents_reused"] += (
                 extra_summary["catalog_reused"]
+            )
+            summary["nomenclatures_created"] += (
+                extra_summary["nomenclatures_created"]
+            )
+            summary["nomenclatures_reused"] += (
+                extra_summary["nomenclatures_reused"]
+            )
+            summary["nomenclatures_updated"] += (
+                extra_summary["nomenclatures_updated"]
             )
 
         conn.commit()
