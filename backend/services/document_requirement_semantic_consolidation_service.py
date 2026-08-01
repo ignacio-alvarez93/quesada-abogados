@@ -259,6 +259,67 @@ SEMANTIC_PLAN = [
         "regla": "ALL",
         "legacy_ids": [25, 26, 27],
         "orden": 10,
+        "option_nomenclatures": [
+            {
+                "codigo": "PASAPORTE",
+                "rol_documental": "REAGRUPANTE",
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "PASAPORTE REAGRUPANTE"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "PASAPORTE",
+                "rol_documental": "REAGRUPADO",
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "PASAPORTE REAGRUPADO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "PASAPORTE REAGRUPADA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                ],
+            },
+            {
+                "codigo": "NIE",
+                "rol_documental": "REAGRUPANTE",
+                "nomenclatures": [
+                    {
+                        "patron_nombre": "NIE REAGRUPANTE",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": "TIE REAGRUPANTE",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                ],
+            },
+        ],
     },
     {
         "tipo_codigo": "REAGRUPACION_FAMILIAR",
@@ -268,6 +329,55 @@ SEMANTIC_PLAN = [
         "regla": "ALL",
         "legacy_ids": [28],
         "orden": 20,
+        "option_nomenclatures": [
+            {
+                "codigo": "EMPADRONAMIENTO_CONJUNTO",
+                "rol_documental": None,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "EMPADRONAMIENTO CONJUNTO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "EMPADRONAMIENTO COLECTIVO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": "PADRON CONJUNTO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": "PADRON COLECTIVO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO CONVIVENCIA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 30,
+                    },
+                ],
+            },
+        ],
     },
     {
         "tipo_codigo": "REAGRUPACION_FAMILIAR",
@@ -356,6 +466,46 @@ SEMANTIC_PLAN = [
         "regla": "ALL",
         "legacy_ids": [30],
         "orden": 40,
+        "option_nomenclatures": [
+            {
+                "codigo": "CERTIFICADO_MATRIMONIO",
+                "rol_documental": None,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO MATRIMONIO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": "CERT MATRIMONIO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": (
+                            "ACTA DE MATRIMONIO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": "ACTA MATRIMONIO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 30,
+                    },
+                ],
+            },
+        ],
     },
     {
         "tipo_codigo": "REAGRUPACION_FAMILIAR",
@@ -872,6 +1022,84 @@ def _add_extra_nomenclatures(
     }
 
 
+def _add_option_nomenclatures(
+    conn,
+    semantic_group_id,
+    tipo_id,
+    subtipo_id,
+    definition,
+):
+    created = 0
+    reused = 0
+    updated = 0
+
+    for option in (
+        definition.get("option_nomenclatures") or []
+    ):
+        code = str(
+            option.get("codigo") or ""
+        ).strip().upper()
+
+        role = str(
+            option.get("rol_documental") or ""
+        ).strip().upper() or None
+
+        if not code:
+            raise ValueError(
+                "La nomenclatura de opción no tiene código"
+            )
+
+        row = conn.execute(
+            """
+            SELECT
+                d.id AS documento_catalogo_id
+            FROM config_grupo_requisito_documentos o
+            JOIN config_documentos_catalogo d
+              ON d.id = o.documento_catalogo_id
+            WHERE o.grupo_id = ?
+              AND d.codigo = ?
+              AND COALESCE(o.rol_documental, '') =
+                  COALESCE(?, '')
+              AND o.activo = 1
+            """,
+            (
+                int(semantic_group_id),
+                code,
+                role,
+            ),
+        ).fetchone()
+
+        if not row:
+            raise ValueError(
+                "No existe la opción heredada "
+                f"{code} / {role or 'SIN_ROL'} "
+                f"en el grupo #{semantic_group_id}"
+            )
+
+        nomenclature_summary = (
+            _add_extra_nomenclatures(
+                conn,
+                document_id=int(
+                    row["documento_catalogo_id"]
+                ),
+                tipo_id=tipo_id,
+                subtipo_id=subtipo_id,
+                role=role,
+                option_definition=option,
+            )
+        )
+
+        created += nomenclature_summary["created"]
+        reused += nomenclature_summary["reused"]
+        updated += nomenclature_summary["updated"]
+
+    return {
+        "nomenclatures_created": created,
+        "nomenclatures_reused": reused,
+        "nomenclatures_updated": updated,
+    }
+
+
 def _add_extra_options(
     conn,
     semantic_group_id,
@@ -1121,6 +1349,32 @@ def consolidate_semantic_groups(
                     summary[
                         "legacy_groups_deactivated"
                     ] += 1
+
+            option_nomenclature_summary = (
+                _add_option_nomenclatures(
+                    conn,
+                    semantic_group_id,
+                    tipo_id,
+                    subtipo_id,
+                    definition,
+                )
+            )
+
+            summary["nomenclatures_created"] += (
+                option_nomenclature_summary[
+                    "nomenclatures_created"
+                ]
+            )
+            summary["nomenclatures_reused"] += (
+                option_nomenclature_summary[
+                    "nomenclatures_reused"
+                ]
+            )
+            summary["nomenclatures_updated"] += (
+                option_nomenclature_summary[
+                    "nomenclatures_updated"
+                ]
+            )
 
             extra_summary = _add_extra_options(
                 conn,

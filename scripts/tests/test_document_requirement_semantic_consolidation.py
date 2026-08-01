@@ -472,13 +472,154 @@ class SemanticDocumentRequirementConsolidationTest(
         self.assertEqual(active_legacy, 0)
         self.assertEqual(provenance, 31)
 
+    def test_inherited_option_nomenclatures_are_created(self):
+        first = consolidation.consolidate_semantic_groups()
+        second = consolidation.consolidate_semantic_groups()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            rows = conn.execute(
+                """
+                SELECT
+                    d.codigo,
+                    n.rol_documental,
+                    n.patron_nombre,
+                    n.prioridad,
+                    n.origen_legacy_id
+                FROM config_nomenclaturas_catalogo n
+                JOIN config_documentos_catalogo d
+                  ON d.id = n.documento_catalogo_id
+                WHERE n.tipo_expediente_id = 14
+                  AND n.subtipo_expediente_id = 8
+                  AND (
+                        d.codigo IN (
+                            'PASAPORTE',
+                            'NIE',
+                            'EMPADRONAMIENTO_CONJUNTO',
+                            'CERTIFICADO_MATRIMONIO'
+                        )
+                  )
+                ORDER BY
+                    d.codigo,
+                    n.rol_documental,
+                    n.prioridad,
+                    n.patron_nombre
+                """
+            ).fetchall()
+
+        values = {
+            (
+                row["codigo"],
+                row["rol_documental"],
+                row["patron_nombre"],
+            )
+            for row in rows
+        }
+
+        expected = {
+            (
+                "PASAPORTE",
+                "REAGRUPANTE",
+                "PASAPORTE REAGRUPANTE",
+            ),
+            (
+                "PASAPORTE",
+                "REAGRUPADO",
+                "PASAPORTE REAGRUPADO",
+            ),
+            (
+                "PASAPORTE",
+                "REAGRUPADO",
+                "PASAPORTE REAGRUPADA",
+            ),
+            (
+                "NIE",
+                "REAGRUPANTE",
+                "NIE REAGRUPANTE",
+            ),
+            (
+                "NIE",
+                "REAGRUPANTE",
+                "TIE REAGRUPANTE",
+            ),
+            (
+                "EMPADRONAMIENTO_CONJUNTO",
+                None,
+                "EMPADRONAMIENTO CONJUNTO",
+            ),
+            (
+                "EMPADRONAMIENTO_CONJUNTO",
+                None,
+                "EMPADRONAMIENTO COLECTIVO",
+            ),
+            (
+                "EMPADRONAMIENTO_CONJUNTO",
+                None,
+                "PADRON CONJUNTO",
+            ),
+            (
+                "EMPADRONAMIENTO_CONJUNTO",
+                None,
+                "PADRON COLECTIVO",
+            ),
+            (
+                "EMPADRONAMIENTO_CONJUNTO",
+                None,
+                "CERTIFICADO CONVIVENCIA",
+            ),
+            (
+                "CERTIFICADO_MATRIMONIO",
+                None,
+                "CERTIFICADO MATRIMONIO",
+            ),
+            (
+                "CERTIFICADO_MATRIMONIO",
+                None,
+                "CERT MATRIMONIO",
+            ),
+            (
+                "CERTIFICADO_MATRIMONIO",
+                None,
+                "ACTA DE MATRIMONIO",
+            ),
+            (
+                "CERTIFICADO_MATRIMONIO",
+                None,
+                "ACTA MATRIMONIO",
+            ),
+        }
+
+        self.assertTrue(expected.issubset(values))
+        self.assertEqual(len(rows), 14)
+
+        self.assertEqual(
+            first["nomenclatures_created"],
+            18,
+        )
+        self.assertEqual(
+            second["nomenclatures_created"],
+            0,
+        )
+        self.assertEqual(
+            second["nomenclatures_reused"],
+            18,
+        )
+
+        self.assertTrue(
+            all(
+                row["origen_legacy_id"] is None
+                for row in rows
+            )
+        )
+
     def test_housing_request_nomenclatures_are_created(self):
         first = consolidation.consolidate_semantic_groups()
         second = consolidation.consolidate_semantic_groups()
 
-        self.assertEqual(first["nomenclatures_created"], 4)
+        self.assertEqual(first["nomenclatures_created"], 18)
         self.assertEqual(second["nomenclatures_created"], 0)
-        self.assertEqual(second["nomenclatures_reused"], 4)
+        self.assertEqual(second["nomenclatures_reused"], 18)
 
         with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
