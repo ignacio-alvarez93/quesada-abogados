@@ -373,15 +373,65 @@ class SemanticDocumentRequirementConsolidationTest(
                     'INTEGRACION_DELE',
                     'NACIMIENTO_HIJOS_MENORES',
                     'IDENTIDAD_REPRESENTANTE',
-                    'RELACION_LABORAL',
-                    'VIVIENDA'
+                    'RELACION_LABORAL'
                 )
                 """
             ).fetchall()
 
-        self.assertEqual(len(rows), 5)
+        self.assertEqual(len(rows), 4)
         self.assertTrue(
             all(row[1] == "OPTIONAL" for row in rows)
+        )
+
+    def test_family_reunification_housing_is_mandatory_any(self):
+        consolidation.consolidate_semantic_groups()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            group = conn.execute(
+                """
+                SELECT
+                    g.id,
+                    g.regla_cumplimiento,
+                    g.minimo_documentos
+                FROM config_grupos_requisitos_documentales g
+                JOIN config_tipos_expediente t
+                  ON t.id = g.tipo_expediente_id
+                JOIN config_subtipos_expediente s
+                  ON s.id = g.subtipo_expediente_id
+                WHERE t.codigo = 'REAGRUPACION_FAMILIAR'
+                  AND s.codigo = 'INICIAL'
+                  AND g.codigo = 'VIVIENDA'
+                  AND g.activo = 1
+                """
+            ).fetchone()
+
+            self.assertIsNotNone(group)
+            self.assertEqual(group[1], "ANY")
+            self.assertEqual(group[2], 1)
+
+            options = conn.execute(
+                """
+                SELECT d.codigo
+                FROM config_grupo_requisito_documentos o
+                JOIN config_documentos_catalogo d
+                  ON d.id = o.documento_catalogo_id
+                WHERE o.grupo_id = ?
+                  AND o.activo = 1
+                  AND d.activo = 1
+                ORDER BY d.codigo
+                """,
+                (group[0],),
+            ).fetchall()
+
+        self.assertEqual(
+            {row[0] for row in options},
+            {
+                "INFORME_DE_VIVIENDA",
+                (
+                    "JUSTIFICANTE_SOLICITUD_"
+                    "INFORME_VIVIENDA"
+                ),
+            },
         )
 
     def test_legacy_groups_are_deactivated_and_traced(self):
@@ -445,7 +495,7 @@ class SemanticDocumentRequirementConsolidationTest(
             ).fetchone()[0]
 
         self.assertEqual(semantic_groups, 27)
-        self.assertEqual(semantic_options, 31)
+        self.assertEqual(semantic_options, 32)
 
 
 if __name__ == "__main__":

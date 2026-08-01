@@ -267,9 +267,37 @@ SEMANTIC_PLAN = [
         "subtipo_codigo": "INICIAL",
         "codigo": "VIVIENDA",
         "nombre": "ADECUACIÓN DE LA VIVIENDA",
-        "regla": "OPTIONAL",
+        "regla": "ANY",
         "legacy_ids": [29],
         "orden": 30,
+        "extra_options": [
+            {
+                "codigo": (
+                    "JUSTIFICANTE_SOLICITUD_"
+                    "INFORME_VIVIENDA"
+                ),
+                "nombre": (
+                    "JUSTIFICANTE DE SOLICITUD "
+                    "DEL INFORME DE VIVIENDA"
+                ),
+                "descripcion": (
+                    "Resguardo o justificante que acredita "
+                    "la solicitud del informe de adecuación "
+                    "de vivienda."
+                ),
+                "categoria": "VIVIENDA",
+                "rol_documental": None,
+                "etiqueta_requisito": (
+                    "Justificante de solicitud del "
+                    "informe de vivienda"
+                ),
+                "descripcion_requisito": (
+                    "Alternativa válida mientras el informe "
+                    "de adecuación de vivienda está pendiente."
+                ),
+                "orden": 20,
+            },
+        ],
     },
     {
         "tipo_codigo": "REAGRUPACION_FAMILIAR",
@@ -576,6 +604,182 @@ def _copy_legacy_options(
     return created, reused
 
 
+def _get_or_create_catalog_document(
+    conn,
+    option_definition,
+):
+    code = str(
+        option_definition.get("codigo") or ""
+    ).strip().upper()
+
+    name = str(
+        option_definition.get("nombre") or ""
+    ).strip().upper()
+
+    if not code:
+        raise ValueError(
+            "La opción documental adicional no tiene código"
+        )
+
+    if not name:
+        raise ValueError(
+            f"La opción documental {code} no tiene nombre"
+        )
+
+    row = conn.execute(
+        """
+        SELECT id
+        FROM config_documentos_catalogo
+        WHERE codigo = ?
+        """,
+        (code,),
+    ).fetchone()
+
+    values = (
+        name,
+        str(
+            option_definition.get("descripcion") or ""
+        ).strip() or None,
+        str(
+            option_definition.get("categoria") or ""
+        ).strip().upper() or None,
+        1,
+    )
+
+    if row:
+        conn.execute(
+            """
+            UPDATE config_documentos_catalogo
+            SET
+                nombre = ?,
+                descripcion = ?,
+                categoria = ?,
+                activo = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            values + (int(row["id"]),),
+        )
+        return int(row["id"]), False
+
+    cursor = conn.execute(
+        """
+        INSERT INTO config_documentos_catalogo (
+            codigo,
+            nombre,
+            descripcion,
+            categoria,
+            activo
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (code,) + values,
+    )
+
+    return int(cursor.lastrowid), True
+
+
+def _add_extra_options(
+    conn,
+    semantic_group_id,
+    definition,
+):
+    created = 0
+    reused = 0
+    catalog_created = 0
+    catalog_reused = 0
+
+    for option in definition.get("extra_options") or []:
+        document_id, document_created = (
+            _get_or_create_catalog_document(
+                conn,
+                option,
+            )
+        )
+
+        if document_created:
+            catalog_created += 1
+        else:
+            catalog_reused += 1
+
+        role = str(
+            option.get("rol_documental") or ""
+        ).strip().upper() or None
+
+        row = conn.execute(
+            """
+            SELECT id
+            FROM config_grupo_requisito_documentos
+            WHERE grupo_id = ?
+              AND documento_catalogo_id = ?
+              AND COALESCE(rol_documental, '') =
+                  COALESCE(?, '')
+            """,
+            (
+                int(semantic_group_id),
+                int(document_id),
+                role,
+            ),
+        ).fetchone()
+
+        values = (
+            str(
+                option.get("etiqueta_requisito") or ""
+            ).strip() or None,
+            str(
+                option.get("descripcion_requisito") or ""
+            ).strip() or None,
+            int(option.get("orden") or 0),
+            1,
+        )
+
+        if row:
+            conn.execute(
+                """
+                UPDATE config_grupo_requisito_documentos
+                SET
+                    etiqueta_requisito = ?,
+                    descripcion_requisito = ?,
+                    orden = ?,
+                    activo = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                values + (int(row["id"]),),
+            )
+            reused += 1
+            continue
+
+        conn.execute(
+            """
+            INSERT INTO config_grupo_requisito_documentos (
+                grupo_id,
+                documento_catalogo_id,
+                rol_documental,
+                etiqueta_requisito,
+                descripcion_requisito,
+                orden,
+                activo
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(semantic_group_id),
+                int(document_id),
+                role,
+            )
+            + values,
+        )
+        created += 1
+
+    return {
+        "options_created": created,
+        "options_reused": reused,
+        "catalog_created": catalog_created,
+        "catalog_reused": catalog_reused,
+    }
+
+
 def consolidate_semantic_groups(
     *,
     deactivate_legacy=True,
@@ -600,6 +804,8 @@ def consolidate_semantic_groups(
             "semantic_groups_reused": 0,
             "options_created": 0,
             "options_reused": 0,
+            "catalog_documents_created": 0,
+            "catalog_documents_reused": 0,
             "provenance_created": 0,
             "provenance_reused": 0,
             "legacy_groups_deactivated": 0,
@@ -681,6 +887,25 @@ def consolidate_semantic_groups(
                     summary[
                         "legacy_groups_deactivated"
                     ] += 1
+
+            extra_summary = _add_extra_options(
+                conn,
+                semantic_group_id,
+                definition,
+            )
+
+            summary["options_created"] += (
+                extra_summary["options_created"]
+            )
+            summary["options_reused"] += (
+                extra_summary["options_reused"]
+            )
+            summary["catalog_documents_created"] += (
+                extra_summary["catalog_created"]
+            )
+            summary["catalog_documents_reused"] += (
+                extra_summary["catalog_reused"]
+            )
 
         conn.commit()
         return summary

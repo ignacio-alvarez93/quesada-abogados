@@ -74,7 +74,21 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         'ESTADO_CIVIL',
                         1
                     ),
-                    (5, 'DELE', 'DELE', 'NACIONALIDAD', 1);
+                    (5, 'DELE', 'DELE', 'NACIONALIDAD', 1),
+                    (
+                        6,
+                        'INFORME_DE_VIVIENDA',
+                        'INFORME DE VIVIENDA',
+                        'VIVIENDA',
+                        1
+                    ),
+                    (
+                        7,
+                        'JUSTIFICANTE_SOLICITUD_INFORME_VIVIENDA',
+                        'JUSTIFICANTE DE SOLICITUD DEL INFORME DE VIVIENDA',
+                        'VIVIENDA',
+                        1
+                    );
 
                 INSERT INTO config_grupos_requisitos_documentales (
                     id,
@@ -130,6 +144,17 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         'OPTIONAL',
                         0,
                         40,
+                        1
+                    ),
+                    (
+                        45,
+                        14,
+                        8,
+                        'VIVIENDA',
+                        'ADECUACIÓN DE LA VIVIENDA',
+                        'ANY',
+                        1,
+                        45,
                         1
                     );
 
@@ -222,6 +247,24 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         NULL,
                         'DELE',
                         10,
+                        1
+                    ),
+                    (
+                        451,
+                        45,
+                        6,
+                        NULL,
+                        'Informe de vivienda',
+                        10,
+                        1
+                    ),
+                    (
+                        452,
+                        45,
+                        7,
+                        NULL,
+                        'Justificante de solicitud del informe',
+                        20,
                         1
                     );
                 """
@@ -353,6 +396,7 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                     "CERTIFICADO_MATRIMONIO",
                     "PASAPORTE",
                     "NIE",
+                    "INFORME_DE_VIVIENDA",
                 ],
             )
         )
@@ -370,6 +414,88 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
             "OPCIONAL_NO_APORTADO",
         )
         self.assertTrue(result["completo"])
+
+    def test_housing_group_blocks_without_document(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [],
+            )
+        )
+
+        housing = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VIVIENDA"
+        )
+
+        self.assertEqual(housing["estado"], "PENDIENTE")
+        self.assertFalse(housing["cumplido"])
+        self.assertTrue(housing["bloquea_completitud"])
+        self.assertEqual(housing["documentos_detectados"], 0)
+        self.assertEqual(housing["documentos_requeridos"], 1)
+
+    def test_housing_group_accepts_housing_report(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": "INFORME_DE_VIVIENDA",
+                        "archivo": "informe_vivienda.pdf",
+                    },
+                ],
+            )
+        )
+
+        housing = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VIVIENDA"
+        )
+
+        self.assertEqual(housing["estado"], "CUMPLIDO")
+        self.assertTrue(housing["cumplido"])
+        self.assertFalse(housing["bloquea_completitud"])
+        self.assertEqual(housing["documentos_detectados"], 1)
+        self.assertEqual(housing["documentos_requeridos"], 1)
+
+    def test_housing_group_accepts_request_receipt(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": (
+                            "JUSTIFICANTE_SOLICITUD_"
+                            "INFORME_VIVIENDA"
+                        ),
+                        "archivo": (
+                            "justificante_solicitud_"
+                            "informe_vivienda.pdf"
+                        ),
+                    },
+                ],
+            )
+        )
+
+        housing = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VIVIENDA"
+        )
+
+        self.assertEqual(housing["estado"], "CUMPLIDO")
+        self.assertTrue(housing["cumplido"])
+        self.assertFalse(housing["bloquea_completitud"])
+        self.assertEqual(housing["documentos_detectados"], 1)
+        self.assertEqual(housing["documentos_requeridos"], 1)
 
     def test_inactive_and_legacy_groups_are_ignored(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
