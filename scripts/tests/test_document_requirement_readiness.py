@@ -88,6 +88,55 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         'JUSTIFICANTE DE SOLICITUD DEL INFORME DE VIVIENDA',
                         'VIVIENDA',
                         1
+                    ),
+                    (
+                        8,
+                        'ACREDITACION_MEDIOS_ECONOMICOS',
+                        'ACREDITACIÓN DE MEDIOS ECONÓMICOS',
+                        'LEGACY_AGGREGATE',
+                        1
+                    ),
+                    (
+                        9,
+                        'NOMINAS',
+                        'NÓMINAS',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    ),
+                    (
+                        10,
+                        'CONTRATO_TRABAJO',
+                        'CONTRATO DE TRABAJO',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    ),
+                    (
+                        11,
+                        'VIDA_LABORAL',
+                        'VIDA LABORAL',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    ),
+                    (
+                        12,
+                        'DECLARACION_IRPF',
+                        'DECLARACIÓN DEL IRPF',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    ),
+                    (
+                        13,
+                        'EXTRACTOS_BANCARIOS',
+                        'EXTRACTOS BANCARIOS',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    ),
+                    (
+                        14,
+                        'CERTIFICADO_BANCARIO',
+                        'CERTIFICADO BANCARIO',
+                        'MEDIOS_ECONOMICOS',
+                        1
                     );
 
                 INSERT INTO config_grupos_requisitos_documentales (
@@ -155,6 +204,17 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         'ANY',
                         1,
                         45,
+                        1
+                    ),
+                    (
+                        50,
+                        14,
+                        8,
+                        'MEDIOS_ECONOMICOS',
+                        'ACREDITACIÓN DE MEDIOS ECONÓMICOS',
+                        'ANY',
+                        1,
+                        50,
                         1
                     );
 
@@ -265,6 +325,69 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         NULL,
                         'Justificante de solicitud del informe',
                         20,
+                        1
+                    ),
+                    (
+                        501,
+                        50,
+                        8,
+                        NULL,
+                        'Acreditación agregada legacy',
+                        0,
+                        1
+                    ),
+                    (
+                        502,
+                        50,
+                        9,
+                        'REAGRUPANTE',
+                        'Nóminas del reagrupante',
+                        10,
+                        1
+                    ),
+                    (
+                        503,
+                        50,
+                        10,
+                        'REAGRUPANTE',
+                        'Contrato de trabajo del reagrupante',
+                        20,
+                        1
+                    ),
+                    (
+                        504,
+                        50,
+                        11,
+                        'REAGRUPANTE',
+                        'Vida laboral del reagrupante',
+                        30,
+                        1
+                    ),
+                    (
+                        505,
+                        50,
+                        12,
+                        'REAGRUPANTE',
+                        'Declaración del IRPF',
+                        40,
+                        1
+                    ),
+                    (
+                        506,
+                        50,
+                        13,
+                        'REAGRUPANTE',
+                        'Extractos bancarios',
+                        50,
+                        1
+                    ),
+                    (
+                        507,
+                        50,
+                        14,
+                        'REAGRUPANTE',
+                        'Certificado bancario',
+                        60,
                         1
                     );
                 """
@@ -397,6 +520,12 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                     "PASAPORTE",
                     "NIE",
                     "INFORME_DE_VIVIENDA",
+                    {
+                        "codigo": "NOMINAS",
+                        "rol_documental": (
+                            "REAGRUPANTE"
+                        ),
+                    },
                 ],
             )
         )
@@ -632,6 +761,119 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
             ["ACTA_NACIMIENTO"],
         )
 
+    def test_economic_group_blocks_without_evidence(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [],
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"]
+            == "MEDIOS_ECONOMICOS"
+        )
+
+        self.assertFalse(group["cumplido"])
+        self.assertTrue(
+            group["bloquea_completitud"]
+        )
+        self.assertEqual(
+            group["documentos_requeridos"],
+            1,
+        )
+
+    def test_economic_group_accepts_payroll_evidence(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": "NOMINAS",
+                        "rol_documental": (
+                            "REAGRUPANTE"
+                        ),
+                    },
+                ],
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"]
+            == "MEDIOS_ECONOMICOS"
+        )
+
+        self.assertTrue(group["cumplido"])
+        self.assertEqual(
+            group["documentos_detectados"],
+            1,
+        )
+
+    def test_economic_role_must_be_reagrupante(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": "NOMINAS",
+                        "rol_documental": (
+                            "REAGRUPADO"
+                        ),
+                    },
+                ],
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"]
+            == "MEDIOS_ECONOMICOS"
+        )
+
+        self.assertFalse(group["cumplido"])
+        self.assertEqual(
+            group[
+                "opciones_ambiguas_por_rol"
+            ],
+            1,
+        )
+
+    def test_economic_legacy_aggregate_remains_valid(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    "ACREDITACION_MEDIOS_ECONOMICOS",
+                ],
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"]
+            == "MEDIOS_ECONOMICOS"
+        )
+
+        self.assertTrue(group["cumplido"])
+        self.assertEqual(
+            group["documentos_detectados"],
+            1,
+        )
+
     def test_inactive_and_legacy_groups_are_ignored(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
@@ -648,7 +890,7 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                 )
                 VALUES
                     (
-                        50,
+                        60,
                         14,
                         8,
                         'LEGACY_REQ_1_PASAPORTE',
@@ -658,7 +900,7 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         1
                     ),
                     (
-                        60,
+                        70,
                         14,
                         8,
                         'INACTIVO',

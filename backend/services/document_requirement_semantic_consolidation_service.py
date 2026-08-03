@@ -611,9 +611,238 @@ SEMANTIC_PLAN = [
         "subtipo_codigo": "INICIAL",
         "codigo": "MEDIOS_ECONOMICOS",
         "nombre": "ACREDITACIÓN DE MEDIOS ECONÓMICOS",
-        "regla": "ALL",
+        "regla": "ANY",
         "legacy_ids": [31],
         "orden": 50,
+        "extra_options": [
+            {
+                "codigo": "NOMINAS",
+                "nombre": "NÓMINAS",
+                "descripcion": (
+                    "Nómina o conjunto de nóminas que "
+                    "acreditan ingresos del reagrupante."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Nóminas del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia documental de ingresos "
+                    "laborales periódicos."
+                ),
+                "orden": 10,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "NOMINA REAGRUPANTE"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "NOMINAS REAGRUPANTE"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "CONTRATO_TRABAJO",
+                "nombre": "CONTRATO DE TRABAJO",
+                "descripcion": (
+                    "Contrato laboral del reagrupante."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Contrato de trabajo del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia de la relación laboral "
+                    "que origina los ingresos."
+                ),
+                "orden": 20,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "CONTRATO TRABAJO REAGRUPANTE"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "CONTRATO DE TRABAJO "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "VIDA_LABORAL",
+                "nombre": "VIDA LABORAL",
+                "descripcion": (
+                    "Informe de vida laboral del "
+                    "reagrupante."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Vida laboral del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia de altas y trayectoria "
+                    "laboral."
+                ),
+                "orden": 30,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "VIDA LABORAL REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "INFORME VIDA LABORAL "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 20,
+                    },
+                ],
+            },
+            {
+                "codigo": "DECLARACION_IRPF",
+                "nombre": "DECLARACIÓN DEL IRPF",
+                "descripcion": (
+                    "Declaración del IRPF o declaración "
+                    "de la renta del reagrupante."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Declaración de la renta"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia fiscal de ingresos "
+                    "declarados."
+                ),
+                "orden": 40,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "DECLARACION IRPF "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "DECLARACION RENTA "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "DECLARACION DE LA RENTA "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "EXTRACTOS_BANCARIOS",
+                "nombre": "EXTRACTOS BANCARIOS",
+                "descripcion": (
+                    "Extractos bancarios aportados como "
+                    "evidencia de fondos o ingresos."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Extractos bancarios del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia bancaria de saldos, "
+                    "movimientos o ingresos."
+                ),
+                "orden": 50,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "EXTRACTO BANCARIO "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "EXTRACTOS BANCARIOS "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "CERTIFICADO_BANCARIO",
+                "nombre": "CERTIFICADO BANCARIO",
+                "descripcion": (
+                    "Certificado bancario de saldo, "
+                    "titularidad o fondos disponibles."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Certificado bancario del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia bancaria emitida por "
+                    "la entidad financiera."
+                ),
+                "orden": 60,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO BANCARIO "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO SALDO "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 20,
+                    },
+                ],
+            },
+        ],
     },
 ]
 

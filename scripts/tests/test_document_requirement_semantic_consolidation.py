@@ -595,7 +595,7 @@ class SemanticDocumentRequirementConsolidationTest(
 
         self.assertEqual(
             first["nomenclatures_created"],
-            26,
+            39,
         )
         self.assertEqual(
             second["nomenclatures_created"],
@@ -603,7 +603,7 @@ class SemanticDocumentRequirementConsolidationTest(
         )
         self.assertEqual(
             second["nomenclatures_reused"],
-            26,
+            39,
         )
 
         self.assertTrue(
@@ -611,6 +611,116 @@ class SemanticDocumentRequirementConsolidationTest(
                 row["origen_legacy_id"] is None
                 for row in rows
             )
+        )
+
+    def test_economic_evidence_options_are_created(self):
+        consolidation.consolidate_semantic_groups()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            group = conn.execute(
+                """
+                SELECT
+                    id,
+                    regla_cumplimiento,
+                    minimo_documentos
+                FROM config_grupos_requisitos_documentales
+                WHERE tipo_expediente_id = 14
+                  AND subtipo_expediente_id = 8
+                  AND codigo = 'MEDIOS_ECONOMICOS'
+                """
+            ).fetchone()
+
+            rows = conn.execute(
+                """
+                SELECT
+                    d.codigo,
+                    o.rol_documental,
+                    o.orden
+                FROM config_grupo_requisito_documentos o
+                JOIN config_documentos_catalogo d
+                  ON d.id = o.documento_catalogo_id
+                WHERE o.grupo_id = ?
+                  AND o.activo = 1
+                ORDER BY o.orden, o.id
+                """,
+                (int(group["id"]),),
+            ).fetchall()
+
+            nomenclatures = conn.execute(
+                """
+                SELECT
+                    d.codigo,
+                    n.patron_nombre,
+                    n.extension_permitida,
+                    n.prioridad
+                FROM config_nomenclaturas_catalogo n
+                JOIN config_documentos_catalogo d
+                  ON d.id = n.documento_catalogo_id
+                WHERE n.tipo_expediente_id = 14
+                  AND n.subtipo_expediente_id = 8
+                  AND d.codigo IN (
+                      'NOMINAS',
+                      'CONTRATO_TRABAJO',
+                      'VIDA_LABORAL',
+                      'DECLARACION_IRPF',
+                      'EXTRACTOS_BANCARIOS',
+                      'CERTIFICADO_BANCARIO'
+                  )
+                ORDER BY
+                    d.codigo,
+                    n.prioridad,
+                    n.patron_nombre
+                """
+            ).fetchall()
+
+        self.assertIsNotNone(group)
+        self.assertEqual(
+            group["regla_cumplimiento"],
+            "ANY",
+        )
+        self.assertEqual(
+            int(group["minimo_documentos"]),
+            1,
+        )
+
+        codes = {
+            row["codigo"]
+            for row in rows
+        }
+
+        self.assertEqual(
+            codes,
+            {
+                "ACREDITACION_MEDIOS_ECONOMICOS",
+                "NOMINAS",
+                "CONTRATO_TRABAJO",
+                "VIDA_LABORAL",
+                "DECLARACION_IRPF",
+                "EXTRACTOS_BANCARIOS",
+                "CERTIFICADO_BANCARIO",
+            },
+        )
+
+        economic_rows = [
+            row
+            for row in rows
+            if row["codigo"]
+            != "ACREDITACION_MEDIOS_ECONOMICOS"
+        ]
+
+        self.assertTrue(
+            all(
+                row["rol_documental"]
+                == "REAGRUPANTE"
+                for row in economic_rows
+            )
+        )
+
+        self.assertEqual(
+            len(nomenclatures),
+            13,
         )
 
     def test_housing_report_nomenclatures_are_created(self):
@@ -675,9 +785,9 @@ class SemanticDocumentRequirementConsolidationTest(
         first = consolidation.consolidate_semantic_groups()
         second = consolidation.consolidate_semantic_groups()
 
-        self.assertEqual(first["nomenclatures_created"], 26)
+        self.assertEqual(first["nomenclatures_created"], 39)
         self.assertEqual(second["nomenclatures_created"], 0)
-        self.assertEqual(second["nomenclatures_reused"], 26)
+        self.assertEqual(second["nomenclatures_reused"], 39)
 
         with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
@@ -745,7 +855,7 @@ class SemanticDocumentRequirementConsolidationTest(
             ).fetchone()[0]
 
         self.assertEqual(semantic_groups, 27)
-        self.assertEqual(semantic_options, 33)
+        self.assertEqual(semantic_options, 39)
 
 
 if __name__ == "__main__":
