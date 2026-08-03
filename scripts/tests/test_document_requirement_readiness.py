@@ -874,6 +874,99 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
             1,
         )
 
+    def test_economic_summary_reports_missing_evidence(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [],
+            )
+        )
+
+        summary = result["evaluacion_economica"]
+
+        self.assertTrue(summary["aplicable"])
+        self.assertFalse(
+            summary[
+                "evidencia_documental_aportada"
+            ]
+        )
+        self.assertEqual(
+            summary["documentos_detectados"],
+            0,
+        )
+        self.assertEqual(
+            summary["codigos_detectados"],
+            [],
+        )
+        self.assertFalse(
+            summary[
+                "suficiencia_economica_evaluada"
+            ]
+        )
+        self.assertIsNone(
+            summary["suficiencia_economica"]
+        )
+        self.assertEqual(
+            summary["estado"],
+            "SIN_EVIDENCIA",
+        )
+
+    def test_economic_summary_reports_detected_evidence(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": "NOMINAS",
+                        "rol_documental": (
+                            "REAGRUPANTE"
+                        ),
+                    },
+                    {
+                        "codigo": "VIDA_LABORAL",
+                        "rol_documental": (
+                            "REAGRUPANTE"
+                        ),
+                    },
+                ],
+            )
+        )
+
+        summary = result["evaluacion_economica"]
+
+        self.assertTrue(
+            summary[
+                "evidencia_documental_aportada"
+            ]
+        )
+        self.assertEqual(
+            summary["documentos_detectados"],
+            2,
+        )
+        self.assertEqual(
+            summary["codigos_detectados"],
+            [
+                "NOMINAS",
+                "VIDA_LABORAL",
+            ],
+        )
+        self.assertFalse(
+            summary[
+                "suficiencia_economica_evaluada"
+            ]
+        )
+        self.assertIsNone(
+            summary["suficiencia_economica"]
+        )
+        self.assertEqual(
+            summary["estado"],
+            "EVIDENCIA_APORTADA",
+        )
+
     def test_inactive_and_legacy_groups_are_ignored(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(

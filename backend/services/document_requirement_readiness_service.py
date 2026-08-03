@@ -554,6 +554,69 @@ def _evaluate_group(group, detections):
     }
 
 
+def _build_economic_evidence_summary(
+    evaluated_groups,
+):
+    group = next(
+        (
+            item
+            for item in evaluated_groups
+            if _norm(item.get("codigo"))
+            == "MEDIOS_ECONOMICOS"
+        ),
+        None,
+    )
+
+    if not group:
+        return {
+            "aplicable": False,
+            "evidencia_documental_aportada": False,
+            "documentos_detectados": 0,
+            "codigos_detectados": [],
+            "suficiencia_economica_evaluada": False,
+            "suficiencia_economica": None,
+            "estado": "NO_APLICABLE",
+        }
+
+    detected_options = [
+        option
+        for option in group.get("opciones", [])
+        if option.get("detectado")
+    ]
+
+    detected_codes = sorted(
+        {
+            _norm(
+                option.get("documento_codigo")
+            )
+            for option in detected_options
+            if _norm(
+                option.get("documento_codigo")
+            )
+        }
+    )
+
+    evidence_detected = bool(detected_options)
+
+    return {
+        "aplicable": True,
+        "evidencia_documental_aportada": (
+            evidence_detected
+        ),
+        "documentos_detectados": len(
+            detected_options
+        ),
+        "codigos_detectados": detected_codes,
+        "suficiencia_economica_evaluada": False,
+        "suficiencia_economica": None,
+        "estado": (
+            "EVIDENCIA_APORTADA"
+            if evidence_detected
+            else "SIN_EVIDENCIA"
+        ),
+    }
+
+
 def evaluate_semantic_requirement_readiness(
     tipo_expediente_id,
     subtipo_expediente_id=None,
@@ -646,6 +709,11 @@ def evaluate_semantic_requirement_readiness(
             and not blocking_groups
         ),
         "detecciones": normalized_detections,
+        "evaluacion_economica": (
+            _build_economic_evidence_summary(
+                evaluated_groups
+            )
+        ),
         "contexto": context,
         "advertencias_contexto": [
             group["contexto_documental"]["advertencia"]
