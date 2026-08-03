@@ -595,7 +595,7 @@ class SemanticDocumentRequirementConsolidationTest(
 
         self.assertEqual(
             first["nomenclatures_created"],
-            22,
+            26,
         )
         self.assertEqual(
             second["nomenclatures_created"],
@@ -603,7 +603,7 @@ class SemanticDocumentRequirementConsolidationTest(
         )
         self.assertEqual(
             second["nomenclatures_reused"],
-            22,
+            26,
         )
 
         self.assertTrue(
@@ -675,9 +675,9 @@ class SemanticDocumentRequirementConsolidationTest(
         first = consolidation.consolidate_semantic_groups()
         second = consolidation.consolidate_semantic_groups()
 
-        self.assertEqual(first["nomenclatures_created"], 22)
+        self.assertEqual(first["nomenclatures_created"], 26)
         self.assertEqual(second["nomenclatures_created"], 0)
-        self.assertEqual(second["nomenclatures_reused"], 22)
+        self.assertEqual(second["nomenclatures_reused"], 26)
 
         with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
@@ -745,7 +745,7 @@ class SemanticDocumentRequirementConsolidationTest(
             ).fetchone()[0]
 
         self.assertEqual(semantic_groups, 27)
-        self.assertEqual(semantic_options, 32)
+        self.assertEqual(semantic_options, 33)
 
 
 if __name__ == "__main__":

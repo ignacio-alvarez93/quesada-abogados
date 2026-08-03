@@ -497,6 +497,141 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
         self.assertEqual(housing["documentos_detectados"], 1)
         self.assertEqual(housing["documentos_requeridos"], 1)
 
+    def test_spouse_requires_marriage_certificate(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": (
+                            "CERTIFICADO_MATRIMONIO"
+                        ),
+                    },
+                ],
+                context={
+                    (
+                        "vinculo_reagrupado_"
+                        "reagrupante"
+                    ): "CÓNYUGE",
+                },
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VINCULO"
+        )
+
+        self.assertTrue(group["cumplido"])
+        self.assertTrue(
+            group[
+                "filtro_contextual_aplicado"
+            ]
+        )
+        self.assertEqual(
+            [
+                option["documento_codigo"]
+                for option in group["opciones"]
+            ],
+            ["CERTIFICADO_MATRIMONIO"],
+        )
+
+    def test_spouse_does_not_accept_birth_certificate(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                ["ACTA_NACIMIENTO"],
+                context={
+                    (
+                        "vinculo_reagrupado_"
+                        "reagrupante"
+                    ): "CÓNYUGE",
+                },
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VINCULO"
+        )
+
+        self.assertFalse(group["cumplido"])
+        self.assertEqual(
+            [
+                option["documento_codigo"]
+                for option in group["opciones"]
+            ],
+            ["CERTIFICADO_MATRIMONIO"],
+        )
+
+    def test_minor_child_requires_birth_certificate(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                ["ACTA_NACIMIENTO"],
+                context={
+                    (
+                        "vinculo_reagrupado_"
+                        "reagrupante"
+                    ): "HIJO/A MENOR 18 AÑOS",
+                },
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VINCULO"
+        )
+
+        self.assertTrue(group["cumplido"])
+        self.assertEqual(
+            [
+                option["documento_codigo"]
+                for option in group["opciones"]
+            ],
+            ["ACTA_NACIMIENTO"],
+        )
+
+    def test_minor_child_does_not_accept_marriage_certificate(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                ["CERTIFICADO_MATRIMONIO"],
+                context={
+                    (
+                        "vinculo_reagrupado_"
+                        "reagrupante"
+                    ): "HIJO/A MENOR 18 AÑOS",
+                },
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VINCULO"
+        )
+
+        self.assertFalse(group["cumplido"])
+        self.assertEqual(
+            [
+                option["documento_codigo"]
+                for option in group["opciones"]
+            ],
+            ["ACTA_NACIMIENTO"],
+        )
+
     def test_inactive_and_legacy_groups_are_ignored(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(

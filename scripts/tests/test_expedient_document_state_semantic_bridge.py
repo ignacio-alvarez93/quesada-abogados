@@ -474,5 +474,72 @@ class ExpedientDocumentStateSemanticBridgeTest(
         )
 
 
+    def test_diagnosis_passes_dynamic_form_context_to_readiness(self):
+        expediente = {
+            "id": 100,
+            "tipo_expediente_id": 14,
+            "subtipo_expediente_id": 8,
+        }
+
+        with patch.object(
+            doc_state.dynamic_form_service,
+            "load_datos_especificos",
+            return_value={
+                (
+                    "vinculo_reagrupado_"
+                    "reagrupante"
+                ): "HIJO/A MENOR 18 AÑOS",
+            },
+        ):
+            context = (
+                doc_state
+                ._load_semantic_document_context(
+                    expediente
+                )
+            )
+
+        self.assertEqual(
+            context[
+                (
+                    "vinculo_reagrupado_"
+                    "reagrupante"
+                )
+            ],
+            "HIJO/A MENOR 18 AÑOS",
+        )
+
+        with patch.object(
+            doc_state.semantic_readiness_service,
+            (
+                "evaluate_semantic_"
+                "requirement_readiness"
+            ),
+            return_value={
+                "completo": False,
+                "grupos": [],
+            },
+        ) as mocked_readiness:
+            doc_state._evaluate_semantic_readiness_safe(
+                expediente,
+                [
+                    {
+                        "codigo": "ACTA_NACIMIENTO",
+                    },
+                ],
+                context=context,
+            )
+
+        mocked_readiness.assert_called_once_with(
+            14,
+            8,
+            [
+                {
+                    "codigo": "ACTA_NACIMIENTO",
+                },
+            ],
+            context=context,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

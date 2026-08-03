@@ -30,6 +30,9 @@ from backend.services import (
     document_requirement_readiness_service as semantic_readiness_service,
 )
 from backend.services import (
+    expedient_dynamic_form_service as dynamic_form_service,
+)
+from backend.services import (
     document_role_inference_service as role_inference_service,
 )
 from backend.services import (
@@ -1389,9 +1392,36 @@ def _summarize_role_inferences(detections):
     return summary
 
 
+def _load_semantic_document_context(expediente):
+    """
+    Carga el contexto documental dinámico del expediente.
+
+    Es tolerante a:
+    - tablas dinámicas todavía no inicializadas;
+    - expedientes sin datos específicos;
+    - errores de lectura que no deben romper el motor legacy.
+    """
+    expediente_id = expediente.get("id")
+
+    if not expediente_id:
+        return {}
+
+    try:
+        return (
+            dynamic_form_service
+            .load_datos_especificos(
+                expediente_id
+            )
+            or {}
+        )
+    except Exception:
+        return {}
+
+
 def _evaluate_semantic_readiness_safe(
     expediente,
     detections,
+    context=None,
 ):
     """
     Ejecuta el motor semántico sin permitir que sus errores rompan
@@ -1404,6 +1434,7 @@ def _evaluate_semantic_readiness_safe(
                 expediente.get("tipo_expediente_id"),
                 expediente.get("subtipo_expediente_id"),
                 detections,
+                context=context,
             )
         )
 
@@ -1452,12 +1483,19 @@ def diagnose_expediente_document_state(expediente_id):
             expediente,
         )
 
+        semantic_document_context = (
+            _load_semantic_document_context(
+                expediente
+            )
+        )
+
         root = expediente.get("box_folder_path")
         if not root:
             semantic_result = (
                 _evaluate_semantic_readiness_safe(
                     expediente,
                     [],
+                    context=semantic_document_context,
                 )
             )
 
@@ -1576,6 +1614,7 @@ def diagnose_expediente_document_state(expediente_id):
     semantic_result = _evaluate_semantic_readiness_safe(
         expediente,
         semantic_detections,
+        context=semantic_document_context,
     )
     role_inference_summary = (
         _summarize_role_inferences(

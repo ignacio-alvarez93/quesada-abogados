@@ -510,6 +510,61 @@ SEMANTIC_PLAN = [
         "regla": "ALL",
         "legacy_ids": [30],
         "orden": 40,
+        "extra_options": [
+            {
+                "codigo": "ACTA_NACIMIENTO",
+                "nombre": "ACTA DE NACIMIENTO",
+                "descripcion": (
+                    "Documento que acredita la filiación "
+                    "entre descendiente y reagrupante."
+                ),
+                "categoria": "ESTADO_CIVIL",
+                "rol_documental": None,
+                "etiqueta_requisito": (
+                    "Acta de nacimiento para acreditar "
+                    "el vínculo de descendiente"
+                ),
+                "descripcion_requisito": (
+                    "Aplicable a expedientes de reagrupación "
+                    "de hijos o hijas."
+                ),
+                "orden": 20,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": "ACTA DE NACIMIENTO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": "ACTA NACIMIENTO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO DE NACIMIENTO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO NACIMIENTO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 30,
+                    },
+                ],
+            },
+        ],
         "option_nomenclatures": [
             {
                 "codigo": "CERTIFICADO_MATRIMONIO",
