@@ -595,7 +595,7 @@ class SemanticDocumentRequirementConsolidationTest(
 
         self.assertEqual(
             first["nomenclatures_created"],
-            18,
+            22,
         )
         self.assertEqual(
             second["nomenclatures_created"],
@@ -603,7 +603,65 @@ class SemanticDocumentRequirementConsolidationTest(
         )
         self.assertEqual(
             second["nomenclatures_reused"],
-            18,
+            22,
+        )
+
+        self.assertTrue(
+            all(
+                row["origen_legacy_id"] is None
+                for row in rows
+            )
+        )
+
+    def test_housing_report_nomenclatures_are_created(self):
+        consolidation.consolidate_semantic_groups()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            rows = conn.execute(
+                """
+                SELECT
+                    d.codigo,
+                    n.patron_nombre,
+                    n.extension_permitida,
+                    n.prioridad,
+                    n.origen_legacy_id
+                FROM config_nomenclaturas_catalogo n
+                JOIN config_documentos_catalogo d
+                  ON d.id = n.documento_catalogo_id
+                WHERE d.codigo = 'INFORME_DE_VIVIENDA'
+                  AND n.tipo_expediente_id = 14
+                  AND n.subtipo_expediente_id = 8
+                ORDER BY
+                    n.prioridad,
+                    n.patron_nombre
+                """
+            ).fetchall()
+
+        self.assertEqual(len(rows), 4)
+
+        patterns = {
+            row["patron_nombre"]
+            for row in rows
+        }
+
+        self.assertEqual(
+            patterns,
+            {
+                "INFORME DE VIVIENDA",
+                "INFORME VIVIENDA",
+                "INFORME ADECUACION VIVIENDA",
+                "INFORME DE ADECUACION DE VIVIENDA",
+            },
+        )
+
+        self.assertTrue(
+            all(
+                row["extension_permitida"]
+                == "pdf,jpg,jpeg,png"
+                for row in rows
+            )
         )
 
         self.assertTrue(
@@ -617,9 +675,9 @@ class SemanticDocumentRequirementConsolidationTest(
         first = consolidation.consolidate_semantic_groups()
         second = consolidation.consolidate_semantic_groups()
 
-        self.assertEqual(first["nomenclatures_created"], 18)
+        self.assertEqual(first["nomenclatures_created"], 22)
         self.assertEqual(second["nomenclatures_created"], 0)
-        self.assertEqual(second["nomenclatures_reused"], 18)
+        self.assertEqual(second["nomenclatures_reused"], 22)
 
         with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(

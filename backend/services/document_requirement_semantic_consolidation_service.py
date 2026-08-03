@@ -387,6 +387,50 @@ SEMANTIC_PLAN = [
         "regla": "ANY",
         "legacy_ids": [29],
         "orden": 30,
+        "option_nomenclatures": [
+            {
+                "codigo": "INFORME_DE_VIVIENDA",
+                "rol_documental": None,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "INFORME DE VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 30,
+                    },
+                    {
+                        "patron_nombre": (
+                            "INFORME VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 40,
+                    },
+                    {
+                        "patron_nombre": (
+                            "INFORME ADECUACION VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 40,
+                    },
+                    {
+                        "patron_nombre": (
+                            "INFORME DE ADECUACION DE VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 30,
+                    },
+                ],
+            },
+        ],
         "extra_options": [
             {
                 "codigo": (

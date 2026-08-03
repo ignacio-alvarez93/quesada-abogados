@@ -997,6 +997,98 @@ class CanonicalNomenclatureDetectionTest(
             2,
         )
 
+    def test_housing_request_is_not_detected_as_report(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO config_nomenclaturas_catalogo (
+                    id,
+                    documento_catalogo_id,
+                    tipo_expediente_id,
+                    subtipo_expediente_id,
+                    rol_documental,
+                    patron_nombre,
+                    extension_permitida,
+                    prioridad,
+                    activo,
+                    origen_legacy_id
+                )
+                VALUES (
+                    64,
+                    3,
+                    14,
+                    8,
+                    NULL,
+                    'JUSTIFICANTE SOLICITUD INFORME DE VIVIENDA',
+                    'pdf,jpg,jpeg,png',
+                    10,
+                    1,
+                    NULL
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET
+                    ruta = ?,
+                    nombre_archivo = ?,
+                    extension = 'pdf',
+                    activo = 1
+                WHERE id = 1
+                """,
+                (
+                    (
+                        "CLIENTES/EXPEDIENTE_100/"
+                        "JUSTIFICANTE SOLICITUD "
+                        "INFORME DE VIVIENDA.pdf"
+                    ),
+                    (
+                        "JUSTIFICANTE SOLICITUD "
+                        "INFORME DE VIVIENDA.pdf"
+                    ),
+                ),
+            )
+
+            conn.execute(
+                """
+                UPDATE box_watch_items
+                SET activo = 0
+                WHERE id = 2
+                """
+            )
+
+            conn.commit()
+
+        result = (
+            doc_state
+            .diagnose_expediente_document_state(100)
+        )
+
+        semantic_codes = [
+            detection["codigo"]
+            for detection in result[
+                "semantic_readiness"
+            ]["detecciones"]
+        ]
+
+        self.assertIn(
+            (
+                "JUSTIFICANTE_SOLICITUD_"
+                "INFORME_VIVIENDA"
+            ),
+            semantic_codes,
+        )
+        self.assertNotIn(
+            "INFORME_DE_VIVIENDA",
+            semantic_codes,
+        )
+        self.assertEqual(
+            result["ambiguedades_documentales"],
+            [],
+        )
+
     def test_document_ambiguity_is_exposed_in_diagnosis(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
