@@ -6533,6 +6533,35 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             )
             page.update()
 
+        def apply_payroll_average_to_form(
+            amount_centimos,
+        ):
+            amount_centimos = int(
+                amount_centimos
+            )
+
+            ingresos_mensuales_computables_euros.value = (
+                _economic_centimos_to_euros(
+                    amount_centimos
+                )
+            )
+
+            _set_specific_control_value(
+                (
+                    "ingresos_mensuales_"
+                    "computables_centimos"
+                ),
+                amount_centimos,
+            )
+
+            expediente_dialog.content = (
+                build_expediente_dialog_content(
+                    expediente_id
+                )
+            )
+
+            page.update()
+
         economic_card = _specific_card(
             "Diagnóstico de medios económicos",
             (
@@ -6544,7 +6573,15 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 build_expedient_payroll_panel(
                     page,
                     expediente_id,
+                    formulario_id=(
+                        formulario.get("id")
+                        if formulario
+                        else None
+                    ),
                     on_refresh=refresh_payroll_panel,
+                    on_average_applied=(
+                        apply_payroll_average_to_form
+                    ),
                 ),
                 ft.Row(
                     controls=[

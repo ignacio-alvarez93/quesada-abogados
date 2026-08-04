@@ -32,6 +32,10 @@ from backend.services import (
     expedient_payroll_review_service
     as payroll_review_service,
 )
+from backend.services import (
+    expedient_payroll_application_service
+    as payroll_application_service,
+)
 
 
 Q_PRIMARY_DARK = "#003B7A"
@@ -557,16 +561,41 @@ def _load_documents(
         )
     )
 
+    proposals = (
+        payroll_review_service
+        .list_expedient_proposals(
+            int(expediente_id),
+            **list_kwargs,
+        )
+    )
+
+    proposals_by_document = {}
+
+    for proposal in proposals:
+        document_id = int(
+            proposal.get("document_id")
+            or 0
+        )
+
+        proposals_by_document.setdefault(
+            document_id,
+            [],
+        ).append(proposal)
+
     result = []
 
     for item in documents:
         document = dict(item)
 
+        document_id = int(
+            document.get("id")
+            or 0
+        )
+
         document["proposals"] = (
-            payroll_proposal_service
-            .list_document_proposals(
-                int(document["id"]),
-                **list_kwargs,
+            proposals_by_document.get(
+                document_id,
+                [],
             )
         )
 
@@ -579,7 +608,11 @@ def build_expedient_payroll_panel(
     page: ft.Page,
     expediente_id: int,
     *,
+    formulario_id: int | None = None,
     on_refresh: Callable[[], None] | None = None,
+    on_average_applied: (
+        Callable[[int], None] | None
+    ) = None,
     db_path: str | Path | None = None,
 ) -> ft.Control:
     """
@@ -597,6 +630,26 @@ def build_expedient_payroll_panel(
     except Exception as exc:
         documents = []
         load_error = str(exc)
+
+    consolidation_kwargs = {}
+
+    if db_path is not None:
+        consolidation_kwargs["db_path"] = (
+            db_path
+        )
+
+    try:
+        consolidation = (
+            payroll_review_service
+            .consolidate_expedient_payrolls(
+                expediente_id,
+                **consolidation_kwargs,
+            )
+        )
+        consolidation_error = ""
+    except Exception as exc:
+        consolidation = {}
+        consolidation_error = str(exc)
 
     async def select_payroll_pdf(e=None):
         try:
@@ -756,6 +809,83 @@ def build_expedient_payroll_panel(
         except Exception as exc:
             show_message(
                 f"No se pudo reabrir: {exc}",
+                error=True,
+            )
+
+    def apply_payroll_average(e=None):
+        try:
+            if not formulario_id:
+                raise ValueError(
+                    "No se ha identificado el "
+                    "formulario EX02"
+                )
+
+            suggested = consolidation.get(
+                "suggested_monthly_"
+                "income_centimos"
+            )
+
+            if suggested is None:
+                reasons = consolidation.get(
+                    "blocking_reasons"
+                ) or []
+
+                raise ValueError(
+                    "El consolidado no está listo: "
+                    + (
+                        " ".join(
+                            str(item)
+                            for item in reasons
+                        )
+                        or
+                        "revisa las nóminas"
+                    )
+                )
+
+            kwargs = {}
+
+            if db_path is not None:
+                kwargs["db_path"] = db_path
+
+            result = (
+                payroll_application_service
+                .apply_payroll_consolidation_to_expedient(
+                    expediente_id,
+                    int(formulario_id),
+                    expected_amount_centimos=(
+                        int(suggested)
+                    ),
+                    **kwargs,
+                )
+            )
+
+            diagnosis = (
+                result.get("consolidation")
+                or {}
+            ).get("diagnosis") or {}
+
+            show_message(
+                (
+                    "Promedio aplicado al EX02: "
+                    f"{_money_centimos(suggested)}. "
+                    "Diagnóstico: "
+                    f"{diagnosis.get('estado') or '-'}"
+                )
+            )
+
+            if on_average_applied:
+                on_average_applied(
+                    int(suggested)
+                )
+            else:
+                refresh_panel()
+
+        except Exception as exc:
+            show_message(
+                (
+                    "No se pudo aplicar el promedio: "
+                    f"{exc}"
+                ),
                 error=True,
             )
 
@@ -919,7 +1049,169 @@ def build_expedient_payroll_panel(
         spacing=10,
     )
 
-    body_controls = [header]
+    confirmed_count = int(
+        consolidation.get(
+            "confirmed_payroll_count"
+        )
+        or 0
+    )
+
+    pending_count = int(
+        consolidation.get(
+            "pending_review_count"
+        )
+        or 0
+    )
+
+    average_centimos = consolidation.get(
+        "average_net_centimos"
+    )
+
+    ready_for_application = bool(
+        consolidation.get(
+            "ready_for_application"
+        )
+    )
+
+    active_application = None
+
+    if formulario_id:
+        try:
+            application_kwargs = {}
+
+            if db_path is not None:
+                application_kwargs["db_path"] = (
+                    db_path
+                )
+
+            active_application = (
+                payroll_application_service
+                .get_active_application(
+                    expediente_id,
+                    int(formulario_id),
+                    **application_kwargs,
+                )
+            )
+        except Exception:
+            active_application = None
+
+    consolidation_controls = [
+        ft.Row(
+            controls=[
+                _info_value(
+                    "Confirmadas",
+                    confirmed_count,
+                    width=120,
+                ),
+                _info_value(
+                    "Pendientes",
+                    pending_count,
+                    width=120,
+                ),
+                _info_value(
+                    "Promedio mensual",
+                    _money_centimos(
+                        average_centimos
+                    ),
+                    width=180,
+                ),
+            ],
+            spacing=12,
+            wrap=True,
+        )
+    ]
+
+    if consolidation_error:
+        consolidation_controls.append(
+            ft.Text(
+                (
+                    "No se pudo calcular el "
+                    f"consolidado: {consolidation_error}"
+                ),
+                size=11,
+                color="#B42318",
+            )
+        )
+
+    elif active_application:
+        consolidation_controls.append(
+            ft.Container(
+                bgcolor="#ECFDF3",
+                border=ft.Border.all(
+                    1,
+                    "#6CE9A6",
+                ),
+                border_radius=8,
+                padding=10,
+                content=ft.Text(
+                    (
+                        "Promedio aplicado al EX02: "
+                        + _money_centimos(
+                            active_application.get(
+                                "applied_value_centimos"
+                            )
+                        )
+                    ),
+                    size=11,
+                    color="#027A48",
+                    weight=ft.FontWeight.BOLD,
+                ),
+            )
+        )
+
+    else:
+        blocking_reasons = (
+            consolidation.get(
+                "blocking_reasons"
+            )
+            or []
+        )
+
+        if blocking_reasons:
+            consolidation_controls.append(
+                ft.Text(
+                    " ".join(
+                        str(item)
+                        for item
+                        in blocking_reasons
+                    ),
+                    size=11,
+                    color="#92400E",
+                )
+            )
+
+        consolidation_controls.append(
+            ft.FilledButton(
+                content=ft.Text(
+                    "Aplicar promedio al diagnóstico"
+                ),
+                icon=ft.Icons.CALCULATE_OUTLINED,
+                on_click=apply_payroll_average,
+                disabled=(
+                    not ready_for_application
+                    or not formulario_id
+                ),
+            )
+        )
+
+    consolidation_panel = ft.Container(
+        bgcolor="#FFFFFF",
+        border=ft.Border.all(
+            1,
+            Q_BORDER,
+        ),
+        border_radius=12,
+        padding=12,
+        content=ft.Column(
+            controls=consolidation_controls,
+            spacing=10,
+        ),
+    )
+
+    body_controls = [
+        header,
+        consolidation_panel,
+    ]
 
     if load_error:
         body_controls.append(
