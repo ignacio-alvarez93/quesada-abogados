@@ -7,6 +7,7 @@ pandas ni de bindings binarios adicionales.
 
 from __future__ import annotations
 
+import csv
 import os
 import re
 import shutil
@@ -32,6 +33,83 @@ DEFAULT_WINDOWS_PATHS = [
         r"\tesseract.exe"
     ),
 ]
+
+
+def _read_tsv_confidence(
+    tsv_path: str | Path,
+) -> dict:
+    path = Path(tsv_path)
+
+    if not path.exists():
+        return {
+            "confidence": 0.0,
+            "recognized_words": 0,
+            "confidence_values": [],
+        }
+
+    confidence_values = []
+    recognized_words = 0
+
+    with path.open(
+        "r",
+        encoding="utf-8",
+        errors="replace",
+        newline="",
+    ) as file_handle:
+        reader = csv.DictReader(
+            file_handle,
+            delimiter="\t",
+        )
+
+        for row in reader:
+            word = str(
+                row.get("text") or ""
+            ).strip()
+
+            if not word:
+                continue
+
+            try:
+                raw_confidence = float(
+                    row.get("conf") or -1
+                )
+            except (TypeError, ValueError):
+                continue
+
+            if raw_confidence < 0:
+                continue
+
+            recognized_words += 1
+            confidence_values.append(
+                raw_confidence
+            )
+
+    if not confidence_values:
+        return {
+            "confidence": 0.0,
+            "recognized_words": recognized_words,
+            "confidence_values": [],
+        }
+
+    average = (
+        sum(confidence_values)
+        / len(confidence_values)
+    )
+
+    normalized = max(
+        0.0,
+        min(
+            1.0,
+            average / 100.0,
+        ),
+    )
+
+    return {
+        "confidence": normalized,
+        "recognized_words": recognized_words,
+        "confidence_values": confidence_values,
+        "average_raw_confidence": average,
+    }
 
 
 class TesseractCliOcrEngine(OcrEngine):
@@ -256,6 +334,7 @@ class TesseractCliOcrEngine(OcrEngine):
                         self.page_segmentation_mode
                     ),
                     "txt",
+                    "tsv",
                 ]
             )
 
@@ -281,25 +360,47 @@ class TesseractCliOcrEngine(OcrEngine):
                     "de texto esperado"
                 )
 
-            text = output_file.read_text(
+            text_result = output_file.read_text(
                 encoding="utf-8",
                 errors="replace",
             ).strip()
 
+            tsv_file = output_base.with_suffix(
+                ".tsv"
+            )
+
+            confidence_data = (
+                _read_tsv_confidence(
+                    tsv_file
+                )
+            )
+
         warnings = []
 
-        if not text:
+        if not text_result:
             warnings.append(
                 "Tesseract no detectó texto"
             )
 
-        # La salida TXT de Tesseract no proporciona una
-        # confianza global fiable. Se usa una estimación
-        # conservadora que deberá mejorarse con TSV.
-        confidence = 0.75 if text else 0.0
+        confidence = (
+            confidence_data["confidence"]
+            if text_result
+            else 0.0
+        )
+
+        if (
+            text_result
+            and not confidence_data[
+                "recognized_words"
+            ]
+        ):
+            warnings.append(
+                "No se pudo calcular confianza "
+                "TSV para el texto reconocido"
+            )
 
         return OcrEngineResult(
-            text=text,
+            text=text_result,
             confidence=confidence,
             engine_code=self.engine_code,
             engine_version=self.get_version(),
@@ -313,7 +414,18 @@ class TesseractCliOcrEngine(OcrEngine):
                     available_languages
                 ),
                 "confidence_source": (
-                    "HEURISTIC_TEXT_OUTPUT"
+                    "TESSERACT_TSV_WORD_AVERAGE"
+                ),
+                "recognized_words": (
+                    confidence_data[
+                        "recognized_words"
+                    ]
+                ),
+                "average_raw_confidence": (
+                    confidence_data.get(
+                        "average_raw_confidence",
+                        0.0,
+                    )
                 ),
             },
         )

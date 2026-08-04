@@ -2,6 +2,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from backend.services.document_intelligence.tesseract_cli_ocr_engine import (
+    _read_tsv_confidence,
+)
+
 from backend.services.document_intelligence import (
     DocumentPageResult,
     DocumentTextResult,
@@ -91,6 +95,80 @@ class FakeRenderer:
             )
 
         return results
+
+
+class TesseractTsvConfidenceTest(
+    unittest.TestCase
+):
+    def test_calculates_average_confidence(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "result.tsv"
+
+            path.write_text(
+                (
+                    "level\tpage_num\tblock_num\t"
+                    "par_num\tline_num\tword_num\t"
+                    "left\ttop\twidth\theight\t"
+                    "conf\ttext\n"
+                    "5\t1\t1\t1\t1\t1\t"
+                    "0\t0\t10\t10\t90\tHola\n"
+                    "5\t1\t1\t1\t1\t2\t"
+                    "10\t0\t10\t10\t80\tmundo\n"
+                ),
+                encoding="utf-8",
+            )
+
+            result = _read_tsv_confidence(
+                path
+            )
+
+        self.assertEqual(
+            result["recognized_words"],
+            2,
+        )
+        self.assertAlmostEqual(
+            result["confidence"],
+            0.85,
+        )
+        self.assertAlmostEqual(
+            result["average_raw_confidence"],
+            85.0,
+        )
+
+    def test_ignores_empty_and_negative_rows(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "result.tsv"
+
+            path.write_text(
+                (
+                    "level\tpage_num\tblock_num\t"
+                    "par_num\tline_num\tword_num\t"
+                    "left\ttop\twidth\theight\t"
+                    "conf\ttext\n"
+                    "5\t1\t1\t1\t1\t1\t"
+                    "0\t0\t10\t10\t-1\t\n"
+                    "5\t1\t1\t1\t1\t2\t"
+                    "10\t0\t10\t10\t95\tTexto\n"
+                ),
+                encoding="utf-8",
+            )
+
+            result = _read_tsv_confidence(
+                path
+            )
+
+        self.assertEqual(
+            result["recognized_words"],
+            1,
+        )
+        self.assertAlmostEqual(
+            result["confidence"],
+            0.95,
+        )
 
 
 class DocumentOcrServiceTest(
@@ -385,7 +463,7 @@ class DocumentOcrServiceTest(
         ):
             engine.extract_image_text(
                 image_path,
-                language="spa",
+                language="zzz_missing",
             )
 
 
