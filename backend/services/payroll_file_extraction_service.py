@@ -17,6 +17,13 @@ from backend.services import (
     payroll_document_extraction_service
     as payroll_parser,
 )
+from backend.services.document_intelligence import (
+    DocumentTextResult,
+    TesseractCliOcrEngine,
+)
+from backend.services.document_intelligence import (
+    document_intelligence_service,
+)
 
 
 STATUS_EXTRACTED = "EXTRACTED"
@@ -253,19 +260,196 @@ def _period_key(extraction):
     return ""
 
 
-def extract_payroll_bundle(path):
+def extract_payroll_bundle_from_document_result(
+    document_result,
+):
+    """
+    Adapta un resultado documental normalizado al contrato
+    de múltiples propuestas de nómina.
+
+    No abre archivos, no ejecuta OCR, no persiste datos y
+    no modifica ningún expediente.
+    """
+    if not isinstance(
+        document_result,
+        DocumentTextResult,
+    ):
+        raise TypeError(
+            "document_result debe ser "
+            "DocumentTextResult"
+        )
+
+    payrolls = []
+    unclassified_pages = []
+
+    for page in document_result.pages:
+        page_number = page.page_number
+        page_text = str(
+            page.text or ""
+        ).strip()
+
+        if (
+            not page_text
+            or not _looks_like_payroll_text(
+                page_text
+            )
+        ):
+            unclassified_pages.append(
+                page_number
+            )
+            continue
+
+        extraction = (
+            payroll_parser.extract_payroll_text(
+                page_text,
+                source_path=(
+                    document_result.source_path
+                ),
+            )
+        )
+
+        extraction.update(
+            {
+                "sequence": len(payrolls) + 1,
+                "source_pages": [page_number],
+                "source_page_start": page_number,
+                "source_page_end": page_number,
+                "period_key": _period_key(
+                    extraction
+                ),
+                "requires_manual_review": True,
+                "document_text_source": (
+                    page.text_source
+                ),
+                "document_text_confidence": (
+                    page.confidence
+                ),
+                "document_language": (
+                    page.language
+                ),
+            }
+        )
+
+        payrolls.append(extraction)
+
+    warnings = [
+        *document_result.warnings,
+        *document_result.errors,
+    ]
+
+    if unclassified_pages:
+        warnings.append(
+            (
+                "Hay páginas sin clasificar que "
+                "requieren revisión manual: "
+                + ", ".join(
+                    str(number)
+                    for number
+                    in unclassified_pages
+                )
+            )
+        )
+
+    period_keys = [
+        payroll["period_key"]
+        for payroll in payrolls
+        if payroll["period_key"]
+    ]
+
+    duplicated_periods = sorted(
+        {
+            period
+            for period in period_keys
+            if period_keys.count(period) > 1
+        }
+    )
+
+    if duplicated_periods:
+        warnings.append(
+            (
+                "Se han detectado periodos repetidos: "
+                + ", ".join(duplicated_periods)
+            )
+        )
+
+    warnings = list(
+        dict.fromkeys(
+            str(item)
+            for item in warnings
+            if str(item or "").strip()
+        )
+    )
+
+    pages_with_text = sum(
+        1
+        for page in document_result.pages
+        if page.has_text
+    )
+
+    return {
+        "status": (
+            STATUS_EXTRACTED
+            if payrolls
+            else STATUS_OCR_REQUIRED
+        ),
+        "source_path": (
+            document_result.source_path
+        ),
+        "source_name": (
+            document_result.source_name
+        ),
+        "source_suffix": (
+            document_result.source_suffix
+        ),
+        "sha256": document_result.sha256,
+        "page_count": (
+            document_result.page_count
+        ),
+        "pages_with_text": pages_with_text,
+        "native_text_pages": (
+            document_result.native_text_pages
+        ),
+        "ocr_text_pages": (
+            document_result.ocr_text_pages
+        ),
+        "requires_ocr": (
+            document_result.requires_ocr
+        ),
+        "requires_manual_review": True,
+        "payroll_count": len(payrolls),
+        "payrolls": payrolls,
+        "unclassified_pages": (
+            unclassified_pages
+        ),
+        "warnings": warnings,
+        "document_intelligence": {
+            "status": document_result.status,
+            "pages_requiring_ocr": (
+                document_result
+                .pages_requiring_ocr
+            ),
+            "metadata": dict(
+                document_result.metadata
+            ),
+        },
+    }
+
+
+def extract_payroll_bundle(
+    path,
+    *,
+    engine=None,
+    language="spa",
+    render_dpi=220,
+    intelligence_db_path=None,
+    force_reprocess=False,
+):
     """
     Analiza un PDF que puede contener varias nóminas.
 
-    MVP:
-    - cada página con suficientes indicadores se trata como
-      una posible nómina;
-    - conserva página, secuencia y periodo;
-    - no persiste ni aplica ingresos;
-    - las páginas ambiguas quedan pendientes de revisión.
-
-    La agrupación de una nómina distribuida en varias páginas
-    se incorporará en una fase posterior.
+    La extracción técnica, el OCR y la caché se delegan en
+    document_intelligence. El parser de nóminas solo recibe
+    el texto normalizado de cada página.
     """
     path = Path(path)
 
@@ -295,129 +479,56 @@ def extract_payroll_bundle(path):
             ],
         }
 
-    pages = extract_pdf_pages_text(path)
-    digest = _calculate_sha256(path)
-
-    pages_with_text = [
-        page
-        for page in pages
-        if page["has_text"]
-    ]
-
-    if not pages_with_text:
-        return {
-            "status": STATUS_OCR_REQUIRED,
-            "source_path": str(path),
-            "source_name": path.name,
-            "source_suffix": suffix,
-            "sha256": digest,
-            "page_count": len(pages),
-            "pages_with_text": 0,
-            "requires_ocr": True,
-            "requires_manual_review": True,
-            "payroll_count": 0,
-            "payrolls": [],
-            "unclassified_pages": [
-                page["page_number"]
-                for page in pages
-            ],
-            "warnings": [
-                (
-                    "El PDF no contiene texto "
-                    "extraíble. Será necesario OCR."
-                )
-            ],
-        }
-
-    payrolls = []
-    unclassified_pages = []
-
-    for page in pages:
-        page_number = page["page_number"]
-        page_text = page["text"]
-
-        if not page_text:
-            unclassified_pages.append(page_number)
-            continue
-
-        if not _looks_like_payroll_text(page_text):
-            unclassified_pages.append(page_number)
-            continue
-
-        extraction = (
-            payroll_parser.extract_payroll_text(
-                page_text,
-                source_path=path,
-            )
-        )
-
-        extraction.update(
-            {
-                "sequence": len(payrolls) + 1,
-                "source_pages": [page_number],
-                "source_page_start": page_number,
-                "source_page_end": page_number,
-                "period_key": _period_key(
-                    extraction
-                ),
-                "requires_manual_review": True,
-            }
-        )
-
-        payrolls.append(extraction)
-
-    warnings = []
-
-    if unclassified_pages:
-        warnings.append(
-            (
-                "Hay páginas sin clasificar que "
-                "requieren revisión manual: "
-                + ", ".join(
-                    str(number)
-                    for number in unclassified_pages
-                )
-            )
-        )
-
-    period_keys = [
-        payroll["period_key"]
-        for payroll in payrolls
-        if payroll["period_key"]
-    ]
-
-    duplicated_periods = sorted(
-        {
-            period
-            for period in period_keys
-            if period_keys.count(period) > 1
-        }
+    ocr_engine = (
+        engine
+        if engine is not None
+        else TesseractCliOcrEngine()
     )
 
-    if duplicated_periods:
-        warnings.append(
-            (
-                "Se han detectado periodos repetidos: "
-                + ", ".join(duplicated_periods)
-            )
+    process_kwargs = {
+        "engine": ocr_engine,
+        "language": language,
+        "render_dpi": int(render_dpi),
+        "force_reprocess": bool(
+            force_reprocess
+        ),
+    }
+
+    if intelligence_db_path is not None:
+        process_kwargs["db_path"] = (
+            intelligence_db_path
         )
 
-    return {
-        "status": (
-            STATUS_EXTRACTED
-            if payrolls
-            else STATUS_OCR_REQUIRED
-        ),
-        "source_path": str(path),
-        "source_name": path.name,
-        "source_suffix": suffix,
-        "sha256": digest,
-        "page_count": len(pages),
-        "pages_with_text": len(pages_with_text),
-        "requires_ocr": not bool(payrolls),
-        "requires_manual_review": True,
-        "payroll_count": len(payrolls),
-        "payrolls": payrolls,
-        "unclassified_pages": unclassified_pages,
-        "warnings": warnings,
-    }
+    try:
+        document_result = (
+            document_intelligence_service
+            .process_document(
+                path,
+                **process_kwargs,
+            )
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+
+        if (
+            "motor OCR no está disponible"
+            not in message.lower()
+            and "tesseract" not in message.lower()
+        ):
+            raise
+
+        document_result = (
+            document_intelligence_service
+            .extract_document_text(path)
+        )
+
+        document_result.warnings.append(
+            "El motor OCR no está disponible; "
+            "las páginas sin texto quedan pendientes."
+        )
+
+    return (
+        extract_payroll_bundle_from_document_result(
+            document_result
+        )
+    )
