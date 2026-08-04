@@ -186,6 +186,23 @@ def _box_path_color(expediente):
     return Q_PRIMARY if str(expediente.get("box_folder_path") or "").strip() else Q_MUTED
 
 
+def _format_file_size(size):
+    try:
+        size = int(size or 0)
+    except Exception:
+        size = 0
+
+    if size >= 1024 * 1024:
+        return (
+            f"{size / (1024 * 1024):.1f} MB"
+        )
+
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+
+    return f"{size} B"
+
+
 def _mercurio_file_sort_key(item):
     import re
     name = str((item or {}).get("name") or "").strip()
