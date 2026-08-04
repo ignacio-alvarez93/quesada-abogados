@@ -336,5 +336,141 @@ class ExpedientPayrollProposalPersistenceTest(
         )
 
 
+    def test_deletes_document_and_proposals(self):
+        document = (
+            proposal_service
+            .persist_payroll_bundle(
+                45,
+                sample_bundle(),
+                db_path=self.db_path,
+            )
+        )
+
+        result = (
+            proposal_service
+            .delete_payroll_document(
+                document["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(
+            result["deleted_proposal_count"],
+            3,
+        )
+        self.assertFalse(
+            result["physical_file_deleted"]
+        )
+
+        self.assertIsNone(
+            proposal_service.get_document(
+                document["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+
+        proposal_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM expedient_payroll_proposals
+            WHERE document_id = ?
+            """,
+            (document["id"],),
+        ).fetchone()[0]
+
+        conn.close()
+
+        self.assertEqual(
+            proposal_count,
+            0,
+        )
+
+    def test_allows_reloading_after_delete(self):
+        first = (
+            proposal_service
+            .persist_payroll_bundle(
+                45,
+                sample_bundle(),
+                db_path=self.db_path,
+            )
+        )
+
+        proposal_service.delete_payroll_document(
+            first["id"],
+            db_path=self.db_path,
+        )
+
+        second = (
+            proposal_service
+            .persist_payroll_bundle(
+                45,
+                sample_bundle(),
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertFalse(
+            second["already_exists"]
+        )
+        self.assertNotEqual(
+            first["id"],
+            second["id"],
+        )
+        self.assertEqual(
+            len(second["proposals"]),
+            3,
+        )
+
+    def test_rejects_deleting_applied_document(self):
+        document = (
+            proposal_service
+            .persist_payroll_bundle(
+                45,
+                sample_bundle(),
+                db_path=self.db_path,
+            )
+        )
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+
+        conn.execute(
+            """
+            UPDATE expedient_payroll_proposals
+            SET review_status = 'APLICADA'
+            WHERE document_id = ?
+            """,
+            (document["id"],),
+        )
+
+        conn.commit()
+        conn.close()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "contiene nóminas aplicadas",
+        ):
+            (
+                proposal_service
+                .delete_payroll_document(
+                    document["id"],
+                    db_path=self.db_path,
+                )
+            )
+
+        self.assertIsNotNone(
+            proposal_service.get_document(
+                document["id"],
+                db_path=self.db_path,
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

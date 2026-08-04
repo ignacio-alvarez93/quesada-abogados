@@ -584,3 +584,129 @@ def persist_payroll_bundle(
     )
 
     return document
+
+
+def delete_payroll_document(
+    document_id,
+    *,
+    db_path=DEFAULT_DB_PATH,
+):
+    """
+    Elimina un PDF de nóminas registrado y sus propuestas.
+
+    No elimina el archivo físico. La eliminación se rechaza
+    cuando alguna propuesta está aplicada o participa en una
+    aplicación económica activa.
+    """
+    ensure_schema(db_path=db_path)
+
+    with _connection(db_path) as conn:
+        document = conn.execute(
+            """
+            SELECT *
+            FROM expedient_income_evidence_documents
+            WHERE id = ?
+            """,
+            (int(document_id),),
+        ).fetchone()
+
+        if not document:
+            raise ValueError(
+                "No existe el documento de nóminas"
+            )
+
+        applied_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM expedient_payroll_proposals
+            WHERE document_id = ?
+              AND review_status = 'APLICADA'
+            """,
+            (int(document_id),),
+        ).fetchone()[0]
+
+        if int(applied_count or 0) > 0:
+            raise ValueError(
+                "No se puede eliminar el PDF porque "
+                "contiene nóminas aplicadas. Revierte "
+                "primero la aplicación económica."
+            )
+
+        proposal_ids = [
+            int(row["id"])
+            for row in conn.execute(
+                """
+                SELECT id
+                FROM expedient_payroll_proposals
+                WHERE document_id = ?
+                """,
+                (int(document_id),),
+            ).fetchall()
+        ]
+
+        if proposal_ids:
+            application_table = conn.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'expedient_payroll_applications'
+                """
+            ).fetchone()
+
+            if application_table:
+                active_rows = conn.execute(
+                    """
+                    SELECT id, proposal_ids_json
+                    FROM expedient_payroll_applications
+                    WHERE application_status = 'APPLIED'
+                    """
+                ).fetchall()
+
+                proposal_id_set = set(proposal_ids)
+
+                for row in active_rows:
+                    active_ids = set(
+                        int(value)
+                        for value in (
+                            _json_loads(
+                                row["proposal_ids_json"],
+                                [],
+                            )
+                            or []
+                        )
+                    )
+
+                    if proposal_id_set & active_ids:
+                        raise ValueError(
+                            "No se puede eliminar el PDF porque "
+                            "sus nóminas participan en una "
+                            "aplicación económica activa."
+                        )
+
+        proposal_count = len(proposal_ids)
+        document_data = _document_row_to_dict(
+            document
+        )
+
+        conn.execute(
+            """
+            DELETE FROM expedient_income_evidence_documents
+            WHERE id = ?
+            """,
+            (int(document_id),),
+        )
+
+    return {
+        "deleted": True,
+        "document_id": int(document_id),
+        "expediente_id": int(
+            document_data["expediente_id"]
+        ),
+        "source_name": (
+            document_data.get("source_name")
+            or ""
+        ),
+        "deleted_proposal_count": proposal_count,
+        "physical_file_deleted": False,
+    }
