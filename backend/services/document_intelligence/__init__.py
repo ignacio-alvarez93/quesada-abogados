@@ -46,3 +46,29 @@ __all__ = [
     "extract_document_text",
     "extract_pdf_native_text",
 ]
+
+from .ocr_engine import (
+    OcrEngine,
+    OcrEngineResult,
+)
+from .tesseract_cli_ocr_engine import (
+    TesseractCliOcrEngine,
+)
+from .document_image_renderer import (
+    PdfPageRenderer,
+    RenderedDocumentPage,
+)
+from .document_ocr_service import (
+    complete_document_ocr,
+)
+
+__all__.extend(
+    [
+        "OcrEngine",
+        "OcrEngineResult",
+        "TesseractCliOcrEngine",
+        "PdfPageRenderer",
+        "RenderedDocumentPage",
+        "complete_document_ocr",
+    ]
+)
