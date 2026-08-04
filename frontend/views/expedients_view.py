@@ -48,6 +48,9 @@ from frontend.components.expedient_status_badge import expedient_status_badge, p
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.listing.card_item import card_item
 from frontend.components.listing.compact_pagination_bar import compact_pagination_bar
+from frontend.components.expedient_payroll_panel import (
+    build_expedient_payroll_panel,
+)
 
 Q_PRIMARY_DARK = "#003B7A"
 Q_PRIMARY = "#0057B8"
@@ -6505,6 +6508,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             "-",
         )
 
+        def refresh_payroll_panel():
+            expediente_dialog.content = (
+                build_expediente_dialog_content(
+                    expediente_id
+                )
+            )
+            page.update()
+
         economic_card = _specific_card(
             "Diagnóstico de medios económicos",
             (
@@ -6513,6 +6524,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 "sustituye la valoración profesional."
             ),
             [
+                build_expedient_payroll_panel(
+                    page,
+                    expediente_id,
+                    on_refresh=refresh_payroll_panel,
+                ),
                 ft.Row(
                     controls=[
                         numero_personas_reagrupadas,
