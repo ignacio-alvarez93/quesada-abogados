@@ -564,56 +564,72 @@ def build_expedient_payroll_panel(
             )
             page.update()
 
-    header = ft.Row(
+    header_text = ft.Column(
         controls=[
-            ft.Container(
-                width=42,
-                height=42,
-                border_radius=21,
-                bgcolor="#EAF3FF",
-                alignment=ft.alignment.Alignment(
-                    0,
-                    0,
-                ),
-                content=ft.Icon(
-                    ft.Icons.RECEIPT_LONG,
-                    color=Q_PRIMARY,
-                    size=22,
-                ),
+            ft.Text(
+                "Nóminas aportadas",
+                size=16,
+                weight=ft.FontWeight.BOLD,
+                color=Q_PRIMARY_DARK,
             ),
-            ft.Column(
+            ft.Text(
+                (
+                    "Extrae y registra varias "
+                    "mensualidades desde un único PDF."
+                ),
+                size=11,
+                color=Q_MUTED,
+            ),
+        ],
+        spacing=2,
+        tight=True,
+    )
+
+    select_button = ft.FilledButton(
+        content=ft.Text(
+            "Seleccionar PDF"
+        ),
+        icon=ft.Icons.UPLOAD_FILE,
+        on_click=select_payroll_pdf,
+    )
+
+    header = ft.Column(
+        controls=[
+            ft.Row(
                 controls=[
-                    ft.Text(
-                        "Nóminas aportadas",
-                        size=16,
-                        weight=ft.FontWeight.BOLD,
-                        color=Q_PRIMARY_DARK,
-                    ),
-                    ft.Text(
-                        (
-                            "Extrae y registra varias "
-                            "mensualidades desde un único PDF."
+                    ft.Container(
+                        width=42,
+                        height=42,
+                        border_radius=21,
+                        bgcolor="#EAF3FF",
+                        alignment=ft.alignment.Alignment(
+                            0,
+                            0,
                         ),
-                        size=11,
-                        color=Q_MUTED,
+                        content=ft.Icon(
+                            ft.Icons.RECEIPT_LONG,
+                            color=Q_PRIMARY,
+                            size=22,
+                        ),
+                    ),
+                    ft.Container(
+                        content=header_text,
+                        expand=True,
                     ),
                 ],
-                spacing=2,
-                expand=True,
-            ),
-            ft.FilledButton(
-                content=ft.Text(
-                    "Seleccionar PDF"
+                spacing=10,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
                 ),
-                icon=ft.Icons.UPLOAD_FILE,
-                on_click=select_payroll_pdf,
+            ),
+            ft.Row(
+                controls=[
+                    select_button,
+                ],
+                alignment=ft.MainAxisAlignment.END,
             ),
         ],
         spacing=10,
-        wrap=True,
-        vertical_alignment=(
-            ft.CrossAxisAlignment.CENTER
-        ),
     )
 
     body_controls = [header]
