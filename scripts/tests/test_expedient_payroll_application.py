@@ -102,6 +102,74 @@ def create_test_database(path):
             'Formulario EX02',
             1
         );
+
+        INSERT INTO config_campos_formulario_expediente (
+            formulario_id,
+            codigo,
+            etiqueta,
+            tipo_campo,
+            activo
+        )
+        VALUES
+            (
+                7,
+                'numero_personas_reagrupadas',
+                'Personas',
+                'texto',
+                0
+            ),
+            (
+                7,
+                'numero_reagrupados_menores',
+                'Menores',
+                'texto',
+                0
+            ),
+            (
+                7,
+                'iprem_mensual_referencia_centimos',
+                'IPREM',
+                'texto',
+                0
+            ),
+            (
+                7,
+                'criterio_economico',
+                'Criterio',
+                'texto',
+                0
+            );
+
+        INSERT INTO expediente_datos_especificos (
+            expediente_id,
+            formulario_id,
+            campo_id,
+            codigo,
+            valor
+        )
+        SELECT
+            45,
+            7,
+            id,
+            codigo,
+            CASE codigo
+                WHEN 'numero_personas_reagrupadas'
+                    THEN '2'
+                WHEN 'numero_reagrupados_menores'
+                    THEN '0'
+                WHEN 'iprem_mensual_referencia_centimos'
+                    THEN '60000'
+                WHEN 'criterio_economico'
+                    THEN 'GENERAL_IPREM'
+            END
+        FROM config_campos_formulario_expediente
+        WHERE formulario_id = 7
+          AND codigo IN (
+              'numero_personas_reagrupadas',
+              'numero_reagrupados_menores',
+              'iprem_mensual_referencia_centimos',
+              'criterio_economico'
+          );
         """
     )
 
@@ -303,6 +371,13 @@ class ExpedientPayrollApplicationTest(
             """
             SELECT COUNT(*)
             FROM expediente_datos_especificos
+            WHERE expediente_id = 45
+              AND (
+                    codigo =
+                        'ingresos_mensuales_computables_centimos'
+                 OR codigo LIKE
+                        'diagnostico_economico_%'
+              )
             """
         ).fetchone()[0]
 
@@ -496,6 +571,183 @@ class ExpedientPayrollApplicationTest(
                     expected_amount_centimos=125000,
                     db_path=self.db_path,
                 )
+
+
+    def test_recalculates_complete_diagnosis(self):
+        result = (
+            application_service
+            .apply_payroll_consolidation_to_expedient(
+                45,
+                7,
+                expected_amount_centimos=125000,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            result["consolidation"][
+                "diagnosis"
+            ]["estado"],
+            "SUFICIENTE",
+        )
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+
+        values = dict(
+            conn.execute(
+                """
+                SELECT codigo, valor
+                FROM expediente_datos_especificos
+                WHERE expediente_id = 45
+                  AND formulario_id = 7
+                  AND codigo LIKE
+                      'diagnostico_economico_%'
+                """
+            ).fetchall()
+        )
+
+        conn.close()
+
+        self.assertEqual(
+            values[
+                "diagnostico_economico_estado"
+            ],
+            "SUFICIENTE",
+        )
+        self.assertEqual(
+            values[
+                "diagnostico_economico_"
+                "porcentaje_iprem"
+            ],
+            "200",
+        )
+        self.assertEqual(
+            values[
+                "diagnostico_economico_"
+                "importe_referencia_centimos"
+            ],
+            "120000",
+        )
+        self.assertEqual(
+            values[
+                "diagnostico_economico_"
+                "diferencia_centimos"
+            ],
+            "5000",
+        )
+        self.assertEqual(
+            values[
+                "diagnostico_economico_"
+                "porcentaje_cobertura"
+            ],
+            "104.17",
+        )
+        self.assertEqual(
+            values[
+                "diagnostico_economico_"
+                "nivel_advertencia"
+            ],
+            "NONE",
+        )
+        self.assertEqual(
+            values[
+                "diagnostico_economico_"
+                "requiere_revision"
+            ],
+            "No",
+        )
+        self.assertEqual(
+            values[
+                "diagnostico_economico_"
+                "bloquea_presentacion"
+            ],
+            "No",
+        )
+
+    def test_rolls_back_when_iprem_is_missing(self):
+        conn = sqlite3.connect(
+            self.db_path
+        )
+
+        conn.execute(
+            """
+            UPDATE expediente_datos_especificos
+            SET valor = ''
+            WHERE expediente_id = 45
+              AND formulario_id = 7
+              AND codigo =
+                  'iprem_mensual_referencia_centimos'
+            """
+        )
+
+        conn.commit()
+        conn.close()
+
+        with self.assertRaises(
+            ValueError
+        ):
+            (
+                application_service
+                .apply_payroll_consolidation_to_expedient(
+                    45,
+                    7,
+                    expected_amount_centimos=125000,
+                    db_path=self.db_path,
+                )
+            )
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+
+        states = [
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT review_status
+                FROM expedient_payroll_proposals
+                ORDER BY id
+                """
+            )
+        ]
+
+        application_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM expedient_payroll_applications
+            """
+        ).fetchone()[0]
+
+        income_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM expediente_datos_especificos
+            WHERE expediente_id = 45
+              AND codigo =
+                  'ingresos_mensuales_computables_centimos'
+            """
+        ).fetchone()[0]
+
+        conn.close()
+
+        self.assertEqual(
+            states,
+            [
+                "CONFIRMADA",
+                "CONFIRMADA",
+                "CONFIRMADA",
+            ],
+        )
+        self.assertEqual(
+            application_count,
+            0,
+        )
+        self.assertEqual(
+            income_count,
+            0,
+        )
 
 
 if __name__ == "__main__":

@@ -18,6 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from backend.services import (
+    family_reunification_economic_diagnosis_service
+    as economic_diagnosis,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -249,6 +254,207 @@ def _current_specific_value(
             "El valor económico actual del EX02 "
             "no contiene un número válido"
         )
+
+
+
+def _specific_value(
+    conn: sqlite3.Connection,
+    expediente_id: int,
+    formulario_id: int,
+    field_code: str,
+    *,
+    required: bool = False,
+    default: str = "",
+) -> str:
+    row = conn.execute(
+        """
+        SELECT valor
+        FROM expediente_datos_especificos
+        WHERE expediente_id = ?
+          AND formulario_id = ?
+          AND codigo = ?
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        """,
+        (
+            int(expediente_id),
+            int(formulario_id),
+            str(field_code),
+        ),
+    ).fetchone()
+
+    value = (
+        str(row["valor"] or "").strip()
+        if row
+        else str(default or "").strip()
+    )
+
+    if required and not value:
+        raise ValueError(
+            "Falta el dato económico obligatorio: "
+            + str(field_code)
+        )
+
+    return value
+
+
+def _upsert_specific_value(
+    conn: sqlite3.Connection,
+    expediente_id: int,
+    formulario_id: int,
+    field_code: str,
+    value: Any,
+) -> None:
+    field_id = _get_or_create_field_id(
+        conn,
+        formulario_id,
+        field_code,
+    )
+
+    conn.execute(
+        """
+        INSERT INTO expediente_datos_especificos (
+            expediente_id,
+            formulario_id,
+            campo_id,
+            codigo,
+            valor,
+            updated_at
+        )
+        VALUES (
+            ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
+        )
+        ON CONFLICT(
+            expediente_id,
+            campo_id
+        )
+        DO UPDATE SET
+            formulario_id = excluded.formulario_id,
+            codigo = excluded.codigo,
+            valor = excluded.valor,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            int(expediente_id),
+            int(formulario_id),
+            int(field_id),
+            str(field_code),
+            str(value if value is not None else ""),
+        ),
+    )
+
+
+def _calculate_and_store_diagnosis(
+    conn: sqlite3.Connection,
+    expediente_id: int,
+    formulario_id: int,
+    income_centimos: int,
+) -> dict:
+    iprem = _specific_value(
+        conn,
+        expediente_id,
+        formulario_id,
+        "iprem_mensual_referencia_centimos",
+        required=True,
+    )
+    people = _specific_value(
+        conn,
+        expediente_id,
+        formulario_id,
+        "numero_personas_reagrupadas",
+        required=True,
+    )
+    minors = _specific_value(
+        conn,
+        expediente_id,
+        formulario_id,
+        "numero_reagrupados_menores",
+        default="0",
+    )
+    criterion = _specific_value(
+        conn,
+        expediente_id,
+        formulario_id,
+        "criterio_economico",
+        default="GENERAL_IPREM",
+    )
+
+    result = (
+        economic_diagnosis
+        .evaluate_family_reunification_economic_diagnosis(
+            iprem_mensual_centimos=int(iprem),
+            numero_personas_reagrupadas=int(people),
+            numero_reagrupados_menores=int(minors or 0),
+            ingresos_mensuales_computables_centimos=(
+                int(income_centimos)
+            ),
+            criterio=(
+                criterion
+                or "GENERAL_IPREM"
+            ),
+        )
+    )
+
+    values = {
+        "ingresos_mensuales_computables_centimos": (
+            int(income_centimos)
+        ),
+        "diagnostico_economico_estado": (
+            result["estado"]
+        ),
+        "diagnostico_economico_porcentaje_iprem": (
+            result["porcentaje_iprem_requerido"]
+        ),
+        (
+            "diagnostico_economico_"
+            "importe_referencia_centimos"
+        ): result["importe_referencia_centimos"],
+        (
+            "diagnostico_economico_"
+            "diferencia_centimos"
+        ): (
+            ""
+            if result["diferencia_centimos"] is None
+            else result["diferencia_centimos"]
+        ),
+        (
+            "diagnostico_economico_"
+            "porcentaje_cobertura"
+        ): (
+            ""
+            if result["porcentaje_cobertura"] is None
+            else result["porcentaje_cobertura"]
+        ),
+        (
+            "diagnostico_economico_"
+            "nivel_advertencia"
+        ): result["nivel_advertencia"],
+        (
+            "diagnostico_economico_"
+            "requiere_revision"
+        ): (
+            "Sí"
+            if result[
+                "requiere_revision_profesional"
+            ]
+            else "No"
+        ),
+        (
+            "diagnostico_economico_"
+            "bloquea_presentacion"
+        ): "No",
+    }
+
+    for field_code, value in values.items():
+        _upsert_specific_value(
+            conn,
+            expediente_id,
+            formulario_id,
+            field_code,
+            value,
+        )
+
+    return result
 
 
 def _confirmed_rows(
@@ -550,45 +756,15 @@ def apply_payroll_consolidation_to_expedient(
                 "expresamente la sobrescritura."
             )
 
-        field_id = (
-            _get_or_create_field_id(
-                conn,
-                formulario_id,
-                INCOME_FIELD_CODE,
-            )
+        diagnosis = _calculate_and_store_diagnosis(
+            conn,
+            expediente_id,
+            formulario_id,
+            calculated,
         )
 
-        conn.execute(
-            """
-            INSERT INTO expediente_datos_especificos (
-                expediente_id,
-                formulario_id,
-                campo_id,
-                codigo,
-                valor,
-                updated_at
-            )
-            VALUES (
-                ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
-            )
-            ON CONFLICT(
-                expediente_id,
-                campo_id
-            )
-            DO UPDATE SET
-                formulario_id = excluded.formulario_id,
-                codigo = excluded.codigo,
-                valor = excluded.valor,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                int(expediente_id),
-                int(formulario_id),
-                int(field_id),
-                INCOME_FIELD_CODE,
-                str(calculated),
-            ),
-        )
+        consolidation["diagnosis"] = diagnosis
+        consolidation["applied_to_diagnosis"] = True
 
         applied_at = _now()
         proposal_ids = consolidation[
