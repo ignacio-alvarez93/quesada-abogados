@@ -28,6 +28,10 @@ from backend.services import (
     payroll_file_extraction_service
     as payroll_extraction_service,
 )
+from backend.services import (
+    expedient_payroll_review_service
+    as payroll_review_service,
+)
 
 
 Q_PRIMARY_DARK = "#003B7A"
@@ -176,6 +180,10 @@ def _info_value(
 
 def _proposal_card(
     proposal: dict,
+    *,
+    on_confirm=None,
+    on_discard=None,
+    on_reopen=None,
 ) -> ft.Container:
     warnings = list(
         proposal.get("warnings")
@@ -191,6 +199,68 @@ def _proposal_card(
         if pages
         else "-"
     )
+
+    status = str(
+        proposal.get("review_status")
+        or "PENDIENTE_REVISION"
+    ).strip().upper()
+
+    proposal_id = int(
+        proposal.get("id")
+        or 0
+    )
+
+    actions = []
+
+    if (
+        status == "PENDIENTE_REVISION"
+        and proposal_id
+    ):
+        actions.extend(
+            [
+                ft.OutlinedButton(
+                    content=ft.Text(
+                        "Confirmar"
+                    ),
+                    icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
+                    on_click=(
+                        lambda e, value=proposal_id:
+                        on_confirm(value)
+                    ),
+                ),
+                ft.TextButton(
+                    content=ft.Text(
+                        "Descartar"
+                    ),
+                    icon=ft.Icons.BLOCK,
+                    on_click=(
+                        lambda e, value=proposal_id:
+                        on_discard(value)
+                    ),
+                ),
+            ]
+        )
+
+    elif (
+        status
+        in {
+            "CONFIRMADA",
+            "DESCARTADA",
+        }
+        and proposal_id
+    ):
+        actions.append(
+            ft.TextButton(
+                content=ft.Text(
+                    "Reabrir"
+                ),
+                icon=ft.Icons.REPLAY,
+                on_click=(
+                    lambda e, value=proposal_id:
+                    on_reopen(value)
+                ),
+            )
+        )
 
     controls = [
         ft.Row(
@@ -216,9 +286,7 @@ def _proposal_card(
                     tight=True,
                     expand=True,
                 ),
-                _status_chip(
-                    proposal.get("review_status")
-                ),
+                _status_chip(status),
             ],
             spacing=10,
             vertical_alignment=(
@@ -288,6 +356,18 @@ def _proposal_card(
             )
         )
 
+    if actions:
+        controls.append(
+            ft.Row(
+                controls=actions,
+                spacing=8,
+                wrap=True,
+                alignment=(
+                    ft.MainAxisAlignment.END
+                ),
+            )
+        )
+
     return ft.Container(
         bgcolor="#FFFFFF",
         border=ft.Border.all(
@@ -305,6 +385,11 @@ def _proposal_card(
 
 def _document_card(
     document: dict,
+    *,
+    on_delete=None,
+    on_confirm=None,
+    on_discard=None,
+    on_reopen=None,
 ) -> ft.Container:
     proposals = list(
         document.get("proposals")
@@ -321,6 +406,67 @@ def _document_card(
         or "PENDIENTE_REVISION"
     )
 
+    document_id = int(
+        document.get("id")
+        or 0
+    )
+
+    header_actions = []
+
+    if document_id and on_delete:
+        header_actions.append(
+            ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE,
+                tooltip="Eliminar registro de nóminas",
+                icon_color="#B42318",
+                on_click=(
+                    lambda e, value=document_id:
+                    on_delete(value)
+                ),
+            )
+        )
+
+    header_controls = [
+        ft.Icon(
+            ft.Icons.PICTURE_AS_PDF,
+            color="#B42318",
+            size=22,
+        ),
+        ft.Column(
+            controls=[
+                ft.Text(
+                    (
+                        document.get(
+                            "source_name"
+                        )
+                        or "PDF de nóminas"
+                    ),
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                    selectable=True,
+                ),
+                ft.Text(
+                    (
+                        f"{document.get('page_count') or 0} "
+                        "página(s) · "
+                        f"{len(proposals)} "
+                        "nómina(s) detectada(s)"
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+            ],
+            spacing=2,
+            expand=True,
+        ),
+        _status_chip(document_status),
+    ]
+
+    header_controls.extend(
+        header_actions
+    )
+
     return ft.Container(
         bgcolor="#F8FAFC",
         border=ft.Border.all(
@@ -332,44 +478,7 @@ def _document_card(
         content=ft.Column(
             controls=[
                 ft.Row(
-                    controls=[
-                        ft.Icon(
-                            ft.Icons.PICTURE_AS_PDF,
-                            color="#B42318",
-                            size=22,
-                        ),
-                        ft.Column(
-                            controls=[
-                                ft.Text(
-                                    (
-                                        document.get(
-                                            "source_name"
-                                        )
-                                        or "PDF de nóminas"
-                                    ),
-                                    size=14,
-                                    weight=(
-                                        ft.FontWeight.BOLD
-                                    ),
-                                    color=Q_PRIMARY_DARK,
-                                    selectable=True,
-                                ),
-                                ft.Text(
-                                    (
-                                        f"{document.get('page_count') or 0} "
-                                        "página(s) · "
-                                        f"{len(proposals)} "
-                                        "nómina(s) detectada(s)"
-                                    ),
-                                    size=11,
-                                    color=Q_MUTED,
-                                ),
-                            ],
-                            spacing=2,
-                            expand=True,
-                        ),
-                        _status_chip(document_status),
-                    ],
+                    controls=header_controls,
                     spacing=10,
                     vertical_alignment=(
                         ft.CrossAxisAlignment.CENTER
@@ -401,7 +510,12 @@ def _document_card(
                 (
                     ft.Column(
                         controls=[
-                            _proposal_card(proposal)
+                            _proposal_card(
+                                proposal,
+                                on_confirm=on_confirm,
+                                on_discard=on_discard,
+                                on_reopen=on_reopen,
+                            )
                             for proposal in proposals
                         ],
                         spacing=8,
@@ -564,6 +678,179 @@ def build_expedient_payroll_panel(
             )
             page.update()
 
+    def show_message(message, *, error=False):
+        page.snack_bar = ft.SnackBar(
+            content=ft.Text(
+                str(message or "")
+            ),
+            open=True,
+        )
+        page.update()
+
+    def refresh_panel():
+        if on_refresh:
+            on_refresh()
+        else:
+            page.update()
+
+    def confirm_proposal(proposal_id):
+        try:
+            kwargs = {}
+            if db_path is not None:
+                kwargs["db_path"] = db_path
+
+            payroll_review_service.confirm_proposal(
+                int(proposal_id),
+                **kwargs,
+            )
+
+            show_message(
+                "Nómina confirmada"
+            )
+            refresh_panel()
+
+        except Exception as exc:
+            show_message(
+                f"No se pudo confirmar: {exc}",
+                error=True,
+            )
+
+    def discard_proposal(proposal_id):
+        try:
+            kwargs = {}
+            if db_path is not None:
+                kwargs["db_path"] = db_path
+
+            payroll_review_service.discard_proposal(
+                int(proposal_id),
+                **kwargs,
+            )
+
+            show_message(
+                "Nómina descartada"
+            )
+            refresh_panel()
+
+        except Exception as exc:
+            show_message(
+                f"No se pudo descartar: {exc}",
+                error=True,
+            )
+
+    def reopen_proposal(proposal_id):
+        try:
+            kwargs = {}
+            if db_path is not None:
+                kwargs["db_path"] = db_path
+
+            payroll_review_service.reopen_proposal(
+                int(proposal_id),
+                **kwargs,
+            )
+
+            show_message(
+                "Nómina reabierta para revisión"
+            )
+            refresh_panel()
+
+        except Exception as exc:
+            show_message(
+                f"No se pudo reabrir: {exc}",
+                error=True,
+            )
+
+    def request_delete_document(document_id):
+        document = next(
+            (
+                item
+                for item in documents
+                if int(item.get("id") or 0)
+                == int(document_id)
+            ),
+            {},
+        )
+
+        source_name = (
+            document.get("source_name")
+            or "PDF de nóminas"
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(
+                "Eliminar registro de nóminas"
+            ),
+            content=ft.Text(
+                (
+                    f"Se eliminará {source_name} "
+                    "del expediente y también sus "
+                    "propuestas extraídas. "
+                    "El archivo físico no se borrará."
+                )
+            ),
+        )
+
+        def close_dialog(e=None):
+            dialog.open = False
+            page.update()
+
+        def confirm_delete(e=None):
+            try:
+                kwargs = {}
+                if db_path is not None:
+                    kwargs["db_path"] = db_path
+
+                result = (
+                    payroll_proposal_service
+                    .delete_payroll_document(
+                        int(document_id),
+                        **kwargs,
+                    )
+                )
+
+                dialog.open = False
+                page.update()
+
+                show_message(
+                    (
+                        "PDF eliminado del CRM: "
+                        f"{result.get('deleted_proposal_count') or 0} "
+                        "propuesta(s) eliminada(s)"
+                    )
+                )
+
+                refresh_panel()
+
+            except Exception as exc:
+                dialog.open = False
+                page.update()
+
+                show_message(
+                    f"No se pudo eliminar el PDF: {exc}",
+                    error=True,
+                )
+
+        dialog.actions = [
+            ft.TextButton(
+                content=ft.Text(
+                    "Cancelar"
+                ),
+                on_click=close_dialog,
+            ),
+            ft.TextButton(
+                content=ft.Text(
+                    "Eliminar registro"
+                ),
+                on_click=confirm_delete,
+            ),
+        ]
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
     header_text = ft.Column(
         controls=[
             ft.Text(
@@ -695,7 +982,21 @@ def build_expedient_payroll_panel(
         body_controls.append(
             ft.Column(
                 controls=[
-                    _document_card(document)
+                    _document_card(
+                        document,
+                        on_delete=(
+                            request_delete_document
+                        ),
+                        on_confirm=(
+                            confirm_proposal
+                        ),
+                        on_discard=(
+                            discard_proposal
+                        ),
+                        on_reopen=(
+                            reopen_proposal
+                        ),
+                    )
                     for document in documents
                 ],
                 spacing=10,

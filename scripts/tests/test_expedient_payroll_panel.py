@@ -193,5 +193,71 @@ class ExpedientPayrollPanelTest(
         )
 
 
+    def test_builds_pending_proposal_actions(self):
+        control = payroll_panel._proposal_card(
+            {
+                "id": 11,
+                "sequence": 1,
+                "period_year": 2026,
+                "period_month": 4,
+                "net_pay_centimos": 120000,
+                "confidence": 0.95,
+                "source_pages": [1],
+                "warnings": [],
+                "review_status": (
+                    "PENDIENTE_REVISION"
+                ),
+            },
+            on_confirm=lambda value: value,
+            on_discard=lambda value: value,
+            on_reopen=lambda value: value,
+        )
+
+        self.assertIsInstance(
+            control,
+            ft.Container,
+        )
+
+        actions_row = (
+            control.content.controls[-1]
+        )
+
+        self.assertIsInstance(
+            actions_row,
+            ft.Row,
+        )
+        self.assertEqual(
+            len(actions_row.controls),
+            2,
+        )
+
+    def test_builds_reopen_action(self):
+        control = payroll_panel._proposal_card(
+            {
+                "id": 12,
+                "sequence": 1,
+                "period_year": 2026,
+                "period_month": 4,
+                "net_pay_centimos": 120000,
+                "confidence": 0.95,
+                "source_pages": [1],
+                "warnings": [],
+                "review_status": "DESCARTADA",
+            },
+            on_confirm=lambda value: value,
+            on_discard=lambda value: value,
+            on_reopen=lambda value: value,
+        )
+
+        actions_row = (
+            control.content.controls[-1]
+        )
+
+        self.assertEqual(
+            len(actions_row.controls),
+            1,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
