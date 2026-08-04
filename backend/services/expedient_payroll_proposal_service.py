@@ -14,6 +14,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+from threading import Lock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +38,9 @@ VALID_REVIEW_STATUSES = {
     "DESCARTADA",
     "APLICADA",
 }
+
+_SCHEMA_READY_PATHS = set()
+_SCHEMA_LOCK = Lock()
 
 
 def _json_dumps(value):
@@ -89,30 +93,89 @@ def _connection(
         conn.close()
 
 
+def _schema_cache_key(
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    raw_path = ""
+
+    if conn is not None:
+        try:
+            rows = conn.execute(
+                "PRAGMA database_list"
+            ).fetchall()
+
+            for row in rows:
+                if str(row[1] or "") == "main":
+                    raw_path = str(
+                        row[2] or ""
+                    )
+                    break
+        except Exception:
+            raw_path = ""
+    else:
+        raw_path = str(
+            db_path or ""
+        )
+
+    if not raw_path or raw_path == ":memory:":
+        return None
+
+    return str(
+        Path(raw_path).resolve()
+    )
+
+
 def ensure_schema(
     conn=None,
     db_path=DEFAULT_DB_PATH,
 ):
-    owns_connection = conn is None
-    connection = conn or _connect(db_path)
+    cache_key = _schema_cache_key(
+        conn,
+        db_path,
+    )
 
-    try:
-        if not MIGRATION_PATH.exists():
-            raise FileNotFoundError(
-                f"No existe la migración: {MIGRATION_PATH}"
-            )
+    if (
+        cache_key
+        and cache_key in _SCHEMA_READY_PATHS
+    ):
+        return
 
-        connection.executescript(
-            MIGRATION_PATH.read_text(
-                encoding="utf-8"
-            )
+    with _SCHEMA_LOCK:
+        if (
+            cache_key
+            and cache_key in _SCHEMA_READY_PATHS
+        ):
+            return
+
+        owns_connection = conn is None
+        connection = conn or _connect(
+            db_path
         )
 
-        if owns_connection:
-            connection.commit()
-    finally:
-        if owns_connection:
-            connection.close()
+        try:
+            if not MIGRATION_PATH.exists():
+                raise FileNotFoundError(
+                    "No existe la migración: "
+                    f"{MIGRATION_PATH}"
+                )
+
+            connection.executescript(
+                MIGRATION_PATH.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            if owns_connection:
+                connection.commit()
+
+            if cache_key:
+                _SCHEMA_READY_PATHS.add(
+                    cache_key
+                )
+        finally:
+            if owns_connection:
+                connection.close()
 
 
 def _document_row_to_dict(row):

@@ -731,14 +731,21 @@ def build_expedient_payroll_panel(
             )
             page.update()
 
-    def show_message(message, *, error=False):
+    def show_message(
+        message,
+        *,
+        error=False,
+        update=True,
+    ):
         page.snack_bar = ft.SnackBar(
             content=ft.Text(
                 str(message or "")
             ),
             open=True,
         )
-        page.update()
+
+        if update:
+            page.update()
 
     def refresh_panel():
         if on_refresh:
@@ -758,7 +765,8 @@ def build_expedient_payroll_panel(
             )
 
             show_message(
-                "Nómina confirmada"
+                "Nómina confirmada",
+                update=False,
             )
             refresh_panel()
 
@@ -780,7 +788,8 @@ def build_expedient_payroll_panel(
             )
 
             show_message(
-                "Nómina descartada"
+                "Nómina descartada",
+                update=False,
             )
             refresh_panel()
 
@@ -802,7 +811,8 @@ def build_expedient_payroll_panel(
             )
 
             show_message(
-                "Nómina reabierta para revisión"
+                "Nómina reabierta para revisión",
+                update=False,
             )
             refresh_panel()
 
@@ -870,7 +880,8 @@ def build_expedient_payroll_panel(
                     f"{_money_centimos(suggested)}. "
                     "Diagnóstico: "
                     f"{diagnosis.get('estado') or '-'}"
-                )
+                ),
+                update=False,
             )
 
             if on_average_applied:
@@ -939,21 +950,20 @@ def build_expedient_payroll_panel(
                 )
 
                 dialog.open = False
-                page.update()
 
                 show_message(
                     (
                         "PDF eliminado del CRM: "
                         f"{result.get('deleted_proposal_count') or 0} "
                         "propuesta(s) eliminada(s)"
-                    )
+                    ),
+                    update=False,
                 )
 
                 refresh_panel()
 
             except Exception as exc:
                 dialog.open = False
-                page.update()
 
                 show_message(
                     f"No se pudo eliminar el PDF: {exc}",

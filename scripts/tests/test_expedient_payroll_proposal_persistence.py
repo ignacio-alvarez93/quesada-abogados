@@ -472,5 +472,24 @@ class ExpedientPayrollProposalPersistenceTest(
         )
 
 
+    def test_schema_cache_tracks_database_path(self):
+        proposal_service.ensure_schema(
+            db_path=self.db_path
+        )
+
+        cache_key = (
+            proposal_service
+            ._schema_cache_key(
+                db_path=self.db_path
+            )
+        )
+
+        self.assertIn(
+            cache_key,
+            proposal_service
+            ._SCHEMA_READY_PATHS,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
