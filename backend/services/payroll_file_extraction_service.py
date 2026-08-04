@@ -229,22 +229,44 @@ def extract_pdf_pages_text(path):
 
 
 def _looks_like_payroll_text(text):
-    normalized = str(text or "").upper()
+    normalized = (
+        payroll_parser
+        ._normalized_text(text)
+    )
 
-    indicators = [
-        "NÓMINA",
-        "NOMINA",
-        "RECIBO DE SALARIOS",
-        "TOTAL DEVENGADO",
-        "TOTAL DEDUCCIONES",
-        "LÍQUIDO A PERCIBIR",
-        "LIQUIDO A PERCIBIR",
+    indicator_groups = [
+        [
+            "NOMINA",
+            "RECIBO DE SALARIOS",
+            "PERIODO DE LIQUIDACION",
+        ],
+        [
+            "TOTAL DEVENGADO",
+            "TOTAL DEVENGOS",
+        ],
+        [
+            "TOTAL DEDUCCIONES",
+            "TOTAL A DEDUCIR",
+            "TOTAL APORTACIONES",
+        ],
+        [
+            "LIQUIDO A PERCIBIR",
+            "LIQUIDO TOTAL A PERCIBIR",
+            "NETO A PERCIBIR",
+        ],
+        [
+            "BASE DE COTIZACION",
+            "CONTINGENCIAS COMUNES",
+        ],
     ]
 
     matches = sum(
         1
-        for indicator in indicators
-        if indicator in normalized
+        for alternatives in indicator_groups
+        if any(
+            indicator in normalized
+            for indicator in alternatives
+        )
     )
 
     return matches >= 2
@@ -332,8 +354,28 @@ def extract_payroll_bundle_from_document_result(
 
         payrolls.append(extraction)
 
+    document_warnings = list(
+        document_result.warnings
+    )
+
+    if (
+        not document_result.requires_ocr
+        and document_result.ocr_text_pages
+    ):
+        obsolete_ocr_warnings = {
+            "El documento completo requiere OCR",
+            "El documento requiere OCR",
+        }
+
+        document_warnings = [
+            warning
+            for warning in document_warnings
+            if warning
+            not in obsolete_ocr_warnings
+        ]
+
     warnings = [
-        *document_result.warnings,
+        *document_warnings,
         *document_result.errors,
     ]
 
@@ -349,6 +391,32 @@ def extract_payroll_bundle_from_document_result(
                 )
             )
         )
+
+    payrolls.sort(
+        key=lambda payroll: (
+            int(
+                payroll.get("period_year")
+                or 0
+            ),
+            int(
+                payroll.get("period_month")
+                or 0
+            ),
+            int(
+                payroll.get(
+                    "source_page_start"
+                )
+                or 0
+            ),
+        ),
+        reverse=True,
+    )
+
+    for sequence, payroll in enumerate(
+        payrolls,
+        start=1,
+    ):
+        payroll["sequence"] = sequence
 
     period_keys = [
         payroll["period_key"]

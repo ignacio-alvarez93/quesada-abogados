@@ -139,24 +139,35 @@ def _extract_money_after_labels(
         for label in labels
     )
 
+    # Algunas nóminas sitúan el importe después de
+    # puntos, expresiones como "(A-B)", "Euros" o
+    # incluso en la línea siguiente.
+    separator = r"[^0-9]{0,100}"
+
     patterns = [
         (
             rf"(?:{escaped_labels})"
-            r"\s*[:\-]?\s*"
-            r"([0-9][0-9.\s]*,[0-9]{2})"
+            + separator
+            + r"([0-9][0-9.\s]*,[0-9]{2})"
         ),
         (
             rf"(?:{escaped_labels})"
-            r"\s*[:\-]?\s*"
-            r"([0-9][0-9,\s]*\.[0-9]{2})"
+            + separator
+            + r"([0-9][0-9,\s]*\.[0-9]{2})"
         ),
     ]
 
     value = _first_match(
         patterns,
         text,
+        flags=(
+            re.IGNORECASE
+            | re.DOTALL
+        ),
     )
+
     return _money_to_centimos(value)
+
 
 
 def _extract_period(text):
@@ -171,6 +182,30 @@ def _extract_period(text):
         )
         if match:
             return month_number, int(match.group(1))
+
+        liquidation_match = re.search(
+            r"\b(?:PERIODO|PERÍODO)"
+            r"\s+DE\s+LIQUIDACION"
+            r"\s*[:\-]?\s*"
+            r"(?:MENS\s+)?"
+            r"(?:DEL\s+)?"
+            r"\d{1,2}\s+DE\s+"
+            rf"{month_name}"
+            r"\s+(?:AL|HASTA)\s+"
+            r"\d{1,2}\s+DE\s+"
+            rf"{month_name}"
+            r"\s+DE\s+"
+            r"(20\d{2})",
+            normalized,
+        )
+
+        if liquidation_match:
+            return (
+                month_number,
+                int(
+                    liquidation_match.group(1)
+                ),
+            )
 
     match = re.search(
         r"\b(?:PERIODO|MES)"
@@ -216,25 +251,88 @@ def _extract_identity(text):
     )
 
 
+def _is_plausible_employee_name(value):
+    candidate = _normalize_line(value)
+
+    if not candidate:
+        return False
+
+    if any(
+        char.isdigit()
+        for char in candidate
+    ):
+        return False
+
+    normalized = _normalized_text(
+        candidate
+    )
+
+    forbidden_fragments = [
+        "COTIZACIONES",
+        "SEGURIDAD SOCIAL",
+        "IMPUESTO",
+        "RENTA DE",
+        "APORTACION",
+        "DEDUCCIONES",
+        "CONTINGENCIAS",
+        "RECAUDACION",
+        "PERIODO",
+        "DOMICILIO",
+        "EMPRESA",
+        "NOMINA",
+    ]
+
+    if any(
+        fragment in normalized
+        for fragment in forbidden_fragments
+    ):
+        return False
+
+    words = re.findall(
+        r"[A-ZÁÉÍÓÚÜÑ]+",
+        candidate.upper(),
+    )
+
+    return (
+        2 <= len(words) <= 8
+        and 4 <= len(candidate) <= 100
+    )
+
+
 def _extract_employee_name(text):
-    return _first_match(
-        [
-            r"(?:TRABAJADOR|EMPLEADO|PERCEPTOR)"
-            r"\s*[:\-]\s*"
-            r"([^\n]{4,100})",
-            r"(?:APELLIDOS Y NOMBRE|NOMBRE Y APELLIDOS)"
-            r"\s*[:\-]\s*"
-            r"([^\n]{4,100})",
-        ],
+    patterns = [
+        (
+            r"TRABAJADOR(?:/A|A)?"
+            r"\s*[\]\|:\-]*\s*"
+            r"([^\n]{4,100})"
+        ),
+        (
+            r"(?:APELLIDOS Y NOMBRE|"
+            r"NOMBRE Y APELLIDOS)"
+            r"\s*[\]\|:\-]*\s*"
+            r"([^\n]{4,100})"
+        ),
+    ]
+
+    candidate = _first_match(
+        patterns,
         text,
     )
+
+    if not _is_plausible_employee_name(
+        candidate
+    ):
+        return ""
+
+    return candidate
+
 
 
 def _extract_company_name(text):
     return _first_match(
         [
             r"(?:EMPRESA|RAZ[ÓO]N SOCIAL)"
-            r"\s*[:\-]\s*"
+            r"\s*[:\-\]]?\s*"
             r"([^\n]{3,120})",
         ],
         text,
@@ -255,19 +353,39 @@ def _extract_company_tax_id(text):
 def _detect_payroll_document(text):
     normalized = _normalized_text(text)
 
-    indicators = [
-        "NOMINA",
-        "RECIBO DE SALARIOS",
-        "LIQUIDO A PERCIBIR",
-        "TOTAL DEVENGADO",
-        "TOTAL DEDUCCIONES",
-        "BASE DE COTIZACION",
+    indicator_groups = [
+        [
+            "NOMINA",
+            "RECIBO DE SALARIOS",
+            "PERIODO DE LIQUIDACION",
+        ],
+        [
+            "LIQUIDO A PERCIBIR",
+            "LIQUIDO TOTAL A PERCIBIR",
+            "NETO A PERCIBIR",
+        ],
+        [
+            "TOTAL DEVENGADO",
+            "TOTAL DEVENGOS",
+        ],
+        [
+            "TOTAL DEDUCCIONES",
+            "TOTAL A DEDUCIR",
+            "TOTAL APORTACIONES",
+        ],
+        [
+            "BASE DE COTIZACION",
+            "CONTINGENCIAS COMUNES",
+        ],
     ]
 
     matches = sum(
         1
-        for indicator in indicators
-        if indicator in normalized
+        for alternatives in indicator_groups
+        if any(
+            indicator in normalized
+            for indicator in alternatives
+        )
     )
 
     return matches >= 2, matches
@@ -319,9 +437,11 @@ def extract_payroll_text(
             [
                 "LIQUIDO A PERCIBIR",
                 "LÍQUIDO A PERCIBIR",
-                "LIQUIDO",
+                "LIQUIDO TOTAL A PERCIBIR",
+                "LÍQUIDO TOTAL A PERCIBIR",
                 "NETO A PERCIBIR",
                 "TOTAL LIQUIDO",
+                "TOTAL LÍQUIDO",
             ],
         )
     )

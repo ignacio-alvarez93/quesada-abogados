@@ -185,6 +185,71 @@ class PayrollDocumentExtractionTest(
             result["warnings"],
         )
 
+    def test_extracts_real_ocr_liquidation_period(self):
+        text = """
+        RECIBO DE SALARIOS
+        TRABAJADOR PERSONA DE PRUEBA
+        Período de liquidación: MENS del 1 de
+        FEBRERO al 28 de FEBRERO de 2026
+        A. TOTAL DEVENGADO 1.935,85
+        B. TOTAL A DEDUCIR 426,05
+        LIQUIDO TOTAL A PERCIBIR (A-B)
+        Euros 1.509,80
+        BASE DE COTIZACION 1.935,85
+        """
+
+        result = payroll.extract_payroll_text(
+            text
+        )
+
+        self.assertEqual(
+            result["document_type"],
+            "PAYROLL",
+        )
+        self.assertEqual(
+            result["period_month"],
+            2,
+        )
+        self.assertEqual(
+            result["period_year"],
+            2026,
+        )
+        self.assertEqual(
+            result["net_pay_centimos"],
+            150980,
+        )
+
+    def test_detects_ocr_payroll_without_nomina_word(self):
+        text = """
+        PERIODO DE LIQUIDACION:
+        MENS DEL 1 DE ENERO AL 31 DE ENERO DE 2026
+        A. TOTAL DEVENGADO 2.071,93
+        B. TOTAL A DEDUCIR 453,37
+        LIQUIDO TOTAL A PERCIBIR 1.618,56
+        CONTINGENCIAS COMUNES 2.071,93
+        """
+
+        result = payroll.extract_payroll_text(
+            text
+        )
+
+        self.assertEqual(
+            result["document_type"],
+            "PAYROLL",
+        )
+        self.assertEqual(
+            result["period_month"],
+            1,
+        )
+        self.assertEqual(
+            result["period_year"],
+            2026,
+        )
+        self.assertEqual(
+            result["net_pay_centimos"],
+            161856,
+        )
+
     def test_detects_inconsistent_totals(self):
         text = """
         NÓMINA

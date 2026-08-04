@@ -103,22 +103,39 @@ class PayrollDocumentIntelligenceTest(
             1,
         )
         self.assertEqual(
+            [
+                payroll["period_key"]
+                for payroll
+                in bundle["payrolls"]
+            ],
+            [
+                "2026-08",
+                "2026-07",
+            ],
+        )
+        self.assertEqual(
             bundle["payrolls"][0][
                 "source_pages"
             ],
-            [1],
+            [2],
         )
         self.assertEqual(
-            bundle["payrolls"][1][
+            bundle["payrolls"][0][
                 "document_text_source"
             ],
             "OCR",
         )
         self.assertAlmostEqual(
-            bundle["payrolls"][1][
+            bundle["payrolls"][0][
                 "document_text_confidence"
             ],
             0.91,
+        )
+        self.assertEqual(
+            bundle["payrolls"][1][
+                "source_pages"
+            ],
+            [1],
         )
 
     def test_preserves_unresolved_pages(self):
@@ -237,6 +254,95 @@ class PayrollDocumentIntelligenceTest(
         self.assertEqual(
             bundle["ocr_text_pages"],
             1,
+        )
+
+    def test_orders_payrolls_by_period_descending(
+        self,
+    ):
+        result = self._document_result(
+            pages=[
+                DocumentPageResult(
+                    page_number=1,
+                    text=PAYROLL_TEXT.replace(
+                        "07/2026",
+                        "12/2025",
+                    ).replace(
+                        "1.220,00",
+                        "1.552,98",
+                    ),
+                    text_source=TEXT_SOURCE_OCR,
+                    confidence=0.80,
+                    language="spa",
+                ),
+                DocumentPageResult(
+                    page_number=2,
+                    text=PAYROLL_TEXT.replace(
+                        "07/2026",
+                        "02/2026",
+                    ).replace(
+                        "1.220,00",
+                        "1.509,80",
+                    ),
+                    text_source=TEXT_SOURCE_OCR,
+                    confidence=0.80,
+                    language="spa",
+                ),
+                DocumentPageResult(
+                    page_number=3,
+                    text=PAYROLL_TEXT.replace(
+                        "07/2026",
+                        "01/2026",
+                    ).replace(
+                        "1.220,00",
+                        "1.618,56",
+                    ),
+                    text_source=TEXT_SOURCE_OCR,
+                    confidence=0.80,
+                    language="spa",
+                ),
+            ]
+        )
+
+        bundle = (
+            payroll_file
+            .extract_payroll_bundle_from_document_result(
+                result
+            )
+        )
+
+        self.assertEqual(
+            [
+                payroll["period_key"]
+                for payroll
+                in bundle["payrolls"]
+            ],
+            [
+                "2026-02",
+                "2026-01",
+                "2025-12",
+            ],
+        )
+
+        self.assertEqual(
+            [
+                payroll["net_pay_centimos"]
+                for payroll
+                in bundle["payrolls"]
+            ],
+            [
+                150980,
+                161856,
+                155298,
+            ],
+        )
+
+        self.assertEqual(
+            [
+                payroll["sequence"]
+                for payroll
+                in bundle["payrolls"]
+            ],
+            [1, 2, 3],
         )
 
     def test_rejects_non_document_result(self):
