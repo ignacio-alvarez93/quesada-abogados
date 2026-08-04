@@ -6544,7 +6544,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             ),
                             size=11,
                             color=Q_MUTED,
-                            expand=True,
                         ),
                     ],
                     spacing=10,
@@ -6555,53 +6554,191 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 ),
                 ft.Row(
                     controls=[
-                        _specific_info_row(
-                            "Estado",
-                            stored_economic_state,
-                        ),
-                        _specific_info_row(
-                            "Referencia",
-                            (
-                                (
-                                    _economic_centimos_to_euros(
-                                        stored_reference_centimos
-                                    )
-                                    + " €"
-                                )
-                                if stored_reference_centimos
-                                else "-"
+                        ft.Container(
+                            width=230,
+                            padding=10,
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            bgcolor="#F8FAFC",
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Estado",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        stored_economic_state,
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                ],
+                                spacing=2,
+                                tight=True,
                             ),
                         ),
-                        _specific_info_row(
-                            "Diferencia",
-                            (
-                                (
-                                    _economic_centimos_to_euros(
-                                        stored_difference_centimos
-                                    )
-                                    + " €"
-                                )
-                                if stored_difference_centimos
-                                not in ("", None)
-                                else "-"
+                        ft.Container(
+                            width=180,
+                            padding=10,
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            bgcolor="#F8FAFC",
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Referencia",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            (
+                                                _economic_centimos_to_euros(
+                                                    stored_reference_centimos
+                                                )
+                                                + " €"
+                                            )
+                                            if stored_reference_centimos
+                                            else "-"
+                                        ),
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                ],
+                                spacing=2,
+                                tight=True,
                             ),
                         ),
-                        _specific_info_row(
-                            "Cobertura",
-                            (
-                                f"{stored_coverage} %"
-                                if stored_coverage
-                                not in ("", None)
-                                else "-"
+                        ft.Container(
+                            width=180,
+                            padding=10,
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            bgcolor="#F8FAFC",
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Diferencia",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            (
+                                                _economic_centimos_to_euros(
+                                                    stored_difference_centimos
+                                                )
+                                                + " €"
+                                            )
+                                            if stored_difference_centimos
+                                            not in ("", None)
+                                            else "-"
+                                        ),
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                ],
+                                spacing=2,
+                                tight=True,
                             ),
                         ),
-                        _specific_info_row(
-                            "Advertencia",
-                            stored_warning,
+                        ft.Container(
+                            width=160,
+                            padding=10,
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            bgcolor="#F8FAFC",
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Cobertura",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            f"{stored_coverage} %"
+                                            if stored_coverage
+                                            not in ("", None)
+                                            else "-"
+                                        ),
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                ],
+                                spacing=2,
+                                tight=True,
+                            ),
                         ),
-                        _specific_info_row(
-                            "Revisión",
-                            stored_review,
+                        ft.Container(
+                            width=180,
+                            padding=10,
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            bgcolor="#F8FAFC",
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Advertencia",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        stored_warning,
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                ],
+                                spacing=2,
+                                tight=True,
+                            ),
+                        ),
+                        ft.Container(
+                            width=150,
+                            padding=10,
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            bgcolor="#F8FAFC",
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Revisión",
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        stored_review,
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                ],
+                                spacing=2,
+                                tight=True,
+                            ),
                         ),
                     ],
                     spacing=10,
@@ -6614,7 +6751,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     wrap=True,
                     spacing=10,
                 ),
-                observaciones_valoracion_economica,
             ],
             icon=ft.Icons.ASSESSMENT,
         )
@@ -6666,17 +6802,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 _forms_popup_menu(),
             ])
 
-        nav = ft.Container(
-            bgcolor="#FFFFFF",
-            border=ft.border.all(1, Q_BORDER),
-            border_radius=14,
-            padding=10,
-            content=ft.Row(
-                controls=nav_controls,
-                spacing=10,
-                wrap=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+        nav = ft.Row(
+            controls=nav_controls,
+            spacing=10,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
         return ft.Container(
