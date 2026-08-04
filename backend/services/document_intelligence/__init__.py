@@ -72,3 +72,29 @@ __all__.extend(
         "complete_document_ocr",
     ]
 )
+
+from .document_ocr_repository import (
+    ensure_schema as ensure_ocr_cache_schema,
+    get_cached_result,
+    persist_result,
+    delete_cached_result,
+)
+from .document_intelligence_service import (
+    PIPELINE_VERSION,
+    NATIVE_EXTRACTOR,
+    policy_fingerprint,
+    process_document,
+)
+
+__all__.extend(
+    [
+        "ensure_ocr_cache_schema",
+        "get_cached_result",
+        "persist_result",
+        "delete_cached_result",
+        "PIPELINE_VERSION",
+        "NATIVE_EXTRACTOR",
+        "policy_fingerprint",
+        "process_document",
+    ]
+)
