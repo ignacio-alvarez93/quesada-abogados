@@ -2,6 +2,7 @@ import threading
 import json
 import csv
 import sqlite3
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 import flet as ft
@@ -25,6 +26,10 @@ from backend.services import document_docx_service
 from backend.services import mapper_preview_service
 from backend.services import pdf_fill_service
 from backend.services import form_mapper_admin_service
+from backend.services import (
+    family_reunification_economic_diagnosis_service
+    as reunification_economic_diagnosis,
+)
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from backend.services.master_data_service import get_provincias_nombres
 from frontend.components.app_button import primary_button, secondary_button, danger_button
@@ -4397,7 +4402,19 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         return ft.Row(controls=controls, spacing=8, wrap=True)
 
     def _set_specific_data_step(step):
-        steps_count = 5
+        try:
+            steps_count = max(
+                1,
+                int(
+                    state.get(
+                        "specific_steps_count"
+                    )
+                    or 5
+                ),
+            )
+        except Exception:
+            steps_count = 5
+
         try:
             step = max(0, min(int(step), steps_count - 1))
         except Exception:
@@ -4680,7 +4697,19 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             ("Checks", "Datos del trámite"),
             ("Revisión", "Snapshot y EX"),
         ]
-        current_step = max(0, min(int(state.get("specific_data_step") or 0), len(steps) - 1))
+        state["specific_steps_count"] = len(steps)
+        current_step = max(
+            0,
+            min(
+                int(
+                    state.get(
+                        "specific_data_step"
+                    )
+                    or 0
+                ),
+                len(steps) - 1,
+            ),
+        )
 
         cliente_id = _option_id(cliente.get_value())
         cliente_details = _fetch_cliente_details(cliente_id) if cliente_id else {}
@@ -5108,7 +5137,19 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             ("Checks", "Datos del trámite"),
             ("Revisión", "Snapshot y EX"),
         ]
-        current_step = max(0, min(int(state.get("specific_data_step") or 0), len(steps) - 1))
+        state["specific_steps_count"] = len(steps)
+        current_step = max(
+            0,
+            min(
+                int(
+                    state.get(
+                        "specific_data_step"
+                    )
+                    or 0
+                ),
+                len(steps) - 1,
+            ),
+        )
 
         cliente_id = _option_id(cliente.get_value())
         cliente_details = _fetch_cliente_details(cliente_id) if cliente_id else {}
@@ -5566,9 +5607,25 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             ("Reagrupante", "Familiar residente"),
             ("Representante", "Presentador profesional"),
             ("Solicitud", "Checks EX02"),
+            (
+                "Medios económicos",
+                "Diagnóstico orientativo",
+            ),
             ("Revisión", "Snapshot y EX"),
         ]
-        current_step = max(0, min(int(state.get("specific_data_step") or 0), len(steps) - 1))
+        state["specific_steps_count"] = len(steps)
+        current_step = max(
+            0,
+            min(
+                int(
+                    state.get(
+                        "specific_data_step"
+                    )
+                    or 0
+                ),
+                len(steps) - 1,
+            ),
+        )
 
         cliente_id = _option_id(cliente.get_value())
         cliente_details = _fetch_cliente_details(cliente_id) if cliente_id else {}
@@ -5732,6 +5789,459 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             saved_values,
             width=620,
         )
+
+        def _economic_integer_value(
+            value,
+            default=0,
+        ):
+            raw = str(value or "").strip()
+
+            if not raw:
+                return int(default)
+
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "Introduce un número entero válido"
+                )
+
+        def _economic_money_to_centimos(value):
+            raw = str(value or "").strip()
+
+            if not raw:
+                return None
+
+            normalized = (
+                raw
+                .replace("€", "")
+                .replace(" ", "")
+            )
+
+            if (
+                "," in normalized
+                and "." in normalized
+            ):
+                if (
+                    normalized.rfind(",")
+                    > normalized.rfind(".")
+                ):
+                    normalized = (
+                        normalized
+                        .replace(".", "")
+                        .replace(",", ".")
+                    )
+                else:
+                    normalized = (
+                        normalized
+                        .replace(",", "")
+                    )
+            elif "," in normalized:
+                normalized = normalized.replace(
+                    ",",
+                    ".",
+                )
+
+            try:
+                amount = Decimal(normalized)
+            except InvalidOperation:
+                raise ValueError(
+                    "Introduce un importe válido en euros"
+                )
+
+            if amount < 0:
+                raise ValueError(
+                    "El importe no puede ser negativo"
+                )
+
+            return int(
+                (
+                    amount
+                    * Decimal("100")
+                ).quantize(
+                    Decimal("1"),
+                    rounding=ROUND_HALF_UP,
+                )
+            )
+
+        def _economic_centimos_to_euros(value):
+            raw = str(value or "").strip()
+
+            if not raw:
+                return ""
+
+            try:
+                cents = int(raw)
+            except (TypeError, ValueError):
+                return ""
+
+            return (
+                f"{Decimal(cents) / Decimal('100'):.2f}"
+            )
+
+        def _economic_saved_euros(
+            euros_code,
+            centimos_code,
+            default="",
+        ):
+            euros = _specific_field_value(
+                saved_values,
+                euros_code,
+                "",
+            )
+
+            if str(euros or "").strip():
+                return str(euros)
+
+            converted = _economic_centimos_to_euros(
+                _specific_field_value(
+                    saved_values,
+                    centimos_code,
+                    "",
+                )
+            )
+
+            return converted or default
+
+        numero_personas_reagrupadas = (
+            _specific_value_text(
+                "numero_personas_reagrupadas",
+                (
+                    "Número total de personas "
+                    "reagrupadas"
+                ),
+                saved_values,
+                width=280,
+            )
+        )
+        if not str(
+            numero_personas_reagrupadas.value
+            or ""
+        ).strip():
+            numero_personas_reagrupadas.value = "1"
+
+        numero_reagrupados_menores = (
+            _specific_value_text(
+                "numero_reagrupados_menores",
+                "Número de menores reagrupados",
+                saved_values,
+                width=260,
+            )
+        )
+        if not str(
+            numero_reagrupados_menores.value
+            or ""
+        ).strip():
+            numero_reagrupados_menores.value = "0"
+
+        iprem_mensual_referencia_euros = (
+            _specific_value_text(
+                "iprem_mensual_referencia_euros",
+                "IPREM mensual de referencia (€)",
+                saved_values,
+                width=280,
+            )
+        )
+        iprem_mensual_referencia_euros.value = (
+            _economic_saved_euros(
+                "iprem_mensual_referencia_euros",
+                (
+                    "iprem_mensual_"
+                    "referencia_centimos"
+                ),
+            )
+        )
+
+        ingresos_mensuales_computables_euros = (
+            _specific_value_text(
+                (
+                    "ingresos_mensuales_"
+                    "computables_euros"
+                ),
+                (
+                    "Ingresos mensuales "
+                    "computables (€)"
+                ),
+                saved_values,
+                width=300,
+            )
+        )
+        ingresos_mensuales_computables_euros.value = (
+            _economic_saved_euros(
+                (
+                    "ingresos_mensuales_"
+                    "computables_euros"
+                ),
+                (
+                    "ingresos_mensuales_"
+                    "computables_centimos"
+                ),
+            )
+        )
+
+        for numeric_control in (
+            numero_personas_reagrupadas,
+            numero_reagrupados_menores,
+            iprem_mensual_referencia_euros,
+            ingresos_mensuales_computables_euros,
+        ):
+            numeric_control.keyboard_type = (
+                ft.KeyboardType.NUMBER
+            )
+
+        criterio_economico = _specific_value_select(
+            "criterio_economico",
+            "Criterio económico aplicado",
+            ["GENERAL_IPREM"],
+            saved_values,
+            width=300,
+            default="GENERAL_IPREM",
+        )
+
+        valoracion_profesional_economica = (
+            _specific_value_select(
+                (
+                    "valoracion_profesional_"
+                    "economica"
+                ),
+                "Valoración profesional",
+                [
+                    "PENDIENTE",
+                    "VIABLE",
+                    (
+                        "VIABLE_CON_"
+                        "ADVERTENCIAS"
+                    ),
+                    "NO_RECOMENDADO",
+                ],
+                saved_values,
+                width=340,
+                default="PENDIENTE",
+            )
+        )
+
+        observaciones_valoracion_economica = (
+            _specific_value_text(
+                (
+                    "observaciones_valoracion_"
+                    "economica"
+                ),
+                (
+                    "Observaciones de la "
+                    "valoración económica"
+                ),
+                saved_values,
+                width=720,
+                multiline=True,
+            )
+        )
+
+        economic_hidden_codes = [
+            "iprem_mensual_referencia_centimos",
+            (
+                "ingresos_mensuales_"
+                "computables_centimos"
+            ),
+            "diagnostico_economico_estado",
+            (
+                "diagnostico_economico_"
+                "porcentaje_iprem"
+            ),
+            (
+                "diagnostico_economico_"
+                "importe_referencia_centimos"
+            ),
+            (
+                "diagnostico_economico_"
+                "diferencia_centimos"
+            ),
+            (
+                "diagnostico_economico_"
+                "porcentaje_cobertura"
+            ),
+            (
+                "diagnostico_economico_"
+                "nivel_advertencia"
+            ),
+            (
+                "diagnostico_economico_"
+                "requiere_revision"
+            ),
+            (
+                "diagnostico_economico_"
+                "bloquea_presentacion"
+            ),
+        ]
+
+        for code in economic_hidden_codes:
+            if (
+                code
+                not in state.setdefault(
+                    "specific_field_controls",
+                    {},
+                )
+            ):
+                _register_hidden_specific_control(
+                    code,
+                    _specific_field_value(
+                        saved_values,
+                        code,
+                        "",
+                    ),
+                )
+
+        def _calculate_ex02_economic_diagnosis():
+            people = _economic_integer_value(
+                numero_personas_reagrupadas.value,
+                default=1,
+            )
+            minors = _economic_integer_value(
+                numero_reagrupados_menores.value,
+                default=0,
+            )
+            iprem_centimos = (
+                _economic_money_to_centimos(
+                    iprem_mensual_referencia_euros
+                    .value
+                )
+            )
+
+            if iprem_centimos is None:
+                raise ValueError(
+                    "Introduce el IPREM mensual "
+                    "de referencia"
+                )
+
+            income_centimos = (
+                _economic_money_to_centimos(
+                    ingresos_mensuales_computables_euros
+                    .value
+                )
+            )
+
+            result = (
+                reunification_economic_diagnosis
+                .evaluate_family_reunification_economic_diagnosis(
+                    iprem_mensual_centimos=(
+                        iprem_centimos
+                    ),
+                    numero_personas_reagrupadas=(
+                        people
+                    ),
+                    numero_reagrupados_menores=(
+                        minors
+                    ),
+                    ingresos_mensuales_computables_centimos=(
+                        income_centimos
+                    ),
+                    criterio=(
+                        criterio_economico.value
+                        or "GENERAL_IPREM"
+                    ),
+                )
+            )
+
+            values_to_store = {
+                (
+                    "iprem_mensual_"
+                    "referencia_centimos"
+                ): iprem_centimos,
+                (
+                    "ingresos_mensuales_"
+                    "computables_centimos"
+                ): (
+                    ""
+                    if income_centimos is None
+                    else income_centimos
+                ),
+                "diagnostico_economico_estado": (
+                    result["estado"]
+                ),
+                (
+                    "diagnostico_economico_"
+                    "porcentaje_iprem"
+                ): (
+                    result[
+                        "porcentaje_iprem_requerido"
+                    ]
+                ),
+                (
+                    "diagnostico_economico_"
+                    "importe_referencia_centimos"
+                ): (
+                    result[
+                        "importe_referencia_centimos"
+                    ]
+                ),
+                (
+                    "diagnostico_economico_"
+                    "diferencia_centimos"
+                ): (
+                    ""
+                    if result["diferencia_centimos"]
+                    is None
+                    else result[
+                        "diferencia_centimos"
+                    ]
+                ),
+                (
+                    "diagnostico_economico_"
+                    "porcentaje_cobertura"
+                ): (
+                    ""
+                    if result["porcentaje_cobertura"]
+                    is None
+                    else result[
+                        "porcentaje_cobertura"
+                    ]
+                ),
+                (
+                    "diagnostico_economico_"
+                    "nivel_advertencia"
+                ): result["nivel_advertencia"],
+                (
+                    "diagnostico_economico_"
+                    "requiere_revision"
+                ): (
+                    "Sí"
+                    if result[
+                        "requiere_revision_profesional"
+                    ]
+                    else "No"
+                ),
+                (
+                    "diagnostico_economico_"
+                    "bloquea_presentacion"
+                ): "No",
+            }
+
+            for code, value in values_to_store.items():
+                _set_specific_control_value(
+                    code,
+                    value,
+                )
+
+            return result
+
+        def calculate_economic_diagnosis(e=None):
+            try:
+                _calculate_ex02_economic_diagnosis()
+                _save_specific_values_or_raise()
+                clear_form_message()
+                set_message(
+                    success_alert(
+                        "Diagnóstico económico "
+                        "actualizado"
+                    )
+                )
+                expediente_dialog.content = (
+                    build_expediente_dialog_content(
+                        expediente_id
+                    )
+                )
+                page.update()
+            except Exception as exc:
+                show_form_error(str(exc))
 
         def apply_reagrupante(selected):
             contacto_id = _option_id(selected)
@@ -5943,6 +6453,172 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             icon=ft.Icons.FACT_CHECK,
         )
 
+        stored_economic_state = (
+            _specific_field_value(
+                saved_values,
+                "diagnostico_economico_estado",
+                "SIN_CALCULAR",
+            )
+        )
+        stored_reference_centimos = (
+            _specific_field_value(
+                saved_values,
+                (
+                    "diagnostico_economico_"
+                    "importe_referencia_centimos"
+                ),
+                "",
+            )
+        )
+        stored_difference_centimos = (
+            _specific_field_value(
+                saved_values,
+                (
+                    "diagnostico_economico_"
+                    "diferencia_centimos"
+                ),
+                "",
+            )
+        )
+        stored_coverage = _specific_field_value(
+            saved_values,
+            (
+                "diagnostico_economico_"
+                "porcentaje_cobertura"
+            ),
+            "",
+        )
+        stored_warning = _specific_field_value(
+            saved_values,
+            (
+                "diagnostico_economico_"
+                "nivel_advertencia"
+            ),
+            "INFO",
+        )
+        stored_review = _specific_field_value(
+            saved_values,
+            (
+                "diagnostico_economico_"
+                "requiere_revision"
+            ),
+            "-",
+        )
+
+        economic_card = _specific_card(
+            "Diagnóstico de medios económicos",
+            (
+                "Referencia aritmética orientativa. "
+                "No bloquea la presentación ni "
+                "sustituye la valoración profesional."
+            ),
+            [
+                ft.Row(
+                    controls=[
+                        numero_personas_reagrupadas,
+                        numero_reagrupados_menores,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+                ft.Row(
+                    controls=[
+                        iprem_mensual_referencia_euros,
+                        ingresos_mensuales_computables_euros,
+                        criterio_economico,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+                ft.Row(
+                    controls=[
+                        primary_button(
+                            "Calcular diagnóstico",
+                            calculate_economic_diagnosis,
+                        ),
+                        ft.Text(
+                            (
+                                "Los ingresos inferiores "
+                                "al umbral generan una "
+                                "advertencia, no un bloqueo."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+                ft.Row(
+                    controls=[
+                        _specific_info_row(
+                            "Estado",
+                            stored_economic_state,
+                        ),
+                        _specific_info_row(
+                            "Referencia",
+                            (
+                                (
+                                    _economic_centimos_to_euros(
+                                        stored_reference_centimos
+                                    )
+                                    + " €"
+                                )
+                                if stored_reference_centimos
+                                else "-"
+                            ),
+                        ),
+                        _specific_info_row(
+                            "Diferencia",
+                            (
+                                (
+                                    _economic_centimos_to_euros(
+                                        stored_difference_centimos
+                                    )
+                                    + " €"
+                                )
+                                if stored_difference_centimos
+                                not in ("", None)
+                                else "-"
+                            ),
+                        ),
+                        _specific_info_row(
+                            "Cobertura",
+                            (
+                                f"{stored_coverage} %"
+                                if stored_coverage
+                                not in ("", None)
+                                else "-"
+                            ),
+                        ),
+                        _specific_info_row(
+                            "Advertencia",
+                            stored_warning,
+                        ),
+                        _specific_info_row(
+                            "Revisión",
+                            stored_review,
+                        ),
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        valoracion_profesional_economica,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+                observaciones_valoracion_economica,
+            ],
+            icon=ft.Icons.ASSESSMENT,
+        )
+
         review_card = _specific_card(
             "Revisión y generación",
             "Guarda, genera snapshot y prepara el EX02 desde datos específicos.",
@@ -5968,7 +6644,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             icon=ft.Icons.CHECK_CIRCLE,
         )
 
-        step_controls = [reagrupado_card, reagrupante_card, representante_card, solicitud_card, review_card]
+        step_controls = [
+            reagrupado_card,
+            reagrupante_card,
+            representante_card,
+            solicitud_card,
+            economic_card,
+            review_card,
+        ]
 
         nav_controls = []
         if current_step > 0:
