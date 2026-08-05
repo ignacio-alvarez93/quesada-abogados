@@ -8264,37 +8264,503 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             ),
         )
 
+    def current_expedient_family():
+        """
+        Devuelve la familia activa del formulario.
+
+        Funciona tanto:
+        - durante una nueva alta;
+        - al editar un expediente existente.
+        """
+
+        selected_family_id = _option_id(
+            familia_expediente.get_value()
+        )
+
+        if not selected_family_id:
+            selected_family_id = state.get(
+                "new_expedient_family_id"
+            )
+
+        for family in (familias or []):
+            try:
+                family_id = int(
+                    family.get("id")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                family_id = 0
+
+            if (
+                selected_family_id
+                and family_id
+                == int(selected_family_id)
+            ):
+                return dict(family)
+
+        fallback_code = state.get(
+            "new_expedient_family_code"
+        )
+
+        fallback_name = state.get(
+            "new_expedient_family_name"
+        )
+
+        if fallback_code or fallback_name:
+            return {
+                "id": selected_family_id,
+                "codigo": fallback_code,
+                "nombre": (
+                    fallback_name
+                    or fallback_code
+                ),
+            }
+
+        return {}
+
+
+    def current_expedient_family_code():
+        family = current_expedient_family()
+
+        return _norm(
+            family.get("codigo")
+            or family.get("nombre")
+        ).replace(" ", "_")
+
+
+    def current_expedient_family_name():
+        family = current_expedient_family()
+
+        return (
+            family.get("nombre")
+            or family.get("codigo")
+            or "Expediente"
+        )
+
+
+    def is_immigration_expedient():
+        return (
+            current_expedient_family_code()
+            == "EXTRANJERIA"
+        )
+
+
+    def get_family_dialog_sections():
+        """
+        Secciones habilitadas según la familia.
+
+        Extranjería conserva las herramientas históricas.
+        Las demás familias parten de una ficha genérica,
+        formularios dinámicos, documentación y trazabilidad.
+        """
+
+        common_sections = [
+            (
+                "Ficha",
+                "ficha",
+                ft.Icons.ARTICLE,
+                "Datos base",
+            ),
+            (
+                "Datos específicos",
+                "datos_especificos",
+                ft.Icons.DYNAMIC_FORM,
+                "Formulario",
+            ),
+            (
+                "Documentación",
+                "documentacion",
+                ft.Icons.FOLDER_OPEN,
+                "Box y documentos",
+            ),
+        ]
+
+        if is_immigration_expedient():
+            common_sections.extend(
+                [
+                    (
+                        "Plantillas y formularios",
+                        "plantillas",
+                        ft.Icons.DESCRIPTION,
+                        "EX / DOCX",
+                    ),
+                    (
+                        "Diagnóstico",
+                        "diagnostico",
+                        ft.Icons.FACT_CHECK,
+                        "Estado documental",
+                    ),
+                    (
+                        "Automatización",
+                        "automatizacion",
+                        ft.Icons.ROCKET_LAUNCH,
+                        "Mercurio / payload",
+                    ),
+                ]
+            )
+
+        common_sections.append(
+            (
+                "Trazabilidad",
+                "trazabilidad",
+                ft.Icons.TIMELINE,
+                "Historial",
+            )
+        )
+
+        return common_sections
+
+
+    def _family_form_header():
+        family_code = (
+            current_expedient_family_code()
+        )
+
+        family_name = (
+            current_expedient_family_name()
+        )
+
+        styles = {
+            "EXTRANJERIA": {
+                "icon": ft.Icons.PUBLIC,
+                "background": "#EAF3FF",
+                "border": "#B9D7FF",
+                "foreground": Q_PRIMARY,
+                "title": (
+                    "Ficha de Extranjería"
+                ),
+                "subtitle": (
+                    "Residencia, presentación, "
+                    "documentación y automatización."
+                ),
+            },
+            "NACIONALIDAD": {
+                "icon": ft.Icons.BADGE_OUTLINED,
+                "background": "#F4F3FF",
+                "border": "#D9D6FE",
+                "foreground": "#6941C6",
+                "title": (
+                    "Ficha de Nacionalidad"
+                ),
+                "subtitle": (
+                    "Datos generales y seguimiento "
+                    "del procedimiento de nacionalidad."
+                ),
+            },
+            "UGE": {
+                "icon": (
+                    ft.Icons.BUSINESS_CENTER_OUTLINED
+                ),
+                "background": "#F0F9FF",
+                "border": "#B9E6FE",
+                "foreground": "#026AA2",
+                "title": "Ficha UGE",
+                "subtitle": (
+                    "Expediente tramitado ante la "
+                    "Unidad de Grandes Empresas."
+                ),
+            },
+            "DOCUMENTACION_EXTRANJEROS": {
+                "icon": ft.Icons.FINGERPRINT,
+                "background": "#ECFDF3",
+                "border": "#A6F4C5",
+                "foreground": "#027A48",
+                "title": (
+                    "Ficha de documentación "
+                    "de extranjeros"
+                ),
+                "subtitle": (
+                    "Huellas, TIE, certificados "
+                    "y actuaciones documentales."
+                ),
+            },
+            "TRAMITES_CONSULARES": {
+                "icon": ft.Icons.TRAVEL_EXPLORE,
+                "background": "#FFFAEB",
+                "border": "#FEDF89",
+                "foreground": "#B54708",
+                "title": (
+                    "Ficha de trámites consulares"
+                ),
+                "subtitle": (
+                    "Visados y actuaciones ante "
+                    "consulados o proveedores."
+                ),
+            },
+            "REGISTRO_CIVIL": {
+                "icon": (
+                    ft.Icons.ACCOUNT_BALANCE_OUTLINED
+                ),
+                "background": "#FDF2FA",
+                "border": "#FCCEEE",
+                "foreground": "#C11574",
+                "title": (
+                    "Ficha de Registro Civil"
+                ),
+                "subtitle": (
+                    "Certificaciones, inscripciones "
+                    "y actuaciones registrales."
+                ),
+            },
+        }
+
+        style = styles.get(
+            family_code,
+            {
+                "icon": ft.Icons.FOLDER_SPECIAL,
+                "background": "#F8FAFC",
+                "border": Q_BORDER,
+                "foreground": Q_PRIMARY,
+                "title": (
+                    f"Ficha · {family_name}"
+                ),
+                "subtitle": (
+                    "Datos generales y seguimiento "
+                    "del expediente."
+                ),
+            },
+        )
+
+        return ft.Container(
+            bgcolor=style["background"],
+            border=ft.border.all(
+                1,
+                style["border"],
+            ),
+            border_radius=16,
+            padding=14,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(
+                            style["icon"],
+                            size=24,
+                            color=style["foreground"],
+                        ),
+                        bgcolor="#FFFFFF",
+                        border_radius=24,
+                        width=48,
+                        height=48,
+                        alignment=ft.alignment.Alignment(
+                            0,
+                            0,
+                        ),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                style["title"],
+                                size=20,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                style["subtitle"],
+                                size=13,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(
+                            1,
+                            style["border"],
+                        ),
+                        border_radius=10,
+                        padding=ft.padding.symmetric(
+                            horizontal=10,
+                            vertical=6,
+                        ),
+                        content=ft.Text(
+                            family_name,
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color=style["foreground"],
+                        ),
+                    ),
+                ],
+                spacing=12,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
+
+    def build_generic_expedient_edit_content():
+        """
+        Ficha base para familias todavía sin formulario
+        principal especializado.
+
+        No muestra identificadores ni herramientas
+        específicos de otras familias.
+        """
+
+        return ft.Column(
+            controls=[
+                _family_form_header(),
+                _form_card(
+                    "Datos principales",
+                    (
+                        "Cliente, familia, tipo, subtipo "
+                        "y estado operativo."
+                    ),
+                    [
+                        ft.Row(
+                            controls=[
+                                numero_expediente,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        cliente.control,
+                        ft.Row(
+                            controls=[
+                                familia_expediente.control,
+                                tipo_expediente.control,
+                                subtipo_expediente.control,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        ft.Row(
+                            controls=[
+                                prioridad,
+                                estado_documental,
+                                estado_administrativo,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        ft.Row(
+                            controls=[
+                                estado_presentacion,
+                                responsable,
+                                provincia.control,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                    ],
+                    ft.Icons.ACCOUNT_TREE,
+                ),
+                _form_card(
+                    "Continuidad y origen",
+                    (
+                        "Indica si el expediente es "
+                        "independiente, continúa otro asunto "
+                        "o sucede a un trámite externo."
+                    ),
+                    [
+                        continuity_form_wrapper,
+                        ft.Text(
+                            (
+                                "Los vínculos se conservan "
+                                "en la trayectoria administrativa "
+                                "del cliente."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    ft.Icons.ROUTE,
+                ),
+                _form_card(
+                    "Fechas y tramitación",
+                    (
+                        "Control temporal y referencias "
+                        "administrativas generales."
+                    ),
+                    [
+                        ft.Row(
+                            controls=[
+                                fecha_apertura,
+                                fecha_presentacion,
+                                fecha_resolucion,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        ft.Row(
+                            controls=[
+                                numero_registro,
+                                organo_presentacion,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                    ],
+                    ft.Icons.EVENT_NOTE,
+                ),
+                _form_card(
+                    "Box y observaciones",
+                    (
+                        "Ruta documental y notas "
+                        "del expediente."
+                    ),
+                    [
+                        box_folder_path,
+                        ft.Row(
+                            controls=[
+                                secondary_button(
+                                    "Buscar carpetas Box",
+                                    lambda e:
+                                    cargar_box_folder_options(
+                                        False
+                                    ),
+                                ),
+                                primary_button(
+                                    "Escanear ruta y buscar",
+                                    lambda e:
+                                    cargar_box_folder_options(
+                                        True
+                                    ),
+                                ),
+                                secondary_button(
+                                    "Vincular ruta escrita",
+                                    vincular_box_folder_desde_ficha,
+                                ),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                        ft.Text(
+                            (
+                                "El ERP vincula la ruta en SQLite. "
+                                "No mueve, renombra ni elimina "
+                                "documentos de Box."
+                            ),
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                        observaciones,
+                        observaciones_internas,
+                    ],
+                    ft.Icons.FOLDER_OPEN,
+                ),
+                form_message,
+            ],
+            width=920,
+            height=620,
+            scroll=ft.ScrollMode.AUTO,
+            spacing=12,
+        )
+
+
+    def build_family_edit_content():
+        if is_immigration_expedient():
+            return build_edit_content()
+
+        return build_generic_expedient_edit_content()
+
+
     def build_edit_content():
         return ft.Column(
             controls=[
-                ft.Container(
-                    bgcolor="#EAF3FF",
-                    border=ft.border.all(1, "#B9D7FF"),
-                    border_radius=16,
-                    padding=14,
-                    content=ft.Row(
-                        controls=[
-                            ft.Container(
-                                content=ft.Icon(ft.Icons.FOLDER_SPECIAL, size=24, color=Q_PRIMARY),
-                                bgcolor="#FFFFFF",
-                                border_radius=24,
-                                width=48,
-                                height=48,
-                                alignment=ft.alignment.Alignment(0, 0),
-                            ),
-                            ft.Column(
-                                controls=[
-                                    ft.Text("Ficha principal del expediente", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                    ft.Text("Datos base, estados, presentación y vinculación documental.", size=13, color=Q_MUTED),
-                                ],
-                                spacing=2,
-                                expand=True,
-                            ),
-                        ],
-                        spacing=12,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                ),
+                _family_form_header(),
                 _form_card(
                     "Datos principales",
                     "Cliente, tipo, subtipo y estado operativo del asunto.",
@@ -19854,7 +20320,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         if section == "plantillas":
             return build_expedient_templates_content(expediente_id)
 
-        return build_edit_content()
+        return build_family_edit_content()
 
 
     def build_expediente_dialog_content(expediente_id=None):
@@ -19870,15 +20336,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         if not state.get("dialog_section"):
             state["dialog_section"] = "ficha"
 
-        menu_items = [
-            ("Ficha", "ficha", ft.Icons.ARTICLE, "Datos base"),
-            ("Datos específicos", "datos_especificos", ft.Icons.DYNAMIC_FORM, "Formulario"),
-            ("Documentación", "documentacion", ft.Icons.FOLDER_OPEN, "Box / PARA PRESENTAR"),
-            ("Plantillas y formularios", "plantillas", ft.Icons.DESCRIPTION, "EX / DOCX"),
-            ("Diagnóstico", "diagnostico", ft.Icons.FACT_CHECK, "Estado documental"),
-            ("Automatización", "automatizacion", ft.Icons.ROCKET_LAUNCH, "Payload mapper"),
-            ("Trazabilidad", "trazabilidad", ft.Icons.TIMELINE, "Historial"),
-        ]
+        menu_items = (
+            get_family_dialog_sections()
+        )
+
+        allowed_sections = {
+            item[1]
+            for item in menu_items
+        }
+
+        if (
+            state.get("dialog_section")
+            not in allowed_sections
+        ):
+            state["dialog_section"] = "ficha"
 
         def _nav_button(label, section, icon, subtitle):
             selected = (state.get("dialog_section") or "ficha") == section
