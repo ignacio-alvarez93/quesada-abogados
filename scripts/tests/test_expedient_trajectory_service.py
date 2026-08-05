@@ -675,5 +675,246 @@ class ExpedientTrajectoryServiceTest(
         )
 
 
+    def _create_test_milestone(self):
+        return (
+            expedient_trajectory_service
+            .create_external_milestone(
+                cliente_id=1,
+                milestone={
+                    "codigo":
+                        "VISADO_EXTERNO",
+                    "nombre":
+                        "Visado externo",
+                    "fecha_inicio":
+                        "2026-07-01",
+                    "estado":
+                        "EN_TRAMITE",
+                    "observaciones":
+                        "Pendiente de resolución.",
+                },
+                expediente_anterior_id=100,
+                usuario="TEST",
+            )
+        )
+
+    def test_gets_external_milestone(self):
+        created = self._create_test_milestone()
+
+        item = (
+            expedient_trajectory_service
+            .get_external_milestone(
+                created["id"]
+            )
+        )
+
+        self.assertEqual(
+            item["codigo"],
+            "VISADO_EXTERNO",
+        )
+
+        self.assertEqual(
+            item["expediente_anterior_numero"],
+            "EXP-2026-0100",
+        )
+
+    def test_updates_external_milestone(self):
+        created = self._create_test_milestone()
+
+        updated = (
+            expedient_trajectory_service
+            .update_external_milestone(
+                created["id"],
+                {
+                    "nombre":
+                        "Visado de reagrupación",
+                    "estado":
+                        "EN_TRAMITE",
+                    "observaciones":
+                        "Documentación presentada.",
+                    "documento_referencia":
+                        "BOX/VISADO.pdf",
+                },
+                usuario="TEST",
+            )
+        )
+
+        self.assertEqual(
+            updated["nombre"],
+            "Visado de reagrupación",
+        )
+
+        self.assertEqual(
+            updated["documento_referencia"],
+            "BOX/VISADO.pdf",
+        )
+
+        with sqlite3.connect(
+            self.db_path
+        ) as conn:
+            event_types = {
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT tipo_evento
+                    FROM expediente_eventos
+                    WHERE expediente_id = 100
+                    """
+                ).fetchall()
+            }
+
+        self.assertIn(
+            "HITO_EXTERNO_ACTUALIZADO",
+            event_types,
+        )
+
+    def test_rejects_editing_trajectory_edges(self):
+        created = self._create_test_milestone()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "extremos de la trayectoria",
+        ):
+            (
+                expedient_trajectory_service
+                .update_external_milestone(
+                    created["id"],
+                    {
+                        "expediente_posterior_id":
+                            200,
+                    },
+                    usuario="TEST",
+                )
+            )
+
+    def test_rejects_invalid_date_range(self):
+        created = self._create_test_milestone()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "fecha final",
+        ):
+            (
+                expedient_trajectory_service
+                .update_external_milestone(
+                    created["id"],
+                    {
+                        "fecha_fin":
+                            "2026-06-01",
+                    },
+                    usuario="TEST",
+                )
+            )
+
+    def test_completes_external_milestone(self):
+        created = self._create_test_milestone()
+
+        completed = (
+            expedient_trajectory_service
+            .complete_external_milestone(
+                created["id"],
+                resultado="CONCEDIDO",
+                fecha_fin="2026-08-05",
+                observaciones=(
+                    "Visado concedido."
+                ),
+                usuario="TEST",
+            )
+        )
+
+        self.assertEqual(
+            completed["estado"],
+            "FINALIZADO",
+        )
+
+        self.assertEqual(
+            completed["resultado"],
+            "CONCEDIDO",
+        )
+
+        self.assertEqual(
+            completed["fecha_fin"],
+            "2026-08-05",
+        )
+
+        with sqlite3.connect(
+            self.db_path
+        ) as conn:
+            event_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM expediente_eventos
+                WHERE expediente_id = 100
+                  AND tipo_evento =
+                      'HITO_EXTERNO_FINALIZADO'
+                """
+            ).fetchone()[0]
+
+        self.assertEqual(
+            event_count,
+            1,
+        )
+
+    def test_deactivates_external_milestone(self):
+        created = self._create_test_milestone()
+
+        result = (
+            expedient_trajectory_service
+            .deactivate_external_milestone(
+                created["id"],
+                usuario="TEST",
+                motivo="Registro duplicado.",
+            )
+        )
+
+        self.assertEqual(
+            result["activo"],
+            0,
+        )
+
+        active_items = (
+            expedient_trajectory_service
+            .list_external_milestones(
+                expediente_id=100,
+                active_only=True,
+            )
+        )
+
+        all_items = (
+            expedient_trajectory_service
+            .list_external_milestones(
+                expediente_id=100,
+                active_only=False,
+            )
+        )
+
+        self.assertEqual(
+            active_items,
+            [],
+        )
+
+        self.assertEqual(
+            len(all_items),
+            1,
+        )
+
+        with sqlite3.connect(
+            self.db_path
+        ) as conn:
+            event_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM expediente_eventos
+                WHERE expediente_id = 100
+                  AND tipo_evento =
+                      'HITO_EXTERNO_DESACTIVADO'
+                """
+            ).fetchone()[0]
+
+        self.assertEqual(
+            event_count,
+            1,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

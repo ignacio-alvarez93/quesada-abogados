@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+from datetime import datetime
 
 from backend.services import expedient_evolution_service
 from backend.services import expedient_service
@@ -877,6 +878,644 @@ def list_external_milestones(
         dict(row)
         for row in rows
     ]
+
+
+
+VALID_MILESTONE_RESULTS = {
+    "CONCEDIDO",
+    "DENEGADO",
+    "COMPLETADO",
+    "DESISTIDO",
+    "ARCHIVADO",
+    "CANCELADO",
+    "SIN_RESULTADO",
+}
+
+
+def _get_external_milestone_with_connection(
+    conn,
+    milestone_id,
+    *,
+    active_only=False,
+):
+    sql = """
+        SELECT
+            h.*,
+            ea.numero_expediente
+                AS expediente_anterior_numero,
+            ep.numero_expediente
+                AS expediente_posterior_numero
+        FROM expediente_hitos_externos h
+        LEFT JOIN expedientes ea
+          ON ea.id = h.expediente_anterior_id
+        LEFT JOIN expedientes ep
+          ON ep.id = h.expediente_posterior_id
+        WHERE h.id = ?
+    """
+
+    params = [int(milestone_id)]
+
+    if active_only:
+        sql += " AND h.activo = 1"
+
+    row = conn.execute(
+        sql,
+        params,
+    ).fetchone()
+
+    return dict(row) if row else None
+
+
+def get_external_milestone(
+    milestone_id,
+    *,
+    active_only=False,
+):
+    ensure_flexible_trajectory_schema()
+
+    with _connect() as conn:
+        return _get_external_milestone_with_connection(
+            conn,
+            milestone_id,
+            active_only=active_only,
+        )
+
+
+def _normalize_milestone_result(value):
+    result = _normalize_code(value)
+
+    if not result:
+        return None
+
+    if result not in VALID_MILESTONE_RESULTS:
+        raise ValueError(
+            "Resultado de hito no permitido: "
+            f"{result}"
+        )
+
+    return (
+        None
+        if result == "SIN_RESULTADO"
+        else result
+    )
+
+
+def _validate_milestone_dates(
+    fecha_inicio,
+    fecha_fin,
+):
+    fecha_inicio = _raw_text(fecha_inicio)
+    fecha_fin = _raw_text(fecha_fin)
+
+    if (
+        fecha_inicio
+        and fecha_fin
+        and fecha_fin < fecha_inicio
+    ):
+        raise ValueError(
+            "La fecha final del hito no puede ser "
+            "anterior a la fecha inicial"
+        )
+
+    return (
+        fecha_inicio or None,
+        fecha_fin or None,
+    )
+
+
+def _linked_milestone_expedient_ids(milestone):
+    result = []
+
+    for field in (
+        "expediente_anterior_id",
+        "expediente_posterior_id",
+    ):
+        value = milestone.get(field)
+
+        if value is None:
+            continue
+
+        value = int(value)
+
+        if value not in result:
+            result.append(value)
+
+    return result
+
+
+def _insert_milestone_events_with_connection(
+    conn,
+    *,
+    milestone,
+    event_type,
+    title,
+    description,
+    usuario,
+):
+    for expediente_id in (
+        _linked_milestone_expedient_ids(
+            milestone
+        )
+    ):
+        expediente = _get_active_expedient(
+            conn,
+            expediente_id,
+        )
+
+        if not expediente:
+            continue
+
+        (
+            expedient_evolution_service
+            ._insert_expedient_event_with_connection(
+                conn=conn,
+                expediente_id=int(
+                    expediente["id"]
+                ),
+                cliente_id=int(
+                    expediente["cliente_id"]
+                ),
+                tipo_evento=event_type,
+                titulo=title,
+                descripcion=description,
+                entidad_relacionada=(
+                    "HITO_EXTERNO"
+                ),
+                entidad_relacionada_id=int(
+                    milestone["id"]
+                ),
+                usuario=usuario,
+            )
+        )
+
+
+def update_external_milestone(
+    milestone_id,
+    data,
+    usuario="ERP",
+):
+    """
+    Actualiza los datos descriptivos de un hito.
+
+    No permite modificar:
+    - cliente_id
+    - expediente_anterior_id
+    - expediente_posterior_id
+    """
+
+    ensure_flexible_trajectory_schema()
+    expedient_evolution_service.ensure_expedient_evolution_schema()
+
+    data = dict(data or {})
+
+    forbidden_fields = {
+        "cliente_id",
+        "expediente_anterior_id",
+        "expediente_posterior_id",
+    }
+
+    attempted_forbidden = sorted(
+        field
+        for field in forbidden_fields
+        if field in data
+    )
+
+    if attempted_forbidden:
+        raise ValueError(
+            "No se pueden modificar desde esta operación "
+            "los extremos de la trayectoria: "
+            + ", ".join(attempted_forbidden)
+        )
+
+    conn = _connect()
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        existing = (
+            _get_external_milestone_with_connection(
+                conn,
+                milestone_id,
+                active_only=True,
+            )
+        )
+
+        if not existing:
+            raise ValueError(
+                "El hito externo no existe o está inactivo"
+            )
+
+        code = _normalize_code(
+            data.get(
+                "codigo",
+                existing.get("codigo"),
+            )
+        )
+
+        name = _raw_text(
+            data.get(
+                "nombre",
+                existing.get("nombre"),
+            )
+        )
+
+        state = _normalize_code(
+            data.get(
+                "estado",
+                existing.get("estado"),
+            )
+        )
+
+        if not code:
+            raise ValueError(
+                "El hito externo necesita un código"
+            )
+
+        if not name:
+            raise ValueError(
+                "El hito externo necesita un nombre"
+            )
+
+        if state not in VALID_MILESTONE_STATES:
+            raise ValueError(
+                "Estado de hito no permitido: "
+                f"{state}"
+            )
+
+        result = _normalize_milestone_result(
+            data.get(
+                "resultado",
+                existing.get("resultado"),
+            )
+        )
+
+        (
+            fecha_inicio,
+            fecha_fin,
+        ) = _validate_milestone_dates(
+            data.get(
+                "fecha_inicio",
+                existing.get("fecha_inicio"),
+            ),
+            data.get(
+                "fecha_fin",
+                existing.get("fecha_fin"),
+            ),
+        )
+
+        if state == "FINALIZADO" and not fecha_fin:
+            raise ValueError(
+                "Un hito finalizado necesita fecha final"
+            )
+
+        if state != "FINALIZADO" and result in {
+            "CONCEDIDO",
+            "DENEGADO",
+            "COMPLETADO",
+            "DESISTIDO",
+            "ARCHIVADO",
+        }:
+            raise ValueError(
+                "El resultado indicado requiere que "
+                "el hito esté finalizado"
+            )
+
+        try:
+            conn.execute(
+                """
+                UPDATE expediente_hitos_externos
+                SET
+                    codigo = ?,
+                    nombre = ?,
+                    familia_referencia_codigo = ?,
+                    tipo_referencia_codigo = ?,
+                    subtipo_referencia_codigo = ?,
+                    fecha_inicio = ?,
+                    fecha_fin = ?,
+                    estado = ?,
+                    resultado = ?,
+                    observaciones = ?,
+                    documento_referencia = ?,
+                    orden = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                  AND activo = 1
+                """,
+                (
+                    code,
+                    name,
+                    (
+                        _normalize_code(
+                            data.get(
+                                "familia_referencia_codigo",
+                                existing.get(
+                                    "familia_referencia_codigo"
+                                ),
+                            )
+                        )
+                        or None
+                    ),
+                    (
+                        _normalize_code(
+                            data.get(
+                                "tipo_referencia_codigo",
+                                existing.get(
+                                    "tipo_referencia_codigo"
+                                ),
+                            )
+                        )
+                        or None
+                    ),
+                    (
+                        _normalize_code(
+                            data.get(
+                                "subtipo_referencia_codigo",
+                                existing.get(
+                                    "subtipo_referencia_codigo"
+                                ),
+                            )
+                        )
+                        or None
+                    ),
+                    fecha_inicio,
+                    fecha_fin,
+                    state,
+                    result,
+                    (
+                        _raw_text(
+                            data.get(
+                                "observaciones",
+                                existing.get(
+                                    "observaciones"
+                                ),
+                            )
+                        )
+                        or None
+                    ),
+                    (
+                        _raw_text(
+                            data.get(
+                                "documento_referencia",
+                                existing.get(
+                                    "documento_referencia"
+                                ),
+                            )
+                        )
+                        or None
+                    ),
+                    int(
+                        data.get(
+                            "orden",
+                            existing.get("orden")
+                            or 0,
+                        )
+                        or 0
+                    ),
+                    int(milestone_id),
+                ),
+            )
+
+        except sqlite3.IntegrityError as exc:
+            if (
+                "UNIQUE constraint failed"
+                in str(exc)
+            ):
+                raise ValueError(
+                    "Ya existe este hito externo "
+                    "en la trayectoria"
+                ) from exc
+            raise
+
+        updated = (
+            _get_external_milestone_with_connection(
+                conn,
+                milestone_id,
+                active_only=True,
+            )
+        )
+
+        description = (
+            "Se actualizó el trámite externo "
+            f"{updated['nombre']} "
+            f"({updated['codigo']})."
+        )
+
+        _insert_milestone_events_with_connection(
+            conn,
+            milestone=updated,
+            event_type=(
+                "HITO_EXTERNO_ACTUALIZADO"
+            ),
+            title=(
+                "HITO EXTERNO ACTUALIZADO"
+            ),
+            description=description,
+            usuario=usuario,
+        )
+
+        conn.commit()
+        return updated
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+def complete_external_milestone(
+    milestone_id,
+    resultado,
+    fecha_fin=None,
+    observaciones=None,
+    usuario="ERP",
+):
+    ensure_flexible_trajectory_schema()
+    expedient_evolution_service.ensure_expedient_evolution_schema()
+
+    result = _normalize_milestone_result(
+        resultado
+    )
+
+    if not result:
+        raise ValueError(
+            "Selecciona un resultado para finalizar "
+            "el hito"
+        )
+
+    conn = _connect()
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        existing = (
+            _get_external_milestone_with_connection(
+                conn,
+                milestone_id,
+                active_only=True,
+            )
+        )
+
+        if not existing:
+            raise ValueError(
+                "El hito externo no existe o está inactivo"
+            )
+
+        final_date = (
+            _raw_text(fecha_fin)
+            or datetime.today().strftime(
+                "%Y-%m-%d"
+            )
+        )
+
+        (
+            _fecha_inicio,
+            final_date,
+        ) = _validate_milestone_dates(
+            existing.get("fecha_inicio"),
+            final_date,
+        )
+
+        final_observations = (
+            _raw_text(observaciones)
+            if observaciones is not None
+            else existing.get("observaciones")
+        )
+
+        conn.execute(
+            """
+            UPDATE expediente_hitos_externos
+            SET
+                estado = 'FINALIZADO',
+                resultado = ?,
+                fecha_fin = ?,
+                observaciones = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND activo = 1
+            """,
+            (
+                result,
+                final_date,
+                final_observations or None,
+                int(milestone_id),
+            ),
+        )
+
+        updated = (
+            _get_external_milestone_with_connection(
+                conn,
+                milestone_id,
+                active_only=True,
+            )
+        )
+
+        description = (
+            "Se finalizó el trámite externo "
+            f"{updated['nombre']} con resultado "
+            f"{updated['resultado']}."
+        )
+
+        _insert_milestone_events_with_connection(
+            conn,
+            milestone=updated,
+            event_type=(
+                "HITO_EXTERNO_FINALIZADO"
+            ),
+            title=(
+                "HITO EXTERNO FINALIZADO"
+            ),
+            description=description,
+            usuario=usuario,
+        )
+
+        conn.commit()
+        return updated
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+def deactivate_external_milestone(
+    milestone_id,
+    usuario="ERP",
+    motivo=None,
+):
+    ensure_flexible_trajectory_schema()
+    expedient_evolution_service.ensure_expedient_evolution_schema()
+
+    conn = _connect()
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        existing = (
+            _get_external_milestone_with_connection(
+                conn,
+                milestone_id,
+                active_only=True,
+            )
+        )
+
+        if not existing:
+            raise ValueError(
+                "El hito externo no existe o está inactivo"
+            )
+
+        conn.execute(
+            """
+            UPDATE expediente_hitos_externos
+            SET
+                activo = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND activo = 1
+            """,
+            (int(milestone_id),),
+        )
+
+        description = (
+            "Se desactivó el trámite externo "
+            f"{existing['nombre']}."
+        )
+
+        if _raw_text(motivo):
+            description += (
+                " Motivo: "
+                + _raw_text(motivo)
+            )
+
+        _insert_milestone_events_with_connection(
+            conn,
+            milestone=existing,
+            event_type=(
+                "HITO_EXTERNO_DESACTIVADO"
+            ),
+            title=(
+                "HITO EXTERNO DESACTIVADO"
+            ),
+            description=description,
+            usuario=usuario,
+        )
+
+        conn.commit()
+
+        result = dict(existing)
+        result["activo"] = 0
+
+        return result
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
 
 
 def create_expedient_with_continuity(
