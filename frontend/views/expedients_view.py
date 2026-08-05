@@ -9,6 +9,7 @@ import flet as ft
 from datetime import datetime
 
 from backend.services import expedient_service
+from backend.services import expedient_evolution_service
 from backend.services import box_watch_service
 from backend.services import document_viewer_service
 from backend.services import document_inbox_service
@@ -10965,6 +10966,492 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         page.update()
 
 
+    def _close_derivation_proposal_dialog(
+        dialog,
+        e=None,
+    ):
+        try:
+            dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    def _open_created_derivation_expedient(
+        dialog,
+        expediente_destino_id,
+        e=None,
+    ):
+        try:
+            dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            expediente_dialog.open = False
+        except Exception:
+            pass
+
+        page.open_expediente_id = int(
+            expediente_destino_id
+        )
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        refresh_table()
+        open_pending_expediente_from_navigation()
+
+
+    def _show_derivation_created_dialog(
+        *,
+        expediente_destino,
+    ):
+        expediente_destino = (
+            expediente_destino
+            or {}
+        )
+
+        expediente_destino_id = (
+            expediente_destino.get("id")
+        )
+
+        numero_destino = (
+            expediente_destino.get(
+                "numero_expediente"
+            )
+            or (
+                f"#{expediente_destino_id}"
+                if expediente_destino_id
+                else "-"
+            )
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.CHECK_CIRCLE,
+                        color="#027A48",
+                        size=24,
+                    ),
+                    ft.Text(
+                        "Expediente de visado creado",
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                width=500,
+                content=ft.Column(
+                    controls=[
+                        success_alert(
+                            "El expediente posterior "
+                            "se ha creado correctamente."
+                        ),
+                        ft.Container(
+                            padding=12,
+                            border_radius=10,
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "VISADO DE "
+                                        "REAGRUPACIÓN FAMILIAR",
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        "N.º de expediente: "
+                                        + str(numero_destino),
+                                        size=12,
+                                        color=Q_MUTED,
+                                        selectable=True,
+                                    ),
+                                ],
+                                spacing=4,
+                                tight=True,
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=lambda e: (
+                        _close_derivation_proposal_dialog(
+                            dialog,
+                            e,
+                        )
+                    ),
+                ),
+                ft.ElevatedButton(
+                    "Abrir expediente",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    disabled=not bool(
+                        expediente_destino_id
+                    ),
+                    on_click=lambda e: (
+                        _open_created_derivation_expedient(
+                            dialog,
+                            expediente_destino_id,
+                            e,
+                        )
+                    ),
+                ),
+            ],
+            actions_alignment=(
+                ft.MainAxisAlignment.END
+            ),
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def _accept_derivation_from_dialog(
+        dialog,
+        proposal,
+        e=None,
+    ):
+        proposal = proposal or {}
+
+        proposal_id = (
+            proposal.get("id")
+            or proposal.get("proposal_id")
+        )
+
+        if not proposal_id:
+            set_message(
+                error_alert(
+                    "No se pudo identificar la "
+                    "propuesta de derivación."
+                )
+            )
+            page.update()
+            return
+
+        try:
+            result = (
+                expedient_evolution_service
+                .accept_derivation_proposal(
+                    proposal_id=int(proposal_id),
+                    usuario="ERP",
+                )
+            )
+
+            dialog.open = False
+
+            destination = (
+                result.get("expediente_destino")
+                or {}
+            )
+
+            origin_id = (
+                proposal.get(
+                    "expediente_origen_id"
+                )
+                or state.get(
+                    "dialog_expediente_id"
+                )
+                or state.get("editing_id")
+            )
+
+            if origin_id:
+                state["dialog_section"] = (
+                    "trazabilidad"
+                )
+
+                expediente_dialog.content = (
+                    build_expediente_dialog_content(
+                        int(origin_id)
+                    )
+                )
+
+            refresh_table()
+            page.update()
+
+            _show_derivation_created_dialog(
+                expediente_destino=destination,
+            )
+
+        except Exception as exc:
+            set_message(
+                error_alert(
+                    "No se pudo crear el expediente "
+                    "de visado:\n"
+                    + str(exc)
+                )
+            )
+            page.update()
+
+
+    def show_derivation_proposal_dialog(
+        proposal_item,
+    ):
+        proposal_item = proposal_item or {}
+
+        proposal = (
+            proposal_item.get("proposal")
+            or proposal_item
+        )
+
+        proposal_id = proposal.get("id")
+
+        if not proposal_id:
+            return
+
+        tipo_destino_nombre = (
+            proposal.get("tipo_destino_nombre")
+            or proposal_item.get(
+                "tipo_destino_nombre"
+            )
+            or "VISADO DE REAGRUPACIÓN FAMILIAR"
+        )
+
+        expediente_origen_numero = (
+            proposal.get(
+                "expediente_origen_numero"
+            )
+            or proposal_item.get(
+                "expediente_origen_numero"
+            )
+            or ""
+        )
+
+        cliente_nombre = ""
+
+        try:
+            expediente_id = int(
+                proposal.get(
+                    "expediente_origen_id"
+                )
+                or state.get(
+                    "dialog_expediente_id"
+                )
+                or state.get("editing_id")
+            )
+
+            expediente = (
+                trace_service.get_expediente_basic(
+                    expediente_id
+                )
+                or {}
+            )
+
+            cliente_nombre = " ".join(
+                part
+                for part in [
+                    expediente.get("nombre"),
+                    expediente.get(
+                        "primer_apellido"
+                    ),
+                    expediente.get(
+                        "segundo_apellido"
+                    ),
+                ]
+                if str(part or "").strip()
+            ).strip()
+
+            if not expediente_origen_numero:
+                expediente_origen_numero = (
+                    expediente.get(
+                        "numero_expediente"
+                    )
+                    or f"#{expediente_id}"
+                )
+
+        except Exception:
+            pass
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.ACCOUNT_TREE,
+                        color=Q_PRIMARY,
+                        size=24,
+                    ),
+                    ft.Text(
+                        "Crear expediente de visado",
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                width=540,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            "Se ha registrado una "
+                            "resolución favorable para la "
+                            "Reagrupación Familiar.",
+                            size=13,
+                            color="#344054",
+                        ),
+                        ft.Text(
+                            "El sistema propone crear el "
+                            "siguiente expediente:",
+                            size=13,
+                            color="#344054",
+                        ),
+                        ft.Container(
+                            padding=14,
+                            border_radius=10,
+                            bgcolor="#F5F9FF",
+                            border=ft.border.all(
+                                1,
+                                "#B2CCFF",
+                            ),
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        str(
+                                            tipo_destino_nombre
+                                        ),
+                                        size=15,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Cliente: "
+                                                + cliente_nombre,
+                                                size=12,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if cliente_nombre
+                                        else []
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Expediente de origen: "
+                                                + str(
+                                                    expediente_origen_numero
+                                                ),
+                                                size=12,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if expediente_origen_numero
+                                        else []
+                                    ),
+                                ],
+                                spacing=5,
+                                tight=True,
+                            ),
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.LINK,
+                                    size=18,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    "El nuevo expediente quedará "
+                                    "vinculado como ACTUACIÓN "
+                                    "POSTERIOR.",
+                                    size=12,
+                                    color=Q_MUTED,
+                                    expand=True,
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                    ],
+                    spacing=13,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Ahora no",
+                    on_click=lambda e: (
+                        _close_derivation_proposal_dialog(
+                            dialog,
+                            e,
+                        )
+                    ),
+                ),
+                ft.ElevatedButton(
+                    "Crear expediente",
+                    icon=ft.Icons.ADD_CIRCLE,
+                    on_click=lambda e: (
+                        _accept_derivation_from_dialog(
+                            dialog,
+                            proposal,
+                            e,
+                        )
+                    ),
+                ),
+            ],
+            actions_alignment=(
+                ft.MainAxisAlignment.END
+            ),
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def _get_new_derivation_proposals(
+        result,
+    ):
+        evaluation = (
+            (result or {}).get(
+                "derivation_evaluation"
+            )
+            or {}
+        )
+
+        if not evaluation.get("ok"):
+            return []
+
+        return [
+            item
+            for item in (
+                evaluation.get("proposals")
+                or []
+            )
+            if (
+                item.get("created")
+                and not item.get(
+                    "already_existed"
+                )
+            )
+        ]
+
+
     def close_admin_document_dialog(e=None):
         admin_document_dialog.open = False
         state["admin_document_file"] = None
@@ -11337,10 +11824,50 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         )
                     )
 
+            new_derivation_proposals = (
+                _get_new_derivation_proposals(
+                    result
+                )
+            )
+
+            derivation_evaluation = (
+                result.get(
+                    "derivation_evaluation"
+                )
+                or {}
+            )
+
+            if (
+                derivation_evaluation
+                and not derivation_evaluation.get(
+                    "ok",
+                    True,
+                )
+            ):
+                set_message(
+                    warning_alert(
+                        "El documento se registró "
+                        "correctamente, pero no se "
+                        "pudieron evaluar las actuaciones "
+                        "posteriores:\n"
+                        + str(
+                            derivation_evaluation.get(
+                                "error"
+                            )
+                            or "Error no determinado"
+                        )
+                    )
+                )
+
             state["dialog_section"] = "trazabilidad"
             expediente_dialog.content = build_expediente_dialog_content(expediente_id)
             refresh_table()
             page.update()
+
+            if new_derivation_proposals:
+                show_derivation_proposal_dialog(
+                    new_derivation_proposals[0]
+                )
         except Exception as exc:
             show_form_error(str(exc))
 
