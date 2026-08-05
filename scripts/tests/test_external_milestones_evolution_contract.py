@@ -136,5 +136,81 @@ class ExternalMilestonesEvolutionContractTest(
         )
 
 
+    def test_has_external_milestone_management_menu(
+        self,
+    ):
+        self.assertIn(
+            "_external_milestone_management_menu",
+            self.function_names,
+        )
+
+        self.assertIn(
+            "allow_management",
+            self.source,
+        )
+
+    def test_has_external_milestone_edit_dialog(
+        self,
+    ):
+        self.assertIn(
+            "open_external_milestone_edit_dialog",
+            self.function_names,
+        )
+
+        self.assertIn(
+            "update_external_milestone",
+            self.source,
+        )
+
+    def test_has_external_milestone_complete_dialog(
+        self,
+    ):
+        self.assertIn(
+            "open_external_milestone_complete_dialog",
+            self.function_names,
+        )
+
+        self.assertIn(
+            "complete_external_milestone",
+            self.source,
+        )
+
+    def test_has_external_milestone_deactivation(
+        self,
+    ):
+        self.assertIn(
+            "confirm_deactivate_external_milestone",
+            self.function_names,
+        )
+
+        self.assertIn(
+            "deactivate_external_milestone",
+            self.source,
+        )
+
+    def test_refreshes_expedient_after_change(
+        self,
+    ):
+        self.assertIn(
+            "_refresh_expedient_after_milestone_change",
+            self.function_names,
+        )
+
+        self.assertIn(
+            "build_expediente_dialog_content",
+            self.source,
+        )
+
+    def test_management_is_enabled_in_evolution(
+        self,
+    ):
+        self.assertGreaterEqual(
+            self.source.count(
+                "allow_management=True"
+            ),
+            2,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11715,10 +11715,843 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         return "RELATED"
 
 
+    EXTERNAL_MILESTONE_STATE_OPTIONS = [
+        "REGISTRADO",
+        "EN_TRAMITE",
+        "FINALIZADO",
+        "CANCELADO",
+    ]
+
+    EXTERNAL_MILESTONE_RESULT_OPTIONS = [
+        "SIN_RESULTADO",
+        "CONCEDIDO",
+        "DENEGADO",
+        "COMPLETADO",
+        "DESISTIDO",
+        "ARCHIVADO",
+        "CANCELADO",
+    ]
+
+
+    def _close_external_milestone_dialog(
+        dialog,
+        e=None,
+    ):
+        try:
+            dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    def _refresh_expedient_after_milestone_change(
+        expediente_id=None,
+    ):
+        expediente_id = (
+            expediente_id
+            or state.get("dialog_expediente_id")
+            or state.get("editing_id")
+        )
+
+        if not expediente_id:
+            return
+
+        expediente_dialog.content = (
+            build_expediente_dialog_content(
+                int(expediente_id)
+            )
+        )
+
+        refresh_table()
+        page.update()
+
+
+    def _milestone_reference_summary(milestone):
+        previous_number = (
+            milestone.get(
+                "expediente_anterior_numero"
+            )
+            or "Sin expediente anterior"
+        )
+
+        posterior_number = (
+            milestone.get(
+                "expediente_posterior_numero"
+            )
+            or "Sin expediente posterior"
+        )
+
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=10,
+            padding=10,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Vínculos de trayectoria",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Anterior: "
+                        + str(previous_number),
+                        size=11,
+                        color=Q_MUTED,
+                        selectable=True,
+                    ),
+                    ft.Text(
+                        "Posterior: "
+                        + str(posterior_number),
+                        size=11,
+                        color=Q_MUTED,
+                        selectable=True,
+                    ),
+                    ft.Text(
+                        (
+                            "Estos vínculos no se modifican "
+                            "desde la edición ordinaria."
+                        ),
+                        size=10,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=4,
+            ),
+        )
+
+
+    def open_external_milestone_edit_dialog(
+        milestone,
+        e=None,
+    ):
+        milestone_id = int(
+            (milestone or {}).get("id")
+        )
+
+        try:
+            current = (
+                expedient_trajectory_service
+                .get_external_milestone(
+                    milestone_id,
+                    active_only=True,
+                )
+            )
+        except Exception as exc:
+            show_form_error(str(exc))
+            return
+
+        if not current:
+            show_form_error(
+                "El trámite externo ya no está disponible"
+            )
+            return
+
+        code_field = text_input(
+            "Código",
+            width=330,
+        )
+
+        name_field = text_input(
+            "Nombre",
+            width=520,
+        )
+
+        family_field = text_input(
+            "Familia de referencia",
+            width=310,
+        )
+
+        type_field = text_input(
+            "Tipo de referencia",
+            width=310,
+        )
+
+        subtype_field = text_input(
+            "Subtipo de referencia",
+            width=310,
+        )
+
+        state_field = select_input(
+            "Estado",
+            EXTERNAL_MILESTONE_STATE_OPTIONS,
+            width=240,
+        )
+
+        result_field = select_input(
+            "Resultado",
+            EXTERNAL_MILESTONE_RESULT_OPTIONS,
+            width=240,
+        )
+
+        start_date_field = text_input(
+            "Fecha de inicio",
+            width=220,
+        )
+
+        end_date_field = text_input(
+            "Fecha de finalización",
+            width=220,
+        )
+
+        document_field = text_input(
+            "Documento de referencia",
+            width=650,
+        )
+
+        order_field = text_input(
+            "Orden",
+            width=160,
+        )
+
+        observations_field = multiline_input(
+            "Observaciones",
+            width=720,
+            height=150,
+        )
+
+        code_field.value = (
+            current.get("codigo")
+            or ""
+        )
+
+        name_field.value = (
+            current.get("nombre")
+            or ""
+        )
+
+        family_field.value = (
+            current.get(
+                "familia_referencia_codigo"
+            )
+            or ""
+        )
+
+        type_field.value = (
+            current.get(
+                "tipo_referencia_codigo"
+            )
+            or ""
+        )
+
+        subtype_field.value = (
+            current.get(
+                "subtipo_referencia_codigo"
+            )
+            or ""
+        )
+
+        state_field.value = (
+            current.get("estado")
+            or "REGISTRADO"
+        )
+
+        result_field.value = (
+            current.get("resultado")
+            or "SIN_RESULTADO"
+        )
+
+        start_date_field.value = _date_to_display(
+            current.get("fecha_inicio")
+        )
+
+        end_date_field.value = _date_to_display(
+            current.get("fecha_fin")
+        )
+
+        document_field.value = (
+            current.get("documento_referencia")
+            or ""
+        )
+
+        order_field.value = str(
+            current.get("orden")
+            or 0
+        )
+
+        observations_field.value = (
+            current.get("observaciones")
+            or ""
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+        )
+
+        def save_changes(event=None):
+            start_date = _date_to_sql(
+                start_date_field.value
+            )
+
+            end_date = _date_to_sql(
+                end_date_field.value
+            )
+
+            if (
+                start_date_field.value
+                and not start_date
+            ):
+                show_form_error(
+                    "La fecha de inicio no es válida"
+                )
+                return
+
+            if (
+                end_date_field.value
+                and not end_date
+            ):
+                show_form_error(
+                    "La fecha de finalización no es válida"
+                )
+                return
+
+            try:
+                order = int(
+                    str(
+                        order_field.value
+                        or "0"
+                    ).strip()
+                )
+            except ValueError:
+                show_form_error(
+                    "El orden debe ser un número entero"
+                )
+                return
+
+            try:
+                (
+                    expedient_trajectory_service
+                    .update_external_milestone(
+                        milestone_id,
+                        {
+                            "codigo":
+                                code_field.value,
+                            "nombre":
+                                name_field.value,
+                            "familia_referencia_codigo":
+                                family_field.value,
+                            "tipo_referencia_codigo":
+                                type_field.value,
+                            "subtipo_referencia_codigo":
+                                subtype_field.value,
+                            "estado":
+                                state_field.value,
+                            "resultado":
+                                result_field.value,
+                            "fecha_inicio":
+                                start_date,
+                            "fecha_fin":
+                                end_date,
+                            "documento_referencia":
+                                document_field.value,
+                            "observaciones":
+                                observations_field.value,
+                            "orden":
+                                order,
+                        },
+                        usuario="ERP",
+                    )
+                )
+
+                _close_external_milestone_dialog(
+                    dialog
+                )
+
+                set_message(
+                    success_alert(
+                        "Trámite externo actualizado"
+                    )
+                )
+
+                _refresh_expedient_after_milestone_change()
+
+            except Exception as exc:
+                show_form_error(str(exc))
+
+        dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.EDIT_OUTLINED,
+                    color=Q_PRIMARY,
+                ),
+                ft.Text(
+                    "Editar trámite externo",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=10,
+        )
+
+        dialog.content = ft.Container(
+            width=780,
+            height=570,
+            content=ft.Column(
+                controls=[
+                    _milestone_reference_summary(
+                        current
+                    ),
+                    ft.Row(
+                        controls=[
+                            code_field,
+                            name_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            family_field,
+                            type_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    subtype_field,
+                    ft.Row(
+                        controls=[
+                            state_field,
+                            result_field,
+                            order_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            start_date_field,
+                            end_date_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    document_field,
+                    observations_field,
+                ],
+                spacing=12,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        )
+
+        dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                lambda event: (
+                    _close_external_milestone_dialog(
+                        dialog,
+                        event,
+                    )
+                ),
+            ),
+            primary_button(
+                "Guardar cambios",
+                save_changes,
+            ),
+        ]
+
+        dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def open_external_milestone_complete_dialog(
+        milestone,
+        e=None,
+    ):
+        milestone_id = int(
+            (milestone or {}).get("id")
+        )
+
+        result_field = select_input(
+            "Resultado",
+            [
+                "CONCEDIDO",
+                "DENEGADO",
+                "COMPLETADO",
+                "DESISTIDO",
+                "ARCHIVADO",
+                "CANCELADO",
+            ],
+            width=280,
+        )
+
+        result_field.value = (
+            milestone.get("resultado")
+            or "COMPLETADO"
+        )
+
+        end_date_field = text_input(
+            "Fecha de finalización",
+            width=240,
+        )
+
+        end_date_field.value = (
+            _date_to_display(
+                milestone.get("fecha_fin")
+            )
+            or datetime.now().strftime(
+                "%d/%m/%Y"
+            )
+        )
+
+        observations_field = multiline_input(
+            "Observaciones",
+            width=610,
+            height=150,
+        )
+
+        observations_field.value = (
+            milestone.get("observaciones")
+            or ""
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+        )
+
+        def complete_milestone(event=None):
+            final_date = _date_to_sql(
+                end_date_field.value
+            )
+
+            if not final_date:
+                show_form_error(
+                    "Indica una fecha final válida"
+                )
+                return
+
+            if not result_field.value:
+                show_form_error(
+                    "Selecciona el resultado"
+                )
+                return
+
+            try:
+                (
+                    expedient_trajectory_service
+                    .complete_external_milestone(
+                        milestone_id,
+                        resultado=result_field.value,
+                        fecha_fin=final_date,
+                        observaciones=(
+                            observations_field.value
+                        ),
+                        usuario="ERP",
+                    )
+                )
+
+                _close_external_milestone_dialog(
+                    dialog
+                )
+
+                set_message(
+                    success_alert(
+                        "Trámite externo finalizado"
+                    )
+                )
+
+                _refresh_expedient_after_milestone_change()
+
+            except Exception as exc:
+                show_form_error(str(exc))
+
+        dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.TASK_ALT,
+                    color="#027A48",
+                ),
+                ft.Text(
+                    "Finalizar trámite externo",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=10,
+        )
+
+        dialog.content = ft.Container(
+            width=650,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        str(
+                            milestone.get("nombre")
+                            or "Trámite externo"
+                        ),
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Row(
+                        controls=[
+                            result_field,
+                            end_date_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    observations_field,
+                ],
+                spacing=12,
+                tight=True,
+            ),
+        )
+
+        dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                lambda event: (
+                    _close_external_milestone_dialog(
+                        dialog,
+                        event,
+                    )
+                ),
+            ),
+            primary_button(
+                "Finalizar",
+                complete_milestone,
+            ),
+        ]
+
+        dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def confirm_deactivate_external_milestone(
+        milestone,
+        e=None,
+    ):
+        milestone_id = int(
+            (milestone or {}).get("id")
+        )
+
+        reason_field = multiline_input(
+            "Motivo de la desactivación",
+            width=590,
+            height=130,
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+        )
+
+        def execute_deactivation(event=None):
+            try:
+                (
+                    expedient_trajectory_service
+                    .deactivate_external_milestone(
+                        milestone_id,
+                        usuario="ERP",
+                        motivo=reason_field.value,
+                    )
+                )
+
+                _close_external_milestone_dialog(
+                    dialog
+                )
+
+                set_message(
+                    success_alert(
+                        "Trámite externo desactivado"
+                    )
+                )
+
+                _refresh_expedient_after_milestone_change()
+
+            except Exception as exc:
+                show_form_error(str(exc))
+
+        dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.DELETE_OUTLINE,
+                    color="#B42318",
+                ),
+                ft.Text(
+                    "Desactivar trámite externo",
+                    weight=ft.FontWeight.BOLD,
+                    color="#B42318",
+                ),
+            ],
+            spacing=10,
+        )
+
+        dialog.content = ft.Container(
+            width=620,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        (
+                            "El trámite dejará de aparecer "
+                            "en la trayectoria ordinaria, "
+                            "pero se conservará para auditoría."
+                        ),
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        str(
+                            milestone.get("nombre")
+                            or "Trámite externo"
+                        ),
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    reason_field,
+                ],
+                spacing=12,
+                tight=True,
+            ),
+        )
+
+        dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                lambda event: (
+                    _close_external_milestone_dialog(
+                        dialog,
+                        event,
+                    )
+                ),
+            ),
+            ft.TextButton(
+                "Desactivar",
+                on_click=execute_deactivation,
+                style=ft.ButtonStyle(
+                    color="#B42318",
+                ),
+            ),
+        ]
+
+        dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def _external_milestone_management_menu(
+        milestone,
+    ):
+        milestone = dict(milestone or {})
+
+        is_finalized = (
+            _norm(milestone.get("estado"))
+            == "FINALIZADO"
+        )
+
+        return ft.PopupMenuButton(
+            icon=ft.Icons.MORE_VERT,
+            tooltip="Gestionar trámite externo",
+            items=[
+                ft.PopupMenuItem(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.EDIT_OUTLINED,
+                                size=17,
+                                color=Q_PRIMARY,
+                            ),
+                            ft.Text(
+                                "Editar trámite externo"
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    on_click=(
+                        lambda event,
+                        item=dict(milestone):
+                        open_external_milestone_edit_dialog(
+                            item,
+                            event,
+                        )
+                    ),
+                ),
+                ft.PopupMenuItem(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.TASK_ALT,
+                                size=17,
+                                color="#027A48",
+                            ),
+                            ft.Text(
+                                "Marcar como finalizado"
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    disabled=is_finalized,
+                    on_click=(
+                        lambda event,
+                        item=dict(milestone):
+                        open_external_milestone_complete_dialog(
+                            item,
+                            event,
+                        )
+                    ),
+                ),
+                ft.PopupMenuItem(),
+                ft.PopupMenuItem(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.DELETE_OUTLINE,
+                                size=17,
+                                color="#B42318",
+                            ),
+                            ft.Text(
+                                "Desactivar",
+                                color="#B42318",
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    on_click=(
+                        lambda event,
+                        item=dict(milestone):
+                        confirm_deactivate_external_milestone(
+                            item,
+                            event,
+                        )
+                    ),
+                ),
+            ],
+        )
+
+
     def _build_external_milestone_card(
         milestone,
         direction="RELATED",
         compact=False,
+        allow_management=False,
     ):
         milestone = dict(milestone or {})
 
@@ -11917,6 +12750,15 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                                     weight=ft.FontWeight.BOLD,
                                     color=foreground,
                                 ),
+                            ),
+                            *(
+                                [
+                                    _external_milestone_management_menu(
+                                        milestone
+                                    )
+                                ]
+                                if allow_management
+                                else []
                             ),
                         ],
                         spacing=10,
@@ -16573,6 +17415,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     milestone,
                     direction="INCOMING",
                     compact=True,
+                    allow_management=True,
                 )
                 for milestone
                 in incoming_external_milestones
@@ -16583,6 +17426,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     milestone,
                     direction="OUTGOING",
                     compact=True,
+                    allow_management=True,
                 )
                 for milestone
                 in outgoing_external_milestones
