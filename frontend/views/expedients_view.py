@@ -21569,6 +21569,16 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 "matrimonio y demás actuaciones registrales."
             ),
         },
+        "ADMINISTRACION_LOCAL": {
+            "icon": ft.Icons.ACCOUNT_BALANCE_OUTLINED,
+            "foreground": "#344054",
+            "background": "#F2F4F7",
+            "border": "#D0D5DD",
+            "description": (
+                "Informes de vivienda e integración "
+                "vinculados a procedimientos de extranjería."
+            ),
+        },
     }
 
 
@@ -21708,7 +21718,11 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             update_page=False,
         )
 
-        if _family_code(family) == "EXTRANJERIA":
+        if _family_code(family) in {
+            "EXTRANJERIA",
+            "ADMINISTRACION_LOCAL",
+        }:
+
             open_new_expedient_subfamily_catalog(
                 family,
                 cliente_id=cliente_id,
@@ -21726,6 +21740,28 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     def _expedient_type_catalog_group(
         expedient_type,
     ):
+        _catalog_type_code = str(
+            expedient_type.get("codigo")
+            or ""
+        ).strip().upper()
+
+        if _catalog_type_code == "INFORME_VIVIENDA_ADECUADA":
+            return (
+                101,
+                "Informes de vivienda",
+                ft.Icons.HOME_OUTLINED,
+            )
+
+        if _catalog_type_code in {
+            "INFORME_INTEGRACION_SOCIAL",
+            "INFORME_ESFUERZO_INTEGRACION",
+        }:
+            return (
+                102,
+                "Informes de integración",
+                ft.Icons.GROUP_OUTLINED,
+            )
+
         code = _norm(
             expedient_type.get("codigo")
             or ""
@@ -22320,6 +22356,18 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         group_order,
         group_name,
     ):
+        if str(group_name) == "Informes de vivienda":
+            return (
+                "Solicitudes de informes sobre la adecuación "
+                "de la vivienda."
+            )
+
+        if str(group_name) == "Informes de integración":
+            return (
+                "Informes de integración social y esfuerzo "
+                "de integración."
+            )
+
         descriptions = {
             1: (
                 "Estudios, movilidad, prácticas, "

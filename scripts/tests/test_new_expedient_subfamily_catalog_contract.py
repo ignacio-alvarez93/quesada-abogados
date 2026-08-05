@@ -86,27 +86,61 @@ class NewExpedientSubfamilyCatalogContractTest(
             "open_new_for_family"
         )
 
-        condition_position = source.index(
-            '_family_code(family) == "EXTRANJERIA"'
+        self.assertIn(
+            '"EXTRANJERIA"',
+            source,
         )
 
-        subfamily_position = source.index(
-            "open_new_expedient_subfamily_catalog"
+        self.assertIn(
+            "open_new_expedient_subfamily_catalog",
+            source,
         )
 
-        direct_catalog_position = source.index(
-            "open_new_expedient_type_catalog",
-            subfamily_position,
+        parsed = ast.parse(
+            source
         )
 
-        self.assertLess(
-            condition_position,
-            subfamily_position,
-        )
+        routed = False
 
-        self.assertLess(
-            subfamily_position,
-            direct_catalog_position,
+        for node in ast.walk(parsed):
+            if not isinstance(node, ast.If):
+                continue
+
+            condition = (
+                ast.get_source_segment(
+                    source,
+                    node.test,
+                )
+                or ""
+            )
+
+            body = "\n".join(
+                (
+                    ast.get_source_segment(
+                        source,
+                        statement,
+                    )
+                    or ""
+                )
+                for statement in node.body
+            )
+
+            if (
+                '"EXTRANJERIA"' in condition
+                and
+                "open_new_expedient_subfamily_catalog"
+                in body
+            ):
+                routed = True
+                break
+
+        self.assertTrue(
+            routed,
+            (
+                "Extranjería debe continuar "
+                "enrutándose al catálogo "
+                "de subfamilias"
+            ),
         )
 
     def test_type_catalog_accepts_group_filter(
