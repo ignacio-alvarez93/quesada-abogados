@@ -11652,6 +11652,316 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         open_pending_expediente_from_navigation()
 
 
+    CREATION_ORIGIN_LABELS = {
+        "APERTURA_MANUAL": (
+            "Abierto directamente"
+        ),
+        "DERIVACION_INTERNA": (
+            "Creado desde una derivación interna"
+        ),
+        "CONTINUIDAD_MANUAL": (
+            "Continuación manual de otro expediente"
+        ),
+        "CONTINUIDAD_CON_HITO_EXTERNO": (
+            "Abierto después de un trámite externo"
+        ),
+        "MIGRACION_LEGACY": (
+            "Procedente de datos históricos"
+        ),
+        "IMPORTACION": (
+            "Expediente importado"
+        ),
+    }
+
+
+    def _creation_origin_label(origin):
+        code = _norm(
+            (origin or {}).get("origen_creacion")
+        )
+
+        return (
+            CREATION_ORIGIN_LABELS.get(code)
+            or code.replace("_", " ").title()
+            or "Origen no especificado"
+        )
+
+
+    def _external_milestone_direction(
+        milestone,
+        expediente_id,
+    ):
+        previous_id = milestone.get(
+            "expediente_anterior_id"
+        )
+
+        posterior_id = milestone.get(
+            "expediente_posterior_id"
+        )
+
+        expediente_id = int(expediente_id)
+
+        if (
+            posterior_id is not None
+            and int(posterior_id) == expediente_id
+        ):
+            return "INCOMING"
+
+        if (
+            previous_id is not None
+            and int(previous_id) == expediente_id
+        ):
+            return "OUTGOING"
+
+        return "RELATED"
+
+
+    def _build_external_milestone_card(
+        milestone,
+        direction="RELATED",
+        compact=False,
+    ):
+        milestone = dict(milestone or {})
+
+        direction = _norm(direction)
+
+        if direction == "INCOMING":
+            direction_label = (
+                "TRÁMITE EXTERNO ANTERIOR"
+            )
+            background = "#FFF7ED"
+            border_color = "#FDBA74"
+            foreground = "#C2410C"
+
+        elif direction == "OUTGOING":
+            direction_label = (
+                "TRÁMITE EXTERNO POSTERIOR"
+            )
+            background = "#F0FDF4"
+            border_color = "#86EFAC"
+            foreground = "#15803D"
+
+        else:
+            direction_label = "TRÁMITE EXTERNO"
+            background = "#FFFAEB"
+            border_color = "#FEC84B"
+            foreground = "#B54708"
+
+        name = (
+            milestone.get("nombre")
+            or milestone.get("codigo")
+            or "Trámite externo"
+        )
+
+        code = (
+            milestone.get("codigo")
+            or ""
+        )
+
+        state_label = str(
+            milestone.get("estado")
+            or "REGISTRADO"
+        ).replace("_", " ")
+
+        result_label = str(
+            milestone.get("resultado")
+            or "SIN RESULTADO"
+        ).replace("_", " ")
+
+        date_value = (
+            milestone.get("fecha_fin")
+            or milestone.get("fecha_inicio")
+            or ""
+        )
+
+        observations = str(
+            milestone.get("observaciones")
+            or ""
+        ).strip()
+
+        previous_number = (
+            milestone.get(
+                "expediente_anterior_numero"
+            )
+            or ""
+        )
+
+        posterior_number = (
+            milestone.get(
+                "expediente_posterior_numero"
+            )
+            or ""
+        )
+
+        detail_controls = [
+            ft.Text(
+                f"Estado: {state_label}",
+                size=11,
+                color=foreground,
+            ),
+            ft.Text(
+                f"Resultado: {result_label}",
+                size=11,
+                color=foreground,
+            ),
+        ]
+
+        if date_value:
+            detail_controls.append(
+                ft.Text(
+                    "Fecha: "
+                    + _date_to_display(
+                        str(date_value)
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                )
+            )
+
+        if previous_number:
+            detail_controls.append(
+                ft.Text(
+                    "Expediente anterior: "
+                    + str(previous_number),
+                    size=11,
+                    color=Q_MUTED,
+                    selectable=True,
+                )
+            )
+
+        if posterior_number:
+            detail_controls.append(
+                ft.Text(
+                    "Expediente posterior: "
+                    + str(posterior_number),
+                    size=11,
+                    color=Q_MUTED,
+                    selectable=True,
+                )
+            )
+
+        return ft.Container(
+            bgcolor=background,
+            border=ft.border.all(
+                1,
+                border_color,
+            ),
+            border_radius=14,
+            padding=12 if compact else 14,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=40,
+                                height=40,
+                                border_radius=12,
+                                bgcolor="#FFFFFF",
+                                alignment=ft.Alignment(
+                                    0,
+                                    0,
+                                ),
+                                content=ft.Icon(
+                                    ft.Icons.PUBLIC,
+                                    color=foreground,
+                                    size=21,
+                                ),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        direction_label,
+                                        size=9,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color=foreground,
+                                    ),
+                                    ft.Text(
+                                        str(name),
+                                        size=14,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            f"Código: {code}"
+                                            if code
+                                            else (
+                                                "Actuación realizada "
+                                                "fuera del despacho"
+                                            )
+                                        ),
+                                        size=10,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Container(
+                                padding=ft.padding.symmetric(
+                                    horizontal=8,
+                                    vertical=4,
+                                ),
+                                border_radius=12,
+                                bgcolor="#FFFFFF",
+                                border=ft.border.all(
+                                    1,
+                                    border_color,
+                                ),
+                                content=ft.Text(
+                                    result_label,
+                                    size=9,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=foreground,
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                    ft.Row(
+                        controls=detail_controls,
+                        spacing=14,
+                        wrap=True,
+                    ),
+                    *(
+                        [
+                            ft.Container(
+                                padding=10,
+                                border_radius=10,
+                                bgcolor="#FFFFFF",
+                                content=ft.Text(
+                                    observations,
+                                    size=11,
+                                    color="#344054",
+                                    selectable=True,
+                                ),
+                            )
+                        ]
+                        if observations and not compact
+                        else []
+                    ),
+                    ft.Text(
+                        (
+                            "Este elemento forma parte de "
+                            "la trayectoria administrativa, "
+                            "pero no es un expediente "
+                            "gestionado por el despacho."
+                        ),
+                        size=10,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=9,
+            ),
+        )
+
+
     def _close_full_expedient_chain_dialog(
         dialog,
         e=None,
@@ -11689,7 +11999,58 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         nodes = chain.get("nodes") or []
         edges = chain.get("edges") or []
 
+        node_ids = {
+            int(node["id"])
+            for node in nodes
+            if node.get("id") is not None
+        }
+
+        try:
+            all_external_milestones = (
+                expedient_trajectory_service
+                .list_external_milestones(
+                    cliente_id=chain.get(
+                        "cliente_id"
+                    ),
+                    active_only=True,
+                )
+            )
+        except Exception:
+            all_external_milestones = []
+
+        external_milestones = [
+            milestone
+            for milestone in all_external_milestones
+            if (
+                (
+                    milestone.get(
+                        "expediente_anterior_id"
+                    )
+                    is not None
+                    and int(
+                        milestone[
+                            "expediente_anterior_id"
+                        ]
+                    )
+                    in node_ids
+                )
+                or (
+                    milestone.get(
+                        "expediente_posterior_id"
+                    )
+                    is not None
+                    and int(
+                        milestone[
+                            "expediente_posterior_id"
+                        ]
+                    )
+                    in node_ids
+                )
+            )
+        ]
+
         node_controls = []
+        rendered_milestone_ids = set()
 
         for index, node in enumerate(nodes):
             node = dict(node or {})
@@ -11762,7 +12123,56 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     "EXPEDIENTE ACTUAL"
                 )
 
-            if index:
+            incoming_node_milestones = [
+                milestone
+                for milestone in external_milestones
+                if (
+                    milestone.get(
+                        "expediente_posterior_id"
+                    )
+                    is not None
+                    and int(
+                        milestone[
+                            "expediente_posterior_id"
+                        ]
+                    )
+                    == node_id
+                    and int(
+                        milestone.get("id")
+                        or 0
+                    )
+                    not in rendered_milestone_ids
+                )
+            ]
+
+            for milestone in incoming_node_milestones:
+                if node_controls:
+                    node_controls.append(
+                        ft.Container(
+                            alignment=ft.Alignment(
+                                0,
+                                0,
+                            ),
+                            content=ft.Icon(
+                                ft.Icons.ARROW_DOWNWARD,
+                                color=Q_MUTED,
+                                size=24,
+                            ),
+                        )
+                    )
+
+                node_controls.append(
+                    _build_external_milestone_card(
+                        milestone,
+                        direction="INCOMING",
+                    )
+                )
+
+                rendered_milestone_ids.add(
+                    int(milestone["id"])
+                )
+
+            if index or incoming_node_milestones:
                 node_controls.append(
                     ft.Container(
                         alignment=ft.Alignment(
@@ -11931,6 +12341,51 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 )
             )
 
+        pending_terminal_milestones = [
+            milestone
+            for milestone in external_milestones
+            if (
+                int(
+                    milestone.get("id")
+                    or 0
+                )
+                not in rendered_milestone_ids
+                and milestone.get(
+                    "expediente_anterior_id"
+                )
+                is not None
+                and int(
+                    milestone[
+                        "expediente_anterior_id"
+                    ]
+                )
+                in node_ids
+            )
+        ]
+
+        for milestone in pending_terminal_milestones:
+            if node_controls:
+                node_controls.append(
+                    ft.Container(
+                        alignment=ft.Alignment(
+                            0,
+                            0,
+                        ),
+                        content=ft.Icon(
+                            ft.Icons.ARROW_DOWNWARD,
+                            color=Q_MUTED,
+                            size=24,
+                        ),
+                    )
+                )
+
+            node_controls.append(
+                _build_external_milestone_card(
+                    milestone,
+                    direction="OUTGOING",
+                )
+            )
+
         if not node_controls:
             node_controls = [
                 empty_state(
@@ -11956,7 +12411,9 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             ),
                             ft.Text(
                                 f"{len(nodes)} expediente(s) · "
-                                f"{len(edges)} relación(es)",
+                                f"{len(edges)} relación(es) · "
+                                f"{len(external_milestones)} "
+                                "trámite(s) externo(s)",
                                 size=11,
                                 color=Q_MUTED,
                             ),
@@ -13395,6 +13852,76 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     "POSTERIORES:",
                     repr(exc),
                 )
+
+            try:
+                creation_origin = (
+                    expedient_trajectory_service
+                    .get_expedient_creation_origin(
+                        int(expediente_id)
+                    )
+                )
+            except Exception as exc:
+                creation_origin = {
+                    "expediente_id": int(
+                        expediente_id
+                    ),
+                    "origen_creacion": (
+                        "APERTURA_MANUAL"
+                    ),
+                    "descripcion": (
+                        "Origen inferido por "
+                        "compatibilidad histórica."
+                    ),
+                    "inferred": True,
+                }
+
+                print(
+                    "ERROR CARGANDO ORIGEN "
+                    "DEL EXPEDIENTE:",
+                    repr(exc),
+                )
+
+            try:
+                external_milestones = (
+                    expedient_trajectory_service
+                    .list_external_milestones(
+                        expediente_id=int(
+                            expediente_id
+                        ),
+                        active_only=True,
+                    )
+                )
+            except Exception as exc:
+                external_milestones = []
+
+                print(
+                    "ERROR CARGANDO HITOS EXTERNOS:",
+                    repr(exc),
+                )
+
+            incoming_external_milestones = [
+                milestone
+                for milestone in external_milestones
+                if (
+                    _external_milestone_direction(
+                        milestone,
+                        expediente_id,
+                    )
+                    == "INCOMING"
+                )
+            ]
+
+            outgoing_external_milestones = [
+                milestone
+                for milestone in external_milestones
+                if (
+                    _external_milestone_direction(
+                        milestone,
+                        expediente_id,
+                    )
+                    == "OUTGOING"
+                )
+            ]
 
             id_presentacion = (
                 expediente.get("numero_presentacion_registro")
@@ -16041,6 +16568,26 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     )
                 ]
 
+            incoming_external_cards = [
+                _build_external_milestone_card(
+                    milestone,
+                    direction="INCOMING",
+                    compact=True,
+                )
+                for milestone
+                in incoming_external_milestones
+            ]
+
+            outgoing_external_cards = [
+                _build_external_milestone_card(
+                    milestone,
+                    direction="OUTGOING",
+                    compact=True,
+                )
+                for milestone
+                in outgoing_external_milestones
+            ]
+
 
             active_tab = state.get(
                 "traceability_tab",
@@ -16090,6 +16637,78 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         ),
 
                         ft.Container(
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=12,
+                            padding=12,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        width=40,
+                                        height=40,
+                                        border_radius=12,
+                                        bgcolor="#EAF3FF",
+                                        alignment=ft.Alignment(
+                                            0,
+                                            0,
+                                        ),
+                                        content=ft.Icon(
+                                            ft.Icons.ROUTE,
+                                            color=Q_PRIMARY,
+                                            size=21,
+                                        ),
+                                    ),
+                                    ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                "Origen de apertura",
+                                                size=12,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color=Q_PRIMARY_DARK,
+                                            ),
+                                            ft.Text(
+                                                _creation_origin_label(
+                                                    creation_origin
+                                                ),
+                                                size=13,
+                                                weight=(
+                                                    ft.FontWeight.W_600
+                                                ),
+                                                color=Q_PRIMARY,
+                                            ),
+                                            ft.Text(
+                                                str(
+                                                    creation_origin.get(
+                                                        "descripcion"
+                                                    )
+                                                    or ""
+                                                ),
+                                                size=10,
+                                                color=Q_MUTED,
+                                                visible=bool(
+                                                    creation_origin.get(
+                                                        "descripcion"
+                                                    )
+                                                ),
+                                            ),
+                                        ],
+                                        spacing=2,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=10,
+                                vertical_alignment=(
+                                    ft.CrossAxisAlignment.CENTER
+                                ),
+                            ),
+                        ),
+
+                        ft.Container(
                             bgcolor="#F5F9FF",
                             border=ft.border.all(
                                 1,
@@ -16118,6 +16737,52 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         ft.Column(
                             controls=incoming_related_cards,
                             spacing=10,
+                        ),
+
+                        *(
+                            [
+                                ft.Container(
+                                    bgcolor="#FFF7ED",
+                                    border=ft.border.all(
+                                        1,
+                                        "#FDBA74",
+                                    ),
+                                    border_radius=12,
+                                    padding=12,
+                                    content=ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                (
+                                                    "Trámites externos "
+                                                    "anteriores"
+                                                ),
+                                                size=14,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color="#C2410C",
+                                            ),
+                                            ft.Text(
+                                                (
+                                                    f"{len(incoming_external_milestones)} "
+                                                    "trámite(s) externo(s)."
+                                                ),
+                                                size=11,
+                                                color="#9A3412",
+                                            ),
+                                        ],
+                                        spacing=2,
+                                    ),
+                                ),
+                                ft.Column(
+                                    controls=(
+                                        incoming_external_cards
+                                    ),
+                                    spacing=10,
+                                ),
+                            ]
+                            if incoming_external_cards
+                            else []
                         ),
 
                         ft.Divider(
@@ -16190,6 +16855,52 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         ft.Column(
                             controls=outgoing_related_cards,
                             spacing=10,
+                        ),
+
+                        *(
+                            [
+                                ft.Container(
+                                    bgcolor="#F0FDF4",
+                                    border=ft.border.all(
+                                        1,
+                                        "#86EFAC",
+                                    ),
+                                    border_radius=12,
+                                    padding=12,
+                                    content=ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                (
+                                                    "Trámites externos "
+                                                    "posteriores"
+                                                ),
+                                                size=14,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color="#15803D",
+                                            ),
+                                            ft.Text(
+                                                (
+                                                    f"{len(outgoing_external_milestones)} "
+                                                    "trámite(s) externo(s)."
+                                                ),
+                                                size=11,
+                                                color="#166534",
+                                            ),
+                                        ],
+                                        spacing=2,
+                                    ),
+                                ),
+                                ft.Column(
+                                    controls=(
+                                        outgoing_external_cards
+                                    ),
+                                    spacing=10,
+                                ),
+                            ]
+                            if outgoing_external_cards
+                            else []
                         ),
                     ],
                     spacing=12,
@@ -16335,6 +17046,9 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                                     )
                                     + len(
                                         outgoing_related_expedients
+                                    )
+                                    + len(
+                                        external_milestones
                                     )
                                 ),
                             ),
