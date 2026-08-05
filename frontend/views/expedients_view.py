@@ -2334,6 +2334,18 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
     def clear_form():
         state["editing_id"] = None
+        state.pop(
+            "new_expedient_family_id",
+            None,
+        )
+        state.pop(
+            "new_expedient_family_code",
+            None,
+        )
+        state.pop(
+            "new_expedient_family_name",
+            None,
+        )
         numero_expediente.value = ""
         id_presentacion.value = ""
         numero_expediente_extranjeria.value = ""
@@ -20952,18 +20964,213 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     )
     page.overlay.append(box_folder_options_dialog)
 
-    def open_new(e=None, cliente_id=None):
-        if not cliente_options:
-            set_message(error_alert("No hay clientes activos para crear expedientes"))
-            refresh()
+    new_expedient_family_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Seleccionar familia"
+        ),
+        content=ft.Container(
+            width=780,
+            height=570,
+            content=ft.Text(
+                "Cargando familias..."
+            ),
+        ),
+        actions=[],
+        actions_alignment=(
+            ft.MainAxisAlignment.END
+        ),
+    )
+    page.overlay.append(
+        new_expedient_family_dialog
+    )
+
+    FAMILY_SELECTOR_STYLES = {
+        "EXTRANJERIA": {
+            "icon": ft.Icons.PUBLIC,
+            "foreground": "#175CD3",
+            "background": "#EFF8FF",
+            "border": "#B2CCFF",
+            "description": (
+                "Residencia, estancia, arraigos, "
+                "reagrupación, renovaciones y modificaciones."
+            ),
+        },
+        "NACIONALIDAD": {
+            "icon": ft.Icons.BADGE_OUTLINED,
+            "foreground": "#6941C6",
+            "background": "#F4F3FF",
+            "border": "#D9D6FE",
+            "description": (
+                "Procedimientos de adquisición y "
+                "seguimiento de nacionalidad."
+            ),
+        },
+        "UGE": {
+            "icon": ft.Icons.BUSINESS_CENTER_OUTLINED,
+            "foreground": "#026AA2",
+            "background": "#F0F9FF",
+            "border": "#B9E6FE",
+            "description": (
+                "Procedimientos tramitados ante la "
+                "Unidad de Grandes Empresas."
+            ),
+        },
+        "DOCUMENTACION_EXTRANJEROS": {
+            "icon": ft.Icons.FINGERPRINT,
+            "foreground": "#027A48",
+            "background": "#ECFDF3",
+            "border": "#A6F4C5",
+            "description": (
+                "Huellas, TIE, certificado de registro UE, "
+                "concordancia y otras actuaciones documentales."
+            ),
+        },
+        "TRAMITES_CONSULARES": {
+            "icon": ft.Icons.TRAVEL_EXPLORE,
+            "foreground": "#B54708",
+            "background": "#FFFAEB",
+            "border": "#FEDF89",
+            "description": (
+                "Visados y actuaciones gestionadas "
+                "ante consulados o proveedores consulares."
+            ),
+        },
+        "REGISTRO_CIVIL": {
+            "icon": ft.Icons.ACCOUNT_BALANCE_OUTLINED,
+            "foreground": "#C11574",
+            "background": "#FDF2FA",
+            "border": "#FCCEEE",
+            "description": (
+                "Certificaciones, inscripciones, opción, "
+                "matrimonio y demás actuaciones registrales."
+            ),
+        },
+    }
+
+
+    def _family_code(family):
+        return _norm(
+            (family or {}).get("codigo")
+            or (family or {}).get("nombre")
+        )
+
+
+    def _family_type_count(family_id):
+        return sum(
+            1
+            for item in (tipos or [])
+            if int(
+                item.get("familia_id")
+                or 0
+            ) == int(family_id or 0)
+            and int(item.get("activo", 1) or 0) == 1
+        )
+
+
+    def _family_selector_style(family):
+        code = _family_code(family)
+
+        return FAMILY_SELECTOR_STYLES.get(
+            code,
+            {
+                "icon": ft.Icons.FOLDER_OPEN,
+                "foreground": Q_PRIMARY,
+                "background": "#F8FAFC",
+                "border": Q_BORDER,
+                "description": (
+                    family.get("descripcion")
+                    or (
+                        "Familia de expedientes "
+                        "configurada en el catálogo."
+                    )
+                ),
+            },
+        )
+
+
+    def close_new_expedient_family_dialog(e=None):
+        new_expedient_family_dialog.open = False
+        page.update()
+
+
+    def open_new_for_family(
+        family,
+        cliente_id=None,
+        e=None,
+    ):
+        family = dict(family or {})
+
+        family_id = family.get("id")
+
+        if not family_id:
+            show_form_error(
+                "La familia seleccionada no es válida"
+            )
             return
+
+        family_option = next(
+            (
+                option
+                for option in familia_options
+                if option.startswith(
+                    str(family_id) + " - "
+                )
+            ),
+            "",
+        )
+
+        if not family_option:
+            show_form_error(
+                "La familia seleccionada no está "
+                "disponible en el catálogo"
+            )
+            return
+
+        new_expedient_family_dialog.open = False
+
         clear_form()
+
+        state["new_expedient_family_id"] = int(
+            family_id
+        )
+
+        state["new_expedient_family_code"] = (
+            _family_code(family)
+        )
+
+        state["new_expedient_family_name"] = (
+            family.get("nombre")
+            or state["new_expedient_family_code"]
+        )
+
+        familia_expediente.set_value(
+            family_option,
+            update=False,
+        )
+
+        refresh_tipo_options_for_familia(
+            familia_value=family_option,
+            reset_value=True,
+        )
+
+        refresh_subtipo_options_for_tipo(
+            tipo_value=tipo_expediente.get_value(),
+            reset_value=True,
+        )
 
         if cliente_id:
             selected_cliente = next(
-                (option for option in cliente_options if option.startswith(str(cliente_id) + " - ")),
+                (
+                    option
+                    for option in cliente_options
+                    if option.startswith(
+                        str(cliente_id) + " - "
+                    )
+                ),
                 "",
             )
+
             if selected_cliente:
                 cliente.set_value(
                     selected_cliente,
@@ -20978,13 +21185,258 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             update_page=False,
         )
 
-        refresh_subtipo_options_for_tipo(tipo_value=tipo_expediente.get_value(), reset_value=True)
         state["dialog_section"] = "ficha"
         state["dialog_expediente_id"] = None
-        state.pop("payload_preview_fullscreen", None)
-        expediente_dialog.title = ft.Text("Nuevo expediente", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
-        expediente_dialog.content = build_expediente_dialog_content()
+        state.pop(
+            "payload_preview_fullscreen",
+            None,
+        )
+
+        expediente_dialog.title = ft.Text(
+            (
+                "Nuevo expediente · "
+                + str(
+                    state.get(
+                        "new_expedient_family_name"
+                    )
+                    or ""
+                )
+            ),
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        )
+
+        expediente_dialog.content = (
+            build_expediente_dialog_content()
+        )
+
         expediente_dialog.open = True
+        page.update()
+
+
+    def _build_new_expedient_family_card(
+        family,
+        cliente_id=None,
+    ):
+        family = dict(family or {})
+
+        style = _family_selector_style(
+            family
+        )
+
+        family_id = int(
+            family.get("id")
+            or 0
+        )
+
+        type_count = _family_type_count(
+            family_id
+        )
+
+        description = (
+            style.get("description")
+            or family.get("descripcion")
+            or ""
+        )
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                style["border"],
+            ),
+            border_radius=16,
+            padding=14,
+            ink=True,
+            on_click=(
+                lambda event,
+                selected_family=dict(family),
+                selected_client_id=cliente_id:
+                open_new_for_family(
+                    selected_family,
+                    cliente_id=selected_client_id,
+                    e=event,
+                )
+            ),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=48,
+                        height=48,
+                        border_radius=14,
+                        bgcolor=style["background"],
+                        alignment=ft.Alignment(
+                            0,
+                            0,
+                        ),
+                        content=ft.Icon(
+                            style["icon"],
+                            color=style["foreground"],
+                            size=25,
+                        ),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                str(
+                                    family.get("nombre")
+                                    or "Familia"
+                                ),
+                                size=15,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                str(description),
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                (
+                                    f"{type_count} tipo(s) "
+                                    "de expediente disponible(s)"
+                                ),
+                                size=10,
+                                weight=ft.FontWeight.W_600,
+                                color=style["foreground"],
+                            ),
+                        ],
+                        spacing=3,
+                        expand=True,
+                    ),
+                    ft.Icon(
+                        ft.Icons.CHEVRON_RIGHT,
+                        color=style["foreground"],
+                    ),
+                ],
+                spacing=12,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
+
+    def open_new(
+        e=None,
+        cliente_id=None,
+    ):
+        if not cliente_options:
+            set_message(
+                error_alert(
+                    "No hay clientes activos "
+                    "para crear expedientes"
+                )
+            )
+            refresh()
+            return
+
+        active_families = [
+            dict(family)
+            for family in (familias or [])
+            if int(
+                family.get("activo", 1)
+                or 0
+            ) == 1
+        ]
+
+        if not active_families:
+            set_message(
+                error_alert(
+                    "No hay familias de expediente "
+                    "activas"
+                )
+            )
+            refresh()
+            return
+
+        state["pending_new_expedient_client_id"] = (
+            int(cliente_id)
+            if cliente_id
+            else None
+        )
+
+        family_cards = [
+            _build_new_expedient_family_card(
+                family,
+                cliente_id=cliente_id,
+            )
+            for family in active_families
+        ]
+
+        new_expedient_family_dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.ACCOUNT_TREE_OUTLINED,
+                    color=Q_PRIMARY,
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            "Seleccionar familia",
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            (
+                                "La familia determinará el catálogo, "
+                                "el formulario y el flujo del expediente."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=1,
+                ),
+            ],
+            spacing=10,
+        )
+
+        new_expedient_family_dialog.content = (
+            ft.Container(
+                width=780,
+                height=570,
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            bgcolor="#EFF8FF",
+                            border=ft.border.all(
+                                1,
+                                "#B2CCFF",
+                            ),
+                            border_radius=12,
+                            padding=12,
+                            content=ft.Text(
+                                (
+                                    "Selecciona primero la familia. "
+                                    "Después solo se mostrarán sus "
+                                    "tipos y su formulario específico."
+                                ),
+                                size=12,
+                                color="#1849A9",
+                            ),
+                        ),
+                        *family_cards,
+                    ],
+                    spacing=10,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            )
+        )
+
+        new_expedient_family_dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                close_new_expedient_family_dialog,
+            ),
+        ]
+
+        new_expedient_family_dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        new_expedient_family_dialog.open = True
         page.update()
 
     def open_edit(expediente):
