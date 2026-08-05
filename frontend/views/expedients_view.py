@@ -2346,6 +2346,18 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             "new_expedient_family_name",
             None,
         )
+        state.pop(
+            "new_expedient_type_id",
+            None,
+        )
+        state.pop(
+            "new_expedient_type_code",
+            None,
+        )
+        state.pop(
+            "new_expedient_type_name",
+            None,
+        )
         numero_expediente.value = ""
         id_presentacion.value = ""
         numero_expediente_extranjeria.value = ""
@@ -19950,6 +19962,46 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         - menú contextual;
         - generación múltiple.
         """
+        if not expediente_id:
+            return ft.Container(
+                padding=18,
+                border_radius=14,
+                bgcolor="#FFF7ED",
+                border=ft.border.all(
+                    1,
+                    "#FED7AA",
+                ),
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.INFO_OUTLINE,
+                                    color="#C2410C",
+                                ),
+                                ft.Text(
+                                    "Guarda primero el expediente",
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#9A3412",
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                        ft.Text(
+                            (
+                                "Las plantillas y documentos "
+                                "generados necesitan un expediente "
+                                "guardado para poder vincularse "
+                                "correctamente."
+                            ),
+                            size=12,
+                            color="#9A3412",
+                        ),
+                    ],
+                    spacing=8,
+                ),
+            )
+
         expediente_id = int(expediente_id)
         templates = (
             _list_ex_document_templates_for_menu()
@@ -21656,8 +21708,327 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             update_page=False,
         )
 
+        if _family_code(family) == "EXTRANJERIA":
+            open_new_expedient_subfamily_catalog(
+                family,
+                cliente_id=cliente_id,
+                e=e,
+            )
+            return
+
+        open_new_expedient_type_catalog(
+            family,
+            cliente_id=cliente_id,
+            e=e,
+        )
+
+
+    def _expedient_type_catalog_group(
+        expedient_type,
+    ):
+        code = _norm(
+            expedient_type.get("codigo")
+            or ""
+        ).replace(" ", "_")
+
+        if (
+            code.startswith("ESTANCIA_")
+            or code.startswith(
+                "PRORROGA_ESTANCIA"
+            )
+        ):
+            return (
+                10,
+                "I. Situaciones de estancia",
+                ft.Icons.EVENT_NOTE,
+            )
+
+        if code in {
+            "RESIDENCIA_TEMPORAL_NO_LUCRATIVA",
+            "REAGRUPACION_FAMILIAR",
+            "RESIDENCIA_INDEPENDIENTE_REAGRUPADO",
+            (
+                "RESIDENCIA_INDEPENDIENTE_"
+                "REAGRUPADO_REFORZADA"
+            ),
+            "RESIDENCIA_TRABAJO_CUENTA_AJENA",
+            "RESIDENCIA_TRABAJO_CUENTA_PROPIA",
+            (
+                "RESIDENCIA_EXCEPCION_"
+                "AUTORIZACION_TRABAJO"
+            ),
+            "RESIDENCIA_RETORNO_VOLUNTARIO",
+            (
+                "RESIDENCIA_BUSQUEDA_EMPLEO_"
+                "PROYECTO_EMPRESARIAL"
+            ),
+        }:
+            return (
+                20,
+                (
+                    "II. Residencia temporal "
+                    "— régimen general"
+                ),
+                ft.Icons.ARTICLE,
+            )
+
+        if (
+            "FAMILIAR_PERSONA_ESPANOLA" in code
+            or "FAMILIAR_ESPANOL" in code
+        ):
+            return (
+                30,
+                (
+                    "III. Familiares de "
+                    "personas españolas"
+                ),
+                ft.Icons.ACCOUNT_TREE,
+            )
+
+        if (
+            code.startswith("ARRAIGO_")
+            or code in {
+                "RESIDENCIA_RAZONES_HUMANITARIAS",
+                "COLABORACION_AUTORIDADES",
+                "VICTIMA_VIOLENCIA_GENERO",
+                "VICTIMA_VIOLENCIA_SEXUAL",
+                "COLABORACION_RED_ORGANIZADA",
+                "VICTIMA_TRATA_SERES_HUMANOS",
+                (
+                    "PRORROGA_CIRCUNSTANCIAS_"
+                    "EXCEPCIONALES"
+                ),
+            }
+        ):
+            return (
+                40,
+                (
+                    "IV. Circunstancias "
+                    "excepcionales"
+                ),
+                ft.Icons.FACT_CHECK,
+            )
+
+        if (
+            "CIUDADANO_UE" in code
+            or "RESIDENCIA_UE" in code
+        ):
+            return (
+                50,
+                "V. Régimen comunitario",
+                ft.Icons.PUBLIC,
+            )
+
+        if "LARGA_DURACION" in code:
+            return (
+                60,
+                "VI. Residencia de larga duración",
+                ft.Icons.TIMELINE,
+            )
+
+        if code.startswith("MODIFICACION_"):
+            return (
+                80,
+                "VIII. Modificaciones",
+                ft.Icons.ROUTE,
+            )
+
+        return (
+            70,
+            (
+                "VII. Otros regímenes y "
+                "autorizaciones especiales"
+            ),
+            ft.Icons.FOLDER_OPEN,
+        )
+
+
+    def _expedient_type_catalog_style(
+        group_order,
+    ):
+        styles = {
+            10: {
+                "background": "#EFF8FF",
+                "border": "#B2DDFF",
+                "foreground": "#175CD3",
+            },
+            20: {
+                "background": "#ECFDF3",
+                "border": "#ABEFC6",
+                "foreground": "#067647",
+            },
+            30: {
+                "background": "#F4F3FF",
+                "border": "#D9D6FE",
+                "foreground": "#6941C6",
+            },
+            40: {
+                "background": "#FFF4ED",
+                "border": "#FFD6AE",
+                "foreground": "#B93815",
+            },
+            50: {
+                "background": "#F0F9FF",
+                "border": "#B9E6FE",
+                "foreground": "#026AA2",
+            },
+            60: {
+                "background": "#FDF2FA",
+                "border": "#FCCEEE",
+                "foreground": "#C11574",
+            },
+            70: {
+                "background": "#FFFAEB",
+                "border": "#FEDF89",
+                "foreground": "#B54708",
+            },
+            80: {
+                "background": "#F8FAFC",
+                "border": "#D0D5DD",
+                "foreground": "#344054",
+            },
+        }
+
+        return styles.get(
+            int(group_order or 0),
+            styles[70],
+        )
+
+
+    def _active_types_for_family(
+        family_id,
+    ):
+        try:
+            family_id = int(family_id)
+        except (TypeError, ValueError):
+            return []
+
+        try:
+            rows = config_service.get_tipos_expediente(
+                active_only=True,
+                familia_id=family_id,
+            )
+        except Exception:
+            rows = [
+                item
+                for item in (tipos or [])
+                if int(
+                    item.get("familia_id")
+                    or 0
+                ) == family_id
+                and int(
+                    item.get("activo", 1)
+                    or 0
+                ) == 1
+            ]
+
+        return [
+            dict(item)
+            for item in (rows or [])
+            if int(
+                item.get("activo", 1)
+                or 0
+            ) == 1
+        ]
+
+
+    def _active_subtype_count_for_type(
+        type_id,
+    ):
+        try:
+            type_id = int(type_id)
+        except (TypeError, ValueError):
+            return 0
+
+        return sum(
+            1
+            for subtype in (subtipos or [])
+            if int(
+                subtype.get("tipo_expediente_id")
+                or 0
+            ) == type_id
+            and int(
+                subtype.get("activo", 1)
+                or 0
+            ) == 1
+        )
+
+
+    def _open_new_expedient_form_after_type(
+        expedient_type,
+        cliente_id=None,
+        e=None,
+    ):
+        """
+        Convierte el diálogo del catálogo en la ficha.
+
+        No se cierra ni sustituye el AlertDialog activo:
+        expediente_dialog se reutiliza durante todo el flujo.
+        """
+        expedient_type = dict(
+            expedient_type
+            or {}
+        )
+
+        type_id = expedient_type.get("id")
+
+        if not type_id:
+            show_form_error(
+                "El trámite seleccionado no es válido"
+            )
+            return
+
+        type_option = next(
+            (
+                option
+                for option in (
+                    tipo_expediente.options
+                    or []
+                )
+                if str(option).startswith(
+                    str(type_id) + " - "
+                )
+            ),
+            "",
+        )
+
+        if not type_option:
+            type_option = (
+                f"{type_id} - "
+                + str(
+                    expedient_type.get("nombre")
+                    or expedient_type.get("codigo")
+                    or "Trámite"
+                )
+            )
+
+        state["new_expedient_type_id"] = int(
+            type_id
+        )
+
+        state["new_expedient_type_code"] = (
+            expedient_type.get("codigo")
+            or ""
+        )
+
+        state["new_expedient_type_name"] = (
+            expedient_type.get("nombre")
+            or state["new_expedient_type_code"]
+        )
+
+        tipo_expediente.set_value(
+            type_option,
+            update=False,
+        )
+
+        refresh_subtipo_options_for_tipo(
+            tipo_value=type_option,
+            reset_value=True,
+        )
+
         state["dialog_section"] = "ficha"
         state["dialog_expediente_id"] = None
+
         state.pop(
             "payload_preview_fullscreen",
             None,
@@ -21672,6 +22043,13 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     )
                     or ""
                 )
+                + " · "
+                + str(
+                    state.get(
+                        "new_expedient_type_name"
+                    )
+                    or ""
+                )
             ),
             weight=ft.FontWeight.BOLD,
             color=Q_PRIMARY_DARK,
@@ -21681,8 +22059,744 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             build_expediente_dialog_content()
         )
 
+        expediente_dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                close_dialog,
+            ),
+            primary_button(
+                "Guardar",
+                save_expediente,
+            ),
+        ]
+
+        expediente_dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        # El catálogo y la ficha usan el mismo diálogo.
+        # Solo sustituimos su contenido.
         expediente_dialog.open = True
         page.update()
+
+
+
+    def _build_new_expedient_type_card(expedient_type, cliente_id=None):
+        expedient_type = dict(expedient_type or {})
+        group_order, group_name, group_icon = _expedient_type_catalog_group(expedient_type)
+        style = _expedient_type_catalog_style(group_order)
+        subtype_count = _active_subtype_count_for_type(expedient_type.get('id'))
+        description = str(expedient_type.get('descripcion') or '').strip()
+        if len(description) > 180:
+            description = description[:177].rstrip() + '...'
+        if not description:
+            description = 'Procedimiento de ' + str(state.get('new_expedient_family_name') or 'expediente').lower() + '.'
+        subtype_label = f'{subtype_count} modalidades' if subtype_count != 1 else '1 modalidad'
+        if subtype_count == 0:
+            subtype_label = 'Sin modalidades configuradas'
+        return ft.Container(padding=14, border_radius=16, bgcolor='#FFFFFF', border=ft.border.all(1, style['border']), ink=True, on_click=lambda event, selected_type=dict(expedient_type), selected_client_id=cliente_id: _open_new_expedient_form_after_type(selected_type, cliente_id=selected_client_id, e=event), content=ft.Row(controls=[ft.Container(width=48, height=48, border_radius=13, bgcolor=style['background'], alignment=ft.Alignment(0, 0), content=ft.Icon(group_icon, color=style['foreground'], size=24)), ft.Column(controls=[ft.Row(controls=[ft.Text(str(expedient_type.get('nombre') or 'Trámite'), size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK, expand=True), ft.Container(padding=ft.padding.symmetric(horizontal=9, vertical=4), border_radius=20, bgcolor=style['background'], content=ft.Text(subtype_label, size=10, weight=ft.FontWeight.W_600, color=style['foreground']))], spacing=10), ft.Text(description, size=11, color=Q_MUTED)], spacing=5, expand=True), ft.Icon(ft.Icons.CHEVRON_RIGHT, size=22, color=style['foreground'])], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER))
+
+
+
+    def _build_expedient_type_catalog_content(
+        family,
+        cliente_id=None,
+        search_text="",
+    ):
+        family = dict(family or {})
+
+        family_id = family.get("id")
+
+        available_types = (
+            _active_types_for_family(
+                family_id
+            )
+        )
+
+        query = _norm(
+            search_text
+            or ""
+        )
+
+        if query:
+            available_types = [
+                item
+                for item in available_types
+                if query in _norm(
+                    " ".join(
+                        [
+                            str(
+                                item.get("codigo")
+                                or ""
+                            ),
+                            str(
+                                item.get("nombre")
+                                or ""
+                            ),
+                            str(
+                                item.get("descripcion")
+                                or ""
+                            ),
+                            str(
+                                _expedient_type_catalog_group(
+                                    item
+                                )[1]
+                            ),
+                        ]
+                    )
+                )
+            ]
+
+        grouped = {}
+
+        for item in available_types:
+            group = (
+                _expedient_type_catalog_group(
+                    item
+                )
+            )
+
+            grouped.setdefault(
+                group,
+                [],
+            ).append(item)
+
+        controls = []
+
+        if not available_types:
+            controls.append(
+                empty_state(
+                "No se encontraron trámites para "
+                "los criterios de búsqueda indicados."
+            )
+            )
+
+        for group in sorted(
+            grouped,
+            key=lambda value: value[0],
+        ):
+            group_order, group_name, group_icon = (
+                group
+            )
+
+            style = (
+                _expedient_type_catalog_style(
+                    group_order
+                )
+            )
+
+            controls.append(
+                ft.Container(
+                    bgcolor=style["background"],
+                    border=ft.border.all(
+                        1,
+                        style["border"],
+                    ),
+                    border_radius=12,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                group_icon,
+                                color=style[
+                                    "foreground"
+                                ],
+                                size=20,
+                            ),
+                            ft.Text(
+                                group_name,
+                                size=14,
+                                weight=(
+                                    ft.FontWeight.BOLD
+                                ),
+                                color=style[
+                                    "foreground"
+                                ],
+                            ),
+                            ft.Container(
+                                expand=True,
+                            ),
+                            ft.Text(
+                                (
+                                    f"{len(grouped[group])} "
+                                    "trámite(s)"
+                                ),
+                                size=10,
+                                weight=(
+                                    ft.FontWeight.W_600
+                                ),
+                                color=style[
+                                    "foreground"
+                                ],
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                )
+            )
+
+            controls.append(
+                ft.Row(
+                    controls=[
+                        _build_new_expedient_type_card(
+                            item,
+                            cliente_id=cliente_id,
+                        )
+                        for item in sorted(
+                            grouped[group],
+                            key=lambda row: _norm(
+                                row.get("nombre")
+                                or ""
+                            ),
+                        )
+                    ],
+                    wrap=True,
+                    spacing=12,
+                    run_spacing=12,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.START
+                    ),
+                )
+            )
+
+        return ft.Column(
+            controls=controls,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+
+    def _active_type_groups_for_family(
+        family_id,
+    ):
+        """
+        Agrupa los tipos activos de una familia según
+        la clasificación visual existente.
+        """
+        grouped = {}
+
+        for expedient_type in (
+            _active_types_for_family(
+                family_id
+            )
+        ):
+            (
+                group_order,
+                group_name,
+                group_icon,
+            ) = _expedient_type_catalog_group(
+                expedient_type
+            )
+
+            group = grouped.setdefault(
+                group_order,
+                {
+                    "order": group_order,
+                    "name": group_name,
+                    "icon": group_icon,
+                    "types": [],
+                },
+            )
+
+            group["types"].append(
+                dict(expedient_type)
+            )
+
+        return [
+            grouped[key]
+            for key in sorted(
+                grouped,
+                key=lambda value: (
+                    int(value)
+                    if str(value).isdigit()
+                    else str(value)
+                ),
+            )
+        ]
+
+
+    def _expedient_subfamily_description(
+        group_order,
+        group_name,
+    ):
+        descriptions = {
+            1: (
+                "Estudios, movilidad, prácticas, "
+                "voluntariado y demás situaciones "
+                "de estancia."
+            ),
+            2: (
+                "Autorizaciones ordinarias de residencia "
+                "y trabajo dentro del régimen general."
+            ),
+            3: (
+                "Autorizaciones vinculadas a ciudadanos "
+                "españoles y a su unidad familiar."
+            ),
+            4: (
+                "Arraigos, razones humanitarias, víctimas "
+                "y otras circunstancias excepcionales."
+            ),
+            5: (
+                "Tarjetas y autorizaciones derivadas del "
+                "régimen de ciudadanos de la Unión."
+            ),
+            6: (
+                "Residencia de larga duración, larga "
+                "duración UE y recuperaciones."
+            ),
+            7: (
+                "Otros regímenes, autorizaciones especiales "
+                "y procedimientos complementarios."
+            ),
+            8: (
+                "Modificaciones entre autorizaciones, "
+                "situaciones de estancia y residencia."
+            ),
+        }
+
+        return descriptions.get(
+            group_order,
+            (
+                "Procedimientos incluidos en "
+                + str(group_name or "este bloque")
+                + "."
+            ),
+        )
+
+
+    def _build_new_expedient_subfamily_card(family, group, cliente_id=None):
+        family = dict(family or {})
+        group = dict(group or {})
+        group_order = group.get('order')
+        group_name = group.get('name') or 'Subfamilia'
+        group_icon = group.get('icon') or ft.Icons.FOLDER_OUTLINED
+        group_types = group.get('types') or []
+        style = _expedient_type_catalog_style(group_order)
+        return ft.Container(padding=14, border_radius=16, bgcolor='#FFFFFF', border=ft.border.all(1, style['border']), ink=True, on_click=lambda event, selected_order=group_order, selected_name=group_name, selected_family=dict(family), selected_client_id=cliente_id: open_new_expedient_type_catalog(selected_family, group_order=selected_order, group_name=selected_name, cliente_id=selected_client_id, e=event), content=ft.Row(controls=[ft.Container(width=48, height=48, border_radius=13, bgcolor=style['background'], alignment=ft.Alignment(0, 0), content=ft.Icon(group_icon, color=style['foreground'], size=24)), ft.Column(controls=[ft.Row(controls=[ft.Text(str(group_name), size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK, expand=True), ft.Container(padding=ft.padding.symmetric(horizontal=9, vertical=4), border_radius=20, bgcolor=style['background'], content=ft.Text(f'{len(group_types)} trámite(s)', size=10, weight=ft.FontWeight.W_600, color=style['foreground']))], spacing=10), ft.Text(_expedient_subfamily_description(group_order, group_name), size=11, color=Q_MUTED)], spacing=5, expand=True), ft.Icon(ft.Icons.CHEVRON_RIGHT, size=22, color=style['foreground'])], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER))
+
+
+
+    def open_new_expedient_subfamily_catalog(
+        family,
+        cliente_id=None,
+        e=None,
+    ):
+        """
+        Muestra los bloques jurídicos de Extranjería antes
+        de cargar el catálogo de trámites concretos.
+        """
+        family = dict(family or {})
+
+        family_id = family.get("id")
+
+        groups = _active_type_groups_for_family(
+            family_id
+        )
+
+        if not groups:
+            show_form_error(
+                (
+                    "La familia seleccionada no tiene "
+                    "subfamilias activas configuradas"
+                )
+            )
+            return
+
+        state.pop(
+            "new_expedient_subfamily_order",
+            None,
+        )
+        state.pop(
+            "new_expedient_subfamily_name",
+            None,
+        )
+
+        cards = [
+            _build_new_expedient_subfamily_card(
+                family,
+                group,
+                cliente_id=cliente_id,
+            )
+            for group in groups
+        ]
+
+        expediente_dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.ACCOUNT_TREE_OUTLINED,
+                    color=Q_PRIMARY,
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                "Subfamilias · "
+                                + str(
+                                    family.get("nombre")
+                                    or "Extranjería"
+                                )
+                            ),
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            (
+                                "Selecciona el bloque jurídico "
+                                "del procedimiento."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=1,
+                ),
+            ],
+            spacing=10,
+        )
+
+        expediente_dialog.content = ft.Container(
+            width=790,
+            height=650,
+            content=ft.Column(
+                controls=[
+                    ft.Container(
+                        bgcolor="#EFF8FF",
+                        border=ft.border.all(
+                            1,
+                            "#B2CCFF",
+                        ),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Text(
+                            (
+                                f"{len(groups)} bloques activos. "
+                                "Cada bloque muestra únicamente "
+                                "sus trámites correspondientes."
+                            ),
+                            size=12,
+                            color="#1849A9",
+                        ),
+                    ),
+                    ft.Container(
+                        expand=True,
+                        content=ft.Column(
+                            controls=cards,
+                            spacing=12,
+                            scroll=ft.ScrollMode.AUTO,
+                        ),
+                    ),
+                ],
+                spacing=12,
+                expand=True,
+            ),
+        )
+
+        def back_to_families(
+            event=None,
+        ):
+            expediente_dialog.open = False
+            page.update()
+
+            open_new(
+                cliente_id=cliente_id,
+            )
+
+        expediente_dialog.actions = [
+            secondary_button(
+                "Volver a familias",
+                back_to_families,
+            ),
+            secondary_button(
+                "Cancelar",
+                close_dialog,
+            ),
+        ]
+
+        expediente_dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        new_expedient_family_dialog.open = False
+        expediente_dialog.open = True
+        page.update()
+
+
+    def open_new_expedient_type_catalog(
+        family,
+        group_order=None,
+        group_name=None,
+        cliente_id=None,
+        e=None,
+    ):
+        """
+        Abre los trámites activos de una familia.
+
+        En Extranjería puede limitarse a una subfamilia
+        concreta mediante group_order.
+        """
+        family = dict(family or {})
+
+        family_id = family.get("id")
+
+        available_types = (
+            _active_types_for_family(
+                family_id
+            )
+        )
+
+        if group_order is not None:
+            available_types = [
+                expedient_type
+                for expedient_type in available_types
+                if (
+                    _expedient_type_catalog_group(
+                        expedient_type
+                    )[0]
+                    == group_order
+                )
+            ]
+
+        if not available_types:
+            show_form_error(
+                (
+                    "La selección no tiene trámites "
+                    "activos configurados"
+                )
+            )
+            return
+
+        state[
+            "pending_new_expedient_client_id"
+        ] = (
+            int(cliente_id)
+            if cliente_id
+            else None
+        )
+
+        if group_order is not None:
+            state[
+                "new_expedient_subfamily_order"
+            ] = group_order
+            state[
+                "new_expedient_subfamily_name"
+            ] = (
+                group_name
+                or "Subfamilia"
+            )
+
+        search_control = text_input(
+            "Buscar por nombre, código o descripción",
+            width=760,
+        )
+
+        catalog_host = ft.Container(
+            expand=True,
+        )
+
+        def build_filtered_catalog(
+            search_text="",
+        ):
+            normalized_search = _norm(
+                search_text
+            )
+
+            filtered_types = [
+                expedient_type
+                for expedient_type in available_types
+                if (
+                    not normalized_search
+                    or normalized_search in _norm(
+                        " ".join(
+                            [
+                                str(
+                                    expedient_type.get(
+                                        "nombre"
+                                    )
+                                    or ""
+                                ),
+                                str(
+                                    expedient_type.get(
+                                        "codigo"
+                                    )
+                                    or ""
+                                ),
+                                str(
+                                    expedient_type.get(
+                                        "descripcion"
+                                    )
+                                    or ""
+                                ),
+                                str(
+                                    group_name
+                                    or ""
+                                ),
+                            ]
+                        )
+                    )
+                )
+            ]
+
+            if not filtered_types:
+                return empty_state(
+                    (
+                        "No se encontraron trámites para "
+                        "los criterios de búsqueda indicados."
+                    )
+                )
+
+            return ft.Column(
+                controls=[
+                             _build_new_expedient_type_card(
+                                 expedient_type,
+                                 cliente_id=cliente_id,
+                             )
+                             for expedient_type in filtered_types
+                         ],
+                spacing=12,
+                scroll=ft.ScrollMode.AUTO,
+            )
+
+        def refresh_catalog(
+            event=None,
+        ):
+            catalog_host.content = (
+                build_filtered_catalog(
+                    search_control.value
+                    or ""
+                )
+            )
+
+            page.update()
+
+        search_control.on_change = refresh_catalog
+
+        catalog_host.content = (
+            build_filtered_catalog()
+        )
+
+        title_suffix = (
+            str(group_name)
+            if group_order is not None
+            else str(
+                family.get("nombre")
+                or "Familia"
+            )
+        )
+
+        expediente_dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.ARTICLE,
+                    color=Q_PRIMARY,
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                "Catálogo de trámites · "
+                                + title_suffix
+                            ),
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            (
+                                "Selecciona el procedimiento "
+                                "que deseas tramitar."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=1,
+                ),
+            ],
+            spacing=10,
+        )
+
+        expediente_dialog.content = ft.Container(
+            width=790,
+            height=650,
+            content=ft.Column(
+                controls=[
+                    ft.Container(
+                        bgcolor="#EFF8FF",
+                        border=ft.border.all(
+                            1,
+                            "#B2CCFF",
+                        ),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Text(
+                            (
+                                f"{len(available_types)} "
+                                "trámite(s) activo(s). "
+                                "Los procedimientos históricos "
+                                "no se muestran para nuevas altas."
+                            ),
+                            size=12,
+                            color="#1849A9",
+                        ),
+                    ),
+                    search_control,
+                    catalog_host,
+                ],
+                spacing=12,
+                expand=True,
+            ),
+        )
+
+        def back_to_previous_level(
+            event=None,
+        ):
+            if (
+                group_order is not None
+                and _family_code(family)
+                == "EXTRANJERIA"
+            ):
+                open_new_expedient_subfamily_catalog(
+                    family,
+                    cliente_id=cliente_id,
+                )
+                return
+
+            expediente_dialog.open = False
+            page.update()
+
+            open_new(
+                cliente_id=cliente_id,
+            )
+
+        back_label = (
+            "Volver a subfamilias"
+            if group_order is not None
+            else "Volver a familias"
+        )
+
+        expediente_dialog.actions = [
+            secondary_button(
+                back_label,
+                back_to_previous_level,
+            ),
+            secondary_button(
+                "Cancelar",
+                close_dialog,
+            ),
+        ]
+
+        expediente_dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        new_expedient_family_dialog.open = False
+        expediente_dialog.open = True
+        page.update()
+
+
 
 
     def _build_new_expedient_family_card(

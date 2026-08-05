@@ -88,37 +88,59 @@ class NewExpedientFamilySelectorContractTest(
             self.source,
         )
 
-    def test_family_is_selected_before_form(self):
-        function = next(
+    def test_family_is_selected_before_next_catalog(
+        self,
+    ):
+        view_path = (
+            ROOT
+            / "frontend"
+            / "views"
+            / "expedients_view.py"
+        )
+
+        view_source = view_path.read_text(
+            encoding="utf-8"
+        )
+
+        view_tree = ast.parse(
+            view_source
+        )
+
+        function_node = next(
             node
-            for node in ast.walk(self.tree)
-            if (
-                isinstance(
-                    node,
-                    ast.FunctionDef,
-                )
-                and node.name
-                == "open_new_for_family"
-            )
+            for node in ast.walk(view_tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "open_new_for_family"
         )
 
-        segment = ast.get_source_segment(
-            self.source,
-            function,
+        function_source = ast.get_source_segment(
+            view_source,
+            function_node,
         )
 
-        family_position = segment.index(
-            "familia_expediente.set_value"
+        family_id_position = function_source.index(
+            'state["new_expedient_family_id"]'
         )
 
-        dialog_position = segment.index(
-            "expediente_dialog.open = True"
+        subfamily_position = function_source.index(
+            "open_new_expedient_subfamily_catalog"
+        )
+
+        type_position = function_source.index(
+            "open_new_expedient_type_catalog"
         )
 
         self.assertLess(
-            family_position,
-            dialog_position,
+            family_id_position,
+            subfamily_position,
         )
+
+        self.assertLess(
+            family_id_position,
+            type_position,
+        )
+
+
 
     def test_preserves_client_navigation(self):
         self.assertIn(
