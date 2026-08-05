@@ -51,7 +51,7 @@ class ExternalMilestonesEvolutionContractTest(
             self.function_names,
         )
 
-    def test_distinguishes_direction(self):
+    def test_distinguishes_milestone_direction(self):
         self.assertIn(
             "_external_milestone_direction",
             self.function_names,
@@ -69,51 +69,45 @@ class ExternalMilestonesEvolutionContractTest(
 
     def test_displays_creation_origin(self):
         self.assertIn(
-            "Origen de apertura",
-            self.source,
-        )
-
-        self.assertIn(
             "CREATION_ORIGIN_LABELS",
             self.source,
         )
 
-    def test_displays_external_sections(self):
         self.assertIn(
+            "_creation_origin_label",
+            self.function_names,
+        )
+
+        self.assertIn(
+            "creation_origin",
+            self.source,
+        )
+
+    def test_builds_external_sections(self):
+        for identifier in (
             "incoming_external_cards",
-            self.source,
-        )
-
-        self.assertIn(
             "outgoing_external_cards",
-            self.source,
-        )
-
-        self.assertIn(
             "incoming_external_milestones",
-            self.source,
-        )
-
-        self.assertIn(
             "outgoing_external_milestones",
-            self.source,
-        )
+        ):
+            self.assertIn(
+                identifier,
+                self.source,
+            )
 
-    def test_full_chain_includes_milestones(self):
-        self.assertIn(
+    def test_full_chain_includes_external_milestones(
+        self,
+    ):
+        for identifier in (
             "all_external_milestones",
-            self.source,
-        )
-
-        self.assertIn(
+            "external_milestones",
             "rendered_milestone_ids",
-            self.source,
-        )
-
-        self.assertIn(
             "pending_terminal_milestones",
-            self.source,
-        )
+        ):
+            self.assertIn(
+                identifier,
+                self.source,
+            )
 
     def test_milestone_card_does_not_open_expedient(
         self,
