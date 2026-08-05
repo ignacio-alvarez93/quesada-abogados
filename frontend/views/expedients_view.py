@@ -10981,7 +10981,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             pass
 
 
-    def _open_created_derivation_expedient(
+    def _open_related_expedient(
         dialog,
         expediente_destino_id,
         e=None,
@@ -11109,7 +11109,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         expediente_destino_id
                     ),
                     on_click=lambda e: (
-                        _open_created_derivation_expedient(
+                        _open_related_expedient(
                             dialog,
                             expediente_destino_id,
                             e,
@@ -12239,7 +12239,23 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 )
 
             try:
-                related_expedients = (
+                incoming_related_expedients = (
+                    expedient_evolution_service
+                    .list_expedient_relations(
+                        int(expediente_id),
+                        direction="INCOMING",
+                    )
+                )
+            except Exception as exc:
+                incoming_related_expedients = []
+                print(
+                    "ERROR CARGANDO EXPEDIENTES "
+                    "DE ORIGEN:",
+                    repr(exc),
+                )
+
+            try:
+                outgoing_related_expedients = (
                     expedient_evolution_service
                     .list_expedient_relations(
                         int(expediente_id),
@@ -12247,10 +12263,10 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     )
                 )
             except Exception as exc:
-                related_expedients = []
+                outgoing_related_expedients = []
                 print(
                     "ERROR CARGANDO EXPEDIENTES "
-                    "RELACIONADOS:",
+                    "POSTERIORES:",
                     repr(exc),
                 )
 
@@ -14618,215 +14634,287 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     )
                 ]
 
-            related_expedient_cards = []
+            def _build_related_expedient_cards(
+                relations,
+                *,
+                direction,
+            ):
+                cards = []
 
-            for relation in related_expedients:
-                relation = dict(relation or {})
-
-                related_id = (
-                    relation.get(
-                        "expediente_relacionado_id"
-                    )
+                is_incoming = (
+                    direction == "INCOMING"
                 )
 
-                related_number = (
-                    relation.get(
-                        "expediente_relacionado_numero"
+                for relation in relations:
+                    relation = dict(
+                        relation
+                        or {}
                     )
-                    or (
-                        f"#{related_id}"
-                        if related_id
-                        else "-"
-                    )
-                )
 
-                related_type = (
-                    relation.get(
-                        "tipo_relacionado_nombre"
+                    related_id = (
+                        relation.get(
+                            "expediente_relacionado_id"
+                        )
                     )
-                    or relation.get(
-                        "tipo_relacionado_codigo"
-                    )
-                    or "Expediente relacionado"
-                )
 
-                related_family = (
-                    relation.get(
-                        "familia_relacionada_nombre"
+                    related_number = (
+                        relation.get(
+                            "expediente_relacionado_numero"
+                        )
+                        or (
+                            f"#{related_id}"
+                            if related_id
+                            else "-"
+                        )
                     )
-                    or relation.get(
-                        "familia_relacionada_codigo"
-                    )
-                    or "-"
-                )
 
-                related_subtype = (
-                    relation.get(
-                        "subtipo_relacionado_nombre"
+                    related_type = (
+                        relation.get(
+                            "tipo_relacionado_nombre"
+                        )
+                        or relation.get(
+                            "tipo_relacionado_codigo"
+                        )
+                        or "Expediente relacionado"
                     )
-                    or relation.get(
-                        "subtipo_relacionado_codigo"
-                    )
-                    or ""
-                )
 
-                related_state = (
-                    relation.get(
-                        "estado_relacionado_nombre"
+                    related_family = (
+                        relation.get(
+                            "familia_relacionada_nombre"
+                        )
+                        or relation.get(
+                            "familia_relacionada_codigo"
+                        )
+                        or "-"
                     )
-                    or "SIN ESTADO"
-                )
 
-                related_state_color = (
-                    relation.get(
-                        "estado_relacionado_color"
+                    related_subtype = (
+                        relation.get(
+                            "subtipo_relacionado_nombre"
+                        )
+                        or relation.get(
+                            "subtipo_relacionado_codigo"
+                        )
+                        or ""
                     )
-                    or Q_PRIMARY
-                )
 
-                relation_label = str(
-                    relation.get(
-                        "tipo_relacion"
+                    related_state = (
+                        relation.get(
+                            "estado_relacionado_nombre"
+                        )
+                        or "SIN ESTADO"
                     )
-                    or "RELACIONADO"
-                ).replace("_", " ")
 
-                relation_body = [
-                    ft.Container(
-                        bgcolor="#F8FAFC",
-                        border=ft.border.all(
-                            1,
-                            Q_BORDER,
-                        ),
-                        border_radius=10,
-                        padding=12,
-                        content=ft.Row(
-                            controls=[
-                                _trace_value(
-                                    "N.º expediente",
-                                    related_number,
-                                    selectable=True,
+                    related_state_color = (
+                        relation.get(
+                            "estado_relacionado_color"
+                        )
+                        or Q_PRIMARY
+                    )
+
+                    relation_label = str(
+                        relation.get(
+                            "tipo_relacion"
+                        )
+                        or "RELACIONADO"
+                    ).replace("_", " ")
+
+                    direction_label = (
+                        "EXPEDIENTE DE ORIGEN"
+                        if is_incoming
+                        else "EXPEDIENTE POSTERIOR"
+                    )
+
+                    relation_body = [
+                        ft.Container(
+                            bgcolor=(
+                                "#F5F9FF"
+                                if is_incoming
+                                else "#F8FAFC"
+                            ),
+                            border=ft.border.all(
+                                1,
+                                (
+                                    "#B2CCFF"
+                                    if is_incoming
+                                    else Q_BORDER
                                 ),
-                                _trace_value(
-                                    "Familia",
-                                    related_family,
+                            ),
+                            border_radius=10,
+                            padding=12,
+                            content=ft.Row(
+                                controls=[
+                                    _trace_value(
+                                        "N.º expediente",
+                                        related_number,
+                                        selectable=True,
+                                    ),
+                                    _trace_value(
+                                        "Familia",
+                                        related_family,
+                                    ),
+                                    _trace_value(
+                                        "Relación",
+                                        relation_label,
+                                    ),
+                                ],
+                                spacing=24,
+                                wrap=True,
+                            ),
+                        )
+                    ]
+
+                    if related_subtype:
+                        relation_body.append(
+                            _trace_value(
+                                "Subtipo",
+                                related_subtype,
+                            )
+                        )
+
+                    relation_motive = (
+                        relation.get("motivo")
+                        or ""
+                    )
+
+                    if relation_motive:
+                        relation_body.append(
+                            ft.Text(
+                                relation_motive,
+                                size=12,
+                                color=Q_MUTED,
+                                selectable=True,
+                            )
+                        )
+
+                    cards.append(
+                        card_item(
+                            title=related_type,
+                            subtitle=(
+                                f"{direction_label} · "
+                                f"{related_number}"
+                            ),
+                            leading=ft.Container(
+                                width=42,
+                                height=42,
+                                border_radius=12,
+                                bgcolor=(
+                                    "#EAF3FF"
+                                    if is_incoming
+                                    else "#ECFDF3"
                                 ),
-                                _trace_value(
-                                    "Relación",
-                                    relation_label,
+                                alignment=ft.Alignment(
+                                    0,
+                                    0,
                                 ),
+                                content=ft.Icon(
+                                    (
+                                        ft.Icons.ARROW_BACK
+                                        if is_incoming
+                                        else ft.Icons.ARROW_FORWARD
+                                    ),
+                                    color=(
+                                        Q_PRIMARY
+                                        if is_incoming
+                                        else "#027A48"
+                                    ),
+                                    size=22,
+                                ),
+                            ),
+                            badges=[
+                                expedient_status_badge(
+                                    related_state,
+                                    related_state_color,
+                                )
                             ],
-                            spacing=24,
-                            wrap=True,
-                        ),
+                            actions=[
+                                ft.ElevatedButton(
+                                    "Abrir expediente",
+                                    icon=ft.Icons.OPEN_IN_NEW,
+                                    disabled=not bool(
+                                        related_id
+                                    ),
+                                    on_click=(
+                                        lambda e,
+                                        eid=related_id: (
+                                            _open_related_expedient(
+                                                None,
+                                                eid,
+                                                e,
+                                            )
+                                        )
+                                    ),
+                                )
+                            ],
+                            body=relation_body,
+                            footer=[
+                                ft.Row(
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.SCHEDULE,
+                                            size=14,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(
+                                            str(
+                                                relation.get(
+                                                    "created_at"
+                                                )
+                                                or ""
+                                            ).replace(
+                                                "T",
+                                                " ",
+                                            ),
+                                            size=11,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=6,
+                                )
+                            ],
+                            border_color=(
+                                "#B2CCFF"
+                                if is_incoming
+                                else "#A6F4C5"
+                            ),
+                            padding=12,
+                        )
+                    )
+
+                return cards
+
+
+            incoming_related_cards = (
+                _build_related_expedient_cards(
+                    incoming_related_expedients,
+                    direction="INCOMING",
+                )
+            )
+
+            if not incoming_related_cards:
+                incoming_related_cards = [
+                    empty_state(
+                        "Este expediente no procede "
+                        "de otro expediente"
                     )
                 ]
 
-                if related_subtype:
-                    relation_body.append(
-                        _trace_value(
-                            "Subtipo",
-                            related_subtype,
-                        )
-                    )
 
-                relation_motive = (
-                    relation.get("motivo")
-                    or ""
+            outgoing_related_cards = (
+                _build_related_expedient_cards(
+                    outgoing_related_expedients,
+                    direction="OUTGOING",
                 )
+            )
 
-                if relation_motive:
-                    relation_body.append(
-                        ft.Text(
-                            relation_motive,
-                            size=12,
-                            color=Q_MUTED,
-                            selectable=True,
-                        )
-                    )
-
-                related_expedient_cards.append(
-                    card_item(
-                        title=related_type,
-                        subtitle=related_number,
-                        leading=ft.Container(
-                            width=42,
-                            height=42,
-                            border_radius=12,
-                            bgcolor="#ECFDF3",
-                            alignment=ft.Alignment(
-                                0,
-                                0,
-                            ),
-                            content=ft.Icon(
-                                ft.Icons.LINK,
-                                color="#027A48",
-                                size=22,
-                            ),
-                        ),
-                        badges=[
-                            expedient_status_badge(
-                                related_state,
-                                related_state_color,
-                            )
-                        ],
-                        actions=[
-                            ft.ElevatedButton(
-                                "Abrir expediente",
-                                icon=ft.Icons.OPEN_IN_NEW,
-                                disabled=not bool(
-                                    related_id
-                                ),
-                                on_click=(
-                                    lambda e,
-                                    eid=related_id: (
-                                        _open_created_derivation_expedient(
-                                            None,
-                                            eid,
-                                            e,
-                                        )
-                                    )
-                                ),
-                            )
-                        ],
-                        body=relation_body,
-                        footer=[
-                            ft.Row(
-                                controls=[
-                                    ft.Icon(
-                                        ft.Icons.SCHEDULE,
-                                        size=14,
-                                        color=Q_MUTED,
-                                    ),
-                                    ft.Text(
-                                        str(
-                                            relation.get(
-                                                "created_at"
-                                            )
-                                            or ""
-                                        ).replace(
-                                            "T",
-                                            " ",
-                                        ),
-                                        size=11,
-                                        color=Q_MUTED,
-                                    ),
-                                ],
-                                spacing=6,
-                            )
-                        ],
-                        border_color="#A6F4C5",
-                        padding=12,
-                    )
-                )
-
-            if not related_expedient_cards:
-                related_expedient_cards = [
+            if not outgoing_related_cards:
+                outgoing_related_cards = [
                     empty_state(
                         "Todavía no se han creado "
                         "expedientes posteriores"
                     )
                 ]
+
 
             active_tab = state.get(
                 "traceability_tab",
@@ -14839,22 +14927,58 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         ft.Column(
                             controls=[
                                 ft.Text(
-                                    "Actuaciones posteriores",
+                                    "Evolución del expediente",
                                     size=17,
                                     weight=ft.FontWeight.BOLD,
                                     color=Q_PRIMARY_DARK,
                                 ),
                                 ft.Text(
-                                    "Expedientes propuestos y "
-                                    "expedientes ya creados desde "
-                                    "la evolución del expediente "
-                                    "actual.",
+                                    "Origen, actuaciones pendientes "
+                                    "y expedientes posteriores "
+                                    "vinculados al expediente actual.",
                                     size=11,
                                     color=Q_MUTED,
                                 ),
                             ],
                             spacing=2,
                         ),
+
+                        ft.Container(
+                            bgcolor="#F5F9FF",
+                            border=ft.border.all(
+                                1,
+                                "#B2CCFF",
+                            ),
+                            border_radius=12,
+                            padding=12,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Expedientes de origen",
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY,
+                                    ),
+                                    ft.Text(
+                                        f"{len(incoming_related_expedients)} "
+                                        "expediente(s) anterior(es).",
+                                        size=11,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                        ),
+                        ft.Column(
+                            controls=incoming_related_cards,
+                            spacing=10,
+                        ),
+
+                        ft.Divider(
+                            height=1,
+                            color=Q_BORDER,
+                        ),
+
                         ft.Container(
                             bgcolor="#FFFAEB",
                             border=ft.border.all(
@@ -14885,10 +15009,12 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             controls=derivation_cards,
                             spacing=10,
                         ),
+
                         ft.Divider(
                             height=1,
                             color=Q_BORDER,
                         ),
+
                         ft.Container(
                             bgcolor="#ECFDF3",
                             border=ft.border.all(
@@ -14900,15 +15026,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             content=ft.Column(
                                 controls=[
                                     ft.Text(
-                                        "Expedientes relacionados",
+                                        "Expedientes posteriores",
                                         size=14,
                                         weight=ft.FontWeight.BOLD,
                                         color="#027A48",
                                     ),
                                     ft.Text(
-                                        f"{len(related_expedients)} "
-                                        "expediente(s) posterior(es) "
-                                        "creado(s).",
+                                        f"{len(outgoing_related_expedients)} "
+                                        "expediente(s) posterior(es).",
                                         size=11,
                                         color="#05603A",
                                     ),
@@ -14917,7 +15042,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             ),
                         ),
                         ft.Column(
-                            controls=related_expedient_cards,
+                            controls=outgoing_related_cards,
                             spacing=10,
                         ),
                     ],
@@ -15053,14 +15178,17 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             _traceability_chip(
                                 expediente_id,
                                 "ACTUACIONES",
-                                "Actuaciones posteriores",
+                                "Evolución",
                                 ft.Icons.ACCOUNT_TREE,
                                 (
                                     len(
+                                        incoming_related_expedients
+                                    )
+                                    + len(
                                         pending_derivation_proposals
                                     )
                                     + len(
-                                        related_expedients
+                                        outgoing_related_expedients
                                     )
                                 ),
                             ),
