@@ -11009,6 +11009,352 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         open_pending_expediente_from_navigation()
 
 
+    def _close_full_expedient_chain_dialog(
+        dialog,
+        e=None,
+    ):
+        try:
+            dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    def show_full_expedient_chain_dialog(
+        expediente_id,
+        e=None,
+    ):
+        try:
+            chain = (
+                expedient_evolution_service
+                .get_expedient_relation_chain(
+                    int(expediente_id)
+                )
+            )
+        except Exception as exc:
+            show_form_error(
+                "No se pudo cargar la cadena "
+                "de expedientes:\n"
+                + str(exc)
+            )
+            return
+
+        nodes = chain.get("nodes") or []
+        edges = chain.get("edges") or []
+
+        node_controls = []
+
+        for index, node in enumerate(nodes):
+            node = dict(node or {})
+
+            node_id = int(node["id"])
+            level = int(node.get("nivel") or 0)
+            is_root = bool(node.get("es_raiz"))
+
+            expediente_number = (
+                node.get("numero_expediente")
+                or f"#{node_id}"
+            )
+
+            expediente_type = (
+                node.get(
+                    "tipo_expediente_nombre"
+                )
+                or node.get(
+                    "tipo_expediente_codigo"
+                )
+                or "Expediente"
+            )
+
+            expediente_family = (
+                node.get(
+                    "familia_expediente_nombre"
+                )
+                or node.get(
+                    "familia_expediente_codigo"
+                )
+                or "-"
+            )
+
+            expediente_subtype = (
+                node.get(
+                    "subtipo_expediente_nombre"
+                )
+                or node.get(
+                    "subtipo_expediente_codigo"
+                )
+                or ""
+            )
+
+            expediente_state = (
+                node.get(
+                    "estado_administrativo_nombre"
+                )
+                or "SIN ESTADO"
+            )
+
+            expediente_state_color = (
+                node.get(
+                    "estado_administrativo_color"
+                )
+                or Q_PRIMARY
+            )
+
+            if level < 0:
+                level_label = (
+                    "EXPEDIENTE ANTERIOR"
+                )
+
+            elif level > 0:
+                level_label = (
+                    "EXPEDIENTE POSTERIOR"
+                )
+
+            else:
+                level_label = (
+                    "EXPEDIENTE ACTUAL"
+                )
+
+            if index:
+                node_controls.append(
+                    ft.Container(
+                        alignment=ft.Alignment(
+                            0,
+                            0,
+                        ),
+                        content=ft.Icon(
+                            ft.Icons.ARROW_DOWNWARD,
+                            color=Q_MUTED,
+                            size=24,
+                        ),
+                    )
+                )
+
+            node_controls.append(
+                ft.Container(
+                    bgcolor=(
+                        "#EAF3FF"
+                        if is_root
+                        else "#FFFFFF"
+                    ),
+                    border=ft.border.all(
+                        2 if is_root else 1,
+                        (
+                            Q_PRIMARY
+                            if is_root
+                            else Q_BORDER
+                        ),
+                    ),
+                    border_radius=14,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        width=42,
+                                        height=42,
+                                        border_radius=12,
+                                        bgcolor=(
+                                            Q_PRIMARY
+                                            if is_root
+                                            else "#F2F4F7"
+                                        ),
+                                        alignment=ft.Alignment(
+                                            0,
+                                            0,
+                                        ),
+                                        content=ft.Icon(
+                                            ft.Icons.FOLDER_OPEN,
+                                            color=(
+                                                "#FFFFFF"
+                                                if is_root
+                                                else Q_PRIMARY
+                                            ),
+                                            size=22,
+                                        ),
+                                    ),
+                                    ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                level_label,
+                                                size=10,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color=(
+                                                    Q_PRIMARY
+                                                    if is_root
+                                                    else Q_MUTED
+                                                ),
+                                            ),
+                                            ft.Text(
+                                                expediente_type,
+                                                size=15,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color=Q_PRIMARY_DARK,
+                                            ),
+                                            ft.Text(
+                                                expediente_number,
+                                                size=12,
+                                                color=Q_MUTED,
+                                                selectable=True,
+                                            ),
+                                        ],
+                                        spacing=2,
+                                        expand=True,
+                                    ),
+                                    expedient_status_badge(
+                                        expediente_state,
+                                        expediente_state_color,
+                                    ),
+                                ],
+                                spacing=10,
+                                vertical_alignment=(
+                                    ft.CrossAxisAlignment.CENTER
+                                ),
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "Familia: "
+                                        + str(
+                                            expediente_family
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Subtipo: "
+                                                + str(
+                                                    expediente_subtype
+                                                ),
+                                                size=11,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if expediente_subtype
+                                        else []
+                                    ),
+                                ],
+                                spacing=18,
+                                wrap=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        expand=True,
+                                    ),
+                                    ft.TextButton(
+                                        (
+                                            "Expediente actual"
+                                            if is_root
+                                            else "Abrir expediente"
+                                        ),
+                                        icon=(
+                                            ft.Icons.CHECK_CIRCLE
+                                            if is_root
+                                            else ft.Icons.OPEN_IN_NEW
+                                        ),
+                                        disabled=is_root,
+                                        on_click=(
+                                            None
+                                            if is_root
+                                            else (
+                                                lambda e,
+                                                eid=node_id: (
+                                                    _open_related_expedient(
+                                                        dialog,
+                                                        eid,
+                                                        e,
+                                                    )
+                                                )
+                                            )
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+                )
+            )
+
+        if not node_controls:
+            node_controls = [
+                empty_state(
+                    "No hay expedientes en la cadena"
+                )
+            ]
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.ACCOUNT_TREE,
+                        color=Q_PRIMARY,
+                        size=25,
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Cadena completa de expedientes",
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                f"{len(nodes)} expediente(s) · "
+                                f"{len(edges)} relación(es)",
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=1,
+                    ),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                width=720,
+                height=560,
+                content=ft.Column(
+                    controls=node_controls,
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=lambda e: (
+                        _close_full_expedient_chain_dialog(
+                            dialog,
+                            e,
+                        )
+                    ),
+                ),
+            ],
+            actions_alignment=(
+                ft.MainAxisAlignment.END
+            ),
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
     def _show_derivation_created_dialog(
         *,
         expediente_destino,
@@ -14924,23 +15270,43 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             if active_tab == "ACTUACIONES":
                 active_content = ft.Column(
                     controls=[
-                        ft.Column(
+                        ft.Row(
                             controls=[
-                                ft.Text(
-                                    "Evolución del expediente",
-                                    size=17,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=Q_PRIMARY_DARK,
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Evolución del expediente",
+                                            size=17,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            "Origen, actuaciones pendientes "
+                                            "y expedientes posteriores "
+                                            "vinculados al expediente actual.",
+                                            size=11,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
                                 ),
-                                ft.Text(
-                                    "Origen, actuaciones pendientes "
-                                    "y expedientes posteriores "
-                                    "vinculados al expediente actual.",
-                                    size=11,
-                                    color=Q_MUTED,
+                                secondary_button(
+                                    "Ver cadena completa",
+                                    lambda e: (
+                                        show_full_expedient_chain_dialog(
+                                            expediente_id,
+                                            e,
+                                        )
+                                    ),
                                 ),
                             ],
-                            spacing=2,
+                            alignment=(
+                                ft.MainAxisAlignment.SPACE_BETWEEN
+                            ),
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.CENTER
+                            ),
                         ),
 
                         ft.Container(

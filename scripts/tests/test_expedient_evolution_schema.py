@@ -1032,5 +1032,107 @@ class ExpedientEvolutionSchemaTest(unittest.TestCase):
             )
 
 
+
+    def test_get_complete_expedient_relation_chain(
+        self,
+    ):
+        conn = sqlite3.connect(self.db_path)
+
+        try:
+            conn.execute(
+                """
+                UPDATE expedientes
+                SET cliente_id = (
+                    SELECT cliente_id
+                    FROM expedientes
+                    WHERE id = 1000
+                )
+                WHERE id = 2000
+                """
+            )
+            conn.commit()
+
+        finally:
+            conn.close()
+
+        (
+            expedient_evolution_service
+            .create_expedient_relation(
+                expediente_origen_id=1000,
+                expediente_destino_id=2000,
+                tipo_relacion=(
+                    "ACTUACION_POSTERIOR"
+                ),
+                motivo="Cadena completa",
+            )
+        )
+
+        chain_from_origin = (
+            expedient_evolution_service
+            .get_expedient_relation_chain(
+                1000
+            )
+        )
+
+        self.assertEqual(
+            chain_from_origin[
+                "expediente_raiz_id"
+            ],
+            1000,
+        )
+
+        self.assertEqual(
+            chain_from_origin["node_count"],
+            2,
+        )
+
+        self.assertEqual(
+            chain_from_origin["edge_count"],
+            1,
+        )
+
+        levels_from_origin = {
+            int(node["id"]): int(node["nivel"])
+            for node
+            in chain_from_origin["nodes"]
+        }
+
+        self.assertEqual(
+            levels_from_origin,
+            {
+                1000: 0,
+                2000: 1,
+            },
+        )
+
+        chain_from_destination = (
+            expedient_evolution_service
+            .get_expedient_relation_chain(
+                2000
+            )
+        )
+
+        levels_from_destination = {
+            int(node["id"]): int(node["nivel"])
+            for node
+            in chain_from_destination["nodes"]
+        }
+
+        self.assertEqual(
+            levels_from_destination,
+            {
+                1000: -1,
+                2000: 0,
+            },
+        )
+
+        self.assertEqual(
+            chain_from_destination[
+                "edges"
+            ][0]["tipo_relacion"],
+            "ACTUACION_POSTERIOR",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

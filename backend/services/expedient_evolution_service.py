@@ -486,6 +486,282 @@ def list_expedient_relations(
     ]
 
 
+def get_expedient_relation_chain(
+    expediente_id,
+):
+    """
+    Devuelve el componente completo de expedientes conectado
+    al expediente indicado.
+
+    La cadena se recorre en ambas direcciones:
+
+    - relaciones entrantes: nivel negativo;
+    - expediente consultado: nivel cero;
+    - relaciones salientes: nivel positivo.
+
+    La búsqueda evita ciclos y devuelve nodos y relaciones
+    por separado para que el frontend pueda representarlos.
+    """
+    ensure_expedient_evolution_schema()
+
+    root_id = int(expediente_id)
+
+    with _connection() as conn:
+        root = conn.execute(
+            """
+            SELECT
+                id,
+                cliente_id
+            FROM expedientes
+            WHERE id = ?
+            """,
+            (root_id,),
+        ).fetchone()
+
+        if not root:
+            raise ValueError(
+                "No existe el expediente raíz"
+            )
+
+        client_id = int(root["cliente_id"])
+
+        relation_rows = conn.execute(
+            """
+            SELECT
+                r.*
+            FROM expediente_relaciones r
+            JOIN expedientes eo
+              ON eo.id = r.expediente_origen_id
+            JOIN expedientes ed
+              ON ed.id = r.expediente_destino_id
+            WHERE r.activo = 1
+              AND eo.cliente_id = ?
+              AND ed.cliente_id = ?
+            ORDER BY
+                r.created_at ASC,
+                r.id ASC
+            """,
+            (
+                client_id,
+                client_id,
+            ),
+        ).fetchall()
+
+        outgoing = {}
+        incoming = {}
+
+        for row in relation_rows:
+            relation = dict(row)
+
+            origin_id = int(
+                relation["expediente_origen_id"]
+            )
+            destination_id = int(
+                relation["expediente_destino_id"]
+            )
+
+            outgoing.setdefault(
+                origin_id,
+                [],
+            ).append(
+                relation
+            )
+
+            incoming.setdefault(
+                destination_id,
+                [],
+            ).append(
+                relation
+            )
+
+        levels = {
+            root_id: 0,
+        }
+
+        queue = [
+            root_id,
+        ]
+
+        connected_relation_ids = set()
+
+        while queue:
+            current_id = queue.pop(0)
+            current_level = levels[current_id]
+
+            for relation in outgoing.get(
+                current_id,
+                [],
+            ):
+                connected_relation_ids.add(
+                    int(relation["id"])
+                )
+
+                destination_id = int(
+                    relation[
+                        "expediente_destino_id"
+                    ]
+                )
+
+                if destination_id not in levels:
+                    levels[destination_id] = (
+                        current_level + 1
+                    )
+                    queue.append(destination_id)
+
+            for relation in incoming.get(
+                current_id,
+                [],
+            ):
+                connected_relation_ids.add(
+                    int(relation["id"])
+                )
+
+                origin_id = int(
+                    relation[
+                        "expediente_origen_id"
+                    ]
+                )
+
+                if origin_id not in levels:
+                    levels[origin_id] = (
+                        current_level - 1
+                    )
+                    queue.append(origin_id)
+
+        connected_ids = sorted(
+            levels.keys()
+        )
+
+        placeholders = ",".join(
+            "?"
+            for _ in connected_ids
+        )
+
+        has_admin_states = _table_exists(
+            conn,
+            "config_estados_administrativos",
+        )
+
+        if has_admin_states:
+            state_select = """
+                ea.codigo
+                    AS estado_administrativo_codigo,
+                ea.nombre
+                    AS estado_administrativo_nombre,
+                ea.color
+                    AS estado_administrativo_color
+            """
+
+            state_join = """
+                LEFT JOIN
+                    config_estados_administrativos ea
+                  ON ea.id =
+                     e.estado_administrativo_id
+            """
+
+        else:
+            state_select = """
+                NULL AS estado_administrativo_codigo,
+                NULL AS estado_administrativo_nombre,
+                NULL AS estado_administrativo_color
+            """
+
+            state_join = ""
+
+        node_rows = conn.execute(
+            f"""
+            SELECT
+                e.id,
+                e.cliente_id,
+                e.numero_expediente,
+                e.activo,
+                e.created_at,
+
+                t.codigo
+                    AS tipo_expediente_codigo,
+                t.nombre
+                    AS tipo_expediente_nombre,
+
+                f.codigo
+                    AS familia_expediente_codigo,
+                f.nombre
+                    AS familia_expediente_nombre,
+
+                s.codigo
+                    AS subtipo_expediente_codigo,
+                s.nombre
+                    AS subtipo_expediente_nombre,
+
+                {state_select}
+
+            FROM expedientes e
+
+            LEFT JOIN config_tipos_expediente t
+              ON t.id = e.tipo_expediente_id
+
+            LEFT JOIN config_familias_expediente f
+              ON f.id = t.familia_id
+
+            LEFT JOIN config_subtipos_expediente s
+              ON s.id = e.subtipo_expediente_id
+
+            {state_join}
+
+            WHERE e.id IN ({placeholders})
+            """,
+            connected_ids,
+        ).fetchall()
+
+        nodes = []
+
+        for row in node_rows:
+            node = dict(row)
+            node_id = int(node["id"])
+
+            node["nivel"] = int(
+                levels[node_id]
+            )
+
+            node["es_raiz"] = (
+                node_id == root_id
+            )
+
+            nodes.append(node)
+
+        nodes.sort(
+            key=lambda item: (
+                int(item["nivel"]),
+                str(
+                    item.get("numero_expediente")
+                    or ""
+                ),
+                int(item["id"]),
+            )
+        )
+
+        edges = [
+            dict(row)
+            for row in relation_rows
+            if int(row["id"])
+            in connected_relation_ids
+        ]
+
+        return {
+            "expediente_raiz_id": root_id,
+            "cliente_id": client_id,
+            "nodes": nodes,
+            "edges": edges,
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "min_level": min(
+                levels.values()
+            ),
+            "max_level": max(
+                levels.values()
+            ),
+        }
+
+
 def create_derivation_proposal(
     expediente_origen_id,
     regla_derivacion_id,
