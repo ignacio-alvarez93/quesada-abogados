@@ -10,6 +10,7 @@ from datetime import datetime
 
 from backend.services import expedient_service
 from backend.services import expedient_evolution_service
+from backend.services import expedient_trajectory_service
 from backend.services import box_watch_service
 from backend.services import document_viewer_service
 from backend.services import document_inbox_service
@@ -268,6 +269,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         "payload_preview_result": {},
         "payload_preview_error": {},
         "traceability_tab": "ANEXOS",
+        "continuity_previous_expedients": [],
     }
 
     content_area = ft.Container(expand=True)
@@ -417,6 +419,198 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     observaciones = multiline_input("Observaciones", width=720)
     observaciones_internas = multiline_input("Observaciones internas", width=720)
     box_folder_path = text_input("Ruta Box futura / observada", width=720)
+
+    continuity_mode_options = [
+        (
+            "INDEPENDENT - "
+            "Actuación independiente"
+        ),
+        (
+            "DIRECT_RELATION - "
+            "Continúa un expediente del CRM"
+        ),
+        (
+            "EXTERNAL_MILESTONE - "
+            "Continúa después de un trámite externo"
+        ),
+    ]
+
+    continuity_mode = select_input(
+        "Modo de apertura",
+        continuity_mode_options,
+        value=continuity_mode_options[0],
+        width=470,
+    )
+
+    continuity_previous_expedient = AppAutocomplete(
+        page=page,
+        label="Expediente anterior",
+        options=[],
+        value="",
+        width=720,
+        max_results=10,
+        allow_free_text=False,
+        helper_text=(
+            "Solo se muestran expedientes activos "
+            "del cliente seleccionado."
+        ),
+    )
+
+    continuity_relation_type = select_input(
+        "Tipo de relación",
+        [
+            (
+                "ACTUACION_POSTERIOR - "
+                "Actuación posterior"
+            ),
+            "CONTINUA - Continuación",
+            "REQUISITO_PREVIO - Requisito previo",
+            "MODIFICACION - Modificación",
+            "RENOVACION - Renovación",
+            "PRORROGA - Prórroga",
+        ],
+        value=(
+            "ACTUACION_POSTERIOR - "
+            "Actuación posterior"
+        ),
+        width=350,
+    )
+
+    continuity_reason = multiline_input(
+        "Motivo de la continuidad",
+        width=720,
+        height=85,
+    )
+
+    milestone_code = text_input(
+        "Código del trámite externo",
+        width=340,
+    )
+
+    milestone_name = text_input(
+        "Nombre del trámite externo",
+        width=500,
+    )
+
+    milestone_family_code = text_input(
+        "Familia de referencia",
+        width=310,
+    )
+
+    milestone_type_code = text_input(
+        "Tipo de referencia",
+        width=360,
+    )
+
+    milestone_state = select_input(
+        "Estado del trámite externo",
+        [
+            "REGISTRADO - Registrado",
+            "EN_TRAMITE - En trámite",
+            "FINALIZADO - Finalizado",
+            "CANCELADO - Cancelado",
+        ],
+        value="FINALIZADO - Finalizado",
+        width=280,
+    )
+
+    milestone_result = select_input(
+        "Resultado",
+        [
+            "SIN_RESULTADO - Sin resultado",
+            "CONCEDIDO - Concedido",
+            "DENEGADO - Denegado",
+            "DESISTIDO - Desistido",
+            "ARCHIVADO - Archivado",
+            "COMPLETADO - Completado",
+        ],
+        value="CONCEDIDO - Concedido",
+        width=260,
+    )
+
+    milestone_date = text_input(
+        "Fecha del trámite DD/MM/AAAA",
+        width=270,
+    )
+
+    milestone_observations = multiline_input(
+        "Observaciones del trámite externo",
+        width=720,
+        height=95,
+    )
+
+    continuity_direct_fields = ft.Container(
+        visible=False,
+        content=ft.Column(
+            controls=[
+                continuity_previous_expedient.control,
+                ft.Row(
+                    controls=[
+                        continuity_relation_type,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                continuity_reason,
+            ],
+            spacing=10,
+        ),
+    )
+
+    continuity_external_fields = ft.Container(
+        visible=False,
+        content=ft.Column(
+            controls=[
+                ft.Text(
+                    "El expediente anterior es opcional. "
+                    "Déjalo vacío cuando todo el procedimiento "
+                    "previo se haya realizado fuera del despacho.",
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                continuity_previous_expedient.control,
+                ft.Row(
+                    controls=[
+                        milestone_code,
+                        milestone_name,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        milestone_family_code,
+                        milestone_type_code,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        milestone_state,
+                        milestone_result,
+                        milestone_date,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                milestone_observations,
+            ],
+            spacing=10,
+        ),
+    )
+
+    continuity_form_wrapper = ft.Container(
+        visible=True,
+        content=ft.Column(
+            controls=[
+                continuity_mode,
+                continuity_direct_fields,
+                continuity_external_fields,
+            ],
+            spacing=10,
+        ),
+    )
 
     admin_document_event_options = [
         "JUSTIFICANTE_PRESENTACION - Justificante de presentación",
@@ -1922,7 +2116,180 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     familia_expediente.on_select = on_familia_expediente_change
     tipo_expediente.on_select = on_tipo_expediente_change
 
-    for date_field in [fecha_apertura, fecha_presentacion, fecha_resolucion]:
+    def _coded_option_value(value):
+        raw = str(value or "").strip()
+
+        if not raw:
+            return ""
+
+        if " - " in raw:
+            raw = raw.split(" - ", 1)[0]
+
+        return _norm(raw).replace(" ", "_")
+
+
+    def _continuity_mode_code():
+        return (
+            _coded_option_value(
+                continuity_mode.value
+            )
+            or "INDEPENDENT"
+        )
+
+
+    def _selected_previous_expedient_id():
+        return _option_id(
+            continuity_previous_expedient.get_value()
+        )
+
+
+    def _build_previous_expedient_option(item):
+        number = (
+            item.get("numero_expediente")
+            or f"#{item.get('id')}"
+        )
+
+        family = (
+            item.get("familia_expediente_nombre")
+            or item.get("familia_expediente_codigo")
+            or "SIN FAMILIA"
+        )
+
+        expedient_type = (
+            item.get("tipo_expediente_nombre")
+            or item.get("tipo_expediente_codigo")
+            or "SIN TIPO"
+        )
+
+        admin_state = (
+            item.get("estado_administrativo_nombre")
+            or "SIN ESTADO"
+        )
+
+        return (
+            f"{item['id']} - {number} · "
+            f"{family} · {expedient_type} · "
+            f"{admin_state}"
+        )
+
+
+    def refresh_continuity_previous_options(
+        reset_value=True,
+    ):
+        client_id = _option_id(
+            cliente.get_value()
+        )
+
+        current_id = (
+            state.get("editing_id")
+            or state.get("dialog_expediente_id")
+        )
+
+        items = []
+
+        if client_id:
+            try:
+                items = expedient_service.get_expedientes(
+                    cliente_id=client_id,
+                    active_only=True,
+                )
+            except Exception:
+                items = []
+
+        filtered = []
+
+        for item in items:
+            item_id = int(item.get("id") or 0)
+
+            if current_id and item_id == int(current_id):
+                continue
+
+            filtered.append(item)
+
+        state[
+            "continuity_previous_expedients"
+        ] = filtered
+
+        options = [
+            _build_previous_expedient_option(item)
+            for item in filtered
+        ]
+
+        continuity_previous_expedient.set_options(
+            options,
+            clear_value=reset_value,
+        )
+
+        if reset_value:
+            continuity_previous_expedient.set_value(
+                "",
+                update=False,
+            )
+
+
+    def update_continuity_visibility(
+        update_page=True,
+    ):
+        mode = _continuity_mode_code()
+        is_new = not bool(state.get("editing_id"))
+
+        continuity_form_wrapper.visible = is_new
+
+        continuity_direct_fields.visible = (
+            is_new
+            and mode == "DIRECT_RELATION"
+        )
+
+        continuity_external_fields.visible = (
+            is_new
+            and mode == "EXTERNAL_MILESTONE"
+        )
+
+        if (
+            mode == "INDEPENDENT"
+            or not is_new
+        ):
+            continuity_previous_expedient.set_value(
+                "",
+                update=False,
+            )
+
+        if update_page:
+            page.update()
+
+
+    def on_continuity_mode_change(e=None):
+        update_continuity_visibility(
+            update_page=True,
+        )
+
+
+    def on_continuity_client_change(
+        selected=None,
+    ):
+        refresh_continuity_previous_options(
+            reset_value=True,
+        )
+
+        update_continuity_visibility(
+            update_page=True,
+        )
+
+
+    continuity_mode.on_change = (
+        on_continuity_mode_change
+    )
+
+    cliente.on_select = (
+        on_continuity_client_change
+    )
+
+    for date_field in [
+        fecha_apertura,
+        fecha_presentacion,
+        fecha_resolucion,
+        milestone_date,
+    ]:
         def on_date_change(e, field=date_field):
             formatted = _format_date_typing(field.value)
             if field.value != formatted:
@@ -1994,6 +2361,48 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         observaciones.value = ""
         observaciones_internas.value = ""
         box_folder_path.value = ""
+
+        continuity_mode.value = (
+            continuity_mode_options[0]
+        )
+
+        continuity_previous_expedient.set_options(
+            [],
+            clear_value=True,
+        )
+
+        continuity_previous_expedient.set_value(
+            "",
+            update=False,
+        )
+
+        continuity_relation_type.value = (
+            "ACTUACION_POSTERIOR - "
+            "Actuación posterior"
+        )
+
+        continuity_reason.value = ""
+
+        milestone_code.value = ""
+        milestone_name.value = ""
+        milestone_family_code.value = ""
+        milestone_type_code.value = ""
+
+        milestone_state.value = (
+            "FINALIZADO - Finalizado"
+        )
+
+        milestone_result.value = (
+            "CONCEDIDO - Concedido"
+        )
+
+        milestone_date.value = ""
+        milestone_observations.value = ""
+
+        update_continuity_visibility(
+            update_page=False,
+        )
+
         clear_form_message()
 
     def load_form(expediente):
@@ -2069,6 +2478,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         observaciones.value = expediente.get("observaciones") or ""
         observaciones_internas.value = expediente.get("observaciones_internas") or ""
         box_folder_path.value = expediente.get("box_folder_path") or ""
+
+        continuity_mode.value = (
+            continuity_mode_options[0]
+        )
+
+        continuity_previous_expedient.set_value(
+            "",
+            update=False,
+        )
+
+        update_continuity_visibility(
+            update_page=False,
+        )
+
         clear_form_message()
 
     def form_data():
@@ -2131,6 +2554,142 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             "activo": 1,
         }
 
+    def continuity_data():
+        mode = _continuity_mode_code()
+
+        previous_id = (
+            _selected_previous_expedient_id()
+        )
+
+        if mode == "INDEPENDENT":
+            return {
+                "mode": "INDEPENDENT",
+                "description": (
+                    "Expediente abierto directamente "
+                    "desde Nuevo expediente."
+                ),
+            }
+
+        if mode == "DIRECT_RELATION":
+            return {
+                "mode": "DIRECT_RELATION",
+                "previous_expedient_id": (
+                    previous_id
+                ),
+                "relation_type": (
+                    _coded_option_value(
+                        continuity_relation_type.value
+                    )
+                    or "ACTUACION_POSTERIOR"
+                ),
+                "reason": (
+                    continuity_reason.value
+                    or ""
+                ).strip(),
+                "description": (
+                    continuity_reason.value
+                    or (
+                        "Expediente creado como "
+                        "continuidad manual."
+                    )
+                ).strip(),
+            }
+
+        result_code = _coded_option_value(
+            milestone_result.value
+        )
+
+        if result_code == "SIN_RESULTADO":
+            result_code = ""
+
+        return {
+            "mode": "EXTERNAL_MILESTONE",
+            "previous_expedient_id": previous_id,
+            "description": (
+                milestone_observations.value
+                or (
+                    "Expediente creado después "
+                    "de un trámite externo."
+                )
+            ).strip(),
+            "milestone": {
+                "codigo": (
+                    milestone_code.value
+                    or ""
+                ).strip(),
+                "nombre": (
+                    milestone_name.value
+                    or ""
+                ).strip(),
+                "familia_referencia_codigo": (
+                    milestone_family_code.value
+                    or ""
+                ).strip(),
+                "tipo_referencia_codigo": (
+                    milestone_type_code.value
+                    or ""
+                ).strip(),
+                "fecha_fin": _date_to_sql(
+                    milestone_date.value
+                ),
+                "estado": (
+                    _coded_option_value(
+                        milestone_state.value
+                    )
+                    or "REGISTRADO"
+                ),
+                "resultado": result_code,
+                "observaciones": (
+                    milestone_observations.value
+                    or ""
+                ).strip(),
+            },
+        }
+
+
+    def validate_continuity(data):
+        errors = []
+
+        if state.get("editing_id"):
+            return errors
+
+        mode = data.get("mode")
+
+        if mode == "DIRECT_RELATION":
+            if not data.get(
+                "previous_expedient_id"
+            ):
+                errors.append(
+                    "Selecciona el expediente anterior"
+                )
+
+        elif mode == "EXTERNAL_MILESTONE":
+            milestone = (
+                data.get("milestone")
+                or {}
+            )
+
+            if not milestone.get("codigo"):
+                errors.append(
+                    "Indica el código del trámite externo"
+                )
+
+            if not milestone.get("nombre"):
+                errors.append(
+                    "Indica el nombre del trámite externo"
+                )
+
+            if (
+                milestone_date.value
+                and not milestone.get("fecha_fin")
+            ):
+                errors.append(
+                    "Fecha del trámite externo inválida"
+                )
+
+        return errors
+
+
     def validate_form(data):
         errors = []
         if not data["cliente_id"]:
@@ -2172,26 +2731,88 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     def save_expediente(e=None):
         data = form_data()
         errors = validate_form(data)
+
+        continuity = None
+
+        if not state.get("editing_id"):
+            continuity = continuity_data()
+            errors.extend(
+                validate_continuity(continuity)
+            )
+
         if errors:
             show_form_error("\n".join(errors))
             return
 
         try:
             if state["editing_id"]:
-                expedient_service.update_expediente(state["editing_id"], data)
-                set_message(success_alert("Expediente actualizado"))
+                expedient_service.update_expediente(
+                    state["editing_id"],
+                    data,
+                )
+
+                set_message(
+                    success_alert(
+                        "Expediente actualizado"
+                    )
+                )
+
                 close_dialog()
                 refresh_table()
+
             else:
-                new_expediente_id = expedient_service.create_expediente(data)
-                set_message(success_alert("Expediente creado"))
+                creation = (
+                    expedient_trajectory_service
+                    .create_expedient_with_continuity(
+                        expediente_data=data,
+                        continuity=continuity,
+                        usuario="ERP",
+                    )
+                )
+
+                new_expediente_id = int(
+                    creation["expediente"]["id"]
+                )
+
+                mode = creation.get("mode")
+
+                success_by_mode = {
+                    "INDEPENDENT": (
+                        "Expediente independiente creado"
+                    ),
+                    "DIRECT_RELATION": (
+                        "Expediente creado y vinculado "
+                        "con su expediente anterior"
+                    ),
+                    "EXTERNAL_MILESTONE": (
+                        "Expediente creado con el "
+                        "trámite externo registrado"
+                    ),
+                }
+
+                set_message(
+                    success_alert(
+                        success_by_mode.get(
+                            mode,
+                            "Expediente creado",
+                        )
+                    )
+                )
+
                 refresh_table()
 
-                expediente = expedient_service.get_expediente(new_expediente_id)
+                expediente = (
+                    expedient_service
+                    .get_expediente(
+                        new_expediente_id
+                    )
+                )
+
                 if expediente:
                     open_edit(expediente)
                 else:
                     close_dialog()
+
         except Exception as exc:
             show_form_error(str(exc))
 
@@ -7694,6 +8315,28 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         ft.Row([responsable, provincia.control], wrap=True, spacing=10),
                     ],
                     ft.Icons.ACCOUNT_TREE,
+                ),
+                _form_card(
+                    "Continuidad y origen",
+                    (
+                        "Indica si el nuevo expediente es "
+                        "independiente, continúa otro expediente "
+                        "o sucede a un trámite externo."
+                    ),
+                    [
+                        continuity_form_wrapper,
+                        ft.Text(
+                            (
+                                "Esta sección solo se utiliza "
+                                "durante la creación. Una actuación "
+                                "externa se registra como hito, "
+                                "no como expediente del despacho."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    ft.Icons.ROUTE,
                 ),
                 _form_card(
                     "Fechas y presentación",
@@ -18764,7 +19407,18 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 "",
             )
             if selected_cliente:
-                cliente.set_value(selected_cliente, update=False)
+                cliente.set_value(
+                    selected_cliente,
+                    update=False,
+                )
+
+        refresh_continuity_previous_options(
+            reset_value=True,
+        )
+
+        update_continuity_visibility(
+            update_page=False,
+        )
 
         refresh_subtipo_options_for_tipo(tipo_value=tipo_expediente.get_value(), reset_value=True)
         state["dialog_section"] = "ficha"
