@@ -11358,9 +11358,15 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     def _show_derivation_created_dialog(
         *,
         expediente_destino,
+        proposal=None,
     ):
         expediente_destino = (
             expediente_destino
+            or {}
+        )
+
+        proposal = (
+            proposal
             or {}
         )
 
@@ -11379,6 +11385,38 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             )
         )
 
+        tipo_destino_nombre = (
+            proposal.get(
+                "tipo_destino_nombre"
+            )
+            or expediente_destino.get(
+                "tipo_expediente_nombre"
+            )
+            or expediente_destino.get(
+                "tipo_nombre"
+            )
+            or proposal.get(
+                "tipo_destino_codigo"
+            )
+            or "EXPEDIENTE POSTERIOR"
+        )
+
+        familia_destino_nombre = (
+            proposal.get(
+                "familia_destino_nombre"
+            )
+            or expediente_destino.get(
+                "familia_expediente_nombre"
+            )
+            or expediente_destino.get(
+                "familia_nombre"
+            )
+            or proposal.get(
+                "familia_destino_codigo"
+            )
+            or ""
+        )
+
         dialog = ft.AlertDialog(
             modal=True,
             title=ft.Row(
@@ -11389,7 +11427,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         size=24,
                     ),
                     ft.Text(
-                        "Expediente de visado creado",
+                        "Expediente posterior creado",
                         weight=ft.FontWeight.BOLD,
                         color=Q_PRIMARY_DARK,
                     ),
@@ -11415,11 +11453,26 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             content=ft.Column(
                                 controls=[
                                     ft.Text(
-                                        "VISADO DE "
-                                        "REAGRUPACIÓN FAMILIAR",
+                                        str(
+                                            tipo_destino_nombre
+                                        ),
                                         size=14,
                                         weight=ft.FontWeight.BOLD,
                                         color=Q_PRIMARY_DARK,
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Familia: "
+                                                + str(
+                                                    familia_destino_nombre
+                                                ),
+                                                size=12,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if familia_destino_nombre
+                                        else []
                                     ),
                                     ft.Text(
                                         "N.º de expediente: "
@@ -11539,13 +11592,14 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
             _show_derivation_created_dialog(
                 expediente_destino=destination,
+                proposal=proposal,
             )
 
         except Exception as exc:
             set_message(
                 error_alert(
                     "No se pudo crear el expediente "
-                    "de visado:\n"
+                    "posterior:\n"
                     + str(exc)
                 )
             )
@@ -11572,8 +11626,62 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             or proposal_item.get(
                 "tipo_destino_nombre"
             )
-            or "VISADO DE REAGRUPACIÓN FAMILIAR"
+            or "EXPEDIENTE POSTERIOR"
         )
+
+        familia_destino_nombre = (
+            proposal.get(
+                "familia_destino_nombre"
+            )
+            or proposal_item.get(
+                "familia_destino_nombre"
+            )
+            or proposal.get(
+                "familia_destino_codigo"
+            )
+            or proposal_item.get(
+                "familia_destino_codigo"
+            )
+            or ""
+        )
+
+        subtipo_destino_nombre = (
+            proposal.get(
+                "subtipo_destino_nombre"
+            )
+            or proposal_item.get(
+                "subtipo_destino_nombre"
+            )
+            or proposal.get(
+                "subtipo_destino_codigo"
+            )
+            or proposal_item.get(
+                "subtipo_destino_codigo"
+            )
+            or ""
+        )
+
+        regla_nombre = (
+            proposal.get("regla_nombre")
+            or proposal_item.get("regla_nombre")
+            or ""
+        )
+
+        proposal_reason = (
+            proposal.get("motivo")
+            or proposal_item.get("motivo")
+            or regla_nombre
+            or (
+                "Se ha detectado una actuación "
+                "posterior disponible."
+            )
+        )
+
+        relation_type = str(
+            proposal.get("tipo_relacion")
+            or proposal_item.get("tipo_relacion")
+            or "ACTUACION_POSTERIOR"
+        ).replace("_", " ")
 
         expediente_origen_numero = (
             proposal.get(
@@ -11640,7 +11748,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         size=24,
                     ),
                     ft.Text(
-                        "Crear expediente de visado",
+                        "Crear expediente posterior",
                         weight=ft.FontWeight.BOLD,
                         color=Q_PRIMARY_DARK,
                     ),
@@ -11652,11 +11760,10 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 content=ft.Column(
                     controls=[
                         ft.Text(
-                            "Se ha registrado una "
-                            "resolución favorable para la "
-                            "Reagrupación Familiar.",
+                            str(proposal_reason),
                             size=13,
                             color="#344054",
+                            selectable=True,
                         ),
                         ft.Text(
                             "El sistema propone crear el "
@@ -11681,6 +11788,34 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                                         size=15,
                                         weight=ft.FontWeight.BOLD,
                                         color=Q_PRIMARY_DARK,
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Familia: "
+                                                + str(
+                                                    familia_destino_nombre
+                                                ),
+                                                size=12,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if familia_destino_nombre
+                                        else []
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Subtipo: "
+                                                + str(
+                                                    subtipo_destino_nombre
+                                                ),
+                                                size=12,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if subtipo_destino_nombre
+                                        else []
                                     ),
                                     *(
                                         [
@@ -11722,8 +11857,9 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                                 ),
                                 ft.Text(
                                     "El nuevo expediente quedará "
-                                    "vinculado como ACTUACIÓN "
-                                    "POSTERIOR.",
+                                    "vinculado como "
+                                    + relation_type
+                                    + ".",
                                     size=12,
                                     color=Q_MUTED,
                                     expand=True,
@@ -11747,7 +11883,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     ),
                 ),
                 ft.ElevatedButton(
-                    "Crear expediente",
+                    "Crear "
+                    + str(tipo_destino_nombre),
                     icon=ft.Icons.ADD_CIRCLE,
                     on_click=lambda e: (
                         _accept_derivation_from_dialog(
