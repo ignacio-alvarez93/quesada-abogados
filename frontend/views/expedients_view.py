@@ -2752,6 +2752,891 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             return
         page.update()
 
+    def _is_initial_family_reunification(
+        expediente,
+    ):
+        """
+        Comprueba por códigos de catálogo si el expediente
+        es una reagrupación familiar inicial.
+
+        No depende de IDs históricos ni de textos visibles.
+        """
+        expediente = dict(
+            expediente
+            or {}
+        )
+
+        tipo_id = expediente.get(
+            "tipo_expediente_id"
+        )
+
+        subtipo_id = expediente.get(
+            "subtipo_expediente_id"
+        )
+
+        if not tipo_id or not subtipo_id:
+            return False
+
+        try:
+            with sqlite3.connect(
+                _database_path()
+            ) as connection:
+                row = connection.execute(
+                    """
+                    SELECT
+                        f.codigo AS familia_codigo,
+                        t.codigo AS tipo_codigo,
+                        s.codigo AS subtipo_codigo
+                    FROM config_tipos_expediente t
+                    JOIN config_familias_expediente f
+                      ON f.id = t.familia_id
+                    JOIN config_subtipos_expediente s
+                      ON s.id = ?
+                     AND s.tipo_expediente_id = t.id
+                    WHERE t.id = ?
+                      AND COALESCE(f.activo, 1) = 1
+                      AND COALESCE(t.activo, 1) = 1
+                      AND COALESCE(s.activo, 1) = 1
+                    LIMIT 1
+                    """,
+                    (
+                        int(subtipo_id),
+                        int(tipo_id),
+                    ),
+                ).fetchone()
+        except Exception:
+            return False
+
+        if not row:
+            return False
+
+        return (
+            str(row[0] or "").strip().upper()
+            == "EXTRANJERIA"
+            and
+            str(row[1] or "").strip().upper()
+            == "REAGRUPACION_FAMILIAR"
+            and
+            str(row[2] or "").strip().upper()
+            == "INICIAL"
+        )
+
+
+    def _has_linked_housing_report(
+        reagrupacion_id,
+    ):
+        """
+        Evita mostrar el diálogo si la reagrupación ya
+        tiene vinculado un informe de vivienda previo.
+        """
+        try:
+            with sqlite3.connect(
+                _database_path()
+            ) as connection:
+                row = connection.execute(
+                    """
+                    SELECT 1
+                    FROM expediente_relaciones r
+                    JOIN expedientes previo
+                      ON previo.id =
+                         r.expediente_origen_id
+                    JOIN config_tipos_expediente t
+                      ON t.id =
+                         previo.tipo_expediente_id
+                    WHERE r.expediente_destino_id = ?
+                      AND r.tipo_relacion =
+                          'ACTUACION_POSTERIOR'
+                      AND t.codigo =
+                          'INFORME_VIVIENDA_ADECUADA'
+                      AND COALESCE(r.activo, 1) = 1
+                      AND COALESCE(previo.activo, 1) = 1
+                    LIMIT 1
+                    """,
+                    (
+                        int(reagrupacion_id),
+                    ),
+                ).fetchone()
+
+            return row is not None
+
+        except Exception:
+            return False
+
+
+    def _list_client_housing_reports(
+        cliente_id,
+        reagrupacion_id=None,
+    ):
+        """
+        Lista informes de vivienda del mismo cliente.
+
+        Se limita al tipo de expediente exacto y excluye
+        relaciones ya existentes con la reagrupación.
+        """
+        if not cliente_id:
+            return []
+
+        try:
+            with sqlite3.connect(
+                _database_path()
+            ) as connection:
+                connection.row_factory = sqlite3.Row
+
+                rows = connection.execute(
+                    """
+                    SELECT
+                        e.id,
+                        e.numero_expediente,
+                        e.fecha_apertura,
+                        e.fecha_presentacion,
+                        e.fecha_resolucion,
+                        e.estado_presentacion,
+                        e.box_folder_path,
+                        t.nombre AS tipo_nombre
+                    FROM expedientes e
+                    JOIN config_tipos_expediente t
+                      ON t.id = e.tipo_expediente_id
+                    WHERE e.cliente_id = ?
+                      AND t.codigo =
+                          'INFORME_VIVIENDA_ADECUADA'
+                      AND COALESCE(e.activo, 1) = 1
+                      AND (
+                          ? IS NULL
+                          OR NOT EXISTS (
+                              SELECT 1
+                              FROM expediente_relaciones r
+                              WHERE r.expediente_origen_id =
+                                    e.id
+                                AND r.expediente_destino_id =
+                                    ?
+                                AND r.tipo_relacion =
+                                    'ACTUACION_POSTERIOR'
+                                AND COALESCE(r.activo, 1) = 1
+                          )
+                      )
+                    ORDER BY
+                        COALESCE(
+                            e.fecha_apertura,
+                            e.created_at
+                        ) DESC,
+                        e.id DESC
+                    """,
+                    (
+                        int(cliente_id),
+                        (
+                            int(reagrupacion_id)
+                            if reagrupacion_id
+                            else None
+                        ),
+                        (
+                            int(reagrupacion_id)
+                            if reagrupacion_id
+                            else None
+                        ),
+                    ),
+                ).fetchall()
+
+            return [
+                dict(row)
+                for row in rows
+            ]
+
+        except Exception:
+            return []
+
+
+    def _close_housing_report_prompt(
+        e=None,
+    ):
+        housing_report_prompt_dialog.open = False
+        state.pop(
+            "housing_report_reagrupacion_id",
+            None,
+        )
+        page.update()
+
+
+    def _link_housing_report_to_reagrupacion(
+        housing_report_id,
+        reagrupacion_id,
+        e=None,
+    ):
+        try:
+            (
+                expedient_trajectory_service
+                .create_manual_expedient_relation(
+                    expediente_origen_id=int(
+                        housing_report_id
+                    ),
+                    expediente_destino_id=int(
+                        reagrupacion_id
+                    ),
+                    tipo_relacion=(
+                        "ACTUACION_POSTERIOR"
+                    ),
+                    motivo=(
+                        "Informe de vivienda adecuado "
+                        "vinculado como expediente previo "
+                        "de la reagrupación familiar inicial."
+                    ),
+                    usuario="ERP",
+                )
+            )
+
+            housing_report_prompt_dialog.open = False
+
+            state.pop(
+                "housing_report_reagrupacion_id",
+                None,
+            )
+
+            set_message(
+                success_alert(
+                    "Informe de vivienda vinculado "
+                    "como expediente previo"
+                )
+            )
+
+            refresh_table()
+            page.update()
+
+        except Exception as exc:
+            housing_report_prompt_dialog.content = (
+                ft.Container(
+                    width=620,
+                    content=ft.Column(
+                        controls=[
+                            error_alert(
+                                "No se pudo vincular el "
+                                f"informe de vivienda: {exc}"
+                            ),
+                        ],
+                        tight=True,
+                    ),
+                )
+            )
+            page.update()
+
+
+    def _show_existing_housing_reports(
+        reagrupacion,
+        e=None,
+    ):
+        reagrupacion = dict(
+            reagrupacion
+            or {}
+        )
+
+        reagrupacion_id = reagrupacion.get(
+            "id"
+        )
+
+        cliente_id = reagrupacion.get(
+            "cliente_id"
+        )
+
+        reports = _list_client_housing_reports(
+            cliente_id,
+            reagrupacion_id=reagrupacion_id,
+        )
+
+        cards = []
+
+        for report in reports:
+            report_id = int(
+                report["id"]
+            )
+
+            report_number = (
+                report.get("numero_expediente")
+                or f"Expediente {report_id}"
+            )
+
+            date_text = (
+                _date_to_display(
+                    report.get("fecha_apertura")
+                )
+                or "-"
+            )
+
+            box_text = (
+                report.get("box_folder_path")
+                or "Sin ruta Box asignada"
+            )
+
+            cards.append(
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=12,
+                    padding=12,
+                    ink=True,
+                    on_click=(
+                        lambda event,
+                        selected_report_id=report_id,
+                        selected_reagrupacion_id=int(
+                            reagrupacion_id
+                        ):
+                        _link_housing_report_to_reagrupacion(
+                            selected_report_id,
+                            selected_reagrupacion_id,
+                            event,
+                        )
+                    ),
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=42,
+                                height=42,
+                                border_radius=21,
+                                bgcolor="#F2F4F7",
+                                alignment=ft.Alignment(
+                                    0,
+                                    0,
+                                ),
+                                content=ft.Icon(
+                                    ft.Icons.HOME_OUTLINED,
+                                    color="#344054",
+                                ),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        report_number,
+                                        size=14,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Informe de vivienda "
+                                            f"· Apertura: {date_text}"
+                                        ),
+                                        size=12,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        box_text,
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Icon(
+                                ft.Icons.LINK,
+                                color=Q_PRIMARY,
+                            ),
+                        ],
+                        spacing=12,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
+        if cards:
+            result_content = ft.Column(
+                controls=cards,
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            )
+        else:
+            result_content = ft.Container(
+                bgcolor="#FFFAEB",
+                border=ft.border.all(
+                    1,
+                    "#FEDF89",
+                ),
+                border_radius=12,
+                padding=14,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                "No existen informes de "
+                                "vivienda para este cliente"
+                            ),
+                            size=14,
+                            weight=ft.FontWeight.BOLD,
+                            color="#B54708",
+                        ),
+                        ft.Text(
+                            (
+                                "En el siguiente incremento "
+                                "podrás crear el informe desde "
+                                "este mismo diálogo y dejarlo "
+                                "vinculado automáticamente."
+                            ),
+                            size=12,
+                            color="#B54708",
+                        ),
+                    ],
+                    spacing=5,
+                ),
+            )
+
+        housing_report_prompt_dialog.title = ft.Text(
+            "Seleccionar informe de vivienda",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        )
+
+        housing_report_prompt_dialog.content = (
+            ft.Container(
+                width=650,
+                height=480,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                "Selecciona el expediente "
+                                "previo que corresponde a "
+                                "esta reagrupación."
+                            ),
+                            size=13,
+                            color=Q_MUTED,
+                        ),
+                        result_content,
+                    ],
+                    spacing=12,
+                    expand=True,
+                ),
+            )
+        )
+
+        housing_report_prompt_dialog.actions = [
+            secondary_button(
+                "Volver",
+                lambda event:
+                _open_housing_report_prompt(
+                    reagrupacion,
+                    event,
+                ),
+            ),
+            secondary_button(
+                "Decidir más tarde",
+                _close_housing_report_prompt,
+            ),
+        ]
+
+        housing_report_prompt_dialog.open = True
+        page.update()
+
+
+    def _housing_report_catalog_context():
+        """
+        Devuelve la familia Administración Local y el tipo
+        Informe de vivienda adecuada por códigos estables.
+        """
+        try:
+            with sqlite3.connect(
+                _database_path()
+            ) as connection:
+                connection.row_factory = sqlite3.Row
+
+                row = connection.execute(
+                    """
+                    SELECT
+                        f.id AS familia_id,
+                        f.codigo AS familia_codigo,
+                        f.nombre AS familia_nombre,
+                        t.id AS tipo_id,
+                        t.codigo AS tipo_codigo,
+                        t.nombre AS tipo_nombre
+                    FROM config_familias_expediente f
+                    JOIN config_tipos_expediente t
+                      ON t.familia_id = f.id
+                    WHERE f.codigo =
+                          'ADMINISTRACION_LOCAL'
+                      AND t.codigo =
+                          'INFORME_VIVIENDA_ADECUADA'
+                      AND COALESCE(f.activo, 1) = 1
+                      AND COALESCE(t.activo, 1) = 1
+                    LIMIT 1
+                    """
+                ).fetchone()
+
+            if not row:
+                return None
+
+            return {
+                "family": {
+                    "id": row["familia_id"],
+                    "codigo": row["familia_codigo"],
+                    "nombre": row["familia_nombre"],
+                },
+                "type": {
+                    "id": row["tipo_id"],
+                    "codigo": row["tipo_codigo"],
+                    "nombre": row["tipo_nombre"],
+                },
+            }
+
+        except Exception:
+            return None
+
+
+    def _is_housing_report_expedient(
+        expediente,
+    ):
+        expediente = dict(
+            expediente
+            or {}
+        )
+
+        tipo_id = expediente.get(
+            "tipo_expediente_id"
+        )
+
+        if not tipo_id:
+            return False
+
+        try:
+            with sqlite3.connect(
+                _database_path()
+            ) as connection:
+                row = connection.execute(
+                    """
+                    SELECT codigo
+                    FROM config_tipos_expediente
+                    WHERE id = ?
+                      AND COALESCE(activo, 1) = 1
+                    LIMIT 1
+                    """,
+                    (
+                        int(tipo_id),
+                    ),
+                ).fetchone()
+
+            return bool(
+                row
+                and str(
+                    row[0]
+                    or ""
+                ).strip().upper()
+                == "INFORME_VIVIENDA_ADECUADA"
+            )
+
+        except Exception:
+            return False
+
+
+    def _cancel_housing_report_creation(
+        reagrupacion,
+        e=None,
+    ):
+        housing_report_prompt_dialog.open = False
+
+        state.pop(
+            "pending_housing_report_reagrupacion_id",
+            None,
+        )
+
+        state.pop(
+            "pending_housing_report_box_root",
+            None,
+        )
+
+        set_message(
+            success_alert(
+                "La reagrupación se ha creado "
+                "sin expediente de informe de vivienda"
+            )
+        )
+
+        page.update()
+
+
+    def _start_housing_report_creation(
+        reagrupacion,
+        e=None,
+    ):
+        """
+        Abre una nueva ficha de informe de vivienda.
+
+        El cliente y la ruta raíz Box se heredan de la
+        reagrupación. La relación se materializa cuando
+        el nuevo informe se guarda correctamente.
+        """
+        reagrupacion = dict(
+            reagrupacion
+            or {}
+        )
+
+        reagrupacion_id = reagrupacion.get(
+            "id"
+        )
+
+        cliente_id = reagrupacion.get(
+            "cliente_id"
+        )
+
+        if not reagrupacion_id or not cliente_id:
+            show_form_error(
+                "No se pudo recuperar la reagrupación "
+                "o su cliente"
+            )
+            return
+
+        catalog = _housing_report_catalog_context()
+
+        if not catalog:
+            show_form_error(
+                "No está disponible el catálogo del "
+                "informe de vivienda adecuada"
+            )
+            return
+
+        housing_report_prompt_dialog.open = False
+
+        family = catalog["family"]
+        expedient_type = catalog["type"]
+
+        # Inicializa la familia y limpia el formulario.
+        open_new_for_family(
+            family,
+            cliente_id=int(cliente_id),
+        )
+
+        # clear_form() se ejecuta dentro de open_new_for_family,
+        # por lo que el contexto pendiente se guarda después.
+        state[
+            "pending_housing_report_reagrupacion_id"
+        ] = int(
+            reagrupacion_id
+        )
+
+        state[
+            "pending_housing_report_box_root"
+        ] = (
+            reagrupacion.get("box_folder_path")
+            or ""
+        )
+
+        if state[
+            "pending_housing_report_box_root"
+        ]:
+            box_folder_path.value = state[
+                "pending_housing_report_box_root"
+            ]
+
+        _open_new_expedient_form_after_type(
+            expedient_type,
+            cliente_id=int(cliente_id),
+        )
+
+
+    def _complete_pending_housing_report_relation(
+        expediente,
+    ):
+        """
+        Si el expediente recién creado es el informe que
+        estaba pendiente, lo vincula automáticamente con
+        la reagrupación que originó el flujo.
+        """
+        reagrupacion_id = state.get(
+            "pending_housing_report_reagrupacion_id"
+        )
+
+        if not reagrupacion_id:
+            return False
+
+        if not _is_housing_report_expedient(
+            expediente
+        ):
+            return False
+
+        informe_id = expediente.get("id")
+
+        if not informe_id:
+            return False
+
+        try:
+            (
+                expedient_trajectory_service
+                .create_manual_expedient_relation(
+                    expediente_origen_id=int(
+                        informe_id
+                    ),
+                    expediente_destino_id=int(
+                        reagrupacion_id
+                    ),
+                    tipo_relacion=(
+                        "ACTUACION_POSTERIOR"
+                    ),
+                    motivo=(
+                        "Informe de vivienda creado "
+                        "como expediente previo de la "
+                        "reagrupación familiar inicial."
+                    ),
+                    usuario="ERP",
+                )
+            )
+
+            state.pop(
+                "pending_housing_report_reagrupacion_id",
+                None,
+            )
+
+            state.pop(
+                "pending_housing_report_box_root",
+                None,
+            )
+
+            return True
+
+        except Exception as exc:
+            show_form_error(
+                "El informe se creó, pero no pudo "
+                "vincularse con la reagrupación: "
+                f"{exc}"
+            )
+
+            return False
+
+
+    def _open_housing_report_prompt(
+        reagrupacion,
+        e=None,
+    ):
+        reagrupacion = dict(
+            reagrupacion
+            or {}
+        )
+
+        reagrupacion_id = reagrupacion.get(
+            "id"
+        )
+
+        if not reagrupacion_id:
+            return
+
+        if _has_linked_housing_report(
+            reagrupacion_id
+        ):
+            return
+
+        state[
+            "housing_report_reagrupacion_id"
+        ] = int(
+            reagrupacion_id
+        )
+
+        numero = (
+            reagrupacion.get("numero_expediente")
+            or f"Expediente {reagrupacion_id}"
+        )
+
+        housing_report_prompt_dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.HOME_WORK_OUTLINED,
+                    color=Q_PRIMARY,
+                ),
+                ft.Text(
+                    "Informe de vivienda previo",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=10,
+        )
+
+        housing_report_prompt_dialog.content = (
+            ft.Container(
+                width=620,
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            bgcolor="#EFF8FF",
+                            border=ft.border.all(
+                                1,
+                                "#B2CCFF",
+                            ),
+                            border_radius=12,
+                            padding=12,
+                            content=ft.Text(
+                                (
+                                    f"Se ha creado {numero}. "
+                                    "Puedes vincular ahora el "
+                                    "informe de vivienda que "
+                                    "actúa como expediente previo."
+                                ),
+                                size=13,
+                                color="#1849A9",
+                            ),
+                        ),
+                        ft.Text(
+                            (
+                                "La relación quedará registrada "
+                                "en la trayectoria administrativa "
+                                "del cliente."
+                            ),
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                        ft.Text(
+                            (
+                                "La ruta de Box no se modifica "
+                                "en esta fase."
+                            ),
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            )
+        )
+
+        housing_report_prompt_dialog.actions = [
+            secondary_button(
+                "Decidir más tarde",
+                _close_housing_report_prompt,
+            ),
+            secondary_button(
+                "No crear informe",
+                lambda event:
+                _cancel_housing_report_creation(
+                    reagrupacion,
+                    event,
+                ),
+            ),
+            secondary_button(
+                "Vincular existente",
+                lambda event:
+                _show_existing_housing_reports(
+                    reagrupacion,
+                    event,
+                ),
+            ),
+            primary_button(
+                "Crear informe de vivienda",
+                lambda event:
+                _start_housing_report_creation(
+                    reagrupacion,
+                    event,
+                ),
+            ),
+        ]
+
+        housing_report_prompt_dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        housing_report_prompt_dialog.open = True
+        page.update()
+
+
     def save_expediente(e=None):
         data = form_data()
         errors = validate_form(data)
@@ -2833,7 +3718,33 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 )
 
                 if expediente:
+                    housing_report_linked = (
+                        _complete_pending_housing_report_relation(
+                            expediente
+                        )
+                    )
+
                     open_edit(expediente)
+
+                    if housing_report_linked:
+                        set_message(
+                            success_alert(
+                                "Informe de vivienda creado "
+                                "y vinculado como expediente "
+                                "previo de la reagrupación"
+                            )
+                        )
+
+                        page.update()
+
+                    elif (
+                        _is_initial_family_reunification(
+                            expediente
+                        )
+                    ):
+                        _open_housing_report_prompt(
+                            expediente
+                        )
                 else:
                     close_dialog()
 
@@ -21486,6 +22397,25 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         actions_alignment=ft.MainAxisAlignment.END,
     )
     page.overlay.append(box_folder_options_dialog)
+
+    housing_report_prompt_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Informe de vivienda previo"
+        ),
+        content=ft.Container(
+            width=620,
+        ),
+        actions=[],
+        actions_alignment=(
+            ft.MainAxisAlignment.END
+        ),
+    )
+
+    page.overlay.append(
+        housing_report_prompt_dialog
+    )
+
 
     new_expedient_family_dialog = ft.AlertDialog(
         modal=True,
