@@ -166,6 +166,132 @@ def _get_expediente(conn, expediente_id):
     )
 
 
+def _get_presentation_target_scope(
+    conn,
+    expediente,
+):
+    """
+    Determina la raíz documental del diagnóstico.
+
+    Regla actual:
+    - con esquema de targets: exige target PRESENTACION;
+    - sin esquema de targets: conserva compatibilidad legacy
+      para bases antiguas y pruebas aisladas;
+    - nunca accede al disco.
+    """
+    expediente_id = expediente.get("id")
+    box_root = _norm_path(
+        expediente.get("box_folder_path")
+    )
+
+    base_result = {
+        "diagnostic_scope": (
+            "PRESENTACION_TARGET"
+        ),
+        "target_disponible": False,
+        "target_id": None,
+        "target_relative_path": "",
+        "target_absolute_path": "",
+        "inventory_root": "",
+        "legacy_fallback": False,
+    }
+
+    if not box_root:
+        base_result["motivo"] = (
+            "El expediente no tiene ruta Box vinculada"
+        )
+        return base_result
+
+    if not _table_exists(
+        conn,
+        "expedient_document_targets",
+    ):
+        return {
+            **base_result,
+            "diagnostic_scope": "LEGACY_BOX_ROOT",
+            "target_disponible": True,
+            "target_absolute_path": box_root,
+            "inventory_root": box_root,
+            "legacy_fallback": True,
+            "motivo": (
+                "Esquema de targets no disponible; "
+                "se utiliza la raíz Box legacy"
+            ),
+        }
+
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            relative_path
+        FROM expedient_document_targets
+        WHERE expediente_id = ?
+          AND purpose = 'PRESENTACION'
+          AND active = 1
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (int(expediente_id),),
+    ).fetchone()
+
+    if not row:
+        base_result["motivo"] = (
+            "Selecciona una carpeta target "
+            "de presentación"
+        )
+        return base_result
+
+    relative_path = (
+        str(row["relative_path"] or "")
+        .replace("\\", "/")
+        .strip("/")
+    )
+
+    parts = [
+        part
+        for part in relative_path.split("/")
+        if part
+    ]
+
+    if (
+        not relative_path
+        or any(part in {".", ".."} for part in parts)
+    ):
+        base_result["motivo"] = (
+            "El target de presentación tiene "
+            "una ruta relativa inválida"
+        )
+        return base_result
+
+    target_root = _norm_path(
+        f"{box_root}/{relative_path}"
+    )
+
+    expected_prefix = box_root + "/"
+
+    if not target_root.startswith(
+        expected_prefix
+    ):
+        base_result["motivo"] = (
+            "El target de presentación sale "
+            "de la ruta Box del expediente"
+        )
+        return base_result
+
+    return {
+        **base_result,
+        "target_disponible": True,
+        "target_id": int(row["id"]),
+        "target_relative_path": relative_path,
+        "target_absolute_path": target_root,
+        "inventory_root": target_root,
+        "motivo": (
+            "Diagnóstico limitado al target "
+            "de presentación"
+        ),
+    }
+
+
 def _get_box_inventory(conn, box_folder_path):
     """
     Devuelve carpetas y archivos bajo la ruta vinculada.
@@ -1328,6 +1454,99 @@ def _build_semantic_detections(detected_documents):
 
 
 
+def _semantic_missing_requirements(
+    semantic_result,
+):
+    """
+    Convierte los grupos semánticos bloqueantes al contrato
+    visual histórico de documentos faltantes.
+
+    No modifica la evaluación semántica original.
+    """
+    if not semantic_result:
+        return []
+
+    if not semantic_result.get("disponible"):
+        return []
+
+    groups = semantic_result.get("grupos") or []
+
+    missing = []
+
+    for group in groups:
+        if not group.get("bloquea_completitud"):
+            continue
+
+        options = []
+
+        for option in group.get("opciones") or []:
+            options.append(
+                {
+                    "codigo": (
+                        option.get("documento_codigo")
+                        or ""
+                    ),
+                    "nombre": (
+                        option.get("documento_nombre")
+                        or option.get(
+                            "etiqueta_requisito"
+                        )
+                        or option.get(
+                            "documento_codigo"
+                        )
+                        or ""
+                    ),
+                    "rol_documental": (
+                        option.get("rol_documental")
+                    ),
+                    "detectado": bool(
+                        option.get("detectado")
+                    ),
+                    "ambiguo_por_rol": bool(
+                        option.get(
+                            "ambiguo_por_rol"
+                        )
+                    ),
+                }
+            )
+
+        missing.append(
+            {
+                "codigo": (
+                    group.get("codigo")
+                    or ""
+                ),
+                "nombre": (
+                    group.get("nombre")
+                    or group.get("codigo")
+                    or "Requisito documental"
+                ),
+                "grupo_semantico": True,
+                "regla_cumplimiento": (
+                    group.get(
+                        "regla_cumplimiento"
+                    )
+                ),
+                "estado": group.get("estado"),
+                "documentos_detectados": int(
+                    group.get(
+                        "documentos_detectados"
+                    )
+                    or 0
+                ),
+                "documentos_requeridos": int(
+                    group.get(
+                        "documentos_requeridos"
+                    )
+                    or 0
+                ),
+                "opciones": options,
+            }
+        )
+
+    return missing
+
+
 def _summarize_role_inferences(detections):
     """
     Resume los resultados de inferencia de rol sin afectar
@@ -1418,6 +1637,41 @@ def _load_semantic_document_context(expediente):
         return {}
 
 
+def _semantic_readiness_mode(expediente):
+    """
+    Determina si la completitud semántica es vinculante.
+
+    La activación se realiza por tipo/subtipo consolidado para
+    evitar modificar expedientes todavía no migrados.
+    """
+    tipo_codigo = _norm(
+        expediente.get("tipo_expediente_codigo")
+    )
+    subtipo_codigo = _norm(
+        expediente.get("subtipo_expediente_codigo")
+    )
+
+    # La completitud semántica se activará cuando los
+    # documentos procedan de la Bandeja Documental con:
+    # - código documental canónico;
+    # - rol documental;
+    # - persona vinculada;
+    # - nomenclatura normalizada.
+    #
+    # Los expedientes actuales contienen nombres legacy,
+    # por lo que el motor semántico permanece informativo
+    # y no bloqueante.
+    binding_scopes = set()
+
+    if (
+        tipo_codigo,
+        subtipo_codigo,
+    ) in binding_scopes:
+        return "VINCULANTE"
+
+    return "PARALELO_NO_VINCULANTE"
+
+
 def _evaluate_semantic_readiness_safe(
     expediente,
     detections,
@@ -1427,6 +1681,10 @@ def _evaluate_semantic_readiness_safe(
     Ejecuta el motor semántico sin permitir que sus errores rompan
     el diagnóstico documental legacy.
     """
+    mode = _semantic_readiness_mode(
+        expediente
+    )
+
     try:
         result = (
             semantic_readiness_service
@@ -1440,14 +1698,14 @@ def _evaluate_semantic_readiness_safe(
 
         return {
             "disponible": True,
-            "modo": "PARALELO_NO_VINCULANTE",
+            "modo": mode,
             **result,
         }
 
     except Exception as exc:
         return {
             "disponible": False,
-            "modo": "PARALELO_NO_VINCULANTE",
+            "modo": mode,
             "completo": None,
             "grupos": [],
             "grupos_bloqueantes": None,
@@ -1489,7 +1747,17 @@ def diagnose_expediente_document_state(expediente_id):
             )
         )
 
-        root = expediente.get("box_folder_path")
+        presentation_target = (
+            _get_presentation_target_scope(
+                conn,
+                expediente,
+            )
+        )
+
+        root = presentation_target.get(
+            "inventory_root"
+        )
+
         if not root:
             semantic_result = (
                 _evaluate_semantic_readiness_safe(
@@ -1580,7 +1848,38 @@ def diagnose_expediente_document_state(expediente_id):
                 "resumen_inferencia_roles": (
                     _summarize_role_inferences([])
                 ),
-                "senales": ["El expediente no tiene ruta Box vinculada"],
+                "diagnostic_scope": (
+                    presentation_target.get(
+                        "diagnostic_scope"
+                    )
+                ),
+                "target_disponible": False,
+                "target_id": (
+                    presentation_target.get(
+                        "target_id"
+                    )
+                ),
+                "target_relative_path": (
+                    presentation_target.get(
+                        "target_relative_path"
+                    )
+                    or ""
+                ),
+                "target_absolute_path": (
+                    presentation_target.get(
+                        "target_absolute_path"
+                    )
+                    or ""
+                ),
+                "senales": [
+                    presentation_target.get(
+                        "motivo"
+                    )
+                    or (
+                        "Selecciona una carpeta target "
+                        "de presentación"
+                    )
+                ],
                 "resumen": {
                     "total_archivos": 0,
                     "total_carpetas": 0,
@@ -1590,9 +1889,33 @@ def diagnose_expediente_document_state(expediente_id):
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
             }
 
-        folders, items = _get_box_inventory(conn, root)
-        required_docs = _get_required_documents(conn, expediente)
-        nomenclatures = _get_nomenclatures(conn, expediente)
+        # Inventario documental:
+        # exclusivamente el target PRESENTACION.
+        folders, items = _get_box_inventory(
+            conn,
+            root,
+        )
+
+        # Inventario procesal:
+        # toda la raíz Box del expediente.
+        global_root = expediente.get(
+            "box_folder_path"
+        )
+        global_folders, global_items = (
+            _get_box_inventory(
+                conn,
+                global_root,
+            )
+        )
+
+        required_docs = _get_required_documents(
+            conn,
+            expediente,
+        )
+        nomenclatures = _get_nomenclatures(
+            conn,
+            expediente,
+        )
 
     doc_codes, detected_docs = _doc_codes_from_items(items)
     nomenclature_codes, detected_by_nomenclature = _doc_codes_from_nomenclatures(items, nomenclatures)
@@ -1622,8 +1945,43 @@ def diagnose_expediente_document_state(expediente_id):
         )
     )
 
-    folder_codes, detected_folders = _folder_codes_from_folders(folders)
-    encontrados, faltantes = _match_required_documents(required_docs, doc_codes, items=items)
+    folder_codes, detected_folders = (
+        _folder_codes_from_folders(
+            folders
+        )
+    )
+
+    encontrados, faltantes_legacy = (
+        _match_required_documents(
+            required_docs,
+            doc_codes,
+            items=items,
+        )
+    )
+
+    faltantes_semanticos = (
+        _semantic_missing_requirements(
+            semantic_result
+        )
+    )
+
+    semantic_groups_available = bool(
+        semantic_result.get("disponible")
+        and (
+            semantic_result.get("modo")
+            == "VINCULANTE"
+        )
+        and semantic_result.get("grupos")
+    )
+
+    # En expedientes con modelo semántico consolidado,
+    # los grupos son la fuente principal de completitud.
+    # El resultado legacy se conserva para auditoría.
+    faltantes = (
+        faltantes_semanticos
+        if semantic_groups_available
+        else faltantes_legacy
+    )
 
     senales = []
 
@@ -1636,10 +1994,47 @@ def diagnose_expediente_document_state(expediente_id):
             )
         )
 
-    hay_denegado, motivo_denegado = _hay_denegacion(doc_codes, folder_codes, folders, items)
-    hay_concedido, motivo_concedido = _hay_concesion(doc_codes, folder_codes, folders, items)
-    hay_req, motivo_req = _hay_requerimiento(doc_codes, folder_codes, folders, items)
-    hay_presentado, motivo_presentado = _hay_presentacion(doc_codes, items)
+    global_doc_codes, _ = (
+        _doc_codes_from_items(
+            global_items
+        )
+    )
+    global_folder_codes, _ = (
+        _folder_codes_from_folders(
+            global_folders
+        )
+    )
+
+    hay_denegado, motivo_denegado = (
+        _hay_denegacion(
+            global_doc_codes,
+            global_folder_codes,
+            global_folders,
+            global_items,
+        )
+    )
+    hay_concedido, motivo_concedido = (
+        _hay_concesion(
+            global_doc_codes,
+            global_folder_codes,
+            global_folders,
+            global_items,
+        )
+    )
+    hay_req, motivo_req = (
+        _hay_requerimiento(
+            global_doc_codes,
+            global_folder_codes,
+            global_folders,
+            global_items,
+        )
+    )
+    hay_presentado, motivo_presentado = (
+        _hay_presentacion(
+            global_doc_codes,
+            global_items,
+        )
+    )
 
     if motivo_denegado:
         senales.append(motivo_denegado)
@@ -1772,6 +2167,31 @@ def diagnose_expediente_document_state(expediente_id):
         "confianza": _confidence(base_conf, required_docs, faltantes, senales),
         "expediente_id": int(expediente_id),
         "expediente": expediente,
+        "diagnostic_scope": (
+            presentation_target.get(
+                "diagnostic_scope"
+            )
+        ),
+        "target_disponible": bool(
+            presentation_target.get(
+                "target_disponible"
+            )
+        ),
+        "target_id": presentation_target.get(
+            "target_id"
+        ),
+        "target_relative_path": (
+            presentation_target.get(
+                "target_relative_path"
+            )
+            or ""
+        ),
+        "target_absolute_path": (
+            presentation_target.get(
+                "target_absolute_path"
+            )
+            or ""
+        ),
         "obligatorios": required_docs,
         "encontrados": encontrados,
         "detectados": detectados,
@@ -1784,12 +2204,53 @@ def diagnose_expediente_document_state(expediente_id):
             role_inference_summary
         ),
         "faltantes": faltantes,
+        "faltantes_semanticos": (
+            faltantes_semanticos
+        ),
+        "faltantes_legacy": (
+            faltantes_legacy
+        ),
+        "fuente_completitud": (
+            "SEMANTICA"
+            if semantic_groups_available
+            else "LEGACY"
+        ),
+        "evaluacion_economica_documental": (
+            semantic_result.get(
+                "evaluacion_economica"
+            )
+            or {}
+        ),
         "senales": senales,
         "resumen": {
             "total_archivos": len(items),
             "total_carpetas": len(folders),
-            "total_obligatorios": len(required_docs),
-            "total_encontrados": len(encontrados),
+            "total_archivos_globales": len(
+                global_items
+            ),
+            "total_carpetas_globales": len(
+                global_folders
+            ),
+            "total_obligatorios": (
+                (
+                    semantic_result.get(
+                        "grupos_obligatorios"
+                    )
+                    or 0
+                )
+                if semantic_groups_available
+                else len(required_docs)
+            ),
+            "total_encontrados": (
+                (
+                    semantic_result.get(
+                        "grupos_cumplidos"
+                    )
+                    or 0
+                )
+                if semantic_groups_available
+                else len(encontrados)
+            ),
             "total_faltantes": len(faltantes),
         },
         "generated_at": datetime.now().isoformat(timespec="seconds"),

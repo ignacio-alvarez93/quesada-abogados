@@ -14,6 +14,10 @@ from backend.services import document_viewer_service
 from backend.services import document_inbox_service
 from backend.services.email_platform import dehu_inbox_service
 from backend.services import expedient_document_state_service as document_state_service
+from backend.services import (
+    expedient_document_target_service
+    as document_target_service,
+)
 from backend.services import expedient_traceability_service as trace_service
 from backend.services import presentation_assistant_service
 from backend.services import presentation_queue_service
@@ -253,6 +257,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         "specific_view_mode": None,
         "specific_data_step": 0,
         "specific_generation_result": {},
+        "template_generation_selected": {},
+        "template_generation_results": {},
         "specific_refresh_counter": 0,
         "snapshot_status": {},
         "expedient_docx_result": {},
@@ -4244,6 +4250,654 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         except Exception as exc:
             show_form_error(str(exc))
 
+    def _generate_document_template_or_raise(
+        template,
+        expediente_id,
+    ):
+        """
+        Genera una plantilla documental desde el catálogo.
+
+        La interfaz de Plantillas y formularios no depende
+        del formulario EX concreto: resuelve el motor por
+        template_type.
+        """
+        if not template:
+            raise ValueError(
+                "No se ha seleccionado ninguna plantilla"
+            )
+
+        template_type = str(
+            template.get("template_type") or ""
+        ).strip().lower()
+
+        if template_type == "pdf":
+            generated = (
+                pdf_fill_service
+                .fill_pdf_from_template(
+                    int(template["id"]),
+                    expediente_id=int(expediente_id),
+                    auto_build_snapshot=True,
+                    flatten=False,
+                )
+            )
+
+            output = generated.get("output") or {}
+            pdf_info = generated.get("pdf") or {}
+
+            generated_path = (
+                output.get("pdf_path")
+                or pdf_info.get("pdf_path")
+                or output.get("json_path")
+                or output.get("payload_path")
+                or ""
+            )
+
+            return generated, generated_path
+
+        if template_type == "docx":
+            generated = (
+                document_docx_service
+                .generate_docx_from_template(
+                    int(template["id"]),
+                    expediente_id=int(expediente_id),
+                    auto_build_snapshot=True,
+                )
+            )
+
+            generated_path = (
+                generated.get("docx_path")
+                or (
+                    generated.get("output")
+                    or {}
+                ).get("docx_path")
+                or ""
+            )
+
+            return generated, generated_path
+
+        raise ValueError(
+            "Tipo de plantilla no soportado para "
+            f"generación: {template_type or 'SIN TIPO'}"
+        )
+
+
+    def _template_result_store(expediente_id):
+        return state.setdefault(
+            "template_generation_results",
+            {},
+        ).setdefault(
+            int(expediente_id),
+            {},
+        )
+
+
+    def _template_selected_store(expediente_id):
+        return state.setdefault(
+            "template_generation_selected",
+            {},
+        ).setdefault(
+            int(expediente_id),
+            set(),
+        )
+
+
+    def _set_template_generation_result(
+        expediente_id,
+        template,
+        *,
+        status,
+        path="",
+        error="",
+    ):
+        template_id = int(template["id"])
+
+        _template_result_store(
+            expediente_id
+        )[template_id] = {
+            "status": status,
+            "template_id": template_id,
+            "codigo": template.get("codigo") or "",
+            "nombre": (
+                template.get("nombre")
+                or template.get("codigo")
+                or "Plantilla"
+            ),
+            "path": path or "",
+            "error": error or "",
+            "at": datetime.now().strftime(
+                "%d/%m/%Y %H:%M"
+            ),
+        }
+
+
+    def _close_generation_dialog(
+        dialog,
+        e=None,
+    ):
+        try:
+            dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    def _open_document_inbox_after_generation(
+        dialog,
+        e=None,
+    ):
+        try:
+            dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            expediente_dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        if not callable(on_open_document_inbox):
+            set_message(
+                warning_alert(
+                    "La Bandeja Documental no está "
+                    "disponible desde esta vista."
+                )
+            )
+            try:
+                page.update()
+            except Exception:
+                pass
+            return
+
+        try:
+            on_open_document_inbox()
+        except TypeError:
+            on_open_document_inbox(e)
+
+
+    def _show_generation_complete_dialog(
+        *,
+        title,
+        message,
+        generated_paths=None,
+    ):
+        generated_paths = [
+            str(path)
+            for path in (
+                generated_paths
+                or []
+            )
+            if str(path or "").strip()
+        ]
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.CHECK_CIRCLE,
+                        color="#027A48",
+                        size=24,
+                    ),
+                    ft.Text(
+                        title,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                width=520,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            message,
+                            size=13,
+                            color="#344054",
+                        ),
+                        *(
+                            [
+                                ft.Container(
+                                    bgcolor="#F8FAFC",
+                                    border=ft.border.all(
+                                        1,
+                                        Q_BORDER,
+                                    ),
+                                    border_radius=10,
+                                    padding=10,
+                                    content=ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                "Archivos generados",
+                                                size=12,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color=Q_PRIMARY_DARK,
+                                            ),
+                                            *[
+                                                ft.Text(
+                                                    path,
+                                                    size=11,
+                                                    color=Q_MUTED,
+                                                    selectable=True,
+                                                )
+                                                for path
+                                                in generated_paths
+                                            ],
+                                        ],
+                                        spacing=4,
+                                    ),
+                                )
+                            ]
+                            if generated_paths
+                            else []
+                        ),
+                        ft.Text(
+                            "¿Deseas abrir la Bandeja "
+                            "Documental?",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "No",
+                    on_click=lambda e: (
+                        _close_generation_dialog(
+                            dialog,
+                            e,
+                        )
+                    ),
+                ),
+                ft.ElevatedButton(
+                    "Sí, abrir bandeja",
+                    icon=ft.Icons.INBOX,
+                    on_click=lambda e: (
+                        _open_document_inbox_after_generation(
+                            dialog,
+                            e,
+                        )
+                    ),
+                ),
+            ],
+            actions_alignment=(
+                ft.MainAxisAlignment.END
+            ),
+        )
+
+        try:
+            if dialog not in page.overlay:
+                page.overlay.append(dialog)
+
+            dialog.open = True
+            page.update()
+
+        except Exception as exc:
+            print(
+                "ERROR ABRIENDO DIÁLOGO DE GENERACIÓN:",
+                repr(exc),
+            )
+
+
+    def generate_catalog_template(
+        template,
+        e=None,
+        *,
+        refresh=True,
+        show_completion_dialog=True,
+    ):
+        """
+        Genera una plantilla del catálogo.
+
+        Para PDF reutiliza exactamente el flujo EX que ya
+        funcionaba desde Datos específicos.
+        """
+        expediente_id = (
+            state.get("dialog_expediente_id")
+            or state.get("editing_id")
+        )
+
+        if not expediente_id:
+            show_form_error(
+                "Guarda primero el expediente "
+                "antes de generar documentos"
+            )
+            return False
+
+        expediente_id = int(expediente_id)
+
+        try:
+            template_type = str(
+                template.get("template_type")
+                or ""
+            ).strip().lower()
+
+            generated_path = ""
+
+            if template_type in (
+                "pdf",
+                "fillable_pdf",
+                "ex",
+            ):
+                (
+                    _generated,
+                    pdf_path,
+                    json_path,
+                ) = _generate_ex_from_template(
+                    template,
+                    expediente_id,
+                )
+
+                generated_path = (
+                    pdf_path
+                    or json_path
+                    or ""
+                )
+
+            elif template_type == "docx":
+                generated = (
+                    document_docx_service
+                    .generate_docx_from_template(
+                        int(template["id"]),
+                        expediente_id=expediente_id,
+                        auto_build_snapshot=True,
+                    )
+                )
+
+                generated_path = (
+                    generated.get("docx_path")
+                    or (
+                        generated.get("output")
+                        or {}
+                    ).get("docx_path")
+                    or ""
+                )
+
+            else:
+                raise ValueError(
+                    "Tipo de plantilla no soportado: "
+                    + (
+                        template_type
+                        or "SIN TIPO"
+                    )
+                )
+
+            label = (
+                template.get("nombre")
+                or template.get("codigo")
+                or "Documento"
+            )
+
+            if not generated_path:
+                raise ValueError(
+                    "El servicio terminó sin devolver "
+                    "la ruta del documento generado"
+                )
+
+            generated_file = Path(
+                generated_path
+            )
+
+            if not generated_file.is_absolute():
+                generated_file = (
+                    Path(__file__).resolve().parents[2]
+                    / generated_file
+                )
+
+            if not generated_file.exists():
+                raise FileNotFoundError(
+                    "El servicio indicó una ruta, "
+                    "pero el archivo no existe: "
+                    f"{generated_file}"
+                )
+
+            generated_path = str(
+                generated_file
+            )
+
+            _set_template_generation_result(
+                expediente_id,
+                template,
+                status="ok",
+                path=generated_path,
+            )
+
+            clear_form_message()
+
+            if refresh:
+                state["dialog_section"] = "plantillas"
+                expediente_dialog.content = (
+                    build_expediente_dialog_content(
+                        expediente_id
+                    )
+                )
+                page.update()
+
+            if show_completion_dialog:
+                _show_generation_complete_dialog(
+                    title="Documento generado",
+                    message=(
+                        f"{label} se ha generado "
+                        "correctamente."
+                    ),
+                    generated_paths=[
+                        generated_path
+                    ],
+                )
+
+            return True
+
+        except Exception as exc:
+            label = (
+                template.get("nombre")
+                or template.get("codigo")
+                or "Documento"
+            )
+
+            _set_template_generation_result(
+                expediente_id,
+                template,
+                status="error",
+                error=str(exc),
+            )
+
+            set_message(
+                error_alert(
+                    f"No se pudo generar {label}: {exc}"
+                )
+            )
+
+            if refresh:
+                state["dialog_section"] = "plantillas"
+                expediente_dialog.content = (
+                    build_expediente_dialog_content(
+                        expediente_id
+                    )
+                )
+                page.update()
+
+            return False
+
+
+    def toggle_generation_template(
+        expediente_id,
+        template_id,
+        selected,
+    ):
+        selected_ids = _template_selected_store(
+            expediente_id
+        )
+
+        if selected:
+            selected_ids.add(int(template_id))
+        else:
+            selected_ids.discard(int(template_id))
+
+        state["dialog_section"] = "plantillas"
+        expediente_dialog.content = (
+            build_expediente_dialog_content(
+                expediente_id
+            )
+        )
+        page.update()
+
+
+    def clear_generation_template_selection(
+        expediente_id,
+        e=None,
+    ):
+        _template_selected_store(
+            expediente_id
+        ).clear()
+
+        state["dialog_section"] = "plantillas"
+        expediente_dialog.content = (
+            build_expediente_dialog_content(
+                expediente_id
+            )
+        )
+        page.update()
+
+
+    def generate_selected_templates(
+        expediente_id,
+        templates,
+        e=None,
+    ):
+        selected_ids = set(
+            _template_selected_store(
+                expediente_id
+            )
+        )
+
+        if not selected_ids:
+            return
+
+        templates_by_id = {
+            int(template["id"]): template
+            for template in templates or []
+            if template.get("id") is not None
+        }
+
+        generated_count = 0
+        error_count = 0
+        generated_paths = []
+
+        for template_id in sorted(selected_ids):
+            template = templates_by_id.get(
+                int(template_id)
+            )
+
+            if not template:
+                continue
+
+            success = generate_catalog_template(
+                template,
+                refresh=False,
+                show_completion_dialog=False,
+            )
+
+            result = (
+                _template_result_store(
+                    expediente_id
+                ).get(
+                    int(template_id)
+                )
+                or {}
+            )
+
+            if success:
+                generated_count += 1
+
+                generated_path = str(
+                    result.get("path")
+                    or ""
+                ).strip()
+
+                if generated_path:
+                    generated_paths.append(
+                        generated_path
+                    )
+            else:
+                error_count += 1
+
+        _template_selected_store(
+            expediente_id
+        ).clear()
+
+        state["dialog_section"] = "plantillas"
+
+        if error_count:
+            set_message(
+                warning_alert(
+                    "Generación múltiple finalizada: "
+                    f"{generated_count} correctos y "
+                    f"{error_count} con error."
+                )
+            )
+        else:
+            set_message(
+                success_alert(
+                    "Generación múltiple finalizada: "
+                    f"{generated_count} documentos."
+                )
+            )
+
+        expediente_dialog.content = (
+            build_expediente_dialog_content(
+                expediente_id
+            )
+        )
+        page.update()
+
+        if generated_count:
+            _show_generation_complete_dialog(
+                title="Generación finalizada",
+                message=(
+                    f"{generated_count} documento"
+                    + (
+                        ""
+                        if generated_count == 1
+                        else "s"
+                    )
+                    + " generado"
+                    + (
+                        ""
+                        if generated_count == 1
+                        else "s"
+                    )
+                    + " correctamente."
+                    + (
+                        f" {error_count} documento"
+                        + (
+                            ""
+                            if error_count == 1
+                            else "s"
+                        )
+                        + " no se pudieron generar."
+                        if error_count
+                        else ""
+                    )
+                ),
+                generated_paths=generated_paths,
+            )
+
+
     def _forms_popup_menu():
         templates = _list_ex_document_templates_for_menu()
         items = []
@@ -4715,7 +5369,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             ("Familiar titular", "Medios económicos"),
             ("Representación", "Presentador profesional"),
             ("Checks", "Datos del trámite"),
-            ("Revisión", "Snapshot y EX"),
+            ("Revisión", "Guardado y snapshot"),
         ]
         state["specific_steps_count"] = len(steps)
         current_step = max(
@@ -5044,8 +5698,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             spacing=10,
                             wrap=True,
                         ),
-                        _specific_generation_status_card(expediente_id),
-                        build_snapshot_status_content(expediente_id),
+                                build_snapshot_status_content(expediente_id),
                         ft.Text(
                             "Usa la barra inferior para guardar, generar snapshot, generar EX01 familiar o elegir otros formularios desde el menú de tres puntos.",
                             size=12,
@@ -5065,8 +5718,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         else:
             nav_controls.extend([
                 secondary_button("Generar snapshot", generate_snapshot),
-                secondary_button("Generar EX01 familiar", generate_referenced_ex_form),
-                _forms_popup_menu(),
             ])
 
         controls = [
@@ -5155,7 +5806,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             ("Solicitante", "Cliente del expediente"),
             ("Representación", "Presentador profesional"),
             ("Checks", "Datos del trámite"),
-            ("Revisión", "Snapshot y EX"),
+            ("Revisión", "Guardado y snapshot"),
         ]
         state["specific_steps_count"] = len(steps)
         current_step = max(
@@ -5388,8 +6039,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             spacing=10,
                             wrap=True,
                         ),
-                        _specific_generation_status_card(expediente_id),
-                        build_snapshot_status_content(expediente_id),
+                                build_snapshot_status_content(expediente_id),
                         ft.Text(
                             "Usa la barra inferior para guardar, generar snapshot, generar EX01 titular o elegir otros formularios desde el menú de tres puntos.",
                             size=12,
@@ -5409,8 +6059,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         else:
             nav_controls.extend([
                 secondary_button("Generar snapshot", generate_snapshot),
-                secondary_button("Generar EX01 titular", generate_referenced_ex_form),
-                _forms_popup_menu(),
             ])
 
         controls = [
@@ -5577,9 +6225,8 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             controls=[
                                 primary_button("Guardar datos específicos", save_specific_data),
                                 secondary_button("Generar snapshot", generate_snapshot),
-                                secondary_button("Volcar datos en formulario", volcar_datos_formulario),
                                 ft.Text(
-                                    "El volcado usará el snapshot confirmado del expediente, no la ficha maestra.",
+                                    "La generación documental se realiza desde Plantillas y formularios usando el snapshot confirmado.",
                                     size=12,
                                     color=Q_MUTED,
                                     expand=True,
@@ -5631,7 +6278,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 "Medios económicos",
                 "Diagnóstico orientativo",
             ),
-            ("Revisión", "Snapshot y EX"),
+            ("Revisión", "Guardado y snapshot"),
         ]
         state["specific_steps_count"] = len(steps)
         current_step = max(
@@ -6826,10 +7473,9 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         )
 
         review_card = _specific_card(
-            "Revisión y generación",
-            "Guarda, genera snapshot y prepara el EX02 desde datos específicos.",
+            "Revisión",
+            "Guarda y revisa los datos que alimentarán el EX02.",
             [
-                _specific_generation_status_card(expediente_id),
                 ft.Row(
                     controls=[
                         _specific_info_row("Mapper", "MERCURIO_EX02"),
@@ -6842,7 +7488,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 ),
                 build_snapshot_status_content(expediente_id),
                 ft.Text(
-                    "Los botones de guardado, snapshot y generación están agrupados abajo para mantener el flujo único de volcado.",
+                    "La generación documental se realiza desde Plantillas y formularios.",
                     size=12,
                     color=Q_MUTED,
                 ),
@@ -6868,8 +7514,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             nav_controls.extend([
                 secondary_button("Guardar datos", save_specific_data),
                 secondary_button("Generar snapshot", generate_snapshot),
-                primary_button("Generar EX02", generate_referenced_ex_form),
-                _forms_popup_menu(),
             ])
 
         nav = ft.Row(
@@ -7108,6 +7752,199 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             result = document_state_service.diagnose_expediente_document_state(expediente_id)
             resumen = result.get("resumen") or {}
 
+            diagnostic_target_available = bool(
+                result.get("target_disponible")
+            )
+            diagnostic_target_relative = str(
+                result.get("target_relative_path")
+                or ""
+            )
+            diagnostic_target_absolute = str(
+                result.get("target_absolute_path")
+                or ""
+            )
+
+            diagnostic_target_card = ft.Container(
+                bgcolor=(
+                    "#EFF8FF"
+                    if diagnostic_target_available
+                    else "#FFFAEB"
+                ),
+                border=ft.border.all(
+                    1,
+                    (
+                        "#84CAFF"
+                        if diagnostic_target_available
+                        else "#FEC84B"
+                    ),
+                ),
+                border_radius=12,
+                padding=10,
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(
+                            (
+                                ft.Icons.FOLDER_SPECIAL
+                                if diagnostic_target_available
+                                else ft.Icons.WARNING_AMBER_ROUNDED
+                            ),
+                            color=(
+                                "#175CD3"
+                                if diagnostic_target_available
+                                else "#B54708"
+                            ),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    (
+                                        "Target de presentación"
+                                        if diagnostic_target_available
+                                        else
+                                        "Sin target de presentación"
+                                    ),
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    (
+                                        diagnostic_target_relative
+                                        if diagnostic_target_available
+                                        else
+                                        "Selecciona una carpeta "
+                                        "desde Documentación."
+                                    ),
+                                    size=12,
+                                    color=(
+                                        "#175CD3"
+                                        if diagnostic_target_available
+                                        else "#B54708"
+                                    ),
+                                    selectable=True,
+                                ),
+                                ft.Text(
+                                    diagnostic_target_absolute,
+                                    size=10,
+                                    color=Q_MUTED,
+                                    selectable=True,
+                                    visible=bool(
+                                        diagnostic_target_absolute
+                                    ),
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=8,
+                ),
+            )
+
+            economic_document_evaluation = (
+                result.get(
+                    "evaluacion_economica_documental"
+                )
+                or {}
+            )
+
+            economic_evidence_available = bool(
+                economic_document_evaluation.get(
+                    "evidencia_documental_aportada"
+                )
+            )
+
+            economic_codes = (
+                economic_document_evaluation.get(
+                    "codigos_detectados"
+                )
+                or []
+            )
+
+            economic_document_card = ft.Container(
+                bgcolor=(
+                    "#ECFDF3"
+                    if economic_evidence_available
+                    else "#FFFAEB"
+                ),
+                border=ft.border.all(
+                    1,
+                    (
+                        "#75E0A7"
+                        if economic_evidence_available
+                        else "#FEC84B"
+                    ),
+                ),
+                border_radius=12,
+                padding=10,
+                visible=bool(
+                    economic_document_evaluation.get(
+                        "aplicable"
+                    )
+                ),
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(
+                            (
+                                ft.Icons.CHECK_CIRCLE
+                                if economic_evidence_available
+                                else ft.Icons.WARNING_AMBER_ROUNDED
+                            ),
+                            color=(
+                                "#027A48"
+                                if economic_evidence_available
+                                else "#B54708"
+                            ),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Medios económicos",
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    (
+                                        "Evidencia documental aportada"
+                                        if economic_evidence_available
+                                        else
+                                        "Sin evidencia documental detectada"
+                                    ),
+                                    size=12,
+                                    color=(
+                                        "#027A48"
+                                        if economic_evidence_available
+                                        else "#B54708"
+                                    ),
+                                ),
+                                ft.Text(
+                                    (
+                                        "Documentos detectados: "
+                                        + ", ".join(economic_codes)
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                    visible=bool(economic_codes),
+                                ),
+                                ft.Text(
+                                    (
+                                        "La suficiencia económica se "
+                                        "evalúa en el panel específico "
+                                        "de nóminas."
+                                    ),
+                                    size=10,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=8,
+                ),
+            )
+
             diagnostic_doc_path_by_name = {}
             try:
                 viewer_docs = document_viewer_service.list_expediente_documents(expediente_id).get("documents") or []
@@ -7271,11 +8108,17 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                                 weight=ft.FontWeight.BOLD,
                                 color=Q_PRIMARY,
                             ),
-                            ft.Text(f"Confianza: {result.get('confianza')}", size=14, color=Q_MUTED),
+                            ft.Text(
+                                f"Confianza: {result.get('confianza')}",
+                                size=14,
+                                color=Q_MUTED,
+                            ),
                         ],
                         wrap=True,
                         spacing=18,
                     ),
+                    diagnostic_target_card,
+                    economic_document_card,
                     _section_box(
                         "Resumen documental",
                         [
@@ -13258,32 +14101,401 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 ),
             )
 
+        try:
+            active_document_targets = (
+                document_target_service
+                .list_active_targets(
+                    int(expediente_id)
+                )
+            )
+        except Exception:
+            active_document_targets = []
+
+        targets_by_relative_path = {}
+
+        for target in active_document_targets:
+            relative_key = (
+                str(
+                    target.get("relative_path")
+                    or ""
+                )
+                .replace("\\", "/")
+                .strip("/")
+                .casefold()
+            )
+
+            targets_by_relative_path.setdefault(
+                relative_key,
+                [],
+            ).append(
+                str(
+                    target.get("purpose")
+                    or ""
+                ).strip().upper()
+            )
+
+        target_labels = {
+            "PRESENTACION": "PRESENTACIÓN",
+            "APORTACION": "APORTACIÓN",
+            "APORTACION_TASAS": "APORTACIÓN TASAS",
+            "REQUERIMIENTO": "REQUERIMIENTO",
+            "RECURSO": "RECURSO",
+        }
+
+        target_styles = {
+            "PRESENTACION": {
+                "foreground": "#175CD3",
+                "background": "#EFF8FF",
+                "border": "#84CAFF",
+            },
+            "APORTACION_TASAS": {
+                "foreground": "#6941C6",
+                "background": "#F4F3FF",
+                "border": "#BDB4FE",
+            },
+            "APORTACION": {
+                "foreground": "#027A48",
+                "background": "#ECFDF3",
+                "border": "#75E0A7",
+            },
+            "REQUERIMIENTO": {
+                "foreground": "#B54708",
+                "background": "#FFFAEB",
+                "border": "#FEC84B",
+            },
+            "RECURSO": {
+                "foreground": "#B42318",
+                "background": "#FEF3F2",
+                "border": "#FDA29B",
+            },
+        }
+
+        target_priority = (
+            "PRESENTACION",
+            "APORTACION_TASAS",
+            "APORTACION",
+            "REQUERIMIENTO",
+            "RECURSO",
+        )
+
+        def refresh_documentation_after_target(
+            message,
+        ):
+            state.setdefault(
+                "diagnostic_viewer_selected_docs",
+                {},
+            ).clear()
+
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(message),
+                open=True,
+            )
+
+            expediente_dialog.content = (
+                build_expediente_dialog_content(
+                    expediente_id
+                )
+            )
+
+            page.update()
+
+        def set_document_folder_target(
+            folder_path,
+            purpose,
+        ):
+            try:
+                result = (
+                    document_target_service
+                    .set_target_from_absolute(
+                        int(expediente_id),
+                        purpose,
+                        folder_path,
+                    )
+                )
+
+                label = target_labels.get(
+                    purpose,
+                    purpose,
+                )
+
+                refresh_documentation_after_target(
+                    f"Target de {label.lower()} "
+                    f"establecido: "
+                    f"{result.get('relative_path')}"
+                )
+
+            except Exception as exc:
+                show_form_error(
+                    "No se pudo establecer "
+                    f"el target: {exc}"
+                )
+
+        def clear_document_folder_target(
+            purpose,
+        ):
+            try:
+                changed = (
+                    document_target_service
+                    .clear_target(
+                        int(expediente_id),
+                        purpose,
+                    )
+                )
+
+                label = target_labels.get(
+                    purpose,
+                    purpose,
+                )
+
+                message = (
+                    f"Target de {label.lower()} eliminado"
+                    if changed
+                    else
+                    f"No había target de "
+                    f"{label.lower()} activo"
+                )
+
+                refresh_documentation_after_target(
+                    message
+                )
+
+            except Exception as exc:
+                show_form_error(
+                    "No se pudo retirar "
+                    f"el target: {exc}"
+                )
+
+        def document_target_badge(purpose):
+            style = target_styles.get(
+                purpose,
+                {
+                    "foreground": Q_PRIMARY_DARK,
+                    "background": "#F8FAFC",
+                    "border": Q_BORDER,
+                },
+            )
+
+            return ft.Container(
+                padding=ft.padding.symmetric(
+                    horizontal=6,
+                    vertical=2,
+                ),
+                border_radius=10,
+                bgcolor=style["background"],
+                border=ft.border.all(
+                    1,
+                    style["border"],
+                ),
+                content=ft.Text(
+                    target_labels.get(
+                        purpose,
+                        purpose,
+                    ),
+                    size=9,
+                    weight=ft.FontWeight.BOLD,
+                    color=style["foreground"],
+                ),
+            )
+
         folder_controls = []
+
         for folder in data.get("folders", []):
-            is_para = _norm(folder.get("name")) == "PARA PRESENTAR"
+            folder_path = str(
+                folder.get("path")
+                or ""
+            )
+
+            try:
+                folder_relative = str(
+                    Path(folder_path)
+                    .resolve()
+                    .relative_to(
+                        Path(root_path).resolve()
+                    )
+                )
+            except Exception:
+                folder_relative = str(
+                    folder.get("relative_path")
+                    or folder.get("name")
+                    or ""
+                )
+
+            folder_relative = (
+                folder_relative
+                .replace("\\", "/")
+                .strip("/")
+            )
+
+            relative_key = (
+                folder_relative.casefold()
+            )
+
+            folder_targets = (
+                targets_by_relative_path.get(
+                    relative_key,
+                    [],
+                )
+            )
+
+            primary_target = next(
+                (
+                    purpose
+                    for purpose in target_priority
+                    if purpose in folder_targets
+                ),
+                None,
+            )
+
+            primary_style = target_styles.get(
+                primary_target,
+                {
+                    "foreground": Q_PRIMARY_DARK,
+                    "background": "#F8FAFC",
+                    "border": Q_BORDER,
+                },
+            )
+
+            menu_items = []
+
+            for purpose in target_priority:
+                label = target_labels[purpose]
+
+                if purpose in folder_targets:
+                    menu_items.append(
+                        ft.PopupMenuItem(
+                            content=ft.Text(
+                                f"Quitar target: {label}"
+                            ),
+                            on_click=(
+                                lambda e,
+                                selected_purpose=purpose:
+                                clear_document_folder_target(
+                                    selected_purpose
+                                )
+                            ),
+                        )
+                    )
+                else:
+                    menu_items.append(
+                        ft.PopupMenuItem(
+                            content=ft.Text(
+                                f"Establecer como: {label}"
+                            ),
+                            on_click=(
+                                lambda e,
+                                selected_path=folder_path,
+                                selected_purpose=purpose:
+                                set_document_folder_target(
+                                    selected_path,
+                                    selected_purpose,
+                                )
+                            ),
+                        )
+                    )
+
             folder_controls.append(
                 ft.Container(
                     padding=10,
                     border_radius=10,
-                    border=ft.border.all(1, "#B9D7FF" if is_para else Q_BORDER),
-                    bgcolor="#EAF3FF" if is_para else "#F8FAFC",
-                    ink=True,
-                    on_click=lambda e, p=folder.get("path"): open_document_folder(p),
+                    border=ft.border.all(
+                        1,
+                        primary_style["border"],
+                    ),
+                    bgcolor=primary_style["background"],
                     content=ft.Row(
                         controls=[
-                            ft.Text("📁", size=20),
-                            ft.Column(
-                                controls=[
-                                    ft.Text(folder.get("name") or "-", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                    ft.Text(folder.get("path") or "", size=11, color=Q_MUTED),
-                                ],
-                                spacing=2,
-                                expand=True,
+                            ft.Container(
+                                ink=True,
+                                border_radius=8,
+                                padding=ft.padding.symmetric(
+                                    horizontal=2,
+                                    vertical=2,
+                                ),
+                                on_click=(
+                                    lambda e,
+                                    p=folder_path:
+                                    open_document_folder(p)
+                                ),
+                                content=ft.Text(
+                                    "📁",
+                                    size=20,
+                                ),
                             ),
-                            ft.Text("PARA PRESENTAR", size=11, color=Q_PRIMARY, visible=is_para),
+                            ft.Container(
+                                expand=True,
+                                ink=True,
+                                border_radius=8,
+                                padding=ft.padding.symmetric(
+                                    horizontal=3,
+                                    vertical=2,
+                                ),
+                                on_click=(
+                                    lambda e,
+                                    p=folder_path:
+                                    open_document_folder(p)
+                                ),
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Row(
+                                            controls=[
+                                                ft.Text(
+                                                    folder.get("name")
+                                                    or "-",
+                                                    size=13,
+                                                    weight=ft.FontWeight.BOLD,
+                                                    color=Q_PRIMARY_DARK,
+                                                ),
+                                                *[
+                                                    document_target_badge(
+                                                        purpose
+                                                    )
+                                                    for purpose
+                                                    in folder_targets
+                                                ],
+                                            ],
+                                            spacing=6,
+                                            wrap=True,
+                                            vertical_alignment=(
+                                                ft.CrossAxisAlignment.CENTER
+                                            ),
+                                        ),
+                                        ft.Text(
+                                            folder_relative
+                                            or ".",
+                                            size=11,
+                                            weight=ft.FontWeight.W_600,
+                                            color=(
+                                                primary_style["foreground"]
+                                                if primary_target
+                                                else Q_MUTED
+                                            ),
+                                            selectable=True,
+                                            tooltip=folder_path,
+                                            max_lines=1,
+                                            overflow=(
+                                                ft.TextOverflow.ELLIPSIS
+                                            ),
+                                        ),
+                                    ],
+                                    spacing=2,
+                                ),
+                            ),
+                            ft.PopupMenuButton(
+                                icon=ft.Icons.MORE_VERT,
+                                icon_color=(
+                                    primary_style["foreground"]
+                                ),
+                                tooltip=(
+                                    "Finalidad documental "
+                                    "de la carpeta"
+                                ),
+                                items=menu_items,
+                            ),
                         ],
-                        spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=8,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
                     ),
                 )
             )
@@ -13711,27 +14923,89 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         documents_bulk_bar_box.content = build_documents_bulk_bar()
 
         file_controls = []
-        for file in sorted(data.get("files", []), key=_mercurio_file_sort_key):
+
+        for file in sorted(
+            data.get("files", []),
+            key=lambda item: str(
+                (item or {}).get("name")
+                or ""
+            ).casefold(),
+        ):
             file_path = file.get("path") or ""
             file_name = file.get("name") or "-"
+
             file_controls.append(
                 document_file_card(
                     name=file_name,
                     path=file_path,
-                    size_label=_format_file_size(file.get("size")),
-                    modified_at=f"Orden: {_mercurio_file_order_label(file)}",
+                    size_label=_format_file_size(
+                        file.get("size")
+                    ),
+                    modified_at=None,
                     file_type=file.get("type"),
                     selected=False,
                     selectable=True,
-                    checkbox_value=file_path in selected_docs,
-                    on_select=lambda e, p=file_path, n=file_name: toggle_document_selection(e, p, n),
+                    checkbox_value=(
+                        file_path in selected_docs
+                    ),
+                    on_select=(
+                        lambda e,
+                        p=file_path,
+                        n=file_name:
+                        toggle_document_selection(
+                            e,
+                            p,
+                            n,
+                        )
+                    ),
                     action_groups=[
                         {
                             "label": "Documento",
                             "items": [
-                                {"label": "Previsualizar", "on_click": lambda e, p=file_path, n=file_name: show_document_preview(p, n, expediente_id)},
-                                {"label": "Abrir externo", "on_click": lambda e, p=file_path: open_document_with_system(p, expediente_id)},
-                                {"label": "Enviar a Bandeja documental", "on_click": lambda e, p=file_path, n=file_name: send_box_documents_to_inbox([{"path": p, "name": n}], e=e)},
+                                {
+                                    "label": "Previsualizar",
+                                    "on_click": (
+                                        lambda e,
+                                        p=file_path,
+                                        n=file_name:
+                                        show_document_preview(
+                                            p,
+                                            n,
+                                            expediente_id,
+                                        )
+                                    ),
+                                },
+                                {
+                                    "label": "Abrir externo",
+                                    "on_click": (
+                                        lambda e,
+                                        p=file_path:
+                                        open_document_with_system(
+                                            p,
+                                            expediente_id,
+                                        )
+                                    ),
+                                },
+                                {
+                                    "label": (
+                                        "Enviar a Bandeja "
+                                        "documental"
+                                    ),
+                                    "on_click": (
+                                        lambda e,
+                                        p=file_path,
+                                        n=file_name:
+                                        send_box_documents_to_inbox(
+                                            [
+                                                {
+                                                    "path": p,
+                                                    "name": n,
+                                                }
+                                            ],
+                                            e=e,
+                                        )
+                                    ),
+                                },
                             ],
                         },
                     ],
@@ -13739,54 +15013,138 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 )
             )
 
-        controls = [
-            ft.Row(
-                controls=[
-                    ft.Row(
-                        controls=[
-                            ft.Text("Documentación Box", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ft.Container(expand=True),
-                        ],
-                        spacing=8,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    ft.Text("Escaneando expediente...", size=12, color=Q_MUTED, visible=scanning),
-                ],
-                spacing=12,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            ft.Text(
-                "Explorador readonly del expediente. No crea, mueve, borra ni renombra documentos.",
-                size=12,
-                color=Q_MUTED,
-            ),
-            ft.Container(
-                bgcolor="#F8FAFC",
-                border=ft.border.all(1, Q_BORDER),
-                border_radius=12,
-                padding=10,
-                content=ft.Column(
+        fixed_header = ft.Column(
+            controls=[
+                ft.Row(
                     controls=[
-                        ft.Text("Ruta actual", size=12, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                        ft.Text(data.get("current_path") or current_path, size=12, color=Q_MUTED),
+                        ft.Text(
+                            "Documentación Box",
+                            size=20,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                            expand=True,
+                        ),
+                        ft.Text(
+                            "Escaneando expediente...",
+                            size=12,
+                            color=Q_MUTED,
+                            visible=scanning,
+                        ),
                     ],
-                    spacing=4,
+                    spacing=12,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
                 ),
-            ),
-            documents_bulk_bar_box,
-            ft.Divider(),
-            ft.Text(f"Carpetas ({len(folder_controls)})", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-            *(folder_controls or [ft.Text("No hay subcarpetas directas", color=Q_MUTED, size=13)]),
-            ft.Text(f"Archivos ({len(file_controls)}) · orden Mercurio: 01, 02, 10 primero; después alfabético", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-            *(file_controls or [ft.Text("No hay archivos directos en esta carpeta", color=Q_MUTED, size=13)]),
-        ]
+                ft.Text(
+                    "Explorador readonly del expediente. "
+                    "No crea, mueve, borra ni renombra "
+                    "documentos.",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=12,
+                    padding=10,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Ruta actual",
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                data.get("current_path")
+                                or current_path,
+                                size=12,
+                                color=Q_MUTED,
+                                selectable=True,
+                                max_lines=2,
+                                overflow=(
+                                    ft.TextOverflow.ELLIPSIS
+                                ),
+                                tooltip=(
+                                    data.get("current_path")
+                                    or current_path
+                                ),
+                            ),
+                        ],
+                        spacing=4,
+                    ),
+                ),
+                documents_bulk_bar_box,
+                ft.Divider(
+                    height=1,
+                    color=Q_BORDER,
+                ),
+            ],
+            spacing=10,
+        )
+
+        scrollable_document_content = ft.Column(
+            controls=[
+                ft.Text(
+                    f"Carpetas ({len(folder_controls)})",
+                    size=15,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                *(
+                    folder_controls
+                    or [
+                        ft.Text(
+                            "No hay subcarpetas directas",
+                            color=Q_MUTED,
+                            size=13,
+                        )
+                    ]
+                ),
+                ft.Container(height=4),
+                ft.Text(
+                    f"Archivos ({len(file_controls)})",
+                    size=15,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                *(
+                    file_controls
+                    or [
+                        ft.Text(
+                            "No hay archivos directos "
+                            "en esta carpeta",
+                            color=Q_MUTED,
+                            size=13,
+                        )
+                    ]
+                ),
+            ],
+            spacing=8,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
 
         return ft.Column(
             width=920,
             height=620,
-            scroll=ft.ScrollMode.AUTO,
             spacing=10,
-            controls=controls,
+            controls=[
+                fixed_header,
+                ft.Container(
+                    expand=True,
+                    clip_behavior=(
+                        ft.ClipBehavior.HARD_EDGE
+                    ),
+                    content=(
+                        scrollable_document_content
+                    ),
+                ),
+            ],
         )
 
     def set_dialog_section(section):
@@ -14210,80 +15568,241 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
     def build_expedient_templates_content(expediente_id):
         """
-        Sección segura del diálogo de expediente para plantillas y formularios.
+        Catálogo de documentos generables del expediente.
 
-        Reutiliza el catálogo de plantillas EX ya disponible en la vista.
-        Evita el NameError al entrar en la pestaña "Plantillas y formularios".
+        La generación documental se centraliza aquí:
+        - card individual;
+        - selección mediante checkbox;
+        - menú contextual;
+        - generación múltiple.
         """
-        templates = _list_ex_document_templates_for_menu()
+        expediente_id = int(expediente_id)
+        templates = (
+            _list_ex_document_templates_for_menu()
+            or []
+        )
 
-        template_controls = []
+        selected_ids = _template_selected_store(
+            expediente_id
+        )
+        result_store = _template_result_store(
+            expediente_id
+        )
 
-        for template in templates[:20]:
+        def _result_control(template):
+            template_id = int(template["id"])
+            result = result_store.get(template_id)
+
+            if not result:
+                return ft.Text(
+                    "Disponible para generar",
+                    size=11,
+                    color=Q_MUTED,
+                )
+
+            if result.get("status") == "ok":
+                return ft.Column(
+                    spacing=1,
+                    controls=[
+                        ft.Text(
+                            "Generado correctamente",
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color="#027A48",
+                        ),
+                        ft.Text(
+                            result.get("path")
+                            or result.get("at")
+                            or "",
+                            size=10,
+                            color=Q_MUTED,
+                            selectable=True,
+                        ),
+                    ],
+                )
+
+            return ft.Column(
+                spacing=1,
+                controls=[
+                    ft.Text(
+                        "Error de generación",
+                        size=11,
+                        weight=ft.FontWeight.BOLD,
+                        color="#B42318",
+                    ),
+                    ft.Text(
+                        result.get("error") or "",
+                        size=10,
+                        color="#B42318",
+                        selectable=True,
+                    ),
+                ],
+            )
+
+        def _template_popup(template):
+            return ft.PopupMenuButton(
+                icon=ft.Icons.MORE_VERT,
+                tooltip="Acciones del documento",
+                items=[
+                    ft.PopupMenuItem(
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.PLAY_ARROW,
+                                    size=18,
+                                    color=Q_PRIMARY,
+                                ),
+                                ft.Text("Generar"),
+                            ],
+                            spacing=8,
+                        ),
+                        on_click=(
+                            lambda e, t=template:
+                            generate_catalog_template(
+                                t,
+                                e,
+                            )
+                        ),
+                    ),
+                ],
+            )
+
+        def _template_card(template):
+            template_id = int(template["id"])
+            selected = template_id in selected_ids
+
             label = (
                 template.get("nombre")
                 or template.get("codigo")
                 or template.get("mapper_destino")
-                or "Formulario"
+                or "Documento"
             )
+
+            template_type = str(
+                template.get("template_type")
+                or ""
+            ).upper()
+
             subtitle = " · ".join(
                 part
                 for part in [
                     template.get("codigo"),
-                    template.get("mapper_destino"),
-                    template.get("template_type"),
+                    template.get("categoria"),
+                    template_type,
                 ]
                 if part
             )
 
-            template_controls.append(
-                ft.Container(
-                    bgcolor="#FFFFFF",
-                    border=ft.border.all(1, Q_BORDER),
-                    border_radius=12,
-                    padding=12,
-                    content=ft.Row(
-                        controls=[
-                            ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, color=Q_PRIMARY),
-                            ft.Column(
-                                controls=[
-                                    ft.Text(label, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                    ft.Text(subtitle or "Plantilla documental", size=11, color=Q_MUTED),
-                                ],
-                                spacing=2,
-                                expand=True,
-                            ),
-                            secondary_button(
-                                "Generar",
-                                lambda e, t=template: generate_specific_ex_template(
-                                    t,
-                                    e,
-                                    return_section="plantillas",
-                                ),
-                            ),
-                        ],
-                        spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                )
+            mapper = (
+                template.get("mapper_destino")
+                or template.get("codigo")
+                or "-"
             )
 
-        if not template_controls:
-            template_controls.append(
+            return ft.Container(
+                bgcolor=(
+                    "#F5F9FF"
+                    if selected
+                    else "#FFFFFF"
+                ),
+                border=ft.border.all(
+                    1,
+                    Q_PRIMARY if selected else Q_BORDER,
+                ),
+                border_radius=14,
+                padding=12,
+                content=ft.Row(
+                    controls=[
+                        ft.Checkbox(
+                            value=selected,
+                            tooltip=(
+                                "Seleccionar para "
+                                "generación múltiple"
+                            ),
+                            on_change=(
+                                lambda e,
+                                tid=template_id:
+                                toggle_generation_template(
+                                    expediente_id,
+                                    tid,
+                                    bool(e.control.value),
+                                )
+                            ),
+                        ),
+                        ft.Container(
+                            width=42,
+                            height=42,
+                            border_radius=12,
+                            bgcolor="#EAF3FF",
+                            alignment=ft.Alignment(0, 0),
+                            content=ft.Icon(
+                                (
+                                    ft.Icons.PICTURE_AS_PDF
+                                    if template_type == "PDF"
+                                    else ft.Icons.DESCRIPTION
+                                ),
+                                color=Q_PRIMARY,
+                                size=22,
+                            ),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    label,
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    subtitle
+                                    or "Plantilla documental",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    f"Mapper: {mapper}",
+                                    size=10,
+                                    color=Q_MUTED,
+                                ),
+                                _result_control(template),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                        _template_popup(template),
+                    ],
+                    spacing=10,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+            )
+
+        cards = [
+            _template_card(template)
+            for template in templates[:30]
+        ]
+
+        if not cards:
+            cards = [
                 ft.Container(
                     bgcolor="#FFFBEB",
-                    border=ft.border.all(1, "#FDE68A"),
+                    border=ft.border.all(
+                        1,
+                        "#FDE68A",
+                    ),
                     border_radius=12,
-                    padding=12,
+                    padding=14,
                     content=ft.Column(
                         controls=[
                             ft.Text(
-                                "No hay plantillas EX activas",
+                                "No hay plantillas compatibles",
                                 weight=ft.FontWeight.BOLD,
                                 color="#92400E",
                             ),
                             ft.Text(
-                                "Revisa el catálogo de plantillas documentales en Settings.",
+                                "Revisa document_templates y "
+                                "form_mapper_templates en Settings.",
                                 size=12,
                                 color="#92400E",
                             ),
@@ -14291,7 +15810,57 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         spacing=4,
                     ),
                 )
-            )
+            ]
+
+        selection_bar = ft.Container(
+            visible=bool(selected_ids),
+            bgcolor="#EAF3FF",
+            border=ft.border.all(
+                1,
+                "#B9D7FF",
+            ),
+            border_radius=12,
+            padding=10,
+            content=ft.Row(
+                controls=[
+                    ft.Text(
+                        (
+                            f"{len(selected_ids)} documento"
+                            if len(selected_ids) == 1
+                            else (
+                                f"{len(selected_ids)} "
+                                "documentos"
+                            )
+                        )
+                        + " seleccionados",
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                        expand=True,
+                    ),
+                    secondary_button(
+                        "Limpiar",
+                        lambda e: (
+                            clear_generation_template_selection(
+                                expediente_id,
+                                e,
+                            )
+                        ),
+                    ),
+                    primary_button(
+                        "Generar seleccionados",
+                        lambda e: generate_selected_templates(
+                            expediente_id,
+                            templates,
+                            e,
+                        ),
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
 
         return ft.Column(
             controls=[
@@ -14306,7 +15875,9 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                                     color=Q_PRIMARY_DARK,
                                 ),
                                 ft.Text(
-                                    "Generación de formularios EX y modelos vinculados al expediente.",
+                                    "Genera formularios EX y "
+                                    "modelos documentales desde "
+                                    "un único punto.",
                                     size=12,
                                     color=Q_MUTED,
                                 ),
@@ -14314,12 +15885,36 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             spacing=2,
                             expand=True,
                         ),
+                        ft.Container(
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            padding=ft.padding.symmetric(
+                                horizontal=10,
+                                vertical=6,
+                            ),
+                            content=ft.Text(
+                                f"{len(templates)} disponibles",
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                        ),
                     ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    alignment=(
+                        ft.MainAxisAlignment.SPACE_BETWEEN
+                    ),
                 ),
-                ft.Divider(height=1, color=Q_BORDER),
+                ft.Divider(
+                    height=1,
+                    color=Q_BORDER,
+                ),
+                selection_bar,
                 ft.Column(
-                    controls=template_controls,
+                    controls=cards,
                     spacing=8,
                     scroll=ft.ScrollMode.AUTO,
                     expand=True,

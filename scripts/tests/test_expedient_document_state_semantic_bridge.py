@@ -382,7 +382,9 @@ class ExpedientDocumentStateSemanticBridgeTest(
             "nomenclatura_configurada",
         )
 
-    def test_semantic_result_is_parallel_and_non_binding(self):
+    def test_semantic_result_is_parallel_and_non_binding(
+        self,
+    ):
         result = (
             doc_state
             .diagnose_expediente_document_state(100)
@@ -392,7 +394,14 @@ class ExpedientDocumentStateSemanticBridgeTest(
             result["estado_sugerido"],
             doc_state.ESTADO_COMPLETO_SIN_PRESENTAR,
         )
-        self.assertEqual(result["faltantes"], [])
+        self.assertEqual(
+            result["fuente_completitud"],
+            "LEGACY",
+        )
+        self.assertEqual(
+            result["faltantes"],
+            [],
+        )
 
         semantic = result["semantic_readiness"]
 
