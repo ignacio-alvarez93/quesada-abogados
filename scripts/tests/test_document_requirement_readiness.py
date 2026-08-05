@@ -74,7 +74,70 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         'ESTADO_CIVIL',
                         1
                     ),
-                    (5, 'DELE', 'DELE', 'NACIONALIDAD', 1);
+                    (5, 'DELE', 'DELE', 'NACIONALIDAD', 1),
+                    (
+                        6,
+                        'INFORME_DE_VIVIENDA',
+                        'INFORME DE VIVIENDA',
+                        'VIVIENDA',
+                        1
+                    ),
+                    (
+                        7,
+                        'JUSTIFICANTE_SOLICITUD_INFORME_VIVIENDA',
+                        'JUSTIFICANTE DE SOLICITUD DEL INFORME DE VIVIENDA',
+                        'VIVIENDA',
+                        1
+                    ),
+                    (
+                        8,
+                        'ACREDITACION_MEDIOS_ECONOMICOS',
+                        'ACREDITACIÓN DE MEDIOS ECONÓMICOS',
+                        'LEGACY_AGGREGATE',
+                        1
+                    ),
+                    (
+                        9,
+                        'NOMINAS',
+                        'NÓMINAS',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    ),
+                    (
+                        10,
+                        'CONTRATO_TRABAJO',
+                        'CONTRATO DE TRABAJO',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    ),
+                    (
+                        11,
+                        'VIDA_LABORAL',
+                        'VIDA LABORAL',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    ),
+                    (
+                        12,
+                        'DECLARACION_IRPF',
+                        'DECLARACIÓN DEL IRPF',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    ),
+                    (
+                        13,
+                        'EXTRACTOS_BANCARIOS',
+                        'EXTRACTOS BANCARIOS',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    ),
+                    (
+                        14,
+                        'CERTIFICADO_BANCARIO',
+                        'CERTIFICADO BANCARIO',
+                        'MEDIOS_ECONOMICOS',
+                        1
+                    );
 
                 INSERT INTO config_grupos_requisitos_documentales (
                     id,
@@ -130,6 +193,28 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         'OPTIONAL',
                         0,
                         40,
+                        1
+                    ),
+                    (
+                        45,
+                        14,
+                        8,
+                        'VIVIENDA',
+                        'ADECUACIÓN DE LA VIVIENDA',
+                        'ANY',
+                        1,
+                        45,
+                        1
+                    ),
+                    (
+                        50,
+                        14,
+                        8,
+                        'MEDIOS_ECONOMICOS',
+                        'ACREDITACIÓN DE MEDIOS ECONÓMICOS',
+                        'ANY',
+                        1,
+                        50,
                         1
                     );
 
@@ -222,6 +307,87 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         NULL,
                         'DELE',
                         10,
+                        1
+                    ),
+                    (
+                        451,
+                        45,
+                        6,
+                        NULL,
+                        'Informe de vivienda',
+                        10,
+                        1
+                    ),
+                    (
+                        452,
+                        45,
+                        7,
+                        NULL,
+                        'Justificante de solicitud del informe',
+                        20,
+                        1
+                    ),
+                    (
+                        501,
+                        50,
+                        8,
+                        NULL,
+                        'Acreditación agregada legacy',
+                        0,
+                        1
+                    ),
+                    (
+                        502,
+                        50,
+                        9,
+                        'REAGRUPANTE',
+                        'Nóminas del reagrupante',
+                        10,
+                        1
+                    ),
+                    (
+                        503,
+                        50,
+                        10,
+                        'REAGRUPANTE',
+                        'Contrato de trabajo del reagrupante',
+                        20,
+                        1
+                    ),
+                    (
+                        504,
+                        50,
+                        11,
+                        'REAGRUPANTE',
+                        'Vida laboral del reagrupante',
+                        30,
+                        1
+                    ),
+                    (
+                        505,
+                        50,
+                        12,
+                        'REAGRUPANTE',
+                        'Declaración del IRPF',
+                        40,
+                        1
+                    ),
+                    (
+                        506,
+                        50,
+                        13,
+                        'REAGRUPANTE',
+                        'Extractos bancarios',
+                        50,
+                        1
+                    ),
+                    (
+                        507,
+                        50,
+                        14,
+                        'REAGRUPANTE',
+                        'Certificado bancario',
+                        60,
                         1
                     );
                 """
@@ -353,6 +519,13 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                     "CERTIFICADO_MATRIMONIO",
                     "PASAPORTE",
                     "NIE",
+                    "INFORME_DE_VIVIENDA",
+                    {
+                        "codigo": "NOMINAS",
+                        "rol_documental": (
+                            "REAGRUPANTE"
+                        ),
+                    },
                 ],
             )
         )
@@ -371,6 +544,429 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
         )
         self.assertTrue(result["completo"])
 
+    def test_housing_group_blocks_without_document(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [],
+            )
+        )
+
+        housing = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VIVIENDA"
+        )
+
+        self.assertEqual(housing["estado"], "PENDIENTE")
+        self.assertFalse(housing["cumplido"])
+        self.assertTrue(housing["bloquea_completitud"])
+        self.assertEqual(housing["documentos_detectados"], 0)
+        self.assertEqual(housing["documentos_requeridos"], 1)
+
+    def test_housing_group_accepts_housing_report(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": "INFORME_DE_VIVIENDA",
+                        "archivo": "informe_vivienda.pdf",
+                    },
+                ],
+            )
+        )
+
+        housing = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VIVIENDA"
+        )
+
+        self.assertEqual(housing["estado"], "CUMPLIDO")
+        self.assertTrue(housing["cumplido"])
+        self.assertFalse(housing["bloquea_completitud"])
+        self.assertEqual(housing["documentos_detectados"], 1)
+        self.assertEqual(housing["documentos_requeridos"], 1)
+
+    def test_housing_group_accepts_request_receipt(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": (
+                            "JUSTIFICANTE_SOLICITUD_"
+                            "INFORME_VIVIENDA"
+                        ),
+                        "archivo": (
+                            "justificante_solicitud_"
+                            "informe_vivienda.pdf"
+                        ),
+                    },
+                ],
+            )
+        )
+
+        housing = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VIVIENDA"
+        )
+
+        self.assertEqual(housing["estado"], "CUMPLIDO")
+        self.assertTrue(housing["cumplido"])
+        self.assertFalse(housing["bloquea_completitud"])
+        self.assertEqual(housing["documentos_detectados"], 1)
+        self.assertEqual(housing["documentos_requeridos"], 1)
+
+    def test_spouse_requires_marriage_certificate(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": (
+                            "CERTIFICADO_MATRIMONIO"
+                        ),
+                    },
+                ],
+                context={
+                    (
+                        "vinculo_reagrupado_"
+                        "reagrupante"
+                    ): "CÓNYUGE",
+                },
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VINCULO"
+        )
+
+        self.assertTrue(group["cumplido"])
+        self.assertTrue(
+            group[
+                "filtro_contextual_aplicado"
+            ]
+        )
+        self.assertEqual(
+            [
+                option["documento_codigo"]
+                for option in group["opciones"]
+            ],
+            ["CERTIFICADO_MATRIMONIO"],
+        )
+
+    def test_spouse_does_not_accept_birth_certificate(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                ["ACTA_NACIMIENTO"],
+                context={
+                    (
+                        "vinculo_reagrupado_"
+                        "reagrupante"
+                    ): "CÓNYUGE",
+                },
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VINCULO"
+        )
+
+        self.assertFalse(group["cumplido"])
+        self.assertEqual(
+            [
+                option["documento_codigo"]
+                for option in group["opciones"]
+            ],
+            ["CERTIFICADO_MATRIMONIO"],
+        )
+
+    def test_minor_child_requires_birth_certificate(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                ["ACTA_NACIMIENTO"],
+                context={
+                    (
+                        "vinculo_reagrupado_"
+                        "reagrupante"
+                    ): "HIJO/A MENOR 18 AÑOS",
+                },
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VINCULO"
+        )
+
+        self.assertTrue(group["cumplido"])
+        self.assertEqual(
+            [
+                option["documento_codigo"]
+                for option in group["opciones"]
+            ],
+            ["ACTA_NACIMIENTO"],
+        )
+
+    def test_minor_child_does_not_accept_marriage_certificate(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                ["CERTIFICADO_MATRIMONIO"],
+                context={
+                    (
+                        "vinculo_reagrupado_"
+                        "reagrupante"
+                    ): "HIJO/A MENOR 18 AÑOS",
+                },
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"] == "VINCULO"
+        )
+
+        self.assertFalse(group["cumplido"])
+        self.assertEqual(
+            [
+                option["documento_codigo"]
+                for option in group["opciones"]
+            ],
+            ["ACTA_NACIMIENTO"],
+        )
+
+    def test_economic_group_blocks_without_evidence(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [],
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"]
+            == "MEDIOS_ECONOMICOS"
+        )
+
+        self.assertFalse(group["cumplido"])
+        self.assertTrue(
+            group["bloquea_completitud"]
+        )
+        self.assertEqual(
+            group["documentos_requeridos"],
+            1,
+        )
+
+    def test_economic_group_accepts_payroll_evidence(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": "NOMINAS",
+                        "rol_documental": (
+                            "REAGRUPANTE"
+                        ),
+                    },
+                ],
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"]
+            == "MEDIOS_ECONOMICOS"
+        )
+
+        self.assertTrue(group["cumplido"])
+        self.assertEqual(
+            group["documentos_detectados"],
+            1,
+        )
+
+    def test_economic_role_must_be_reagrupante(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": "NOMINAS",
+                        "rol_documental": (
+                            "REAGRUPADO"
+                        ),
+                    },
+                ],
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"]
+            == "MEDIOS_ECONOMICOS"
+        )
+
+        self.assertFalse(group["cumplido"])
+        self.assertEqual(
+            group[
+                "opciones_ambiguas_por_rol"
+            ],
+            1,
+        )
+
+    def test_economic_legacy_aggregate_remains_valid(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    "ACREDITACION_MEDIOS_ECONOMICOS",
+                ],
+            )
+        )
+
+        group = next(
+            group
+            for group in result["grupos"]
+            if group["codigo"]
+            == "MEDIOS_ECONOMICOS"
+        )
+
+        self.assertTrue(group["cumplido"])
+        self.assertEqual(
+            group["documentos_detectados"],
+            1,
+        )
+
+    def test_economic_summary_reports_missing_evidence(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [],
+            )
+        )
+
+        summary = result["evaluacion_economica"]
+
+        self.assertTrue(summary["aplicable"])
+        self.assertFalse(
+            summary[
+                "evidencia_documental_aportada"
+            ]
+        )
+        self.assertEqual(
+            summary["documentos_detectados"],
+            0,
+        )
+        self.assertEqual(
+            summary["codigos_detectados"],
+            [],
+        )
+        self.assertFalse(
+            summary[
+                "suficiencia_economica_evaluada"
+            ]
+        )
+        self.assertIsNone(
+            summary["suficiencia_economica"]
+        )
+        self.assertEqual(
+            summary["estado"],
+            "SIN_EVIDENCIA",
+        )
+
+    def test_economic_summary_reports_detected_evidence(self):
+        result = (
+            readiness
+            .evaluate_semantic_requirement_readiness(
+                14,
+                8,
+                [
+                    {
+                        "codigo": "NOMINAS",
+                        "rol_documental": (
+                            "REAGRUPANTE"
+                        ),
+                    },
+                    {
+                        "codigo": "VIDA_LABORAL",
+                        "rol_documental": (
+                            "REAGRUPANTE"
+                        ),
+                    },
+                ],
+            )
+        )
+
+        summary = result["evaluacion_economica"]
+
+        self.assertTrue(
+            summary[
+                "evidencia_documental_aportada"
+            ]
+        )
+        self.assertEqual(
+            summary["documentos_detectados"],
+            2,
+        )
+        self.assertEqual(
+            summary["codigos_detectados"],
+            [
+                "NOMINAS",
+                "VIDA_LABORAL",
+            ],
+        )
+        self.assertFalse(
+            summary[
+                "suficiencia_economica_evaluada"
+            ]
+        )
+        self.assertIsNone(
+            summary["suficiencia_economica"]
+        )
+        self.assertEqual(
+            summary["estado"],
+            "EVIDENCIA_APORTADA",
+        )
+
     def test_inactive_and_legacy_groups_are_ignored(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
@@ -387,7 +983,7 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                 )
                 VALUES
                     (
-                        50,
+                        60,
                         14,
                         8,
                         'LEGACY_REQ_1_PASAPORTE',
@@ -397,7 +993,7 @@ class DocumentRequirementReadinessTest(unittest.TestCase):
                         1
                     ),
                     (
-                        60,
+                        70,
                         14,
                         8,
                         'INACTIVO',

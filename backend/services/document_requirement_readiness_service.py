@@ -282,6 +282,138 @@ def _load_active_groups(
     return list(groups.values())
 
 
+FAMILY_LINK_CONTEXT_KEY = (
+    "vinculo_reagrupado_reagrupante"
+)
+
+
+def _normalize_context_text(value):
+    text = _norm(value)
+
+    replacements = {
+        "Á": "A",
+        "É": "E",
+        "Í": "I",
+        "Ó": "O",
+        "Ú": "U",
+        "Ü": "U",
+        "Ñ": "N",
+    }
+
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+
+    return " ".join(text.split())
+
+
+def _family_link_profile(context):
+    context = context or {}
+
+    raw_value = context.get(
+        FAMILY_LINK_CONTEXT_KEY
+    )
+
+    normalized = _normalize_context_text(
+        raw_value
+    )
+
+    if not normalized:
+        return {
+            "valor_original": raw_value,
+            "valor_normalizado": "",
+            "estado": "SIN_CONTEXTO",
+            "documentos_aplicables": None,
+            "advertencia": (
+                "No consta el vínculo entre la persona "
+                "reagrupada y la persona reagrupante"
+            ),
+        }
+
+    if normalized == "CONYUGE":
+        return {
+            "valor_original": raw_value,
+            "valor_normalizado": normalized,
+            "estado": "CONFIGURADO",
+            "documentos_aplicables": {
+                "CERTIFICADO_MATRIMONIO",
+            },
+            "advertencia": None,
+        }
+
+    if normalized.startswith("HIJO/A"):
+        return {
+            "valor_original": raw_value,
+            "valor_normalizado": normalized,
+            "estado": "CONFIGURADO_PARCIAL",
+            "documentos_aplicables": {
+                "ACTA_NACIMIENTO",
+            },
+            "advertencia": (
+                "El vínculo exige acta de nacimiento; "
+                "pueden existir requisitos adicionales "
+                "según edad, discapacidad o supuesto."
+            ),
+        }
+
+    return {
+        "valor_original": raw_value,
+        "valor_normalizado": normalized,
+        "estado": "NO_CONFIGURADO",
+        "documentos_aplicables": set(),
+        "advertencia": (
+            "El vínculo consta en el expediente, pero "
+            "todavía no tiene reglas documentales "
+            "específicas configuradas"
+        ),
+    }
+
+
+def _apply_group_context(group, context):
+    if _norm(group.get("codigo")) not in {
+        "VINCULO",
+        "VINCULO_FAMILIAR",
+    }:
+        return {
+            **group,
+            "filtro_contextual_aplicado": False,
+            "contexto_incompleto": False,
+            "contexto_documental": None,
+        }
+
+    profile = _family_link_profile(context)
+    applicable = profile.get(
+        "documentos_aplicables"
+    )
+
+    contextual_group = {
+        **group,
+        "contexto_documental": profile,
+        "filtro_contextual_aplicado": (
+            applicable is not None
+        ),
+        "contexto_incompleto": (
+            profile["estado"]
+            in {
+                "SIN_CONTEXTO",
+                "NO_CONFIGURADO",
+            }
+        ),
+    }
+
+    if applicable is None:
+        return contextual_group
+
+    contextual_group["opciones"] = [
+        option
+        for option in group["opciones"]
+        if _norm(
+            option.get("documento_codigo")
+        ) in applicable
+    ]
+
+    return contextual_group
+
+
 def _evaluate_option(option, detections):
     required_code = option["documento_codigo"]
     required_role = option["rol_documental"]
@@ -422,10 +554,74 @@ def _evaluate_group(group, detections):
     }
 
 
+def _build_economic_evidence_summary(
+    evaluated_groups,
+):
+    group = next(
+        (
+            item
+            for item in evaluated_groups
+            if _norm(item.get("codigo"))
+            == "MEDIOS_ECONOMICOS"
+        ),
+        None,
+    )
+
+    if not group:
+        return {
+            "aplicable": False,
+            "evidencia_documental_aportada": False,
+            "documentos_detectados": 0,
+            "codigos_detectados": [],
+            "suficiencia_economica_evaluada": False,
+            "suficiencia_economica": None,
+            "estado": "NO_APLICABLE",
+        }
+
+    detected_options = [
+        option
+        for option in group.get("opciones", [])
+        if option.get("detectado")
+    ]
+
+    detected_codes = sorted(
+        {
+            _norm(
+                option.get("documento_codigo")
+            )
+            for option in detected_options
+            if _norm(
+                option.get("documento_codigo")
+            )
+        }
+    )
+
+    evidence_detected = bool(detected_options)
+
+    return {
+        "aplicable": True,
+        "evidencia_documental_aportada": (
+            evidence_detected
+        ),
+        "documentos_detectados": len(
+            detected_options
+        ),
+        "codigos_detectados": detected_codes,
+        "suficiencia_economica_evaluada": False,
+        "suficiencia_economica": None,
+        "estado": (
+            "EVIDENCIA_APORTADA"
+            if evidence_detected
+            else "SIN_EVIDENCIA"
+        ),
+    }
+
+
 def evaluate_semantic_requirement_readiness(
     tipo_expediente_id,
     subtipo_expediente_id=None,
     detections=None,
+    context=None,
 ):
     """
     Evalúa los grupos semánticos activos de un tipo/subtipo.
@@ -456,12 +652,22 @@ def evaluate_semantic_requirement_readiness(
     finally:
         conn.close()
 
+    context = dict(context or {})
+
+    contextual_groups = [
+        _apply_group_context(
+            group,
+            context,
+        )
+        for group in groups
+    ]
+
     evaluated_groups = [
         _evaluate_group(
             group,
             normalized_detections,
         )
-        for group in groups
+        for group in contextual_groups
     ]
 
     blocking_groups = [
@@ -503,5 +709,21 @@ def evaluate_semantic_requirement_readiness(
             and not blocking_groups
         ),
         "detecciones": normalized_detections,
+        "evaluacion_economica": (
+            _build_economic_evidence_summary(
+                evaluated_groups
+            )
+        ),
+        "contexto": context,
+        "advertencias_contexto": [
+            group["contexto_documental"]["advertencia"]
+            for group in evaluated_groups
+            if (
+                group.get("contexto_documental")
+                and group["contexto_documental"].get(
+                    "advertencia"
+                )
+            )
+        ],
         "opciones_ambiguas_por_rol": ambiguous_options,
     }

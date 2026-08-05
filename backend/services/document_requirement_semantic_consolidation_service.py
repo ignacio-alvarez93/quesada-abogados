@@ -29,6 +29,13 @@ PROVENANCE_SCHEMA_PATH = (
     / "20260731_create_semantic_requirement_provenance.sql"
 )
 
+NOMENCLATURE_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "database"
+    / "migrations"
+    / "20260731_create_canonical_document_nomenclatures.sql"
+)
+
 
 SEMANTIC_PLAN = [
     # --------------------------------------------------------
@@ -252,6 +259,67 @@ SEMANTIC_PLAN = [
         "regla": "ALL",
         "legacy_ids": [25, 26, 27],
         "orden": 10,
+        "option_nomenclatures": [
+            {
+                "codigo": "PASAPORTE",
+                "rol_documental": "REAGRUPANTE",
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "PASAPORTE REAGRUPANTE"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "PASAPORTE",
+                "rol_documental": "REAGRUPADO",
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "PASAPORTE REAGRUPADO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "PASAPORTE REAGRUPADA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                ],
+            },
+            {
+                "codigo": "NIE",
+                "rol_documental": "REAGRUPANTE",
+                "nomenclatures": [
+                    {
+                        "patron_nombre": "NIE REAGRUPANTE",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": "TIE REAGRUPANTE",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                ],
+            },
+        ],
     },
     {
         "tipo_codigo": "REAGRUPACION_FAMILIAR",
@@ -261,15 +329,178 @@ SEMANTIC_PLAN = [
         "regla": "ALL",
         "legacy_ids": [28],
         "orden": 20,
+        "option_nomenclatures": [
+            {
+                "codigo": "EMPADRONAMIENTO_CONJUNTO",
+                "rol_documental": None,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "EMPADRONAMIENTO CONJUNTO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "EMPADRONAMIENTO COLECTIVO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": "PADRON CONJUNTO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": "PADRON COLECTIVO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO CONVIVENCIA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 30,
+                    },
+                ],
+            },
+        ],
     },
     {
         "tipo_codigo": "REAGRUPACION_FAMILIAR",
         "subtipo_codigo": "INICIAL",
         "codigo": "VIVIENDA",
         "nombre": "ADECUACIÓN DE LA VIVIENDA",
-        "regla": "OPTIONAL",
+        "regla": "ANY",
         "legacy_ids": [29],
         "orden": 30,
+        "option_nomenclatures": [
+            {
+                "codigo": "INFORME_DE_VIVIENDA",
+                "rol_documental": None,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "INFORME DE VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 30,
+                    },
+                    {
+                        "patron_nombre": (
+                            "INFORME VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 40,
+                    },
+                    {
+                        "patron_nombre": (
+                            "INFORME ADECUACION VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 40,
+                    },
+                    {
+                        "patron_nombre": (
+                            "INFORME DE ADECUACION DE VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 30,
+                    },
+                ],
+            },
+        ],
+        "extra_options": [
+            {
+                "codigo": (
+                    "JUSTIFICANTE_SOLICITUD_"
+                    "INFORME_VIVIENDA"
+                ),
+                "nombre": (
+                    "JUSTIFICANTE DE SOLICITUD "
+                    "DEL INFORME DE VIVIENDA"
+                ),
+                "descripcion": (
+                    "Resguardo o justificante que acredita "
+                    "la solicitud del informe de adecuación "
+                    "de vivienda."
+                ),
+                "categoria": "VIVIENDA",
+                "rol_documental": None,
+                "etiqueta_requisito": (
+                    "Justificante de solicitud del "
+                    "informe de vivienda"
+                ),
+                "descripcion_requisito": (
+                    "Alternativa válida mientras el informe "
+                    "de adecuación de vivienda está pendiente."
+                ),
+                "orden": 20,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "JUSTIFICANTE SOLICITUD "
+                            "INFORME VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "RESGUARDO SOLICITUD "
+                            "INFORME VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "SOLICITUD INFORME "
+                            "ADECUACION VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": (
+                            "JUSTIFICANTE SOLICITUD "
+                            "ADECUACION VIVIENDA"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                ],
+            },
+        ],
     },
     {
         "tipo_codigo": "REAGRUPACION_FAMILIAR",
@@ -279,15 +510,339 @@ SEMANTIC_PLAN = [
         "regla": "ALL",
         "legacy_ids": [30],
         "orden": 40,
+        "extra_options": [
+            {
+                "codigo": "ACTA_NACIMIENTO",
+                "nombre": "ACTA DE NACIMIENTO",
+                "descripcion": (
+                    "Documento que acredita la filiación "
+                    "entre descendiente y reagrupante."
+                ),
+                "categoria": "ESTADO_CIVIL",
+                "rol_documental": None,
+                "etiqueta_requisito": (
+                    "Acta de nacimiento para acreditar "
+                    "el vínculo de descendiente"
+                ),
+                "descripcion_requisito": (
+                    "Aplicable a expedientes de reagrupación "
+                    "de hijos o hijas."
+                ),
+                "orden": 20,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": "ACTA DE NACIMIENTO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": "ACTA NACIMIENTO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO DE NACIMIENTO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO NACIMIENTO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 30,
+                    },
+                ],
+            },
+        ],
+        "option_nomenclatures": [
+            {
+                "codigo": "CERTIFICADO_MATRIMONIO",
+                "rol_documental": None,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO MATRIMONIO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": "CERT MATRIMONIO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": (
+                            "ACTA DE MATRIMONIO"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 20,
+                    },
+                    {
+                        "patron_nombre": "ACTA MATRIMONIO",
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 30,
+                    },
+                ],
+            },
+        ],
     },
     {
         "tipo_codigo": "REAGRUPACION_FAMILIAR",
         "subtipo_codigo": "INICIAL",
         "codigo": "MEDIOS_ECONOMICOS",
         "nombre": "ACREDITACIÓN DE MEDIOS ECONÓMICOS",
-        "regla": "ALL",
+        "regla": "ANY",
         "legacy_ids": [31],
         "orden": 50,
+        "extra_options": [
+            {
+                "codigo": "NOMINAS",
+                "nombre": "NÓMINAS",
+                "descripcion": (
+                    "Nómina o conjunto de nóminas que "
+                    "acreditan ingresos del reagrupante."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Nóminas del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia documental de ingresos "
+                    "laborales periódicos."
+                ),
+                "orden": 10,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "NOMINA REAGRUPANTE"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "NOMINAS REAGRUPANTE"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "CONTRATO_TRABAJO",
+                "nombre": "CONTRATO DE TRABAJO",
+                "descripcion": (
+                    "Contrato laboral del reagrupante."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Contrato de trabajo del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia de la relación laboral "
+                    "que origina los ingresos."
+                ),
+                "orden": 20,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "CONTRATO TRABAJO REAGRUPANTE"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "CONTRATO DE TRABAJO "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": (
+                            "pdf,jpg,jpeg,png"
+                        ),
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "VIDA_LABORAL",
+                "nombre": "VIDA LABORAL",
+                "descripcion": (
+                    "Informe de vida laboral del "
+                    "reagrupante."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Vida laboral del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia de altas y trayectoria "
+                    "laboral."
+                ),
+                "orden": 30,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "VIDA LABORAL REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "INFORME VIDA LABORAL "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 20,
+                    },
+                ],
+            },
+            {
+                "codigo": "DECLARACION_IRPF",
+                "nombre": "DECLARACIÓN DEL IRPF",
+                "descripcion": (
+                    "Declaración del IRPF o declaración "
+                    "de la renta del reagrupante."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Declaración de la renta"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia fiscal de ingresos "
+                    "declarados."
+                ),
+                "orden": 40,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "DECLARACION IRPF "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "DECLARACION RENTA "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "DECLARACION DE LA RENTA "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "EXTRACTOS_BANCARIOS",
+                "nombre": "EXTRACTOS BANCARIOS",
+                "descripcion": (
+                    "Extractos bancarios aportados como "
+                    "evidencia de fondos o ingresos."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Extractos bancarios del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia bancaria de saldos, "
+                    "movimientos o ingresos."
+                ),
+                "orden": 50,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "EXTRACTO BANCARIO "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "EXTRACTOS BANCARIOS "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "CERTIFICADO_BANCARIO",
+                "nombre": "CERTIFICADO BANCARIO",
+                "descripcion": (
+                    "Certificado bancario de saldo, "
+                    "titularidad o fondos disponibles."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Certificado bancario del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Evidencia bancaria emitida por "
+                    "la entidad financiera."
+                ),
+                "orden": 60,
+                "nomenclatures": [
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO BANCARIO "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre": (
+                            "CERTIFICADO SALDO "
+                            "REAGRUPANTE"
+                        ),
+                        "extension_permitida": "pdf",
+                        "prioridad": 20,
+                    },
+                ],
+            },
+        ],
     },
 ]
 
@@ -576,6 +1131,431 @@ def _copy_legacy_options(
     return created, reused
 
 
+def _get_or_create_catalog_document(
+    conn,
+    option_definition,
+):
+    code = str(
+        option_definition.get("codigo") or ""
+    ).strip().upper()
+
+    name = str(
+        option_definition.get("nombre") or ""
+    ).strip().upper()
+
+    if not code:
+        raise ValueError(
+            "La opción documental adicional no tiene código"
+        )
+
+    if not name:
+        raise ValueError(
+            f"La opción documental {code} no tiene nombre"
+        )
+
+    row = conn.execute(
+        """
+        SELECT id
+        FROM config_documentos_catalogo
+        WHERE codigo = ?
+        """,
+        (code,),
+    ).fetchone()
+
+    values = (
+        name,
+        str(
+            option_definition.get("descripcion") or ""
+        ).strip() or None,
+        str(
+            option_definition.get("categoria") or ""
+        ).strip().upper() or None,
+        1,
+    )
+
+    if row:
+        conn.execute(
+            """
+            UPDATE config_documentos_catalogo
+            SET
+                nombre = ?,
+                descripcion = ?,
+                categoria = ?,
+                activo = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            values + (int(row["id"]),),
+        )
+        return int(row["id"]), False
+
+    cursor = conn.execute(
+        """
+        INSERT INTO config_documentos_catalogo (
+            codigo,
+            nombre,
+            descripcion,
+            categoria,
+            activo
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (code,) + values,
+    )
+
+    return int(cursor.lastrowid), True
+
+
+def _normalize_extensions(value):
+    raw = str(
+        value or "pdf,jpg,jpeg,png"
+    ).lower().replace(";", ",")
+
+    extensions = []
+
+    for item in raw.split(","):
+        extension = item.strip().lstrip(".")
+
+        if extension and extension not in extensions:
+            extensions.append(extension)
+
+    return ",".join(extensions) or "pdf,jpg,jpeg,png"
+
+
+def _add_extra_nomenclatures(
+    conn,
+    *,
+    document_id,
+    tipo_id,
+    subtipo_id,
+    role,
+    option_definition,
+):
+    created = 0
+    reused = 0
+    updated = 0
+
+    for nomenclature in (
+        option_definition.get("nomenclatures") or []
+    ):
+        pattern = str(
+            nomenclature.get("patron_nombre") or ""
+        ).strip().upper()
+
+        if not pattern:
+            raise ValueError(
+                "La nomenclatura adicional no tiene patrón"
+            )
+
+        extensions = _normalize_extensions(
+            nomenclature.get("extension_permitida")
+        )
+        priority = int(
+            nomenclature.get("prioridad") or 100
+        )
+        active = int(
+            nomenclature.get("activo", 1) or 0
+        )
+
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM config_nomenclaturas_catalogo
+            WHERE documento_catalogo_id = ?
+              AND tipo_expediente_id = ?
+              AND COALESCE(subtipo_expediente_id, -1) =
+                  COALESCE(?, -1)
+              AND COALESCE(rol_documental, '') =
+                  COALESCE(?, '')
+              AND UPPER(TRIM(patron_nombre)) = ?
+              AND LOWER(TRIM(extension_permitida)) = ?
+            """,
+            (
+                int(document_id),
+                int(tipo_id),
+                subtipo_id,
+                role,
+                pattern,
+                extensions,
+            ),
+        ).fetchone()
+
+        values = (
+            priority,
+            active,
+        )
+
+        if existing:
+            changed = any(
+                [
+                    int(existing["prioridad"] or 100)
+                    != priority,
+                    int(existing["activo"] or 0)
+                    != active,
+                ]
+            )
+
+            conn.execute(
+                """
+                UPDATE config_nomenclaturas_catalogo
+                SET
+                    prioridad = ?,
+                    activo = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                values + (int(existing["id"]),),
+            )
+
+            if changed:
+                updated += 1
+            else:
+                reused += 1
+
+            continue
+
+        conn.execute(
+            """
+            INSERT INTO config_nomenclaturas_catalogo (
+                documento_catalogo_id,
+                tipo_expediente_id,
+                subtipo_expediente_id,
+                rol_documental,
+                patron_nombre,
+                extension_permitida,
+                prioridad,
+                activo,
+                origen_legacy_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                int(document_id),
+                int(tipo_id),
+                subtipo_id,
+                role,
+                pattern,
+                extensions,
+                priority,
+                active,
+            ),
+        )
+
+        created += 1
+
+    return {
+        "created": created,
+        "reused": reused,
+        "updated": updated,
+    }
+
+
+def _add_option_nomenclatures(
+    conn,
+    semantic_group_id,
+    tipo_id,
+    subtipo_id,
+    definition,
+):
+    created = 0
+    reused = 0
+    updated = 0
+
+    for option in (
+        definition.get("option_nomenclatures") or []
+    ):
+        code = str(
+            option.get("codigo") or ""
+        ).strip().upper()
+
+        role = str(
+            option.get("rol_documental") or ""
+        ).strip().upper() or None
+
+        if not code:
+            raise ValueError(
+                "La nomenclatura de opción no tiene código"
+            )
+
+        row = conn.execute(
+            """
+            SELECT
+                d.id AS documento_catalogo_id
+            FROM config_grupo_requisito_documentos o
+            JOIN config_documentos_catalogo d
+              ON d.id = o.documento_catalogo_id
+            WHERE o.grupo_id = ?
+              AND d.codigo = ?
+              AND COALESCE(o.rol_documental, '') =
+                  COALESCE(?, '')
+              AND o.activo = 1
+            """,
+            (
+                int(semantic_group_id),
+                code,
+                role,
+            ),
+        ).fetchone()
+
+        if not row:
+            raise ValueError(
+                "No existe la opción heredada "
+                f"{code} / {role or 'SIN_ROL'} "
+                f"en el grupo #{semantic_group_id}"
+            )
+
+        nomenclature_summary = (
+            _add_extra_nomenclatures(
+                conn,
+                document_id=int(
+                    row["documento_catalogo_id"]
+                ),
+                tipo_id=tipo_id,
+                subtipo_id=subtipo_id,
+                role=role,
+                option_definition=option,
+            )
+        )
+
+        created += nomenclature_summary["created"]
+        reused += nomenclature_summary["reused"]
+        updated += nomenclature_summary["updated"]
+
+    return {
+        "nomenclatures_created": created,
+        "nomenclatures_reused": reused,
+        "nomenclatures_updated": updated,
+    }
+
+
+def _add_extra_options(
+    conn,
+    semantic_group_id,
+    tipo_id,
+    subtipo_id,
+    definition,
+):
+    created = 0
+    reused = 0
+    catalog_created = 0
+    catalog_reused = 0
+    nomenclatures_created = 0
+    nomenclatures_reused = 0
+    nomenclatures_updated = 0
+
+    for option in definition.get("extra_options") or []:
+        document_id, document_created = (
+            _get_or_create_catalog_document(
+                conn,
+                option,
+            )
+        )
+
+        if document_created:
+            catalog_created += 1
+        else:
+            catalog_reused += 1
+
+        role = str(
+            option.get("rol_documental") or ""
+        ).strip().upper() or None
+
+        nomenclature_summary = _add_extra_nomenclatures(
+            conn,
+            document_id=document_id,
+            tipo_id=tipo_id,
+            subtipo_id=subtipo_id,
+            role=role,
+            option_definition=option,
+        )
+
+        nomenclatures_created += (
+            nomenclature_summary["created"]
+        )
+        nomenclatures_reused += (
+            nomenclature_summary["reused"]
+        )
+        nomenclatures_updated += (
+            nomenclature_summary["updated"]
+        )
+
+        row = conn.execute(
+            """
+            SELECT id
+            FROM config_grupo_requisito_documentos
+            WHERE grupo_id = ?
+              AND documento_catalogo_id = ?
+              AND COALESCE(rol_documental, '') =
+                  COALESCE(?, '')
+            """,
+            (
+                int(semantic_group_id),
+                int(document_id),
+                role,
+            ),
+        ).fetchone()
+
+        values = (
+            str(
+                option.get("etiqueta_requisito") or ""
+            ).strip() or None,
+            str(
+                option.get("descripcion_requisito") or ""
+            ).strip() or None,
+            int(option.get("orden") or 0),
+            1,
+        )
+
+        if row:
+            conn.execute(
+                """
+                UPDATE config_grupo_requisito_documentos
+                SET
+                    etiqueta_requisito = ?,
+                    descripcion_requisito = ?,
+                    orden = ?,
+                    activo = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                values + (int(row["id"]),),
+            )
+            reused += 1
+            continue
+
+        conn.execute(
+            """
+            INSERT INTO config_grupo_requisito_documentos (
+                grupo_id,
+                documento_catalogo_id,
+                rol_documental,
+                etiqueta_requisito,
+                descripcion_requisito,
+                orden,
+                activo
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(semantic_group_id),
+                int(document_id),
+                role,
+            )
+            + values,
+        )
+        created += 1
+
+    return {
+        "options_created": created,
+        "options_reused": reused,
+        "catalog_created": catalog_created,
+        "catalog_reused": catalog_reused,
+        "nomenclatures_created": nomenclatures_created,
+        "nomenclatures_reused": nomenclatures_reused,
+        "nomenclatures_updated": nomenclatures_updated,
+    }
+
+
 def consolidate_semantic_groups(
     *,
     deactivate_legacy=True,
@@ -583,6 +1563,11 @@ def consolidate_semantic_groups(
     if not PROVENANCE_SCHEMA_PATH.exists():
         raise FileNotFoundError(
             "No existe el esquema de trazabilidad semántica"
+        )
+
+    if not NOMENCLATURE_SCHEMA_PATH.exists():
+        raise FileNotFoundError(
+            "No existe el esquema de nomenclaturas canónicas"
         )
 
     conn = _connect()
@@ -594,12 +1579,23 @@ def consolidate_semantic_groups(
             )
         )
 
+        conn.executescript(
+            NOMENCLATURE_SCHEMA_PATH.read_text(
+                encoding="utf-8"
+            )
+        )
+
         summary = {
             "semantic_groups_planned": len(SEMANTIC_PLAN),
             "semantic_groups_created": 0,
             "semantic_groups_reused": 0,
             "options_created": 0,
             "options_reused": 0,
+            "catalog_documents_created": 0,
+            "catalog_documents_reused": 0,
+            "nomenclatures_created": 0,
+            "nomenclatures_reused": 0,
+            "nomenclatures_updated": 0,
             "provenance_created": 0,
             "provenance_reused": 0,
             "legacy_groups_deactivated": 0,
@@ -681,6 +1677,62 @@ def consolidate_semantic_groups(
                     summary[
                         "legacy_groups_deactivated"
                     ] += 1
+
+            option_nomenclature_summary = (
+                _add_option_nomenclatures(
+                    conn,
+                    semantic_group_id,
+                    tipo_id,
+                    subtipo_id,
+                    definition,
+                )
+            )
+
+            summary["nomenclatures_created"] += (
+                option_nomenclature_summary[
+                    "nomenclatures_created"
+                ]
+            )
+            summary["nomenclatures_reused"] += (
+                option_nomenclature_summary[
+                    "nomenclatures_reused"
+                ]
+            )
+            summary["nomenclatures_updated"] += (
+                option_nomenclature_summary[
+                    "nomenclatures_updated"
+                ]
+            )
+
+            extra_summary = _add_extra_options(
+                conn,
+                semantic_group_id,
+                tipo_id,
+                subtipo_id,
+                definition,
+            )
+
+            summary["options_created"] += (
+                extra_summary["options_created"]
+            )
+            summary["options_reused"] += (
+                extra_summary["options_reused"]
+            )
+            summary["catalog_documents_created"] += (
+                extra_summary["catalog_created"]
+            )
+            summary["catalog_documents_reused"] += (
+                extra_summary["catalog_reused"]
+            )
+            summary["nomenclatures_created"] += (
+                extra_summary["nomenclatures_created"]
+            )
+            summary["nomenclatures_reused"] += (
+                extra_summary["nomenclatures_reused"]
+            )
+            summary["nomenclatures_updated"] += (
+                extra_summary["nomenclatures_updated"]
+            )
 
         conn.commit()
         return summary

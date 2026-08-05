@@ -30,6 +30,9 @@ from backend.services import (
     document_requirement_readiness_service as semantic_readiness_service,
 )
 from backend.services import (
+    expedient_dynamic_form_service as dynamic_form_service,
+)
+from backend.services import (
     document_role_inference_service as role_inference_service,
 )
 from backend.services import (
@@ -161,6 +164,132 @@ def _get_expediente(conn, expediente_id):
             (int(expediente_id),),
         ).fetchone()
     )
+
+
+def _get_presentation_target_scope(
+    conn,
+    expediente,
+):
+    """
+    Determina la raíz documental del diagnóstico.
+
+    Regla actual:
+    - con esquema de targets: exige target PRESENTACION;
+    - sin esquema de targets: conserva compatibilidad legacy
+      para bases antiguas y pruebas aisladas;
+    - nunca accede al disco.
+    """
+    expediente_id = expediente.get("id")
+    box_root = _norm_path(
+        expediente.get("box_folder_path")
+    )
+
+    base_result = {
+        "diagnostic_scope": (
+            "PRESENTACION_TARGET"
+        ),
+        "target_disponible": False,
+        "target_id": None,
+        "target_relative_path": "",
+        "target_absolute_path": "",
+        "inventory_root": "",
+        "legacy_fallback": False,
+    }
+
+    if not box_root:
+        base_result["motivo"] = (
+            "El expediente no tiene ruta Box vinculada"
+        )
+        return base_result
+
+    if not _table_exists(
+        conn,
+        "expedient_document_targets",
+    ):
+        return {
+            **base_result,
+            "diagnostic_scope": "LEGACY_BOX_ROOT",
+            "target_disponible": True,
+            "target_absolute_path": box_root,
+            "inventory_root": box_root,
+            "legacy_fallback": True,
+            "motivo": (
+                "Esquema de targets no disponible; "
+                "se utiliza la raíz Box legacy"
+            ),
+        }
+
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            relative_path
+        FROM expedient_document_targets
+        WHERE expediente_id = ?
+          AND purpose = 'PRESENTACION'
+          AND active = 1
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (int(expediente_id),),
+    ).fetchone()
+
+    if not row:
+        base_result["motivo"] = (
+            "Selecciona una carpeta target "
+            "de presentación"
+        )
+        return base_result
+
+    relative_path = (
+        str(row["relative_path"] or "")
+        .replace("\\", "/")
+        .strip("/")
+    )
+
+    parts = [
+        part
+        for part in relative_path.split("/")
+        if part
+    ]
+
+    if (
+        not relative_path
+        or any(part in {".", ".."} for part in parts)
+    ):
+        base_result["motivo"] = (
+            "El target de presentación tiene "
+            "una ruta relativa inválida"
+        )
+        return base_result
+
+    target_root = _norm_path(
+        f"{box_root}/{relative_path}"
+    )
+
+    expected_prefix = box_root + "/"
+
+    if not target_root.startswith(
+        expected_prefix
+    ):
+        base_result["motivo"] = (
+            "El target de presentación sale "
+            "de la ruta Box del expediente"
+        )
+        return base_result
+
+    return {
+        **base_result,
+        "target_disponible": True,
+        "target_id": int(row["id"]),
+        "target_relative_path": relative_path,
+        "target_absolute_path": target_root,
+        "inventory_root": target_root,
+        "motivo": (
+            "Diagnóstico limitado al target "
+            "de presentación"
+        ),
+    }
 
 
 def _get_box_inventory(conn, box_folder_path):
@@ -460,82 +589,300 @@ def _norm_filename(value):
 
 
 def _pattern_matches_filename(pattern, filename):
+    import re
+
     pattern = _norm_filename(pattern)
     filename = _norm_filename(filename)
 
     if not pattern or not filename:
         return False
 
-    # Coincidencia directa.
-    if pattern in filename:
-        return True
+    pattern = re.sub(r"\\s+", " ", pattern).strip()
+    filename = re.sub(r"\\s+", " ", filename).strip()
 
-    # Permitir patrones con * de forma simple.
     if "*" in pattern:
-        import re
-        regex = "^" + re.escape(pattern).replace("\\*", ".*") + "$"
+        escaped = re.escape(pattern)
+        wildcard = escaped.replace(r"\\*", ".*")
+        regex = rf"(?<![A-Z0-9]){wildcard}(?![A-Z0-9])"
         return re.search(regex, filename) is not None
 
-    return False
+    regex = (
+        rf"(?<![A-Z0-9])"
+        rf"{re.escape(pattern)}"
+        rf"(?![A-Z0-9])"
+    )
+
+    return re.search(regex, filename) is not None
+
+
+def _nomenclature_match_rank(rule):
+    source = _norm(
+        rule.get("fuente_nomenclatura")
+    )
+
+    source_rank = (
+        0
+        if source == "CANONICAL"
+        else 1
+    )
+
+    try:
+        priority = int(
+            rule.get("prioridad")
+            if rule.get("prioridad") is not None
+            else 100
+        )
+    except (TypeError, ValueError):
+        priority = 100
+
+    normalized_pattern = _norm_filename(
+        rule.get("patron_nombre")
+    )
+
+    pattern_length_rank = -len(
+        normalized_pattern
+    )
+
+    try:
+        nomenclature_id = int(
+            rule.get("id") or 0
+        )
+    except (TypeError, ValueError):
+        nomenclature_id = 0
+
+    return (
+        source_rank,
+        priority,
+        pattern_length_rank,
+        nomenclature_id,
+    )
+
+
+def _select_nomenclature_candidate(candidates):
+    """
+    Selecciona una detección automática segura.
+
+    Si existen candidatos de códigos distintos:
+    - permite escoger el patrón específico cuando contiene
+      completamente al patrón general;
+    - considera ambiguos los patrones independientes.
+
+    Un archivo compuesto no debe satisfacer automáticamente varios
+    requisitos documentales.
+    """
+    if not candidates:
+        return None, []
+
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (
+            _nomenclature_match_rank(
+                candidate["rule"]
+            )
+        ),
+    )
+
+    distinct_codes = {
+        candidate["code"]
+        for candidate in ordered
+    }
+
+    if len(distinct_codes) == 1:
+        return ordered[0], ordered[1:]
+
+    normalized_patterns = {
+        id(candidate): _norm_filename(
+            candidate["pattern"]
+        )
+        for candidate in ordered
+    }
+
+    for candidate in ordered:
+        candidate_pattern = normalized_patterns[
+            id(candidate)
+        ]
+
+        other_patterns = [
+            normalized_patterns[id(other)]
+            for other in ordered
+            if other is not candidate
+        ]
+
+        if (
+            other_patterns
+            and all(
+                other_pattern in candidate_pattern
+                for other_pattern in other_patterns
+            )
+        ):
+            return (
+                candidate,
+                [
+                    other
+                    for other in ordered
+                    if other is not candidate
+                ],
+            )
+
+    return None, ordered
 
 
 def _doc_codes_from_nomenclatures(items, nomenclatures):
     """
-    Segunda capa de detección por patrones configurados.
+    Detecta como máximo una nomenclatura por archivo.
 
-    Recorre TODOS los archivos bajo la ruta del expediente, estén en raíz,
-    PARA PRESENTAR, APORTAR, REQ o cualquier subdirectorio.
+    Preferencia:
+    - canónica frente a legacy;
+    - menor prioridad;
+    - patrón más específico;
+    - ID como desempate estable.
     """
     codes = set()
     detected = []
 
     for item in items or []:
-        filename = item.get("nombre_archivo") or ""
-        extension = _norm(item.get("extension")).lower().lstrip(".")
+        filename = item.get(
+            "nombre_archivo"
+        ) or ""
+
+        extension = _norm(
+            item.get("extension")
+        ).lower().lstrip(".")
+
+        candidates = []
 
         for rule in nomenclatures or []:
-            pattern = rule.get("patron_nombre") or ""
-            allowed_raw = str(rule.get("extension_permitida") or "").lower().replace(";", ",")
-            allowed = {x.strip().lstrip(".") for x in allowed_raw.split(",") if x.strip()}
+            pattern = (
+                rule.get("patron_nombre")
+                or ""
+            )
 
-            if allowed and extension and extension not in allowed:
+            allowed_raw = str(
+                rule.get(
+                    "extension_permitida"
+                )
+                or ""
+            ).lower().replace(";", ",")
+
+            allowed = {
+                value.strip().lstrip(".")
+                for value in allowed_raw.split(",")
+                if value.strip()
+            }
+
+            if (
+                allowed
+                and extension
+                and extension not in allowed
+            ):
                 continue
 
-            if _pattern_matches_filename(pattern, filename):
-                code = _norm(rule.get("codigo_documento"))
-                if not code:
-                    continue
+            if not _pattern_matches_filename(
+                pattern,
+                filename,
+            ):
+                continue
 
-                codes.add(code)
-                source = _norm(
-                    rule.get("fuente_nomenclatura")
-                )
+            code = _norm(
+                rule.get("codigo_documento")
+            )
 
-                detected.append(
-                    {
-                        "codigo": code,
-                        "rol_documental": (
-                            _norm(
-                                rule.get(
-                                    "rol_documental"
-                                )
-                            )
-                            or None
-                        ),
-                        "archivo": filename,
-                        "ruta": item.get("ruta"),
-                        "patron": pattern,
-                        "nomenclatura_id": rule.get("id"),
-                        "fuente_nomenclatura": (
-                            source or "LEGACY"
-                        ),
-                        "origen": (
-                            "nomenclatura_canónica"
-                            if source == "CANONICAL"
-                            else "nomenclatura_legacy"
-                        ),
-                    }
-                )
+            if not code:
+                continue
+
+            candidates.append(
+                {
+                    "rule": rule,
+                    "code": code,
+                    "pattern": pattern,
+                }
+            )
+
+        if not candidates:
+            continue
+
+        winner, discarded = (
+            _select_nomenclature_candidate(
+                candidates
+            )
+        )
+
+        if winner is None:
+            detected.append(
+                {
+                    "codigo": "",
+                    "rol_documental": None,
+                    "archivo": filename,
+                    "ruta": item.get("ruta"),
+                    "patron": None,
+                    "nomenclatura_id": None,
+                    "fuente_nomenclatura": None,
+                    "origen": (
+                        "nomenclatura_ambigua"
+                    ),
+                    "estado_clasificacion": (
+                        "AMBIGUA"
+                    ),
+                    "codigos_candidatos": sorted(
+                        {
+                            candidate["code"]
+                            for candidate in discarded
+                        }
+                    ),
+                    "patrones_candidatos": [
+                        candidate["pattern"]
+                        for candidate in discarded
+                    ],
+                    "coincidencias_descartadas": (
+                        len(discarded)
+                    ),
+                }
+            )
+            continue
+
+        rule = winner["rule"]
+        code = winner["code"]
+        pattern = winner["pattern"]
+
+        codes.add(code)
+
+        source = _norm(
+            rule.get("fuente_nomenclatura")
+        )
+
+        detected.append(
+            {
+                "codigo": code,
+                "rol_documental": (
+                    _norm(
+                        rule.get(
+                            "rol_documental"
+                        )
+                    )
+                    or None
+                ),
+                "archivo": filename,
+                "ruta": item.get("ruta"),
+                "patron": pattern,
+                "nomenclatura_id": (
+                    rule.get("id")
+                ),
+                "fuente_nomenclatura": (
+                    source or "LEGACY"
+                ),
+                "origen": (
+                    "nomenclatura_canónica"
+                    if source == "CANONICAL"
+                    else "nomenclatura_legacy"
+                ),
+                "coincidencias_descartadas": (
+                    len(discarded)
+                ),
+                "estado_clasificacion": (
+                    "AUTOMATICA"
+                ),
+            }
+        )
 
     return codes, detected
 
@@ -942,6 +1289,61 @@ def _confidence(base, required_docs, faltantes, signals):
     return round(min(0.98, max(0.10, value)), 2)
 
 
+def _extract_document_classification_ambiguities(
+    detected_documents,
+):
+    """
+    Extrae archivos que no pueden clasificarse automáticamente
+    porque coinciden con nomenclaturas independientes.
+
+    Estas entradas:
+    - no aportan códigos documentales;
+    - no completan requisitos;
+    - deben resolverse desde la bandeja documental.
+    """
+    ambiguities = []
+
+    for detection in detected_documents or []:
+        if (
+            detection.get("estado_clasificacion")
+            != "AMBIGUA"
+        ):
+            continue
+
+        ambiguities.append(
+            {
+                "archivo": detection.get("archivo"),
+                "ruta": detection.get("ruta"),
+                "estado": "AMBIGUA",
+                "origen": detection.get(
+                    "origen"
+                ),
+                "codigos_candidatos": list(
+                    detection.get(
+                        "codigos_candidatos",
+                        [],
+                    )
+                ),
+                "patrones_candidatos": list(
+                    detection.get(
+                        "patrones_candidatos",
+                        [],
+                    )
+                ),
+                "coincidencias": int(
+                    detection.get(
+                        "coincidencias_descartadas",
+                        0,
+                    )
+                    or 0
+                ),
+                "requiere_revision": True,
+            }
+        )
+
+    return ambiguities
+
+
 def _build_semantic_detections(detected_documents):
     """
     Convierte las detecciones actuales en entradas estructuradas
@@ -1052,6 +1454,99 @@ def _build_semantic_detections(detected_documents):
 
 
 
+def _semantic_missing_requirements(
+    semantic_result,
+):
+    """
+    Convierte los grupos semánticos bloqueantes al contrato
+    visual histórico de documentos faltantes.
+
+    No modifica la evaluación semántica original.
+    """
+    if not semantic_result:
+        return []
+
+    if not semantic_result.get("disponible"):
+        return []
+
+    groups = semantic_result.get("grupos") or []
+
+    missing = []
+
+    for group in groups:
+        if not group.get("bloquea_completitud"):
+            continue
+
+        options = []
+
+        for option in group.get("opciones") or []:
+            options.append(
+                {
+                    "codigo": (
+                        option.get("documento_codigo")
+                        or ""
+                    ),
+                    "nombre": (
+                        option.get("documento_nombre")
+                        or option.get(
+                            "etiqueta_requisito"
+                        )
+                        or option.get(
+                            "documento_codigo"
+                        )
+                        or ""
+                    ),
+                    "rol_documental": (
+                        option.get("rol_documental")
+                    ),
+                    "detectado": bool(
+                        option.get("detectado")
+                    ),
+                    "ambiguo_por_rol": bool(
+                        option.get(
+                            "ambiguo_por_rol"
+                        )
+                    ),
+                }
+            )
+
+        missing.append(
+            {
+                "codigo": (
+                    group.get("codigo")
+                    or ""
+                ),
+                "nombre": (
+                    group.get("nombre")
+                    or group.get("codigo")
+                    or "Requisito documental"
+                ),
+                "grupo_semantico": True,
+                "regla_cumplimiento": (
+                    group.get(
+                        "regla_cumplimiento"
+                    )
+                ),
+                "estado": group.get("estado"),
+                "documentos_detectados": int(
+                    group.get(
+                        "documentos_detectados"
+                    )
+                    or 0
+                ),
+                "documentos_requeridos": int(
+                    group.get(
+                        "documentos_requeridos"
+                    )
+                    or 0
+                ),
+                "opciones": options,
+            }
+        )
+
+    return missing
+
+
 def _summarize_role_inferences(detections):
     """
     Resume los resultados de inferencia de rol sin afectar
@@ -1116,14 +1611,80 @@ def _summarize_role_inferences(detections):
     return summary
 
 
+def _load_semantic_document_context(expediente):
+    """
+    Carga el contexto documental dinámico del expediente.
+
+    Es tolerante a:
+    - tablas dinámicas todavía no inicializadas;
+    - expedientes sin datos específicos;
+    - errores de lectura que no deben romper el motor legacy.
+    """
+    expediente_id = expediente.get("id")
+
+    if not expediente_id:
+        return {}
+
+    try:
+        return (
+            dynamic_form_service
+            .load_datos_especificos(
+                expediente_id
+            )
+            or {}
+        )
+    except Exception:
+        return {}
+
+
+def _semantic_readiness_mode(expediente):
+    """
+    Determina si la completitud semántica es vinculante.
+
+    La activación se realiza por tipo/subtipo consolidado para
+    evitar modificar expedientes todavía no migrados.
+    """
+    tipo_codigo = _norm(
+        expediente.get("tipo_expediente_codigo")
+    )
+    subtipo_codigo = _norm(
+        expediente.get("subtipo_expediente_codigo")
+    )
+
+    # La completitud semántica se activará cuando los
+    # documentos procedan de la Bandeja Documental con:
+    # - código documental canónico;
+    # - rol documental;
+    # - persona vinculada;
+    # - nomenclatura normalizada.
+    #
+    # Los expedientes actuales contienen nombres legacy,
+    # por lo que el motor semántico permanece informativo
+    # y no bloqueante.
+    binding_scopes = set()
+
+    if (
+        tipo_codigo,
+        subtipo_codigo,
+    ) in binding_scopes:
+        return "VINCULANTE"
+
+    return "PARALELO_NO_VINCULANTE"
+
+
 def _evaluate_semantic_readiness_safe(
     expediente,
     detections,
+    context=None,
 ):
     """
     Ejecuta el motor semántico sin permitir que sus errores rompan
     el diagnóstico documental legacy.
     """
+    mode = _semantic_readiness_mode(
+        expediente
+    )
+
     try:
         result = (
             semantic_readiness_service
@@ -1131,19 +1692,20 @@ def _evaluate_semantic_readiness_safe(
                 expediente.get("tipo_expediente_id"),
                 expediente.get("subtipo_expediente_id"),
                 detections,
+                context=context,
             )
         )
 
         return {
             "disponible": True,
-            "modo": "PARALELO_NO_VINCULANTE",
+            "modo": mode,
             **result,
         }
 
     except Exception as exc:
         return {
             "disponible": False,
-            "modo": "PARALELO_NO_VINCULANTE",
+            "modo": mode,
             "completo": None,
             "grupos": [],
             "grupos_bloqueantes": None,
@@ -1179,12 +1741,29 @@ def diagnose_expediente_document_state(expediente_id):
             expediente,
         )
 
-        root = expediente.get("box_folder_path")
+        semantic_document_context = (
+            _load_semantic_document_context(
+                expediente
+            )
+        )
+
+        presentation_target = (
+            _get_presentation_target_scope(
+                conn,
+                expediente,
+            )
+        )
+
+        root = presentation_target.get(
+            "inventory_root"
+        )
+
         if not root:
             semantic_result = (
                 _evaluate_semantic_readiness_safe(
                     expediente,
                     [],
+                    context=semantic_document_context,
                 )
             )
 
@@ -1263,12 +1842,44 @@ def diagnose_expediente_document_state(expediente_id):
                 "expediente": expediente,
                 "obligatorios": [],
                 "detectados": [],
+                "ambiguedades_documentales": [],
                 "faltantes": [],
                 "semantic_readiness": semantic_result,
                 "resumen_inferencia_roles": (
                     _summarize_role_inferences([])
                 ),
-                "senales": ["El expediente no tiene ruta Box vinculada"],
+                "diagnostic_scope": (
+                    presentation_target.get(
+                        "diagnostic_scope"
+                    )
+                ),
+                "target_disponible": False,
+                "target_id": (
+                    presentation_target.get(
+                        "target_id"
+                    )
+                ),
+                "target_relative_path": (
+                    presentation_target.get(
+                        "target_relative_path"
+                    )
+                    or ""
+                ),
+                "target_absolute_path": (
+                    presentation_target.get(
+                        "target_absolute_path"
+                    )
+                    or ""
+                ),
+                "senales": [
+                    presentation_target.get(
+                        "motivo"
+                    )
+                    or (
+                        "Selecciona una carpeta target "
+                        "de presentación"
+                    )
+                ],
                 "resumen": {
                     "total_archivos": 0,
                     "total_carpetas": 0,
@@ -1278,9 +1889,33 @@ def diagnose_expediente_document_state(expediente_id):
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
             }
 
-        folders, items = _get_box_inventory(conn, root)
-        required_docs = _get_required_documents(conn, expediente)
-        nomenclatures = _get_nomenclatures(conn, expediente)
+        # Inventario documental:
+        # exclusivamente el target PRESENTACION.
+        folders, items = _get_box_inventory(
+            conn,
+            root,
+        )
+
+        # Inventario procesal:
+        # toda la raíz Box del expediente.
+        global_root = expediente.get(
+            "box_folder_path"
+        )
+        global_folders, global_items = (
+            _get_box_inventory(
+                conn,
+                global_root,
+            )
+        )
+
+        required_docs = _get_required_documents(
+            conn,
+            expediente,
+        )
+        nomenclatures = _get_nomenclatures(
+            conn,
+            expediente,
+        )
 
     doc_codes, detected_docs = _doc_codes_from_items(items)
     nomenclature_codes, detected_by_nomenclature = _doc_codes_from_nomenclatures(items, nomenclatures)
@@ -1290,12 +1925,19 @@ def diagnose_expediente_document_state(expediente_id):
         + list(detected_by_nomenclature or [])
     )
 
+    document_classification_ambiguities = (
+        _extract_document_classification_ambiguities(
+            detected_by_nomenclature
+        )
+    )
+
     semantic_detections = _build_semantic_detections(
         detected_docs
     )
     semantic_result = _evaluate_semantic_readiness_safe(
         expediente,
         semantic_detections,
+        context=semantic_document_context,
     )
     role_inference_summary = (
         _summarize_role_inferences(
@@ -1303,15 +1945,96 @@ def diagnose_expediente_document_state(expediente_id):
         )
     )
 
-    folder_codes, detected_folders = _folder_codes_from_folders(folders)
-    encontrados, faltantes = _match_required_documents(required_docs, doc_codes, items=items)
+    folder_codes, detected_folders = (
+        _folder_codes_from_folders(
+            folders
+        )
+    )
+
+    encontrados, faltantes_legacy = (
+        _match_required_documents(
+            required_docs,
+            doc_codes,
+            items=items,
+        )
+    )
+
+    faltantes_semanticos = (
+        _semantic_missing_requirements(
+            semantic_result
+        )
+    )
+
+    semantic_groups_available = bool(
+        semantic_result.get("disponible")
+        and (
+            semantic_result.get("modo")
+            == "VINCULANTE"
+        )
+        and semantic_result.get("grupos")
+    )
+
+    # En expedientes con modelo semántico consolidado,
+    # los grupos son la fuente principal de completitud.
+    # El resultado legacy se conserva para auditoría.
+    faltantes = (
+        faltantes_semanticos
+        if semantic_groups_available
+        else faltantes_legacy
+    )
 
     senales = []
 
-    hay_denegado, motivo_denegado = _hay_denegacion(doc_codes, folder_codes, folders, items)
-    hay_concedido, motivo_concedido = _hay_concesion(doc_codes, folder_codes, folders, items)
-    hay_req, motivo_req = _hay_requerimiento(doc_codes, folder_codes, folders, items)
-    hay_presentado, motivo_presentado = _hay_presentacion(doc_codes, items)
+    if document_classification_ambiguities:
+        senales.append(
+            (
+                "Hay "
+                f"{len(document_classification_ambiguities)} "
+                "archivo(s) con clasificación documental ambigua"
+            )
+        )
+
+    global_doc_codes, _ = (
+        _doc_codes_from_items(
+            global_items
+        )
+    )
+    global_folder_codes, _ = (
+        _folder_codes_from_folders(
+            global_folders
+        )
+    )
+
+    hay_denegado, motivo_denegado = (
+        _hay_denegacion(
+            global_doc_codes,
+            global_folder_codes,
+            global_folders,
+            global_items,
+        )
+    )
+    hay_concedido, motivo_concedido = (
+        _hay_concesion(
+            global_doc_codes,
+            global_folder_codes,
+            global_folders,
+            global_items,
+        )
+    )
+    hay_req, motivo_req = (
+        _hay_requerimiento(
+            global_doc_codes,
+            global_folder_codes,
+            global_folders,
+            global_items,
+        )
+    )
+    hay_presentado, motivo_presentado = (
+        _hay_presentacion(
+            global_doc_codes,
+            global_items,
+        )
+    )
 
     if motivo_denegado:
         senales.append(motivo_denegado)
@@ -1444,21 +2167,90 @@ def diagnose_expediente_document_state(expediente_id):
         "confianza": _confidence(base_conf, required_docs, faltantes, senales),
         "expediente_id": int(expediente_id),
         "expediente": expediente,
+        "diagnostic_scope": (
+            presentation_target.get(
+                "diagnostic_scope"
+            )
+        ),
+        "target_disponible": bool(
+            presentation_target.get(
+                "target_disponible"
+            )
+        ),
+        "target_id": presentation_target.get(
+            "target_id"
+        ),
+        "target_relative_path": (
+            presentation_target.get(
+                "target_relative_path"
+            )
+            or ""
+        ),
+        "target_absolute_path": (
+            presentation_target.get(
+                "target_absolute_path"
+            )
+            or ""
+        ),
         "obligatorios": required_docs,
         "encontrados": encontrados,
         "detectados": detectados,
+        "ambiguedades_documentales": (
+            document_classification_ambiguities
+        ),
         "nomenclaturas_usadas": len(nomenclatures),
         "semantic_readiness": semantic_result,
         "resumen_inferencia_roles": (
             role_inference_summary
         ),
         "faltantes": faltantes,
+        "faltantes_semanticos": (
+            faltantes_semanticos
+        ),
+        "faltantes_legacy": (
+            faltantes_legacy
+        ),
+        "fuente_completitud": (
+            "SEMANTICA"
+            if semantic_groups_available
+            else "LEGACY"
+        ),
+        "evaluacion_economica_documental": (
+            semantic_result.get(
+                "evaluacion_economica"
+            )
+            or {}
+        ),
         "senales": senales,
         "resumen": {
             "total_archivos": len(items),
             "total_carpetas": len(folders),
-            "total_obligatorios": len(required_docs),
-            "total_encontrados": len(encontrados),
+            "total_archivos_globales": len(
+                global_items
+            ),
+            "total_carpetas_globales": len(
+                global_folders
+            ),
+            "total_obligatorios": (
+                (
+                    semantic_result.get(
+                        "grupos_obligatorios"
+                    )
+                    or 0
+                )
+                if semantic_groups_available
+                else len(required_docs)
+            ),
+            "total_encontrados": (
+                (
+                    semantic_result.get(
+                        "grupos_cumplidos"
+                    )
+                    or 0
+                )
+                if semantic_groups_available
+                else len(encontrados)
+            ),
             "total_faltantes": len(faltantes),
         },
         "generated_at": datetime.now().isoformat(timespec="seconds"),
