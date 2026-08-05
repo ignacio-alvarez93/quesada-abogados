@@ -2620,6 +2620,17 @@ def create_admin_document_event(data):
             "error": str(exc),
         }
 
+    derivation_evaluation = (
+        _evaluate_derivations_after_admin_event(
+            expediente_id=expediente_id,
+            event_code=event_code,
+            usuario=_raw(
+                data.get("usuario")
+                or "ERP"
+            ),
+        )
+    )
+
     return {
         "justificante_id": justificante_id,
         "evento_id": evento_id,
@@ -2633,6 +2644,8 @@ def create_admin_document_event(data):
         "queue_completion": queue_completion,
         "notification_tracking":
             notification_tracking,
+        "derivation_evaluation":
+            derivation_evaluation,
         "dehu_confirmation":
             dehu_confirmation,
         "residence_expiry_update":
@@ -2654,6 +2667,78 @@ def create_admin_document_event(data):
         "denial_resolution_extraction":
             denial_resolution_extraction,
     }
+
+
+def _evaluate_derivations_after_admin_event(
+    expediente_id,
+    event_code,
+    usuario="ERP",
+):
+    """
+    Evalúa las reglas de derivación después de registrar un documento
+    administrativo.
+
+    Esta proyección es secundaria: un error del motor de derivaciones
+    no debe impedir que el documento o la resolución queden registrados.
+    """
+    normalized_event = _text(event_code)
+
+    result_by_event = {
+        "RESOLUCION_FAVORABLE": "CONCEDIDO",
+        "RESOLUCION_DENEGATORIA": "DENEGADO",
+    }
+
+    required_result = result_by_event.get(
+        normalized_event
+    )
+
+    try:
+        from backend.services import (
+            expedient_evolution_service
+        )
+
+        evaluation = (
+            expedient_evolution_service
+            .evaluate_derivation_rules_for_event(
+                expediente_id=int(expediente_id),
+                event_code=normalized_event,
+                resultado=required_result,
+                usuario=_raw(usuario or "ERP"),
+            )
+        )
+
+        return {
+            "ok": True,
+            "event_code": normalized_event,
+            "resultado": required_result,
+            "rules_evaluated": int(
+                evaluation.get(
+                    "rules_evaluated",
+                    0,
+                )
+                or 0
+            ),
+            "proposals": (
+                evaluation.get("proposals")
+                or []
+            ),
+            "skipped": (
+                evaluation.get("skipped")
+                or []
+            ),
+            "error": "",
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "event_code": normalized_event,
+            "resultado": required_result,
+            "rules_evaluated": 0,
+            "proposals": [],
+            "skipped": [],
+            "error": str(exc),
+        }
 
 
 def create_consulta_previa(data):
