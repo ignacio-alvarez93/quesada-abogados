@@ -194,14 +194,14 @@ class VisaToFingerprintsDerivationSeedTest(
         )
         self.conn.commit()
 
-    def test_seed_creates_police_catalog_and_rule(self):
+    def test_seed_creates_foreigner_documents_catalog_and_rule(self):
         self.apply_seed()
 
         family = self.conn.execute(
             """
             SELECT *
             FROM config_familias_expediente
-            WHERE codigo = 'POLICIA_NACIONAL'
+            WHERE codigo = 'DOCUMENTACION_EXTRANJEROS'
             """
         ).fetchone()
 
@@ -237,8 +237,16 @@ class VisaToFingerprintsDerivationSeedTest(
         self.assertIsNotNone(origin_type)
 
         self.assertEqual(
+            family["codigo"],
+            "DOCUMENTACION_EXTRANJEROS",
+        )
+        self.assertEqual(
             expedient_type["familia_id"],
             family["id"],
+        )
+        self.assertEqual(
+            expedient_type["workflow_code"],
+            "DOCUMENTACION_EXTRANJEROS",
         )
         self.assertEqual(
             rule["familia_origen_id"],
@@ -291,7 +299,7 @@ class VisaToFingerprintsDerivationSeedTest(
             """
             SELECT COUNT(*)
             FROM config_familias_expediente
-            WHERE codigo = 'POLICIA_NACIONAL'
+            WHERE codigo = 'DOCUMENTACION_EXTRANJEROS'
             """
         ).fetchone()[0]
 

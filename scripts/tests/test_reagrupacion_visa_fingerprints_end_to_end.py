@@ -919,7 +919,7 @@ class ReagrupacionVisaFingerprintsEndToEndTest(
         )
         self.assertEqual(
             fingerprints["familia_codigo"],
-            "POLICIA_NACIONAL",
+            "DOCUMENTACION_EXTRANJEROS",
         )
         self.assertEqual(
             fingerprints["responsable"],
