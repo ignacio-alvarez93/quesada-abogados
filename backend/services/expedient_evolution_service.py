@@ -1,5 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 
 
@@ -60,11 +61,45 @@ def _migration_path():
 
 
 def ensure_expedient_evolution_schema(conn=None):
+    """
+    Garantiza el esquema de evolución de forma idempotente.
+
+    Cuando participa en una transacción externa y las tablas ya
+    existen, no ejecuta executescript(), porque SQLite podría confirmar
+    implícitamente la transacción activa.
+    """
     owns_connection = conn is None
     if owns_connection:
         conn = _connect()
 
+    required_tables = {
+        "expediente_relaciones",
+        "config_transiciones_autorizacion",
+        "config_reglas_expediente_derivado",
+        "expediente_derivacion_propuestas",
+    }
+
     try:
+        existing_tables = {
+            row["name"]
+            for row in conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                """
+            ).fetchall()
+        }
+
+        if required_tables.issubset(existing_tables):
+            return
+
+        if not owns_connection and conn.in_transaction:
+            raise RuntimeError(
+                "El esquema de evolución debe inicializarse "
+                "antes de comenzar la transacción operativa"
+            )
+
         migration_path = _migration_path()
 
         if not migration_path.exists():
@@ -425,3 +460,418 @@ def list_derivation_proposals(
         rows = conn.execute(sql, params).fetchall()
 
     return [dict(row) for row in rows]
+
+def _table_exists(conn, table_name):
+    row = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = ?
+        """,
+        (table_name,),
+    ).fetchone()
+
+    return row is not None
+
+
+def _insert_expedient_event_with_connection(
+    conn,
+    expediente_id,
+    cliente_id,
+    tipo_evento,
+    titulo,
+    descripcion,
+    entidad_relacionada,
+    entidad_relacionada_id,
+    usuario,
+):
+    """
+    Registra un evento usando la transacción activa.
+
+    No abre conexión propia y no confirma la operación.
+    """
+    if not _table_exists(conn, "expediente_eventos"):
+        raise RuntimeError(
+            "No existe la tabla expediente_eventos"
+        )
+
+    cursor = conn.execute(
+        """
+        INSERT INTO expediente_eventos (
+            expediente_id,
+            cliente_id,
+            tipo_evento,
+            titulo,
+            descripcion,
+            entidad_relacionada,
+            entidad_relacionada_id,
+            usuario
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(expediente_id),
+            int(cliente_id),
+            _normalize_code(tipo_evento),
+            _normalize_code(titulo),
+            str(descripcion or "").strip(),
+            _normalize_code(entidad_relacionada),
+            (
+                int(entidad_relacionada_id)
+                if entidad_relacionada_id is not None
+                else None
+            ),
+            str(usuario or "ERP").strip().upper(),
+        ),
+    )
+
+    return int(cursor.lastrowid)
+
+
+def _build_derived_expedient_data(
+    proposal,
+    origin,
+    expediente_data=None,
+):
+    """
+    Construye los datos del expediente derivado.
+
+    Cliente, tipo y subtipo proceden siempre de la propuesta.
+    """
+    supplied = dict(expediente_data or {})
+
+    origin_number = (
+        str(origin["numero_expediente"] or "").strip()
+        or f"#{origin['id']}"
+    )
+
+    default_observations = (
+        "Expediente creado desde propuesta de derivación "
+        f"del expediente {origin_number}."
+    )
+
+    data = {
+        "cliente_id": int(proposal["cliente_id"]),
+        "tipo_expediente_id": int(
+            proposal["tipo_expediente_destino_id"]
+        ),
+        "subtipo_expediente_id": (
+            int(proposal["subtipo_expediente_destino_id"])
+            if proposal["subtipo_expediente_destino_id"]
+            is not None
+            else None
+        ),
+        "numero_expediente": "",
+        "estado_documental_id": None,
+        "estado_administrativo_id": None,
+        "estado_presentacion": "NO PRESENTADO",
+        "prioridad_id": origin["prioridad_id"],
+        "responsable": origin["responsable"] or "",
+        "fecha_apertura": date.today().isoformat(),
+        "fecha_presentacion": None,
+        "fecha_resolucion": None,
+        "numero_registro": "",
+        "organo_presentacion": "",
+        "provincia": origin["provincia"] or "",
+        "observaciones": default_observations,
+        "observaciones_internas": "",
+        "box_folder_path": "",
+        "activo": 1,
+    }
+
+    protected_fields = {
+        "cliente_id",
+        "tipo_expediente_id",
+        "subtipo_expediente_id",
+    }
+
+    for key, value in supplied.items():
+        if key not in protected_fields:
+            data[key] = value
+
+    return data
+
+
+def accept_derivation_proposal(
+    proposal_id,
+    expediente_data=None,
+    usuario="ERP",
+):
+    """
+    Acepta una propuesta y crea el expediente derivado de forma atómica.
+
+    En una única transacción:
+
+    - crea el expediente destino;
+    - crea la relación origen-destino;
+    - marca la propuesta como CREADA;
+    - registra eventos en ambos expedientes.
+
+    La operación es idempotente cuando la propuesta ya está creada.
+    """
+    from backend.services import expedient_service
+
+    # La inicialización se realiza antes de comenzar la transacción
+    # operativa para evitar commits implícitos de executescript().
+    ensure_expedient_evolution_schema()
+
+    conn = _connect()
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        proposal = conn.execute(
+            """
+            SELECT
+                p.*,
+                r.codigo AS regla_codigo,
+                r.nombre AS regla_nombre,
+                r.tipo_relacion,
+                r.activo AS regla_activa
+            FROM expediente_derivacion_propuestas p
+            JOIN config_reglas_expediente_derivado r
+              ON r.id = p.regla_derivacion_id
+            WHERE p.id = ?
+            """,
+            (int(proposal_id),),
+        ).fetchone()
+
+        if not proposal:
+            raise ValueError(
+                "No existe la propuesta de derivación"
+            )
+
+        if (
+            proposal["estado"] == "CREADA"
+            and proposal["expediente_destino_id"]
+        ):
+            destination = conn.execute(
+                """
+                SELECT *
+                FROM expedientes
+                WHERE id = ?
+                """,
+                (
+                    int(
+                        proposal["expediente_destino_id"]
+                    ),
+                ),
+            ).fetchone()
+
+            conn.commit()
+
+            return {
+                "proposal": dict(proposal),
+                "expediente_destino": (
+                    dict(destination)
+                    if destination
+                    else None
+                ),
+                "created": False,
+                "already_created": True,
+            }
+
+        if proposal["estado"] not in {
+            "PENDIENTE",
+            "ACEPTADA",
+        }:
+            raise ValueError(
+                "La propuesta no puede aceptarse "
+                f"desde el estado {proposal['estado']}"
+            )
+
+        if int(proposal["regla_activa"] or 0) != 1:
+            raise ValueError(
+                "La regla de derivación está inactiva"
+            )
+
+        origin = conn.execute(
+            """
+            SELECT
+                id,
+                cliente_id,
+                numero_expediente,
+                prioridad_id,
+                responsable,
+                provincia,
+                activo
+            FROM expedientes
+            WHERE id = ?
+            """,
+            (
+                int(proposal["expediente_origen_id"]),
+            ),
+        ).fetchone()
+
+        if not origin:
+            raise ValueError(
+                "No existe el expediente de origen"
+            )
+
+        if int(origin["activo"] or 0) != 1:
+            raise ValueError(
+                "El expediente de origen está inactivo"
+            )
+
+        if (
+            int(origin["cliente_id"])
+            != int(proposal["cliente_id"])
+        ):
+            raise ValueError(
+                "La propuesta no pertenece al cliente "
+                "del expediente de origen"
+            )
+
+        derived_data = _build_derived_expedient_data(
+            proposal,
+            origin,
+            expediente_data=expediente_data,
+        )
+
+        destination_id = (
+            expedient_service
+            ._create_expediente_with_connection(
+                conn,
+                derived_data,
+            )
+        )
+
+        relation = create_expedient_relation(
+            expediente_origen_id=int(
+                proposal["expediente_origen_id"]
+            ),
+            expediente_destino_id=destination_id,
+            tipo_relacion=proposal["tipo_relacion"],
+            regla_origen_id=int(
+                proposal["regla_derivacion_id"]
+            ),
+            creado_automaticamente=False,
+            motivo=(
+                proposal["motivo"]
+                or proposal["regla_nombre"]
+            ),
+            created_by=usuario,
+            conn=conn,
+        )
+
+        updated = conn.execute(
+            """
+            UPDATE expediente_derivacion_propuestas
+            SET
+                estado = 'CREADA',
+                expediente_destino_id = ?,
+                revisada_por = ?,
+                revisada_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND estado IN ('PENDIENTE', 'ACEPTADA')
+              AND expediente_destino_id IS NULL
+            """,
+            (
+                int(destination_id),
+                str(usuario or "ERP").strip().upper(),
+                int(proposal_id),
+            ),
+        )
+
+        if updated.rowcount != 1:
+            raise RuntimeError(
+                "No se pudo actualizar la propuesta "
+                "de derivación"
+            )
+
+        destination = conn.execute(
+            """
+            SELECT id, numero_expediente
+            FROM expedientes
+            WHERE id = ?
+            """,
+            (int(destination_id),),
+        ).fetchone()
+
+        destination_number = (
+            destination["numero_expediente"]
+            if destination
+            else f"#{destination_id}"
+        )
+
+        origin_number = (
+            origin["numero_expediente"]
+            or f"#{origin['id']}"
+        )
+
+        _insert_expedient_event_with_connection(
+            conn=conn,
+            expediente_id=int(origin["id"]),
+            cliente_id=int(origin["cliente_id"]),
+            tipo_evento=(
+                "EXPEDIENTE_DERIVADO_CREADO"
+            ),
+            titulo="EXPEDIENTE DERIVADO CREADO",
+            descripcion=(
+                f"Se ha creado el expediente "
+                f"{destination_number} mediante la regla "
+                f"{proposal['regla_codigo']}."
+            ),
+            entidad_relacionada="EXPEDIENTE",
+            entidad_relacionada_id=destination_id,
+            usuario=usuario,
+        )
+
+        _insert_expedient_event_with_connection(
+            conn=conn,
+            expediente_id=destination_id,
+            cliente_id=int(proposal["cliente_id"]),
+            tipo_evento=(
+                "EXPEDIENTE_CREADO_DESDE_DERIVACION"
+            ),
+            titulo=(
+                "EXPEDIENTE CREADO DESDE DERIVACIÓN"
+            ),
+            descripcion=(
+                f"Expediente creado desde "
+                f"{origin_number} mediante la regla "
+                f"{proposal['regla_codigo']}."
+            ),
+            entidad_relacionada="EXPEDIENTE",
+            entidad_relacionada_id=int(origin["id"]),
+            usuario=usuario,
+        )
+
+        result_proposal = conn.execute(
+            """
+            SELECT *
+            FROM expediente_derivacion_propuestas
+            WHERE id = ?
+            """,
+            (int(proposal_id),),
+        ).fetchone()
+
+        result_destination = conn.execute(
+            """
+            SELECT *
+            FROM expedientes
+            WHERE id = ?
+            """,
+            (int(destination_id),),
+        ).fetchone()
+
+        conn.commit()
+
+        return {
+            "proposal": dict(result_proposal),
+            "expediente_destino": dict(
+                result_destination
+            ),
+            "relation": relation,
+            "created": True,
+            "already_created": False,
+        }
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
