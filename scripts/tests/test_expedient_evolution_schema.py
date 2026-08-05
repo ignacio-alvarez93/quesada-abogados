@@ -918,5 +918,119 @@ class ExpedientEvolutionSchemaTest(unittest.TestCase):
         )
 
 
+
+    def test_list_relations_returns_enriched_related_expedient(
+        self,
+    ):
+        # Las relaciones entre expedientes exigen que ambos
+        # pertenezcan al mismo cliente principal.
+        conn = sqlite3.connect(self.db_path)
+
+        try:
+            conn.execute(
+                """
+                UPDATE expedientes
+                SET cliente_id = (
+                    SELECT cliente_id
+                    FROM expedientes
+                    WHERE id = 1000
+                )
+                WHERE id = 2000
+                """
+            )
+            conn.commit()
+
+        finally:
+            conn.close()
+
+        relation = (
+            expedient_evolution_service
+            .create_expedient_relation(
+                expediente_origen_id=1000,
+                expediente_destino_id=2000,
+                tipo_relacion=(
+                    "ACTUACION_POSTERIOR"
+                ),
+                motivo="Prueba enriquecida",
+            )
+        )
+
+        self.assertIsNotNone(relation["id"])
+
+        outgoing = (
+            expedient_evolution_service
+            .list_expedient_relations(
+                1000,
+                direction="OUTGOING",
+            )
+        )
+
+        self.assertEqual(len(outgoing), 1)
+
+        item = outgoing[0]
+
+        self.assertEqual(
+            item["direccion"],
+            "OUTGOING",
+        )
+        self.assertEqual(
+            item["expediente_relacionado_id"],
+            2000,
+        )
+        self.assertEqual(
+            item["expediente_relacionado_numero"],
+            "EXP-2026-2000",
+        )
+        self.assertEqual(
+            item["tipo_relacion"],
+            "ACTUACION_POSTERIOR",
+        )
+
+        incoming = (
+            expedient_evolution_service
+            .list_expedient_relations(
+                2000,
+                direction="INCOMING",
+            )
+        )
+
+        self.assertEqual(len(incoming), 1)
+        self.assertEqual(
+            incoming[0]["direccion"],
+            "INCOMING",
+        )
+        self.assertEqual(
+            incoming[0][
+                "expediente_relacionado_id"
+            ],
+            1000,
+        )
+
+        both = (
+            expedient_evolution_service
+            .list_expedient_relations(
+                1000,
+            )
+        )
+
+        self.assertEqual(len(both), 1)
+
+
+    def test_list_relations_rejects_unknown_direction(
+        self,
+    ):
+        with self.assertRaisesRegex(
+            ValueError,
+            "Dirección de relación",
+        ):
+            (
+                expedient_evolution_service
+                .list_expedient_relations(
+                    1000,
+                    direction="LATERAL",
+                )
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

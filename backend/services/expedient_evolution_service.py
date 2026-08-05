@@ -257,37 +257,233 @@ def create_expedient_relation(
             conn.close()
 
 
-def list_expedient_relations(expediente_id):
+def list_expedient_relations(
+    expediente_id,
+    direction="BOTH",
+):
+    """
+    Lista las relaciones activas de un expediente.
+
+    direction:
+    - OUTGOING: expedientes creados o vinculados desde el actual.
+    - INCOMING: expedientes desde los que procede el actual.
+    - BOTH: ambas direcciones.
+
+    Mantiene los campos legacy de origen y destino y añade una
+    proyección enriquecida del expediente relacionado.
+    """
     ensure_expedient_evolution_schema()
 
+    expediente_id = int(expediente_id)
+    normalized_direction = (
+        _normalize_code(direction)
+        or "BOTH"
+    )
+
+    if normalized_direction not in {
+        "OUTGOING",
+        "INCOMING",
+        "BOTH",
+    }:
+        raise ValueError(
+            "Dirección de relación no permitida: "
+            f"{normalized_direction}"
+        )
+
+    direction_conditions = {
+        "OUTGOING": (
+            "r.expediente_origen_id = ?"
+        ),
+        "INCOMING": (
+            "r.expediente_destino_id = ?"
+        ),
+        "BOTH": (
+            "("
+            "r.expediente_origen_id = ? "
+            "OR r.expediente_destino_id = ?"
+            ")"
+        ),
+    }
+
+    params = (
+        [expediente_id, expediente_id]
+        if normalized_direction == "BOTH"
+        else [expediente_id]
+    )
+
     with _connection() as conn:
-        rows = conn.execute(
+        has_admin_states = _table_exists(
+            conn,
+            "config_estados_administrativos",
+        )
+
+        if has_admin_states:
+            state_select = """
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN ead.codigo
+                    ELSE eao.codigo
+                END AS estado_relacionado_codigo,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN ead.nombre
+                    ELSE eao.nombre
+                END AS estado_relacionado_nombre,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN ead.color
+                    ELSE eao.color
+                END AS estado_relacionado_color
             """
+
+            state_joins = """
+                LEFT JOIN config_estados_administrativos eao
+                  ON eao.id = eo.estado_administrativo_id
+
+                LEFT JOIN config_estados_administrativos ead
+                  ON ead.id = ed.estado_administrativo_id
+            """
+
+            state_params = [
+                expediente_id,
+                expediente_id,
+                expediente_id,
+            ]
+
+        else:
+            state_select = """
+                NULL AS estado_relacionado_codigo,
+                NULL AS estado_relacionado_nombre,
+                NULL AS estado_relacionado_color
+            """
+
+            state_joins = ""
+            state_params = []
+
+        sql = f"""
             SELECT
                 r.*,
+
                 eo.numero_expediente
                     AS expediente_origen_numero,
                 ed.numero_expediente
-                    AS expediente_destino_numero
+                    AS expediente_destino_numero,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN 'OUTGOING'
+                    ELSE 'INCOMING'
+                END AS direccion,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN ed.id
+                    ELSE eo.id
+                END AS expediente_relacionado_id,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN ed.numero_expediente
+                    ELSE eo.numero_expediente
+                END AS expediente_relacionado_numero,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN ed.activo
+                    ELSE eo.activo
+                END AS expediente_relacionado_activo,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN td.codigo
+                    ELSE tor.codigo
+                END AS tipo_relacionado_codigo,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN td.nombre
+                    ELSE tor.nombre
+                END AS tipo_relacionado_nombre,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN fd.codigo
+                    ELSE fo.codigo
+                END AS familia_relacionada_codigo,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN fd.nombre
+                    ELSE fo.nombre
+                END AS familia_relacionada_nombre,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN sd.codigo
+                    ELSE so.codigo
+                END AS subtipo_relacionado_codigo,
+
+                CASE
+                    WHEN r.expediente_origen_id = ?
+                    THEN sd.nombre
+                    ELSE so.nombre
+                END AS subtipo_relacionado_nombre,
+
+                {state_select}
+
             FROM expediente_relaciones r
+
             JOIN expedientes eo
               ON eo.id = r.expediente_origen_id
+
             JOIN expedientes ed
               ON ed.id = r.expediente_destino_id
-            WHERE (
-                    r.expediente_origen_id = ?
-                 OR r.expediente_destino_id = ?
-            )
+
+            LEFT JOIN config_tipos_expediente tor
+              ON tor.id = eo.tipo_expediente_id
+
+            LEFT JOIN config_tipos_expediente td
+              ON td.id = ed.tipo_expediente_id
+
+            LEFT JOIN config_familias_expediente fo
+              ON fo.id = tor.familia_id
+
+            LEFT JOIN config_familias_expediente fd
+              ON fd.id = td.familia_id
+
+            LEFT JOIN config_subtipos_expediente so
+              ON so.id = eo.subtipo_expediente_id
+
+            LEFT JOIN config_subtipos_expediente sd
+              ON sd.id = ed.subtipo_expediente_id
+
+            {state_joins}
+
+            WHERE {direction_conditions[normalized_direction]}
               AND r.activo = 1
-            ORDER BY r.created_at, r.id
-            """,
-            (
-                int(expediente_id),
-                int(expediente_id),
-            ),
+
+            ORDER BY
+                r.created_at ASC,
+                r.id ASC
+        """
+
+        query_params = (
+            [expediente_id] * 10
+            + state_params
+            + params
+        )
+
+        rows = conn.execute(
+            sql,
+            query_params,
         ).fetchall()
 
-    return [dict(row) for row in rows]
+    return [
+        dict(row)
+        for row in rows
+    ]
 
 
 def create_derivation_proposal(
