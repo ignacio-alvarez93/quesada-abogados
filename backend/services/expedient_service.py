@@ -328,36 +328,64 @@ def _resolve_expedient_type_and_subtype(
     return dict(tipo), dict(subtipo)
 
 
-def _next_numero_expediente():
+def _next_numero_expediente_with_connection(conn):
+    """
+    Genera el siguiente número usando la misma conexión y transacción
+    que realizará la inserción del expediente.
+    """
     year = date.today().year
     prefix = f"EXP-{year}-"
-    with _connect() as conn:
-        row = conn.execute(
-            """
-            SELECT numero_expediente
-            FROM expedientes
-            WHERE numero_expediente LIKE ?
-            ORDER BY numero_expediente DESC
-            LIMIT 1
-            """,
-            (prefix + "%",),
-        ).fetchone()
+
+    row = conn.execute(
+        """
+        SELECT numero_expediente
+        FROM expedientes
+        WHERE numero_expediente LIKE ?
+        ORDER BY numero_expediente DESC
+        LIMIT 1
+        """,
+        (prefix + "%",),
+    ).fetchone()
 
     if not row:
         return prefix + "0001"
 
     try:
-        last_number = int(row["numero_expediente"].split("-")[-1])
+        last_number = int(
+            row["numero_expediente"].split("-")[-1]
+        )
     except Exception:
         last_number = 0
 
     return prefix + str(last_number + 1).zfill(4)
 
 
-def create_expediente(data):
+def _next_numero_expediente():
+    """
+    Compatibilidad para usos internos o pruebas existentes.
+
+    Las creaciones transaccionales deben utilizar
+    _next_numero_expediente_with_connection().
+    """
+    with _connect() as conn:
+        return _next_numero_expediente_with_connection(conn)
+
+
+def _create_expediente_with_connection(conn, data):
+    """
+    Inserta un expediente utilizando una conexión existente.
+
+    No confirma ni revierte la transacción. La operación superior es
+    responsable de commit o rollback.
+    """
+    if conn is None:
+        raise ValueError(
+            "Se requiere una conexión para crear el expediente"
+        )
+
     numero = (
         _normalize_text(data.get("numero_expediente"))
-        or _next_numero_expediente()
+        or _next_numero_expediente_with_connection(conn)
     )
 
     id_presentacion = _normalize_text(
@@ -369,79 +397,100 @@ def create_expediente(data):
         data.get("numero_expediente_extranjeria")
     )
 
-    with _connect() as conn:
-        tipo, subtipo = _resolve_expedient_type_and_subtype(
-            conn,
-            data.get("tipo_expediente_id"),
-            data.get("subtipo_expediente_id"),
-        )
+    tipo, subtipo = _resolve_expedient_type_and_subtype(
+        conn,
+        data.get("tipo_expediente_id"),
+        data.get("subtipo_expediente_id"),
+    )
 
-        subtipo_legacy = (
-            _normalize_text(subtipo.get("nombre"))
-            if subtipo
-            else _normalize_text(data.get("subtipo_expediente"))
-        )
+    subtipo_legacy = (
+        _normalize_text(subtipo.get("nombre"))
+        if subtipo
+        else _normalize_text(data.get("subtipo_expediente"))
+    )
 
-        cur = conn.execute(
-            """
-            INSERT INTO expedientes (
-                cliente_id,
-                numero_expediente,
-                numero_expediente_mercurio,
-                numero_presentacion_registro,
-                numero_expediente_extranjeria,
-                tipo_expediente_id,
-                subtipo_expediente_id,
-                subtipo_expediente,
-                estado_documental_id,
-                estado_administrativo_id,
-                estado_presentacion,
-                prioridad_id,
-                responsable,
-                fecha_apertura,
-                fecha_presentacion,
-                fecha_resolucion,
-                numero_registro,
-                organo_presentacion,
-                provincia,
-                observaciones,
-                observaciones_internas,
-                box_folder_path,
-                activo
-            )
-            VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            )
-            """,
-            (
-                int(data.get("cliente_id")),
-                numero,
-                id_presentacion,
-                id_presentacion,
-                numero_extranjeria,
-                int(tipo["id"]),
-                int(subtipo["id"]) if subtipo else None,
-                subtipo_legacy,
-                _int_or_none(data.get("estado_documental_id")),
-                _int_or_none(data.get("estado_administrativo_id")),
-                _normalize_text(data.get("estado_presentacion") or "NO PRESENTADO"),
-                _int_or_none(data.get("prioridad_id")),
-                _normalize_text(data.get("responsable")),
-                _date_or_none(data.get("fecha_apertura")),
-                _date_or_none(data.get("fecha_presentacion")),
-                _date_or_none(data.get("fecha_resolucion")),
-                _normalize_text(data.get("numero_registro")),
-                _normalize_text(data.get("organo_presentacion")),
-                _normalize_text(data.get("provincia")),
-                (data.get("observaciones") or "").strip(),
-                (data.get("observaciones_internas") or "").strip(),
-                (data.get("box_folder_path") or "").strip(),
-                int(data.get("activo", 1)),
+    cur = conn.execute(
+        """
+        INSERT INTO expedientes (
+            cliente_id,
+            numero_expediente,
+            numero_expediente_mercurio,
+            numero_presentacion_registro,
+            numero_expediente_extranjeria,
+            tipo_expediente_id,
+            subtipo_expediente_id,
+            subtipo_expediente,
+            estado_documental_id,
+            estado_administrativo_id,
+            estado_presentacion,
+            prioridad_id,
+            responsable,
+            fecha_apertura,
+            fecha_presentacion,
+            fecha_resolucion,
+            numero_registro,
+            organo_presentacion,
+            provincia,
+            observaciones,
+            observaciones_internas,
+            box_folder_path,
+            activo
+        )
+        VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        """,
+        (
+            int(data.get("cliente_id")),
+            numero,
+            id_presentacion,
+            id_presentacion,
+            numero_extranjeria,
+            int(tipo["id"]),
+            int(subtipo["id"]) if subtipo else None,
+            subtipo_legacy,
+            _int_or_none(data.get("estado_documental_id")),
+            _int_or_none(data.get("estado_administrativo_id")),
+            _normalize_text(
+                data.get("estado_presentacion")
+                or "NO PRESENTADO"
             ),
-        )
-        conn.commit()
-        return cur.lastrowid
+            _int_or_none(data.get("prioridad_id")),
+            _normalize_text(data.get("responsable")),
+            _date_or_none(data.get("fecha_apertura")),
+            _date_or_none(data.get("fecha_presentacion")),
+            _date_or_none(data.get("fecha_resolucion")),
+            _normalize_text(data.get("numero_registro")),
+            _normalize_text(data.get("organo_presentacion")),
+            _normalize_text(data.get("provincia")),
+            (data.get("observaciones") or "").strip(),
+            (data.get("observaciones_internas") or "").strip(),
+            (data.get("box_folder_path") or "").strip(),
+            int(data.get("activo", 1)),
+        ),
+    )
+
+    return int(cur.lastrowid)
+
+
+def create_expediente(data):
+    """
+    Crea un expediente y confirma la operación.
+
+    Mantiene el contrato público histórico utilizado por el frontend.
+    """
+    with _connect() as conn:
+        try:
+            expediente_id = _create_expediente_with_connection(
+                conn,
+                data,
+            )
+            conn.commit()
+            return expediente_id
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def update_expediente(expediente_id, data):
