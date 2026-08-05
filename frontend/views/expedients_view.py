@@ -12220,6 +12220,24 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             eventos = resumen.get("eventos", [])
             notas = resumen.get("notas", [])
 
+            try:
+                pending_derivation_proposals = (
+                    expedient_evolution_service
+                    .list_derivation_proposals(
+                        expediente_origen_id=int(
+                            expediente_id
+                        ),
+                        estado="PENDIENTE",
+                    )
+                )
+            except Exception as exc:
+                pending_derivation_proposals = []
+                print(
+                    "ERROR CARGANDO PROPUESTAS "
+                    "DE DERIVACIÓN:",
+                    repr(exc),
+                )
+
             id_presentacion = (
                 expediente.get("numero_presentacion_registro")
                 or expediente.get("numero_expediente_mercurio")
@@ -14396,12 +14414,230 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     )
                 ]
 
+            derivation_cards = []
+
+            for proposal in pending_derivation_proposals:
+                proposal = dict(proposal or {})
+
+                destination_name = (
+                    proposal.get(
+                        "tipo_destino_nombre"
+                    )
+                    or proposal.get(
+                        "tipo_destino_codigo"
+                    )
+                    or "Expediente posterior"
+                )
+
+                destination_family = (
+                    proposal.get(
+                        "familia_destino_nombre"
+                    )
+                    or proposal.get(
+                        "familia_destino_codigo"
+                    )
+                    or "-"
+                )
+
+                destination_subtype = (
+                    proposal.get(
+                        "subtipo_destino_nombre"
+                    )
+                    or proposal.get(
+                        "subtipo_destino_codigo"
+                    )
+                    or ""
+                )
+
+                relation_type = (
+                    proposal.get(
+                        "tipo_relacion"
+                    )
+                    or "ACTUACION_POSTERIOR"
+                )
+
+                proposal_reason = (
+                    proposal.get("motivo")
+                    or proposal.get("regla_nombre")
+                    or (
+                        "Actuación posterior propuesta "
+                        "automáticamente por el sistema."
+                    )
+                )
+
+                proposal_date = (
+                    proposal.get("created_at")
+                    or ""
+                )
+
+                proposal_body = [
+                    ft.Container(
+                        bgcolor="#F5F9FF",
+                        border=ft.border.all(
+                            1,
+                            "#B2CCFF",
+                        ),
+                        border_radius=10,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        _trace_value(
+                                            "Familia destino",
+                                            destination_family,
+                                        ),
+                                        _trace_value(
+                                            "Relación",
+                                            str(
+                                                relation_type
+                                            ).replace(
+                                                "_",
+                                                " ",
+                                            ),
+                                        ),
+                                    ],
+                                    spacing=24,
+                                    wrap=True,
+                                ),
+                                *(
+                                    [
+                                        _trace_value(
+                                            "Subtipo",
+                                            destination_subtype,
+                                        )
+                                    ]
+                                    if destination_subtype
+                                    else []
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    ft.Text(
+                        proposal_reason,
+                        size=12,
+                        color=Q_MUTED,
+                        selectable=True,
+                    ),
+                ]
+
+                proposal_footer = []
+
+                if proposal_date:
+                    proposal_footer.append(
+                        ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.SCHEDULE,
+                                    size=14,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    str(proposal_date).replace(
+                                        "T",
+                                        " ",
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=6,
+                        )
+                    )
+
+                derivation_cards.append(
+                    card_item(
+                        title=destination_name,
+                        subtitle=(
+                            "ACTUACIÓN POSTERIOR PENDIENTE"
+                        ),
+                        leading=ft.Container(
+                            width=42,
+                            height=42,
+                            border_radius=12,
+                            bgcolor="#EAF3FF",
+                            alignment=ft.Alignment(
+                                0,
+                                0,
+                            ),
+                            content=ft.Icon(
+                                ft.Icons.ACCOUNT_TREE,
+                                color=Q_PRIMARY,
+                                size=22,
+                            ),
+                        ),
+                        badges=[
+                            expedient_status_badge(
+                                "PENDIENTE",
+                                "#B54708",
+                            )
+                        ],
+                        actions=[
+                            ft.ElevatedButton(
+                                "Crear expediente",
+                                icon=ft.Icons.ADD_CIRCLE,
+                                on_click=(
+                                    lambda e,
+                                    p=dict(proposal): (
+                                        show_derivation_proposal_dialog(
+                                            p
+                                        )
+                                    )
+                                ),
+                            )
+                        ],
+                        body=proposal_body,
+                        footer=proposal_footer,
+                        border_color="#B2CCFF",
+                        padding=12,
+                    )
+                )
+
+            if not derivation_cards:
+                derivation_cards = [
+                    empty_state(
+                        "No hay actuaciones posteriores "
+                        "pendientes para este expediente"
+                    )
+                ]
+
             active_tab = state.get(
                 "traceability_tab",
                 "ANEXOS",
             )
 
-            if active_tab == "HISTORIA":
+            if active_tab == "ACTUACIONES":
+                active_content = ft.Column(
+                    controls=[
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Actuaciones posteriores",
+                                    size=17,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    "Expedientes que el sistema "
+                                    "propone iniciar a partir de "
+                                    "la evolución del expediente "
+                                    "actual.",
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                        ),
+                        ft.Column(
+                            controls=derivation_cards,
+                            spacing=10,
+                        ),
+                    ],
+                    spacing=12,
+                )
+
+            elif active_tab == "HISTORIA":
                 active_content = ft.Column(
                     controls=[
                         ft.Column(
@@ -14526,6 +14762,15 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                                 "Notas del expediente",
                                 ft.Icons.EDIT_NOTE,
                                 len(notas),
+                            ),
+                            _traceability_chip(
+                                expediente_id,
+                                "ACTUACIONES",
+                                "Actuaciones posteriores",
+                                ft.Icons.ACCOUNT_TREE,
+                                len(
+                                    pending_derivation_proposals
+                                ),
                             ),
                         ],
                         spacing=8,
