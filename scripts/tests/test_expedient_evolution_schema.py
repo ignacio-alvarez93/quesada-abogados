@@ -527,6 +527,326 @@ class ExpedientEvolutionSchemaTest(unittest.TestCase):
         )
         self.assertIsNone(proposal_state[1])
 
+    def test_evaluate_rules_creates_matching_proposals(self):
+        expedient_evolution_service.ensure_expedient_evolution_schema()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO config_reglas_expediente_derivado (
+                    id,
+                    codigo,
+                    nombre,
+                    familia_origen_id,
+                    tipo_expediente_origen_id,
+                    subtipo_expediente_origen_id,
+                    evento_disparador,
+                    resultado_requerido,
+                    familia_destino_id,
+                    tipo_expediente_destino_id,
+                    subtipo_expediente_destino_id,
+                    tipo_relacion
+                )
+                VALUES
+                    (
+                        20,
+                        'REGLA_EXACTA',
+                        'Regla exacta',
+                        1,
+                        10,
+                        100,
+                        'RESOLUCION_FAVORABLE',
+                        'CONCEDIDO',
+                        3,
+                        20,
+                        200,
+                        'ACTUACION_POSTERIOR'
+                    ),
+                    (
+                        21,
+                        'REGLA_TIPO',
+                        'Regla genérica de tipo',
+                        NULL,
+                        10,
+                        NULL,
+                        'RESOLUCION_FAVORABLE',
+                        'CONCEDIDO',
+                        3,
+                        20,
+                        200,
+                        'ACTUACION_POSTERIOR'
+                    ),
+                    (
+                        22,
+                        'REGLA_OTRO_TIPO',
+                        'Regla de otro tipo',
+                        NULL,
+                        30,
+                        NULL,
+                        'RESOLUCION_FAVORABLE',
+                        'CONCEDIDO',
+                        3,
+                        20,
+                        200,
+                        'ACTUACION_POSTERIOR'
+                    )
+                """
+            )
+            conn.commit()
+
+        result = (
+            expedient_evolution_service
+            .evaluate_derivation_rules_for_event(
+                expediente_id=1000,
+                event_code="RESOLUCION_FAVORABLE",
+                resultado="CONCEDIDO",
+                usuario="NACHO",
+            )
+        )
+
+        self.assertEqual(
+            result["rules_evaluated"],
+            2,
+        )
+        self.assertEqual(
+            len(result["proposals"]),
+            2,
+        )
+
+        codes = {
+            item["regla_codigo"]
+            for item in result["proposals"]
+        }
+
+        self.assertEqual(
+            codes,
+            {
+                "REGLA_EXACTA",
+                "REGLA_TIPO",
+            },
+        )
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            proposal_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM expediente_derivacion_propuestas
+                WHERE expediente_origen_id = 1000
+                """
+            ).fetchone()[0]
+
+            event_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM expediente_eventos
+                WHERE expediente_id = 1000
+                  AND tipo_evento =
+                      'PROPUESTA_DERIVACION_GENERADA'
+                """
+            ).fetchone()[0]
+
+        self.assertEqual(proposal_count, 2)
+        self.assertEqual(event_count, 2)
+
+    def test_evaluate_rules_respects_required_result(self):
+        expedient_evolution_service.ensure_expedient_evolution_schema()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO config_reglas_expediente_derivado (
+                    id,
+                    codigo,
+                    nombre,
+                    tipo_expediente_origen_id,
+                    evento_disparador,
+                    resultado_requerido,
+                    familia_destino_id,
+                    tipo_expediente_destino_id,
+                    subtipo_expediente_destino_id
+                )
+                VALUES (
+                    30,
+                    'SOLO_CONCEDIDO',
+                    'Solo si es concedido',
+                    10,
+                    'RESOLUCION_FAVORABLE',
+                    'CONCEDIDO',
+                    3,
+                    20,
+                    200
+                )
+                """
+            )
+            conn.commit()
+
+        result = (
+            expedient_evolution_service
+            .evaluate_derivation_rules_for_event(
+                expediente_id=1000,
+                event_code="RESOLUCION_FAVORABLE",
+                resultado="DENEGADO",
+            )
+        )
+
+        self.assertEqual(
+            len(result["proposals"]),
+            0,
+        )
+        self.assertEqual(
+            len(result["skipped"]),
+            1,
+        )
+        self.assertEqual(
+            result["skipped"][0]["reason"],
+            "RESULTADO_NO_COINCIDE",
+        )
+
+    def test_evaluate_rules_is_idempotent(self):
+        expedient_evolution_service.ensure_expedient_evolution_schema()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO config_reglas_expediente_derivado (
+                    id,
+                    codigo,
+                    nombre,
+                    tipo_expediente_origen_id,
+                    evento_disparador,
+                    familia_destino_id,
+                    tipo_expediente_destino_id,
+                    subtipo_expediente_destino_id
+                )
+                VALUES (
+                    40,
+                    'REGLA_IDEMPOTENTE',
+                    'Regla idempotente',
+                    10,
+                    'RESOLUCION_FAVORABLE',
+                    3,
+                    20,
+                    200
+                )
+                """
+            )
+            conn.commit()
+
+        first = (
+            expedient_evolution_service
+            .evaluate_derivation_rules_for_event(
+                expediente_id=1000,
+                event_code="RESOLUCION_FAVORABLE",
+            )
+        )
+
+        second = (
+            expedient_evolution_service
+            .evaluate_derivation_rules_for_event(
+                expediente_id=1000,
+                event_code="RESOLUCION_FAVORABLE",
+            )
+        )
+
+        self.assertTrue(
+            first["proposals"][0]["created"]
+        )
+        self.assertTrue(
+            second["proposals"][0][
+                "already_existed"
+            ]
+        )
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            proposals = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM expediente_derivacion_propuestas
+                WHERE expediente_origen_id = 1000
+                  AND regla_derivacion_id = 40
+                """
+            ).fetchone()[0]
+
+            events = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM expediente_eventos
+                WHERE expediente_id = 1000
+                  AND tipo_evento =
+                      'PROPUESTA_DERIVACION_GENERADA'
+                """
+            ).fetchone()[0]
+
+        self.assertEqual(proposals, 1)
+        self.assertEqual(events, 1)
+
+    def test_evaluate_rules_rolls_back_with_external_connection(self):
+        expedient_evolution_service.ensure_expedient_evolution_schema()
+
+        with closing(sqlite3.connect(self.db_path)) as setup_conn:
+            setup_conn.execute(
+                """
+                INSERT INTO config_reglas_expediente_derivado (
+                    id,
+                    codigo,
+                    nombre,
+                    tipo_expediente_origen_id,
+                    evento_disparador,
+                    familia_destino_id,
+                    tipo_expediente_destino_id
+                )
+                VALUES (
+                    50,
+                    'REGLA_TRANSACCIONAL',
+                    'Regla transaccional',
+                    10,
+                    'RESOLUCION_FAVORABLE',
+                    3,
+                    20
+                )
+                """
+            )
+            setup_conn.commit()
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+
+            result = (
+                expedient_evolution_service
+                .evaluate_derivation_rules_for_event(
+                    expediente_id=1000,
+                    event_code=(
+                        "RESOLUCION_FAVORABLE"
+                    ),
+                    conn=conn,
+                )
+            )
+
+            self.assertEqual(
+                len(result["proposals"]),
+                1,
+            )
+
+            conn.rollback()
+        finally:
+            conn.close()
+
+        with closing(sqlite3.connect(self.db_path)) as check_conn:
+            proposal_count = check_conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM expediente_derivacion_propuestas
+                WHERE expediente_origen_id = 1000
+                  AND regla_derivacion_id = 50
+                """
+            ).fetchone()[0]
+
+        self.assertEqual(proposal_count, 0)
+
     def test_derivation_proposal_is_idempotent(self):
         expedient_evolution_service.ensure_expedient_evolution_schema()
 

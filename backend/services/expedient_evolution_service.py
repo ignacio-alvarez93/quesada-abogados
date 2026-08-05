@@ -875,3 +875,235 @@ def accept_derivation_proposal(
 
     finally:
         conn.close()
+def evaluate_derivation_rules_for_event(
+    expediente_id,
+    event_code,
+    resultado=None,
+    usuario="ERP",
+    conn=None,
+):
+    """
+    Evalúa las reglas activas aplicables a un evento de expediente.
+
+    Las reglas pueden definir familia, tipo y subtipo de origen.
+    Los campos NULL funcionan como comodines.
+
+    La creación de propuestas es idempotente gracias a la restricción
+    única expediente_origen_id + regla_derivacion_id.
+    """
+    normalized_event = _normalize_code(event_code)
+    normalized_result = (
+        _normalize_code(resultado)
+        if resultado is not None
+        else None
+    )
+
+    if not normalized_event:
+        raise ValueError(
+            "Se requiere un código de evento"
+        )
+
+    owns_connection = conn is None
+
+    if owns_connection:
+        ensure_expedient_evolution_schema()
+        conn = _connect()
+    else:
+        ensure_expedient_evolution_schema(conn)
+
+    try:
+        expediente = conn.execute(
+            """
+            SELECT
+                e.id,
+                e.cliente_id,
+                e.tipo_expediente_id,
+                e.subtipo_expediente_id,
+                e.activo,
+                t.familia_id
+            FROM expedientes e
+            JOIN config_tipos_expediente t
+              ON t.id = e.tipo_expediente_id
+            WHERE e.id = ?
+            """,
+            (int(expediente_id),),
+        ).fetchone()
+
+        if not expediente:
+            raise ValueError(
+                "No existe el expediente"
+            )
+
+        if int(expediente["activo"] or 0) != 1:
+            raise ValueError(
+                "El expediente está inactivo"
+            )
+
+        rules = conn.execute(
+            """
+            SELECT
+                r.*
+            FROM config_reglas_expediente_derivado r
+            WHERE r.activo = 1
+              AND UPPER(TRIM(r.evento_disparador)) = ?
+              AND (
+                    r.familia_origen_id IS NULL
+                 OR r.familia_origen_id = ?
+              )
+              AND (
+                    r.tipo_expediente_origen_id IS NULL
+                 OR r.tipo_expediente_origen_id = ?
+              )
+              AND (
+                    r.subtipo_expediente_origen_id IS NULL
+                 OR r.subtipo_expediente_origen_id = ?
+              )
+            ORDER BY
+                CASE
+                    WHEN r.subtipo_expediente_origen_id
+                         IS NOT NULL
+                    THEN 4
+                    WHEN r.tipo_expediente_origen_id
+                         IS NOT NULL
+                    THEN 3
+                    WHEN r.familia_origen_id
+                         IS NOT NULL
+                    THEN 2
+                    ELSE 1
+                END DESC,
+                r.orden ASC,
+                r.id ASC
+            """,
+            (
+                normalized_event,
+                expediente["familia_id"],
+                expediente["tipo_expediente_id"],
+                expediente["subtipo_expediente_id"],
+            ),
+        ).fetchall()
+
+        created = []
+        skipped = []
+
+        for rule in rules:
+            required_result = (
+                _normalize_code(
+                    rule["resultado_requerido"]
+                )
+                if rule["resultado_requerido"]
+                else None
+            )
+
+            if required_result:
+                if not normalized_result:
+                    skipped.append(
+                        {
+                            "regla_id": int(rule["id"]),
+                            "regla_codigo": rule["codigo"],
+                            "reason": (
+                                "RESULTADO_NO_INFORMADO"
+                            ),
+                        }
+                    )
+                    continue
+
+                if required_result != normalized_result:
+                    skipped.append(
+                        {
+                            "regla_id": int(rule["id"]),
+                            "regla_codigo": rule["codigo"],
+                            "reason": (
+                                "RESULTADO_NO_COINCIDE"
+                            ),
+                        }
+                    )
+                    continue
+
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM expediente_derivacion_propuestas
+                WHERE expediente_origen_id = ?
+                  AND regla_derivacion_id = ?
+                """,
+                (
+                    int(expediente_id),
+                    int(rule["id"]),
+                ),
+            ).fetchone()
+
+            proposal = create_derivation_proposal(
+                expediente_origen_id=int(
+                    expediente_id
+                ),
+                regla_derivacion_id=int(rule["id"]),
+                detectada_por_evento=normalized_event,
+                motivo=(
+                    f"Regla {rule['codigo']} activada "
+                    f"por el evento {normalized_event}."
+                ),
+                conn=conn,
+            )
+
+            created.append(
+                {
+                    "proposal": proposal,
+                    "created": existing is None,
+                    "already_existed": existing is not None,
+                    "regla_codigo": rule["codigo"],
+                }
+            )
+
+            if (
+                existing is None
+                and _table_exists(
+                    conn,
+                    "expediente_eventos",
+                )
+            ):
+                _insert_expedient_event_with_connection(
+                    conn=conn,
+                    expediente_id=int(expediente_id),
+                    cliente_id=int(
+                        expediente["cliente_id"]
+                    ),
+                    tipo_evento=(
+                        "PROPUESTA_DERIVACION_GENERADA"
+                    ),
+                    titulo=(
+                        "PROPUESTA DE DERIVACIÓN GENERADA"
+                    ),
+                    descripcion=(
+                        f"El evento {normalized_event} "
+                        f"ha activado la regla "
+                        f"{rule['codigo']}."
+                    ),
+                    entidad_relacionada=(
+                        "EXPEDIENTE_DERIVACION_PROPUESTA"
+                    ),
+                    entidad_relacionada_id=int(
+                        proposal["id"]
+                    ),
+                    usuario=usuario,
+                )
+
+        if owns_connection:
+            conn.commit()
+
+        return {
+            "expediente_id": int(expediente_id),
+            "event_code": normalized_event,
+            "resultado": normalized_result,
+            "rules_evaluated": len(rules),
+            "proposals": created,
+            "skipped": skipped,
+        }
+
+    except Exception:
+        if owns_connection:
+            conn.rollback()
+        raise
+
+    finally:
+        if owns_connection:
+            conn.close()
