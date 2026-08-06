@@ -2449,7 +2449,89 @@ def create_admin_document_event(data):
             )
         )
 
-    transition = _apply_admin_document_transition(expediente_id, event_code)
+    transition = _apply_admin_document_transition(
+        expediente_id,
+        event_code,
+    )
+
+    authorization_transition = None
+
+    if event_code == "RESOLUCION_FAVORABLE":
+        try:
+            from backend.services import (
+                client_authorization_transition_service
+            )
+
+            resolution_data = dict(
+                favorable_resolution_extraction
+                or {}
+            )
+
+            resolution_data.setdefault(
+                "fecha_concesion",
+                resolution_data.get(
+                    "fecha_resolucion"
+                )
+                or fecha_documento
+                or None,
+            )
+
+            resolution_data.setdefault(
+                "fecha_vigencia_hasta",
+                resolution_data.get(
+                    "fecha_caducidad"
+                )
+                or None,
+            )
+
+            resolution_data.setdefault(
+                "numero_expediente_administrativo",
+                resolution_data.get(
+                    "numero_expediente_extranjeria"
+                )
+                or numero_expediente_documento
+                or None,
+            )
+
+            resolution_data.setdefault(
+                "organismo_concedente",
+                resolution_data.get(
+                    "unidad_tramitacion_nombre"
+                )
+                or organo_documento
+                or None,
+            )
+
+            authorization_transition = (
+                client_authorization_transition_service
+                .apply_favorable_resolution_to_client(
+                    expediente_id=expediente_id,
+                    documento_id=justificante_id,
+                    resolution_data=resolution_data,
+                    usuario=_raw(
+                        data.get("usuario")
+                        or "ERP"
+                    ),
+                )
+            )
+
+            authorization_transition = {
+                "ok": True,
+                **(
+                    authorization_transition
+                    or {}
+                ),
+            }
+
+        except Exception as exc:
+            authorization_transition = {
+                "ok": False,
+                "applied": False,
+                "already_applied": False,
+                "reason":
+                    "ERROR_APLICANDO_AUTORIZACION",
+                "error": str(exc),
+            }
 
     transition_text = ""
     if transition.get("changed"):
@@ -2650,6 +2732,8 @@ def create_admin_document_event(data):
             dehu_confirmation,
         "residence_expiry_update":
             residence_expiry_update,
+        "authorization_transition":
+            authorization_transition,
         "presentation_extraction":
             presentation_extraction,
         "admission_extraction":
