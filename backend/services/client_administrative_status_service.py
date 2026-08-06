@@ -72,6 +72,15 @@ def _migration_path():
     )
 
 
+def _authorization_catalog_migration_path():
+    return (
+        Path(__file__).resolve().parents[2]
+        / "database"
+        / "migrations"
+        / "20260806_seed_client_authorization_catalog.sql"
+    )
+
+
 def ensure_client_administrative_schema(conn=None):
     """
     Garantiza de forma idempotente la infraestructura administrativa
@@ -93,6 +102,22 @@ def ensure_client_administrative_schema(conn=None):
 
         conn.executescript(
             migration_path.read_text(encoding="utf-8")
+        )
+
+        catalog_migration_path = (
+            _authorization_catalog_migration_path()
+        )
+
+        if not catalog_migration_path.exists():
+            raise FileNotFoundError(
+                f"No existe la migración: "
+                f"{catalog_migration_path}"
+            )
+
+        conn.executescript(
+            catalog_migration_path.read_text(
+                encoding="utf-8"
+            )
         )
 
         if not _table_exists(conn, "clientes"):
