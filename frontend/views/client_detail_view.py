@@ -22,6 +22,10 @@ from frontend.components.app_badge import status_badge
 from frontend.components.app_table import app_table
 from frontend.components.app_empty_state import empty_state
 from frontend.components.app_autocomplete import AppAutocomplete
+from backend.services.client_administrative_status_service import (
+    get_current_authorization,
+    list_administrative_situations,
+)
 
 try:
     from frontend.views.company_detail_view import company_detail_view
@@ -916,6 +920,587 @@ def _header(client):
     )
 
 
+def _administrative_location_label(value):
+    labels = {
+        "EN_ESPANA": "España",
+        "EN_ORIGEN": "País de origen",
+        "EN_OTRO_PAIS": "Otro país",
+        "DESCONOCIDA": "Desconocida",
+    }
+
+    raw = str(value or "").strip().upper()
+
+    return labels.get(
+        raw,
+        str(value or "").strip() or "No informada",
+    )
+
+
+def _administrative_situation_name(client):
+    situation_id = client.get(
+        "situacion_administrativa_id"
+    )
+
+    if not situation_id:
+        return "No informada"
+
+    try:
+        situations = list_administrative_situations(
+            active_only=False
+        )
+    except TypeError:
+        try:
+            situations = list_administrative_situations()
+        except Exception:
+            situations = []
+    except Exception:
+        situations = []
+
+    for situation in situations:
+        try:
+            if int(
+                situation.get("id")
+                or 0
+            ) == int(situation_id):
+                return (
+                    situation.get("nombre")
+                    or "No informada"
+                )
+        except Exception:
+            continue
+
+    return "No informada"
+
+
+def _years_months_days_from_date(value):
+    if not value:
+        return ""
+
+    try:
+        start = datetime.strptime(
+            str(value)[:10],
+            "%Y-%m-%d",
+        ).date()
+    except ValueError:
+        return ""
+
+    today = date.today()
+
+    if start > today:
+        return "Fecha futura"
+
+    years = today.year - start.year
+    months = today.month - start.month
+    days = today.day - start.day
+
+    if days < 0:
+        months -= 1
+
+        previous_month = (
+            today.month - 1
+            if today.month > 1
+            else 12
+        )
+
+        previous_year = (
+            today.year
+            if today.month > 1
+            else today.year - 1
+        )
+
+        if previous_month == 12:
+            next_month = date(
+                previous_year + 1,
+                1,
+                1,
+            )
+        else:
+            next_month = date(
+                previous_year,
+                previous_month + 1,
+                1,
+            )
+
+        current_month = date(
+            previous_year,
+            previous_month,
+            1,
+        )
+
+        days += (
+            next_month - current_month
+        ).days
+
+    if months < 0:
+        years -= 1
+        months += 12
+
+    return (
+        f"{years} años, "
+        f"{months} meses y "
+        f"{days} días"
+    )
+
+
+def _administrative_status_badge(
+    text,
+    foreground,
+    background,
+):
+    return ft.Container(
+        content=ft.Text(
+            text,
+            size=11,
+            color=foreground,
+            weight=ft.FontWeight.BOLD,
+            no_wrap=True,
+        ),
+        bgcolor=background,
+        border_radius=18,
+        padding=ft.padding.symmetric(
+            horizontal=10,
+            vertical=6,
+        ),
+        height=30,
+        alignment=ft.alignment.Alignment(
+            0,
+            0,
+        ),
+    )
+
+
+def _administrative_info_block(
+    label,
+    value,
+    *,
+    secondary="",
+    width=250,
+    selectable=False,
+):
+    controls = [
+        ft.Text(
+            label,
+            size=11,
+            color=Q_MUTED,
+        ),
+        ft.Text(
+            str(value or "No informado"),
+            size=14,
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+            selectable=selectable,
+        ),
+    ]
+
+    if secondary:
+        controls.append(
+            ft.Text(
+                str(secondary),
+                size=12,
+                color=Q_MUTED,
+            )
+        )
+
+    return ft.Container(
+        width=width,
+        content=ft.Column(
+            controls=controls,
+            spacing=3,
+            tight=True,
+        ),
+    )
+
+
+def _authorization_status(
+    authorization,
+):
+    if not authorization:
+        return (
+            "SIN AUTORIZACIÓN INFORMADA",
+            "#475467",
+            "#F2F4F7",
+        )
+
+    expiry_raw = authorization.get(
+        "fecha_vigencia_hasta"
+    )
+
+    if not expiry_raw:
+        return (
+            "VIGENCIA NO INFORMADA",
+            "#B54708",
+            "#FFFAEB",
+        )
+
+    try:
+        expiry = datetime.strptime(
+            str(expiry_raw)[:10],
+            "%Y-%m-%d",
+        ).date()
+    except ValueError:
+        return (
+            "FECHA NO VÁLIDA",
+            "#B42318",
+            "#FEF3F2",
+        )
+
+    days = (
+        expiry - date.today()
+    ).days
+
+    if days < 0:
+        return (
+            "AUTORIZACIÓN CADUCADA",
+            "#B42318",
+            "#FEF3F2",
+        )
+
+    if days <= 30:
+        return (
+            f"CADUCA EN {days} DÍAS",
+            "#B54708",
+            "#FFFAEB",
+        )
+
+    return (
+        "AUTORIZACIÓN VIGENTE",
+        "#027A48",
+        "#ECFDF3",
+    )
+
+
+def _legal_residence_warning(client):
+    continuity = str(
+        client.get(
+            "continuidad_residencia_legal"
+        )
+        or ""
+    ).strip().upper()
+
+    verification = str(
+        client.get(
+            "estado_verificacion_residencia_legal"
+        )
+        or ""
+    ).strip().upper()
+
+    if continuity == "INTERRUMPIDA":
+        return (
+            "Residencia legal interrumpida",
+            "#B42318",
+            "#FEF3F2",
+        )
+
+    if continuity == "POSIBLE INTERRUPCIÓN":
+        return (
+            "Posible interrupción pendiente de revisión",
+            "#B54708",
+            "#FFFAEB",
+        )
+
+    if continuity in {
+        "",
+        "NO DETERMINADA",
+        "PENDIENTE DE VERIFICAR",
+    }:
+        return (
+            "Continuidad pendiente de verificar",
+            "#B54708",
+            "#FFFAEB",
+        )
+
+    if verification == "DECLARADA POR EL CLIENTE":
+        return (
+            "Dato declarado por el cliente",
+            "#175CD3",
+            "#EFF8FF",
+        )
+
+    if verification in {
+        "",
+        "PENDIENTE DE DOCUMENTACIÓN",
+        "REQUIERE REVISIÓN",
+    }:
+        return (
+            "Residencia legal sin acreditar documentalmente",
+            "#B54708",
+            "#FFFAEB",
+        )
+
+    return None
+
+
+def _administrative_summary_card(client):
+    try:
+        authorization = get_current_authorization(
+            client.get("id")
+        )
+    except Exception:
+        authorization = None
+
+    status_text, status_fg, status_bg = (
+        _authorization_status(
+            authorization
+        )
+    )
+
+    authorization_name = (
+        authorization.get(
+            "autorizacion_nombre"
+        )
+        if authorization
+        else None
+    )
+
+    authorization_from = (
+        authorization.get(
+            "fecha_vigencia_desde"
+        )
+        if authorization
+        else None
+    )
+
+    authorization_to = (
+        authorization.get(
+            "fecha_vigencia_hasta"
+        )
+        if authorization
+        else None
+    )
+
+    start_residence = client.get(
+        "fecha_inicio_residencia_legal"
+    )
+
+    seniority = (
+        _years_months_days_from_date(
+            start_residence
+        )
+    )
+
+    legal_warning = (
+        _legal_residence_warning(
+            client
+        )
+    )
+
+    warning_controls = []
+
+    if legal_warning:
+        text, foreground, background = (
+            legal_warning
+        )
+
+        warning_controls.append(
+            _administrative_status_badge(
+                text,
+                foreground,
+                background,
+            )
+        )
+
+    if (
+        client.get(
+            "fecha_inicio_residencia_legal_aproximada"
+        )
+    ):
+        warning_controls.append(
+            _administrative_status_badge(
+                "FECHA INICIAL APROXIMADA",
+                "#175CD3",
+                "#EFF8FF",
+            )
+        )
+
+    return _section_card(
+        "Situación administrativa",
+        ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        _administrative_status_badge(
+                            status_text,
+                            status_fg,
+                            status_bg,
+                        ),
+                        *warning_controls,
+                    ],
+                    spacing=8,
+                    wrap=True,
+                    tight=True,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+
+                ft.Row(
+                    controls=[
+                        _administrative_info_block(
+                            "Localización actual",
+                            _administrative_location_label(
+                                client.get(
+                                    "localizacion_actual"
+                                )
+                            ),
+                            secondary=(
+                                client.get(
+                                    "pais_localizacion_actual"
+                                )
+                                or ""
+                            ),
+                            width=220,
+                        ),
+                        _administrative_info_block(
+                            "Situación administrativa",
+                            _administrative_situation_name(
+                                client
+                            ),
+                            width=300,
+                        ),
+                        _administrative_info_block(
+                            "Soporte NIE/TIE",
+                            client.get(
+                                "numero_soporte_nie"
+                            )
+                            or "No informado",
+                            width=220,
+                            selectable=True,
+                        ),
+                    ],
+                    spacing=18,
+                    wrap=True,
+                    tight=True,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.START
+                    ),
+                ),
+
+                ft.Divider(),
+
+                ft.Text(
+                    "Autorización vigente",
+                    size=12,
+                    color=Q_MUTED,
+                ),
+
+                ft.Text(
+                    authorization_name
+                    or "No se ha informado una autorización actual",
+                    size=15,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+
+                ft.Text(
+                    (
+                        "Vigencia: "
+                        f"{_fecha_display(authorization_from) or '-'}"
+                        " — "
+                        f"{_fecha_display(authorization_to) or '-'}"
+                    ),
+                    size=12,
+                    color=Q_MUTED,
+                ),
+
+                ft.Divider(),
+
+                ft.Text(
+                    "Residencia legal computable para nacionalidad",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+
+                ft.Row(
+                    controls=[
+                        _administrative_info_block(
+                            "Inicio computable",
+                            _fecha_display(
+                                start_residence
+                            )
+                            or "No informado",
+                            width=220,
+                        ),
+                        _administrative_info_block(
+                            "Antigüedad",
+                            seniority
+                            or "No calculable",
+                            width=260,
+                        ),
+                        _administrative_info_block(
+                            "Continuidad",
+                            client.get(
+                                "continuidad_residencia_legal"
+                            )
+                            or "No determinada",
+                            width=280,
+                        ),
+                    ],
+                    spacing=18,
+                    wrap=True,
+                    tight=True,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.START
+                    ),
+                ),
+
+                ft.Row(
+                    controls=[
+                        _administrative_info_block(
+                            "Estado de verificación",
+                            client.get(
+                                "estado_verificacion_residencia_legal"
+                            )
+                            or "No informado",
+                            width=300,
+                        ),
+                        _administrative_info_block(
+                            "Fecha de verificación",
+                            _fecha_display(
+                                client.get(
+                                    "fecha_verificacion_residencia_legal"
+                                )
+                            )
+                            or "No informada",
+                            width=220,
+                        ),
+                        _administrative_info_block(
+                            "Origen del dato",
+                            client.get(
+                                "origen_residencia_legal"
+                            )
+                            or "No informado",
+                            width=260,
+                        ),
+                    ],
+                    spacing=18,
+                    wrap=True,
+                    tight=True,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.START
+                    ),
+                ),
+
+                ft.Text(
+                    client.get(
+                        "observaciones_residencia_legal"
+                    )
+                    or "",
+                    size=12,
+                    color=Q_MUTED,
+                    visible=bool(
+                        client.get(
+                            "observaciones_residencia_legal"
+                        )
+                    ),
+                ),
+            ],
+            spacing=12,
+            tight=True,
+        ),
+    )
+
+
 def _section_card(title, content):
     return ft.Container(
         content=ft.Column(
@@ -1385,6 +1970,9 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                         ("Nombre madre", client.get("nombre_madre")),
                         ("Estado civil", client.get("estado_civil")),
                     ],
+                ),
+                _administrative_summary_card(
+                    client
                 ),
                 detail_section(
                     "Observaciones",
