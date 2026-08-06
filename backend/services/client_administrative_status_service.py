@@ -13,6 +13,14 @@ CLIENT_ADMINISTRATIVE_COLUMNS = {
     "fecha_entrada_espana": "TEXT",
     "fecha_entrada_espana_aproximada":
         "INTEGER NOT NULL DEFAULT 0",
+    "fecha_inicio_residencia_legal": "TEXT",
+    "fecha_inicio_residencia_legal_aproximada":
+        "INTEGER NOT NULL DEFAULT 0",
+    "continuidad_residencia_legal": "TEXT",
+    "estado_verificacion_residencia_legal": "TEXT",
+    "fecha_verificacion_residencia_legal": "TEXT",
+    "origen_residencia_legal": "TEXT",
+    "observaciones_residencia_legal": "TEXT",
     "situacion_administrativa_id": "INTEGER",
     "autorizacion_actual_id": "INTEGER",
     "fecha_caducidad_origen": "TEXT",
@@ -81,6 +89,15 @@ def _authorization_catalog_migration_path():
     )
 
 
+def _administrative_situations_refinement_path():
+    return (
+        Path(__file__).resolve().parents[2]
+        / "database"
+        / "migrations"
+        / "20260806_refine_client_administrative_situations.sql"
+    )
+
+
 def ensure_client_administrative_schema(conn=None):
     """
     Garantiza de forma idempotente la infraestructura administrativa
@@ -116,6 +133,22 @@ def ensure_client_administrative_schema(conn=None):
 
         conn.executescript(
             catalog_migration_path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        refinement_path = (
+            _administrative_situations_refinement_path()
+        )
+
+        if not refinement_path.exists():
+            raise FileNotFoundError(
+                f"No existe la migración: "
+                f"{refinement_path}"
+            )
+
+        conn.executescript(
+            refinement_path.read_text(
                 encoding="utf-8"
             )
         )
@@ -334,6 +367,13 @@ def update_client_administrative_snapshot(
                 pais_localizacion_actual = ?,
                 fecha_entrada_espana = ?,
                 fecha_entrada_espana_aproximada = ?,
+                fecha_inicio_residencia_legal = ?,
+                fecha_inicio_residencia_legal_aproximada = ?,
+                continuidad_residencia_legal = ?,
+                estado_verificacion_residencia_legal = ?,
+                fecha_verificacion_residencia_legal = ?,
+                origen_residencia_legal = ?,
+                observaciones_residencia_legal = ?,
                 situacion_administrativa_id = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
@@ -380,6 +420,61 @@ def update_client_administrative_snapshot(
                     else 0
                 ),
                 (
+                    data.get(
+                        "fecha_inicio_residencia_legal"
+                    )
+                    or None
+                ),
+                (
+                    1
+                    if data.get(
+                        "fecha_inicio_residencia_legal_aproximada"
+                    )
+                    else 0
+                ),
+                (
+                    str(
+                        data.get(
+                            "continuidad_residencia_legal"
+                        )
+                        or ""
+                    ).strip().upper()
+                    or None
+                ),
+                (
+                    str(
+                        data.get(
+                            "estado_verificacion_residencia_legal"
+                        )
+                        or ""
+                    ).strip().upper()
+                    or None
+                ),
+                (
+                    data.get(
+                        "fecha_verificacion_residencia_legal"
+                    )
+                    or None
+                ),
+                (
+                    str(
+                        data.get(
+                            "origen_residencia_legal"
+                        )
+                        or ""
+                    ).strip()
+                    or None
+                ),
+                (
+                    str(
+                        data.get(
+                            "observaciones_residencia_legal"
+                        )
+                        or ""
+                    ).strip()
+                    or None
+                ),
+                (
                     int(
                         data[
                             "situacion_administrativa_id"
@@ -418,6 +513,156 @@ def update_client_administrative_snapshot(
     finally:
         if owns_connection:
             conn.close()
+
+
+def update_current_authorization_details(
+    client_id,
+    authorization_data,
+):
+    """
+    Actualiza los datos operativos de la autorización actual
+    sin crear un nuevo hito histórico.
+
+    Se utiliza cuando la situación y el tipo de autorización
+    no han cambiado, pero se corrigen fechas, estado u otros
+    datos descriptivos.
+    """
+    ensure_client_administrative_schema()
+
+    data = dict(
+        authorization_data
+        or {}
+    )
+
+    with _connection() as conn:
+        current = conn.execute(
+            """
+            SELECT id
+            FROM cliente_autorizaciones
+            WHERE cliente_id = ?
+              AND es_actual = 1
+              AND activo = 1
+            LIMIT 1
+            """,
+            (
+                int(client_id),
+            ),
+        ).fetchone()
+
+        if not current:
+            raise ValueError(
+                "El cliente no tiene una autorización actual"
+            )
+
+        authorization_id = int(
+            current["id"]
+        )
+
+        conn.execute(
+            """
+            UPDATE cliente_autorizaciones
+            SET
+                estado_autorizacion = COALESCE(
+                    ?,
+                    estado_autorizacion
+                ),
+                fecha_solicitud = ?,
+                fecha_presentacion = ?,
+                fecha_concesion = ?,
+                fecha_notificacion = ?,
+                fecha_vigencia_desde = ?,
+                fecha_vigencia_hasta = ?,
+                numero_expediente_administrativo = ?,
+                organismo_concedente = ?,
+                provincia = ?,
+                motivo_inicio = ?,
+                observaciones = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                (
+                    str(
+                        data.get(
+                            "estado_autorizacion"
+                        )
+                        or ""
+                    ).strip().upper()
+                    or None
+                ),
+                data.get("fecha_solicitud") or None,
+                data.get("fecha_presentacion") or None,
+                data.get("fecha_concesion") or None,
+                data.get("fecha_notificacion") or None,
+                data.get("fecha_vigencia_desde") or None,
+                data.get("fecha_vigencia_hasta") or None,
+                (
+                    data.get(
+                        "numero_expediente_administrativo"
+                    )
+                    or None
+                ),
+                (
+                    data.get(
+                        "organismo_concedente"
+                    )
+                    or None
+                ),
+                data.get("provincia") or None,
+                data.get("motivo_inicio") or None,
+                data.get("observaciones") or None,
+                authorization_id,
+            ),
+        )
+
+        conn.execute(
+            """
+            UPDATE clientes
+            SET
+                fecha_caducidad_residencia = ?,
+                fecha_caducidad_origen =
+                    CASE
+                        WHEN ? IS NOT NULL
+                        THEN 'AUTORIZACION_CLIENTE'
+                        ELSE fecha_caducidad_origen
+                    END,
+                fecha_caducidad_actualizada_at =
+                    CURRENT_TIMESTAMP,
+                updated_at =
+                    CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                data.get("fecha_vigencia_hasta") or None,
+                data.get("fecha_vigencia_hasta") or None,
+                int(client_id),
+            ),
+        )
+
+        row = conn.execute(
+            """
+            SELECT
+                ca.*,
+                sa.codigo AS situacion_codigo,
+                sa.nombre AS situacion_nombre,
+                ta.codigo AS autorizacion_codigo,
+                ta.nombre AS autorizacion_nombre,
+                ta.familia_codigo AS autorizacion_familia
+            FROM cliente_autorizaciones ca
+            LEFT JOIN config_situaciones_administrativas sa
+              ON sa.id =
+                 ca.situacion_administrativa_id
+            LEFT JOIN config_tipos_autorizacion ta
+              ON ta.id =
+                 ca.tipo_autorizacion_id
+            WHERE ca.id = ?
+            """,
+            (
+                authorization_id,
+            ),
+        ).fetchone()
+
+    return dict(row)
 
 
 def set_current_authorization(

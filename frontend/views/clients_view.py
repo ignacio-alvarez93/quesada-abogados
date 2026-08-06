@@ -29,6 +29,13 @@ from backend.services.master_data_service import (
 )
 from backend.services.config_service import get_columnas_tabla
 from backend.services.economic_service import get_deuda_cliente
+from backend.services.client_administrative_status_service import (
+    get_current_authorization,
+    list_administrative_situations,
+    list_authorization_types,
+    set_current_authorization,
+    update_current_authorization_details,
+)
 from frontend.components.client_context_panel import client_context_panel
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.views.client_detail_view import client_detail_view
@@ -902,6 +909,40 @@ def clients_view(page: ft.Page, on_create_expediente=None):
     tipo_via_options = safe_master_list(get_tipos_via, FALLBACK_TIPOS_VIA)
     estado_civil_options = safe_master_list(get_estados_civiles, FALLBACK_ESTADOS_CIVILES)
 
+    try:
+        administrative_situations = (
+            list_administrative_situations()
+        )
+    except Exception:
+        administrative_situations = []
+
+    try:
+        authorization_types = (
+            list_authorization_types()
+        )
+    except Exception:
+        authorization_types = []
+
+    situation_by_label = {
+        item["nombre"]: item
+        for item in administrative_situations
+    }
+
+    situation_label_by_id = {
+        int(item["id"]): item["nombre"]
+        for item in administrative_situations
+    }
+
+    authorization_label_by_id = {
+        int(item["id"]): item["nombre"]
+        for item in authorization_types
+    }
+
+    authorization_by_label = {
+        item["nombre"]: item
+        for item in authorization_types
+    }
+
     content_area = ft.Container(expand=True)
     table_container = ft.Container(expand=True)
     quick_filters_container = ft.Row(spacing=8, wrap=True)
@@ -936,6 +977,152 @@ def clients_view(page: ft.Page, on_create_expediente=None):
     email = text_input("Email", width=320)
     estado_cliente = select_input("Estado cliente", CLIENT_STATES, value="Asesoramiento inicial", width=320)
     sexo = select_input("Sexo", ["HOMBRE", "MUJER", "X"], width=180)
+
+    numero_soporte_nie = text_input(
+        "Número de soporte NIE/TIE",
+        width=240,
+    )
+
+    localizacion_actual_autocomplete = AppAutocomplete(
+        page=page,
+        label="Localización actual",
+        options=[
+            "EN ESPAÑA",
+            "EN PAÍS DE ORIGEN",
+            "EN OTRO PAÍS",
+            "DESCONOCIDA",
+        ],
+        width=240,
+        max_results=4,
+        allow_free_text=False,
+    )
+
+    pais_localizacion_actual_autocomplete = AppAutocomplete(
+        page=page,
+        label="País de localización actual",
+        options=pais_options,
+        width=280,
+        max_results=10,
+        allow_free_text=False,
+    )
+
+    fecha_entrada_espana = text_input(
+        "Entrada en España DD/MM/AAAA",
+        width=260,
+    )
+
+    fecha_entrada_espana_aproximada = ft.Checkbox(
+        label="Fecha aproximada",
+        value=False,
+    )
+
+    situacion_administrativa_autocomplete = AppAutocomplete(
+        page=page,
+        label="Situación administrativa",
+        options=list(situation_by_label.keys()),
+        width=360,
+        max_results=10,
+        allow_free_text=False,
+        on_select=lambda value:
+            on_situacion_administrativa_selected(value),
+    )
+
+    autorizacion_vigente_autocomplete = AppAutocomplete(
+        page=page,
+        label="Autorización vigente",
+        options=[],
+        width=620,
+        max_results=12,
+        allow_free_text=False,
+    )
+
+    autorizacion_vigente_desde = text_input(
+        "Vigente desde DD/MM/AAAA",
+        width=260,
+    )
+
+    autorizacion_vigente_hasta = text_input(
+        "Vigente hasta DD/MM/AAAA",
+        width=260,
+    )
+
+    fecha_inicio_residencia_legal = text_input(
+        "Inicio residencia legal DD/MM/AAAA",
+        width=280,
+    )
+
+    fecha_inicio_residencia_legal_aproximada = ft.Checkbox(
+        label="Fecha aproximada",
+        value=False,
+    )
+
+    continuidad_residencia_legal_autocomplete = AppAutocomplete(
+        page=page,
+        label="Continuidad de la residencia",
+        options=[
+            "VERIFICADA",
+            "PENDIENTE DE VERIFICAR",
+            "POSIBLE INTERRUPCIÓN",
+            "INTERRUMPIDA",
+            "NO DETERMINADA",
+        ],
+        width=320,
+        max_results=5,
+        allow_free_text=False,
+    )
+
+    estado_verificacion_residencia_legal_autocomplete = (
+        AppAutocomplete(
+            page=page,
+            label="Estado de verificación",
+            options=[
+                "ACREDITADA DOCUMENTALMENTE",
+                "DECLARADA POR EL CLIENTE",
+                "PENDIENTE DE DOCUMENTACIÓN",
+                "REQUIERE REVISIÓN",
+            ],
+            width=340,
+            max_results=4,
+            allow_free_text=False,
+        )
+    )
+
+    fecha_verificacion_residencia_legal = text_input(
+        "Fecha de verificación DD/MM/AAAA",
+        width=290,
+    )
+
+    origen_residencia_legal_autocomplete = AppAutocomplete(
+        page=page,
+        label="Origen del dato",
+        options=[
+            "RESOLUCIÓN",
+            "TIE",
+            "CERTIFICADO DE RESIDENCIA",
+            "PASAPORTE",
+            "EXPEDIENTE ANTERIOR",
+            "DECLARACIÓN DEL CLIENTE",
+            "OTRO",
+        ],
+        width=320,
+        max_results=7,
+        allow_free_text=True,
+    )
+
+    observaciones_residencia_legal = ft.TextField(
+        label="Observaciones sobre residencia legal",
+        multiline=True,
+        min_lines=2,
+        max_lines=4,
+        width=700,
+    )
+
+    antiguedad_residencia_legal = ft.Text(
+        "Antigüedad computable: sin fecha",
+        size=13,
+        weight=ft.FontWeight.W_600,
+        color="#475569",
+    )
 
     tipo_via = select_input("Tipo de vía", dropdown_values(tipo_via_options), width=180)
     nombre_via = text_input("Nombre de la vía", width=320)
@@ -1009,6 +1196,299 @@ def clients_view(page: ft.Page, on_create_expediente=None):
         "hubspot_imported_at": "",
     }
 
+    def authorization_matches_situation(
+        authorization,
+        situation_code,
+    ):
+        category = (
+            authorization.get("categoria")
+            or ""
+        ).upper()
+
+        modality = (
+            authorization.get("modalidad")
+            or ""
+        ).upper()
+
+        regime = (
+            authorization.get("regimen_juridico")
+            or ""
+        ).upper()
+
+        if situation_code == "ESTANCIA_CORTA_DURACION":
+            return (
+                category == "ESTANCIA"
+                and modality == "CORTA_DURACION"
+            )
+
+        if situation_code == "ESTANCIA_LARGA_DURACION":
+            return (
+                category == "ESTANCIA"
+                and modality != "CORTA_DURACION"
+            )
+
+        if situation_code == "RESIDENCIA_TEMPORAL":
+            return (
+                category.startswith(
+                    "RESIDENCIA_TEMPORAL"
+                )
+                or category == "ARRAIGO"
+                or category
+                == "OTRAS_CIRCUNSTANCIAS_EXCEPCIONALES"
+                or regime
+                == "FAMILIAR_PERSONA_ESPANOLA"
+                or (
+                    regime == "CIUDADANOS_UNION"
+                    and category
+                    == "FAMILIAR_CIUDADANO_UE"
+                )
+            )
+
+        if situation_code == "RESIDENCIA_LARGA_DURACION":
+            return category == "LARGA_DURACION"
+
+        if situation_code == "CIUDADANO_UE":
+            return regime == "CIUDADANOS_UNION"
+
+        if situation_code in {
+            "SOLICITANTE_PROTECCION_INTERNACIONAL",
+            "PROTECCION_TEMPORAL",
+        }:
+            return regime in {
+                "PROTECCION_INTERNACIONAL",
+                "PROTECCION_TEMPORAL",
+            }
+
+        return False
+
+    def refresh_authorization_options(
+        selected_authorization_id=None,
+    ):
+        situation = situation_by_label.get(
+            situacion_administrativa_autocomplete.get_value()
+            or ""
+        )
+
+        situation_code = (
+            situation.get("codigo")
+            if situation
+            else None
+        )
+
+        filtered = [
+            item
+            for item in authorization_types
+            if authorization_matches_situation(
+                item,
+                situation_code,
+            )
+        ]
+
+        labels = [
+            item["nombre"]
+            for item in filtered
+        ]
+
+        selected_label = (
+            authorization_label_by_id.get(
+                int(selected_authorization_id)
+            )
+            if selected_authorization_id
+            else ""
+        )
+
+        if (
+            selected_label
+            and selected_label not in labels
+        ):
+            labels.append(
+                selected_label
+            )
+
+        autorizacion_vigente_autocomplete.set_options(
+            labels,
+            clear_value=not bool(selected_label),
+        )
+
+        autorizacion_vigente_autocomplete.set_value(
+            selected_label or "",
+            update=False,
+        )
+
+    def on_situacion_administrativa_selected(
+        value,
+    ):
+        refresh_authorization_options()
+        page.update()
+
+    def on_fecha_entrada_espana_change(e=None):
+        formatted = formatear_fecha_ddmmaaaa(
+            fecha_entrada_espana.value
+        )
+
+        if fecha_entrada_espana.value != formatted:
+            fecha_entrada_espana.value = formatted
+            page.update()
+
+    fecha_entrada_espana.on_change = (
+        on_fecha_entrada_espana_change
+    )
+
+    def on_autorizacion_fecha_change(control):
+        def handler(e=None):
+            formatted = formatear_fecha_ddmmaaaa(
+                control.value
+            )
+
+            if control.value != formatted:
+                control.value = formatted
+                page.update()
+
+        return handler
+
+    autorizacion_vigente_desde.on_change = (
+        on_autorizacion_fecha_change(
+            autorizacion_vigente_desde
+        )
+    )
+
+    autorizacion_vigente_hasta.on_change = (
+        on_autorizacion_fecha_change(
+            autorizacion_vigente_hasta
+        )
+    )
+
+    def actualizar_antiguedad_residencia_legal(
+        e=None,
+    ):
+        from datetime import date, datetime
+
+        value = fecha_a_sql(
+            fecha_inicio_residencia_legal.value
+        )
+
+        if not value:
+            antiguedad_residencia_legal.value = (
+                "Antigüedad computable: sin fecha"
+            )
+
+            if e is not None:
+                page.update()
+
+            return
+
+        try:
+            start = datetime.strptime(
+                value,
+                "%Y-%m-%d",
+            ).date()
+        except ValueError:
+            antiguedad_residencia_legal.value = (
+                "Antigüedad computable: fecha no válida"
+            )
+
+            if e is not None:
+                page.update()
+
+            return
+
+        today = date.today()
+
+        if start > today:
+            antiguedad_residencia_legal.value = (
+                "Antigüedad computable: la fecha es futura"
+            )
+
+            if e is not None:
+                page.update()
+
+            return
+
+        years = today.year - start.year
+        months = today.month - start.month
+        days = today.day - start.day
+
+        if days < 0:
+            months -= 1
+
+            previous_month = (
+                today.month - 1
+                if today.month > 1
+                else 12
+            )
+
+            previous_year = (
+                today.year
+                if today.month > 1
+                else today.year - 1
+            )
+
+            if previous_month == 12:
+                next_month = date(
+                    previous_year + 1,
+                    1,
+                    1,
+                )
+            else:
+                next_month = date(
+                    previous_year,
+                    previous_month + 1,
+                    1,
+                )
+
+            current_month = date(
+                previous_year,
+                previous_month,
+                1,
+            )
+
+            days += (
+                next_month - current_month
+            ).days
+
+        if months < 0:
+            years -= 1
+            months += 12
+
+        antiguedad_residencia_legal.value = (
+            "Antigüedad computable: "
+            f"{years} años, "
+            f"{months} meses y "
+            f"{days} días"
+        )
+
+        if e is not None:
+            page.update()
+
+    def on_fecha_inicio_residencia_legal_change(
+        e=None,
+    ):
+        formatted = formatear_fecha_ddmmaaaa(
+            fecha_inicio_residencia_legal.value
+        )
+
+        if (
+            fecha_inicio_residencia_legal.value
+            != formatted
+        ):
+            fecha_inicio_residencia_legal.value = (
+                formatted
+            )
+
+        actualizar_antiguedad_residencia_legal(
+            e
+        )
+
+    fecha_inicio_residencia_legal.on_change = (
+        on_fecha_inicio_residencia_legal_change
+    )
+
+    fecha_verificacion_residencia_legal.on_change = (
+        on_autorizacion_fecha_change(
+            fecha_verificacion_residencia_legal
+        )
+    )
+
     def on_fecha_nacimiento_change(e=None):
         formatted = formatear_fecha_ddmmaaaa(fecha_nacimiento.value)
         if fecha_nacimiento.value != formatted:
@@ -1051,6 +1531,14 @@ def clients_view(page: ft.Page, on_create_expediente=None):
             nie,
             pasaporte,
             dni,
+            numero_soporte_nie,
+            pais_localizacion_actual_autocomplete.control,
+            fecha_entrada_espana,
+            autorizacion_vigente_desde,
+            autorizacion_vigente_hasta,
+            fecha_inicio_residencia_legal,
+            fecha_verificacion_residencia_legal,
+            observaciones_residencia_legal,
             fecha_caducidad_residencia,
             fecha_nacimiento,
             telefono,
@@ -1071,6 +1559,48 @@ def clients_view(page: ft.Page, on_create_expediente=None):
         ]:
             field.value = ""
         estado_cliente.value = "Asesoramiento inicial"
+        localizacion_actual_autocomplete.set_value(
+            "",
+            update=False,
+        )
+        pais_localizacion_actual_autocomplete.set_value(
+            "",
+            update=False,
+        )
+        situacion_administrativa_autocomplete.set_value(
+            "",
+            update=False,
+        )
+        autorizacion_vigente_autocomplete.set_value(
+            "",
+            update=False,
+        )
+        fecha_entrada_espana_aproximada.value = False
+        fecha_inicio_residencia_legal_aproximada.value = False
+
+        continuidad_residencia_legal_autocomplete.set_value(
+            "",
+            update=False,
+        )
+
+        estado_verificacion_residencia_legal_autocomplete.set_value(
+            "",
+            update=False,
+        )
+
+        origen_residencia_legal_autocomplete.set_value(
+            "",
+            update=False,
+        )
+
+        antiguedad_residencia_legal.value = (
+            "Antigüedad computable: sin fecha"
+        )
+
+        autorizacion_vigente_autocomplete.set_options(
+            [],
+            clear_value=True,
+        )
         nacionalidad_autocomplete.set_value("", update=False)
         pais_nacimiento_autocomplete.set_value("", update=False)
         provincia_autocomplete.set_value("", update=False)
@@ -1086,6 +1616,153 @@ def clients_view(page: ft.Page, on_create_expediente=None):
         nie.value = cliente.get("nie") or ""
         pasaporte.value = cliente.get("pasaporte") or ""
         dni.value = cliente.get("dni") or ""
+        numero_soporte_nie.value = (
+            cliente.get("numero_soporte_nie")
+            or ""
+        )
+
+        location_display = {
+            "EN_ESPANA": "EN ESPAÑA",
+            "EN_ORIGEN": "EN PAÍS DE ORIGEN",
+            "EN_OTRO_PAIS": "EN OTRO PAÍS",
+            "DESCONOCIDA": "DESCONOCIDA",
+        }
+
+        localizacion_actual_autocomplete.set_value(
+            location_display.get(
+                cliente.get("localizacion_actual"),
+                cliente.get("localizacion_actual")
+                or "",
+            ),
+            update=False,
+        )
+
+        pais_localizacion_actual_autocomplete.set_value(
+            cliente.get(
+                "pais_localizacion_actual"
+            )
+            or "",
+            update=False,
+        )
+
+        fecha_entrada_espana.value = fecha_a_display(
+            cliente.get(
+                "fecha_entrada_espana"
+            )
+        )
+
+        fecha_entrada_espana_aproximada.value = bool(
+            cliente.get(
+                "fecha_entrada_espana_aproximada"
+            )
+        )
+
+        situation_id = cliente.get(
+            "situacion_administrativa_id"
+        )
+
+        situacion_administrativa_autocomplete.set_value(
+            (
+                situation_label_by_id.get(
+                    int(situation_id)
+                )
+                if situation_id
+                else ""
+            ),
+            update=False,
+        )
+
+        current_authorization = (
+            get_current_authorization(
+                cliente["id"]
+            )
+        )
+
+        current_authorization_id = (
+            current_authorization.get(
+                "tipo_autorizacion_id"
+            )
+            if current_authorization
+            else None
+        )
+
+        refresh_authorization_options(
+            current_authorization_id
+        )
+
+        autorizacion_vigente_desde.value = (
+            fecha_a_display(
+                current_authorization.get(
+                    "fecha_vigencia_desde"
+                )
+            )
+            if current_authorization
+            else ""
+        )
+
+        autorizacion_vigente_hasta.value = (
+            fecha_a_display(
+                current_authorization.get(
+                    "fecha_vigencia_hasta"
+                )
+            )
+            if current_authorization
+            else ""
+        )
+
+        fecha_inicio_residencia_legal.value = fecha_a_display(
+            cliente.get(
+                "fecha_inicio_residencia_legal"
+            )
+        )
+
+        fecha_inicio_residencia_legal_aproximada.value = bool(
+            cliente.get(
+                "fecha_inicio_residencia_legal_aproximada"
+            )
+        )
+
+        continuidad_residencia_legal_autocomplete.set_value(
+            cliente.get(
+                "continuidad_residencia_legal"
+            )
+            or "",
+            update=False,
+        )
+
+        estado_verificacion_residencia_legal_autocomplete.set_value(
+            cliente.get(
+                "estado_verificacion_residencia_legal"
+            )
+            or "",
+            update=False,
+        )
+
+        fecha_verificacion_residencia_legal.value = (
+            fecha_a_display(
+                cliente.get(
+                    "fecha_verificacion_residencia_legal"
+                )
+            )
+        )
+
+        origen_residencia_legal_autocomplete.set_value(
+            cliente.get(
+                "origen_residencia_legal"
+            )
+            or "",
+            update=False,
+        )
+
+        observaciones_residencia_legal.value = (
+            cliente.get(
+                "observaciones_residencia_legal"
+            )
+            or ""
+        )
+
+        actualizar_antiguedad_residencia_legal()
+
         fecha_caducidad_residencia.value = fecha_a_display(
             cliente.get("fecha_caducidad_residencia")
         )
@@ -1131,6 +1808,71 @@ def clients_view(page: ft.Page, on_create_expediente=None):
             "nie": nie.value,
             "pasaporte": pasaporte.value,
             "dni": dni.value,
+            "numero_soporte_nie":
+                numero_soporte_nie.value,
+            "localizacion_actual": {
+                "EN ESPAÑA": "EN_ESPANA",
+                "EN PAÍS DE ORIGEN": "EN_ORIGEN",
+                "EN OTRO PAÍS": "EN_OTRO_PAIS",
+                "DESCONOCIDA": "DESCONOCIDA",
+            }.get(
+                localizacion_actual_autocomplete.get_value(),
+                localizacion_actual_autocomplete.get_value(),
+            ),
+            "pais_localizacion_actual":
+                pais_localizacion_actual_autocomplete.get_value(),
+            "fecha_entrada_espana": fecha_a_sql(
+                fecha_entrada_espana.value
+            ),
+            "fecha_entrada_espana_aproximada":
+                bool(
+                    fecha_entrada_espana_aproximada.value
+                ),
+            "situacion_administrativa_id": (
+                situation_by_label.get(
+                    situacion_administrativa_autocomplete.get_value()
+                    or "",
+                    {},
+                ).get("id")
+            ),
+            "tipo_autorizacion_id": (
+                authorization_by_label.get(
+                    autorizacion_vigente_autocomplete.get_value()
+                    or "",
+                    {},
+                ).get("id")
+            ),
+            "autorizacion_vigente_desde":
+                fecha_a_sql(
+                    autorizacion_vigente_desde.value
+                ),
+            "autorizacion_vigente_hasta":
+                fecha_a_sql(
+                    autorizacion_vigente_hasta.value
+                ),
+            "fecha_inicio_residencia_legal":
+                fecha_a_sql(
+                    fecha_inicio_residencia_legal.value
+                ),
+            "fecha_inicio_residencia_legal_aproximada":
+                bool(
+                    fecha_inicio_residencia_legal_aproximada.value
+                ),
+            "continuidad_residencia_legal":
+                continuidad_residencia_legal_autocomplete.get_value(),
+            "estado_verificacion_residencia_legal":
+                (
+                    estado_verificacion_residencia_legal_autocomplete
+                    .get_value()
+                ),
+            "fecha_verificacion_residencia_legal":
+                fecha_a_sql(
+                    fecha_verificacion_residencia_legal.value
+                ),
+            "origen_residencia_legal":
+                origen_residencia_legal_autocomplete.get_value(),
+            "observaciones_residencia_legal":
+                observaciones_residencia_legal.value,
             "fecha_caducidad_residencia": fecha_a_sql(
                 fecha_caducidad_residencia.value
             ),
@@ -1171,6 +1913,87 @@ def clients_view(page: ft.Page, on_create_expediente=None):
             errores.append("El nombre es obligatorio")
         if fecha_nacimiento.value and not fecha_a_sql(fecha_nacimiento.value):
             errores.append("La fecha de nacimiento debe tener formato DD/MM/AAAA")
+        if (
+            fecha_entrada_espana.value
+            and not fecha_a_sql(
+                fecha_entrada_espana.value
+            )
+        ):
+            errores.append(
+                "La fecha de entrada en España debe "
+                "tener formato DD/MM/AAAA"
+            )
+
+        if (
+            autorizacion_vigente_desde.value
+            and not fecha_a_sql(
+                autorizacion_vigente_desde.value
+            )
+        ):
+            errores.append(
+                "La fecha de inicio de la autorización "
+                "debe tener formato DD/MM/AAAA"
+            )
+
+        if (
+            autorizacion_vigente_hasta.value
+            and not fecha_a_sql(
+                autorizacion_vigente_hasta.value
+            )
+        ):
+            errores.append(
+                "La fecha final de la autorización "
+                "debe tener formato DD/MM/AAAA"
+            )
+
+        if (
+            autorizacion_vigente_autocomplete.get_value()
+            and not (
+                situacion_administrativa_autocomplete
+                .get_value()
+            )
+        ):
+            errores.append(
+                "Selecciona la situación administrativa "
+                "de la autorización"
+            )
+
+        if (
+            fecha_inicio_residencia_legal.value
+            and not fecha_a_sql(
+                fecha_inicio_residencia_legal.value
+            )
+        ):
+            errores.append(
+                "El inicio de residencia legal debe "
+                "tener formato DD/MM/AAAA"
+            )
+
+        if (
+            fecha_verificacion_residencia_legal.value
+            and not fecha_a_sql(
+                fecha_verificacion_residencia_legal.value
+            )
+        ):
+            errores.append(
+                "La fecha de verificación debe "
+                "tener formato DD/MM/AAAA"
+            )
+
+        inicio_residencia_sql = fecha_a_sql(
+            fecha_inicio_residencia_legal.value
+        )
+
+        if (
+            inicio_residencia_sql
+            and inicio_residencia_sql
+            > __import__("datetime").date.today().isoformat()
+        ):
+            errores.append(
+                "El inicio de residencia legal "
+                "no puede ser una fecha futura"
+            )
+
         if (
             fecha_caducidad_residencia.value
             and not fecha_a_sql(
@@ -1213,13 +2036,93 @@ def clients_view(page: ft.Page, on_create_expediente=None):
             return
         data = datos_formulario()
         if state["editing_id"]:
-            update_client(state["editing_id"], data)
+            client_id = int(
+                state["editing_id"]
+            )
+
+            update_client(
+                client_id,
+                data,
+            )
         else:
             duplicates = find_client_duplicates(data)
+
             if duplicates:
-                show_message(error_alert(format_duplicate_warning(duplicates)))
+                show_message(
+                    error_alert(
+                        format_duplicate_warning(
+                            duplicates
+                        )
+                    )
+                )
                 return
-            create_client(data)
+
+            client_id = create_client(data)
+
+        situation_id = data.get(
+            "situacion_administrativa_id"
+        )
+
+        authorization_type_id = data.get(
+            "tipo_autorizacion_id"
+        )
+
+        if (
+            client_id
+            and situation_id
+            and authorization_type_id
+        ):
+            current = get_current_authorization(
+                client_id
+            )
+
+            authorization_data = {
+                "situacion_administrativa_id":
+                    situation_id,
+                "tipo_autorizacion_id":
+                    authorization_type_id,
+                "estado_autorizacion":
+                    "VIGENTE",
+                "fecha_vigencia_desde":
+                    data.get(
+                        "autorizacion_vigente_desde"
+                    ),
+                "fecha_vigencia_hasta":
+                    data.get(
+                        "autorizacion_vigente_hasta"
+                    ),
+                "motivo_inicio":
+                    "Registro desde ficha de cliente",
+            }
+
+            same_current = bool(
+                current
+                and int(
+                    current.get(
+                        "situacion_administrativa_id"
+                    )
+                    or 0
+                ) == int(situation_id)
+                and int(
+                    current.get(
+                        "tipo_autorizacion_id"
+                    )
+                    or 0
+                ) == int(authorization_type_id)
+            )
+
+            if same_current:
+                update_current_authorization_details(
+                    client_id,
+                    authorization_data,
+                )
+            else:
+                set_current_authorization(
+                    client_id,
+                    authorization_data,
+                    usuario="FICHA_CLIENTE",
+                )
+
         cerrar_dialogo()
         cargar_clientes()
         show_client_list()
@@ -1337,6 +2240,102 @@ def clients_view(page: ft.Page, on_create_expediente=None):
                 ),
                 ft.Row([nacionalidad_autocomplete.control, fecha_nacimiento, telefono], wrap=True, spacing=10),
                 ft.Row([email, estado_cliente], wrap=True, spacing=10),
+
+                ft.Text(
+                    "Situación administrativa",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color="#003B7A",
+                ),
+
+                ft.Row(
+                    [
+                        numero_soporte_nie,
+                        localizacion_actual_autocomplete.control,
+                        pais_localizacion_actual_autocomplete.control,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+
+                ft.Row(
+                    [
+                        fecha_entrada_espana,
+                        fecha_entrada_espana_aproximada,
+                        situacion_administrativa_autocomplete.control,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+
+                ft.Row(
+                    [
+                        autorizacion_vigente_autocomplete.control,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+
+                ft.Row(
+                    [
+                        autorizacion_vigente_desde,
+                        autorizacion_vigente_hasta,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+
+                ft.Divider(height=12),
+
+                ft.Text(
+                    "Residencia legal computable para nacionalidad",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color="#003B7A",
+                ),
+
+                ft.Row(
+                    [
+                        fecha_inicio_residencia_legal,
+                        fecha_inicio_residencia_legal_aproximada,
+                        continuidad_residencia_legal_autocomplete.control,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+
+                ft.Row(
+                    [
+                        estado_verificacion_residencia_legal_autocomplete.control,
+                        fecha_verificacion_residencia_legal,
+                        origen_residencia_legal_autocomplete.control,
+                    ],
+                    wrap=True,
+                    spacing=10,
+                ),
+
+                antiguedad_residencia_legal,
+
+                observaciones_residencia_legal,
+
+                ft.Text(
+                    "Esta fecha permite valorar inicialmente "
+                    "la nacionalidad aunque todavía no se haya "
+                    "reconstruido toda la trayectoria administrativa. "
+                    "La continuidad debe verificarse documentalmente.",
+                    size=12,
+                    color="#64748B",
+                ),
+
+                ft.Text(
+                    "La autorización describe el título "
+                    "administrativo actual del cliente. "
+                    "Por ejemplo: autorización de residencia "
+                    "temporal por reagrupación familiar.",
+                    size=12,
+                    color="#64748B",
+                ),
+
                 ft.Text("Dirección en España", size=16, weight=ft.FontWeight.BOLD, color="#003B7A"),
                 ft.Row([tipo_via, nombre_via, numero_via, piso], wrap=True, spacing=10),
                 ft.Row([provincia_autocomplete.control, localidad_autocomplete.control, codigo_postal], wrap=True, spacing=10),

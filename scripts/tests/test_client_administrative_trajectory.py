@@ -101,14 +101,42 @@ class ClientAdministrativeTrajectoryTest(unittest.TestCase):
         client_administrative_status_service.ensure_client_administrative_schema()
 
         with closing(sqlite3.connect(self.db_path)) as conn:
-            situations = conn.execute(
+            total_situations = conn.execute(
                 """
                 SELECT COUNT(*)
                 FROM config_situaciones_administrativas
                 """
             ).fetchone()[0]
 
-        self.assertEqual(situations, 16)
+            active_situations = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM config_situaciones_administrativas
+                WHERE activo = 1
+                """
+            ).fetchone()[0]
+
+            distinct_codes = conn.execute(
+                """
+                SELECT COUNT(DISTINCT codigo)
+                FROM config_situaciones_administrativas
+                """
+            ).fetchone()[0]
+
+        self.assertEqual(
+            total_situations,
+            18,
+        )
+
+        self.assertEqual(
+            active_situations,
+            16,
+        )
+
+        self.assertEqual(
+            total_situations,
+            distinct_codes,
+        )
 
     def test_only_one_current_authorization_per_client(self):
         client_administrative_status_service.ensure_client_administrative_schema()
@@ -576,6 +604,195 @@ class ClientAdministrativeTrajectoryTest(unittest.TestCase):
         self.assertTrue(
             previous["motivo_fin"]
         )
+
+
+    def test_updates_current_authorization_without_new_history(
+        self,
+    ):
+        client_administrative_status_service.ensure_client_administrative_schema()
+
+        with closing(
+            sqlite3.connect(
+                self.db_path
+            )
+        ) as conn:
+            conn.row_factory = sqlite3.Row
+
+            situation_id = conn.execute(
+                """
+                SELECT id
+                FROM config_situaciones_administrativas
+                WHERE codigo =
+                      'RESIDENCIA_TEMPORAL'
+                """
+            ).fetchone()["id"]
+
+            authorization_type_id = (
+                conn.execute(
+                    """
+                    SELECT id
+                    FROM config_tipos_autorizacion
+                    WHERE codigo =
+                          'RESIDENCIA_TEMPORAL_REAGRUPACION_FAMILIAR'
+                    """
+                ).fetchone()["id"]
+            )
+
+        created = (
+            client_administrative_status_service
+            .set_current_authorization(
+                client_id=1,
+                authorization_data={
+                    "situacion_administrativa_id":
+                        situation_id,
+                    "tipo_autorizacion_id":
+                        authorization_type_id,
+                    "fecha_vigencia_desde":
+                        "2026-01-01",
+                    "fecha_vigencia_hasta":
+                        "2027-01-01",
+                },
+            )
+        )
+
+        updated = (
+            client_administrative_status_service
+            .update_current_authorization_details(
+                client_id=1,
+                authorization_data={
+                    "estado_autorizacion":
+                        "VIGENTE",
+                    "fecha_vigencia_desde":
+                        "2026-02-01",
+                    "fecha_vigencia_hasta":
+                        "2027-02-01",
+                },
+            )
+        )
+
+        history = (
+            client_administrative_status_service
+            .list_client_authorizations(1)
+        )
+
+        self.assertEqual(
+            created["id"],
+            updated["id"],
+        )
+
+        self.assertEqual(
+            len(history),
+            1,
+        )
+
+        self.assertEqual(
+            updated["fecha_vigencia_desde"],
+            "2026-02-01",
+        )
+
+        self.assertEqual(
+            updated["fecha_vigencia_hasta"],
+            "2027-02-01",
+        )
+
+        with closing(
+            sqlite3.connect(
+                self.db_path
+            )
+        ) as conn:
+            expiry = conn.execute(
+                """
+                SELECT fecha_caducidad_residencia
+                FROM clientes
+                WHERE id = 1
+                """
+            ).fetchone()[0]
+
+        self.assertEqual(
+            expiry,
+            "2027-02-01",
+        )
+
+    def test_active_situations_distinguish_stay_duration(
+        self,
+    ):
+        situations = (
+            client_administrative_status_service
+            .list_administrative_situations()
+        )
+
+        codes = {
+            item["codigo"]
+            for item in situations
+        }
+
+        self.assertIn(
+            "ESTANCIA_CORTA_DURACION",
+            codes,
+        )
+
+        self.assertIn(
+            "ESTANCIA_LARGA_DURACION",
+            codes,
+        )
+
+        self.assertNotIn(
+            "ESTANCIA_REGULAR",
+            codes,
+        )
+
+        self.assertNotIn(
+            "REGIMEN_COMUNITARIO",
+            codes,
+        )
+
+    def test_persists_legal_residence_snapshot(
+        self,
+    ):
+        result = (
+            client_administrative_status_service
+            .update_client_administrative_snapshot(
+                client_id=1,
+                data={
+                    "fecha_inicio_residencia_legal":
+                        "2020-06-15",
+                    "fecha_inicio_residencia_legal_aproximada":
+                        True,
+                    "continuidad_residencia_legal":
+                        "PENDIENTE DE VERIFICAR",
+                    "estado_verificacion_residencia_legal":
+                        "DECLARADA POR EL CLIENTE",
+                    "fecha_verificacion_residencia_legal":
+                        "2026-08-06",
+                    "origen_residencia_legal":
+                        "Primera TIE aportada",
+                    "observaciones_residencia_legal":
+                        "Pendiente de revisión.",
+                },
+            )
+        )
+
+        self.assertEqual(
+            result["fecha_inicio_residencia_legal"],
+            "2020-06-15",
+        )
+
+        self.assertEqual(
+            result["fecha_inicio_residencia_legal_aproximada"],
+            1,
+        )
+
+        self.assertEqual(
+            result["continuidad_residencia_legal"],
+            "PENDIENTE DE VERIFICAR",
+        )
+
+        self.assertEqual(
+            result["estado_verificacion_residencia_legal"],
+            "DECLARADA POR EL CLIENTE",
+        )
+
+
 
 
 if __name__ == "__main__":
