@@ -132,14 +132,27 @@ def registrar_evento(
     entidad_relacionada="",
     entidad_relacionada_id=None,
     usuario="",
+    conn=None,
 ):
-    with _connect() as conn:
+    owns_connection = conn is None
+
+    if owns_connection:
+        conn = _connect()
+
+    try:
         cur = conn.execute(
             """
             INSERT INTO expediente_eventos (
-                expediente_id, cliente_id, tipo_evento, titulo, descripcion,
-                estado_anterior, estado_nuevo, entidad_relacionada,
-                entidad_relacionada_id, usuario
+                expediente_id,
+                cliente_id,
+                tipo_evento,
+                titulo,
+                descripcion,
+                estado_anterior,
+                estado_nuevo,
+                entidad_relacionada,
+                entidad_relacionada_id,
+                usuario
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -156,8 +169,20 @@ def registrar_evento(
                 _text(usuario),
             ),
         )
-        conn.commit()
+
+        if owns_connection:
+            conn.commit()
+
         return cur.lastrowid
+
+    except Exception:
+        if owns_connection:
+            conn.rollback()
+        raise
+
+    finally:
+        if owns_connection:
+            conn.close()
 
 
 def get_eventos_expediente(expediente_id):
@@ -204,20 +229,50 @@ def ensure_admin_document_metadata_schema(conn):
             )
 
 
-def create_justificante(data):
-    expediente_id = int(data.get("expediente_id"))
-    expediente = get_expediente_basic(expediente_id)
-    if not expediente:
-        raise ValueError("Expediente no encontrado")
+def create_justificante(
+    data,
+    conn=None,
+):
+    expediente_id = int(
+        data.get("expediente_id")
+    )
 
-    cliente_id = expediente["cliente_id"]
+    owns_connection = conn is None
 
-    import json
+    if owns_connection:
+        conn = _connect()
 
-    with _connect() as conn:
-        ensure_admin_document_metadata_schema(conn)
+    try:
+        ensure_admin_document_metadata_schema(
+            conn
+        )
 
-        metadata = data.get("metadata_documento") or {}
+        expediente = conn.execute(
+            """
+            SELECT
+                e.id,
+                e.cliente_id
+            FROM expedientes e
+            WHERE e.id = ?
+            """,
+            (
+                expediente_id,
+            ),
+        ).fetchone()
+
+        if not expediente:
+            raise ValueError(
+                "Expediente no encontrado"
+            )
+
+        cliente_id = int(
+            expediente["cliente_id"]
+        )
+
+        metadata = (
+            data.get("metadata_documento")
+            or {}
+        )
 
         cur = conn.execute(
             """
@@ -250,20 +305,62 @@ def create_justificante(data):
             (
                 expediente_id,
                 cliente_id,
-                _raw(data.get("archivo_nombre")),
-                _raw(data.get("archivo_ruta")),
+                _raw(
+                    data.get(
+                        "archivo_nombre"
+                    )
+                ),
+                _raw(
+                    data.get(
+                        "archivo_ruta"
+                    )
+                ),
                 _text(
-                    data.get("tipo_justificante")
+                    data.get(
+                        "tipo_justificante"
+                    )
                     or "PRESENTACION"
                 ),
-                _raw(data.get("fecha_presentacion")),
-                _text(data.get("numero_registro")),
-                _text(data.get("organo_presentacion")),
-                _raw(data.get("fecha_documento")),
-                _raw(data.get("csv_documento")),
-                _text(data.get("dir3_documento")),
-                _raw(data.get("organo_documento")),
-                _text(data.get("nie_documento")),
+                _raw(
+                    data.get(
+                        "fecha_presentacion"
+                    )
+                ),
+                _text(
+                    data.get(
+                        "numero_registro"
+                    )
+                ),
+                _text(
+                    data.get(
+                        "organo_presentacion"
+                    )
+                ),
+                _raw(
+                    data.get(
+                        "fecha_documento"
+                    )
+                ),
+                _raw(
+                    data.get(
+                        "csv_documento"
+                    )
+                ),
+                _text(
+                    data.get(
+                        "dir3_documento"
+                    )
+                ),
+                _raw(
+                    data.get(
+                        "organo_documento"
+                    )
+                ),
+                _text(
+                    data.get(
+                        "nie_documento"
+                    )
+                ),
                 _text(
                     data.get(
                         "numero_expediente_documento"
@@ -273,28 +370,71 @@ def create_justificante(data):
                     metadata,
                     ensure_ascii=False,
                 ),
-                _text(data.get("procedimiento_detectado")),
                 _text(
-                    data.get("estado_conciliacion")
+                    data.get(
+                        "procedimiento_detectado"
+                    )
+                ),
+                _text(
+                    data.get(
+                        "estado_conciliacion"
+                    )
                     or "PENDIENTE"
                 ),
-                _raw(data.get("observaciones")),
+                _raw(
+                    data.get(
+                        "observaciones"
+                    )
+                ),
             ),
         )
-        justificante_id = cur.lastrowid
-        conn.commit()
 
-    registrar_evento(
-        expediente_id=expediente_id,
-        cliente_id=cliente_id,
-        tipo_evento="JUSTIFICANTE",
-        titulo="JUSTIFICANTE CARGADO",
-        descripcion=f"Justificante registrado: {_raw(data.get('archivo_nombre')) or _raw(data.get('archivo_ruta'))}",
-        entidad_relacionada="expediente_justificantes",
-        entidad_relacionada_id=justificante_id,
-    )
+        justificante_id = int(
+            cur.lastrowid
+        )
 
-    return justificante_id
+        registrar_evento(
+            expediente_id=expediente_id,
+            cliente_id=cliente_id,
+            tipo_evento="JUSTIFICANTE",
+            titulo="JUSTIFICANTE CARGADO",
+            descripcion=(
+                "Justificante registrado: "
+                + (
+                    _raw(
+                        data.get(
+                            "archivo_nombre"
+                        )
+                    )
+                    or _raw(
+                        data.get(
+                            "archivo_ruta"
+                        )
+                    )
+                )
+            ),
+            entidad_relacionada=(
+                "expediente_justificantes"
+            ),
+            entidad_relacionada_id=(
+                justificante_id
+            ),
+            conn=conn,
+        )
+
+        if owns_connection:
+            conn.commit()
+
+        return justificante_id
+
+    except Exception:
+        if owns_connection:
+            conn.rollback()
+        raise
+
+    finally:
+        if owns_connection:
+            conn.close()
 
 
 def get_admin_document(justificante_id):
@@ -1394,23 +1534,41 @@ def _get_estado_administrativo_id(conn, nombre):
     return int(row["id"]) if row else None
 
 
-def _apply_admin_document_transition(expediente_id, event_code):
+def _apply_admin_document_transition(
+    expediente_id,
+    event_code,
+    conn=None,
+):
     """
-    Aplica transición administrativa según el workflow del tipo de expediente.
+    Aplica la transición administrativa del documento.
 
-    Workflow:
-    - EXTRANJERIA: usa estados ampliados de extranjería.
-    - NACIONALIDAD: mapping base provisional.
-    - GENERAL: mapping base.
+    Si recibe conn, participa en la transacción superior.
     """
-    with _connect() as conn:
-        workflow_code = _resolve_expediente_workflow_code(conn, expediente_id)
-        target_state = _get_admin_document_target_state(event_code, workflow_code)
+    owns_connection = conn is None
+
+    if owns_connection:
+        conn = _connect()
+
+    try:
+        workflow_code = (
+            _resolve_expediente_workflow_code(
+                conn,
+                expediente_id,
+            )
+        )
+
+        target_state = (
+            _get_admin_document_target_state(
+                event_code,
+                workflow_code,
+            )
+        )
 
         if not target_state:
             return {
                 "changed": False,
-                "workflow_code": workflow_code,
+                "workflow_code":
+                    workflow_code,
                 "estado_anterior": "",
                 "estado_nuevo": "",
                 "estado_nuevo_id": None,
@@ -1418,73 +1576,130 @@ def _apply_admin_document_transition(expediente_id, event_code):
 
         expediente = conn.execute(
             """
-            SELECT id, estado_administrativo_id
+            SELECT
+                id,
+                estado_administrativo_id
             FROM expedientes
             WHERE id = ?
             """,
-            (int(expediente_id),),
+            (
+                int(expediente_id),
+            ),
         ).fetchone()
 
         if not expediente:
-            raise ValueError("Expediente no encontrado")
+            raise ValueError(
+                "Expediente no encontrado"
+            )
 
-        estado_anterior = _get_estado_administrativo_nombre(
-            conn,
-            expediente["estado_administrativo_id"],
+        estado_anterior = (
+            _get_estado_administrativo_nombre(
+                conn,
+                expediente[
+                    "estado_administrativo_id"
+                ],
+            )
         )
-        estado_nuevo_id = _get_estado_administrativo_id(conn, target_state)
+
+        estado_nuevo_id = (
+            _get_estado_administrativo_id(
+                conn,
+                target_state,
+            )
+        )
 
         if not estado_nuevo_id:
             return {
                 "changed": False,
-                "workflow_code": workflow_code,
-                "estado_anterior": estado_anterior,
+                "workflow_code":
+                    workflow_code,
+                "estado_anterior":
+                    estado_anterior,
                 "estado_nuevo": "",
                 "estado_nuevo_id": None,
             }
 
-        estado_nuevo = _text(target_state)
+        estado_nuevo = _text(
+            target_state
+        )
 
-        if int(expediente["estado_administrativo_id"] or 0) == int(estado_nuevo_id):
+        if int(
+            expediente[
+                "estado_administrativo_id"
+            ]
+            or 0
+        ) == int(estado_nuevo_id):
             return {
                 "changed": False,
-                "workflow_code": workflow_code,
-                "estado_anterior": estado_anterior,
-                "estado_nuevo": estado_nuevo,
-                "estado_nuevo_id": estado_nuevo_id,
+                "workflow_code":
+                    workflow_code,
+                "estado_anterior":
+                    estado_anterior,
+                "estado_nuevo":
+                    estado_nuevo,
+                "estado_nuevo_id":
+                    estado_nuevo_id,
             }
 
-        if _text(event_code) == "JUSTIFICANTE_PRESENTACION":
+        if (
+            _text(event_code)
+            == "JUSTIFICANTE_PRESENTACION"
+        ):
             conn.execute(
                 """
                 UPDATE expedientes
-                SET estado_administrativo_id = ?,
-                    estado_presentacion = 'PRESENTADO',
-                    updated_at = CURRENT_TIMESTAMP
+                SET
+                    estado_administrativo_id = ?,
+                    estado_presentacion =
+                        'PRESENTADO',
+                    updated_at =
+                        CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (estado_nuevo_id, int(expediente_id)),
+                (
+                    estado_nuevo_id,
+                    int(expediente_id),
+                ),
             )
         else:
             conn.execute(
                 """
                 UPDATE expedientes
-                SET estado_administrativo_id = ?,
-                    updated_at = CURRENT_TIMESTAMP
+                SET
+                    estado_administrativo_id = ?,
+                    updated_at =
+                        CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (estado_nuevo_id, int(expediente_id)),
+                (
+                    estado_nuevo_id,
+                    int(expediente_id),
+                ),
             )
 
-        conn.commit()
+        if owns_connection:
+            conn.commit()
 
-    return {
-        "changed": True,
-        "workflow_code": workflow_code,
-        "estado_anterior": estado_anterior,
-        "estado_nuevo": estado_nuevo,
-        "estado_nuevo_id": estado_nuevo_id,
-    }
+        return {
+            "changed": True,
+            "workflow_code":
+                workflow_code,
+            "estado_anterior":
+                estado_anterior,
+            "estado_nuevo":
+                estado_nuevo,
+            "estado_nuevo_id":
+                estado_nuevo_id,
+        }
+
+    except Exception:
+        if owns_connection:
+            conn.rollback()
+        raise
+
+    finally:
+        if owns_connection:
+            conn.close()
 
 
 
@@ -1688,14 +1903,25 @@ def _update_client_residence_expiry_from_resolution(
     justificante_id,
     extraction,
     usuario="ERP",
+    conn=None,
 ):
-    extraction = dict(extraction or {})
+    extraction = dict(
+        extraction or {}
+    )
+
     detected_date = extraction.get(
         "fecha_caducidad"
     )
 
-    with _connect() as conn:
-        _ensure_client_residence_expiry_schema(conn)
+    owns_connection = conn is None
+
+    if owns_connection:
+        conn = _connect()
+
+    try:
+        _ensure_client_residence_expiry_schema(
+            conn
+        )
 
         row = conn.execute(
             """
@@ -1708,26 +1934,34 @@ def _update_client_residence_expiry_from_resolution(
               ON c.id = e.cliente_id
             WHERE e.id = ?
             """,
-            (int(expediente_id),),
+            (
+                int(expediente_id),
+            ),
         ).fetchone()
 
         if not row:
             raise ValueError(
-                "No existe el expediente o su cliente"
+                "No existe el expediente "
+                "o su cliente"
             )
 
         decision = (
             _decide_client_residence_expiry_update(
-                row["fecha_caducidad_residencia"],
+                row[
+                    "fecha_caducidad_residencia"
+                ],
                 detected_date,
             )
         )
 
         result = {
             **decision,
-            "expediente_id": int(expediente_id),
-            "cliente_id": int(row["cliente_id"]),
-            "justificante_id": int(justificante_id),
+            "expediente_id":
+                int(expediente_id),
+            "cliente_id":
+                int(row["cliente_id"]),
+            "justificante_id":
+                int(justificante_id),
         }
 
         if decision["should_update"]:
@@ -1742,104 +1976,118 @@ def _update_client_residence_expiry_from_resolution(
                     fecha_caducidad_documento_id = ?,
                     fecha_caducidad_actualizada_at =
                         CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at =
+                        CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
                 (
-                    decision["detected_date"],
+                    decision[
+                        "detected_date"
+                    ],
                     int(expediente_id),
                     int(justificante_id),
                     int(row["cliente_id"]),
                 ),
             )
 
-            conn.execute(
-                """
-                INSERT INTO expediente_eventos (
-                    expediente_id,
-                    cliente_id,
-                    tipo_evento,
-                    titulo,
-                    descripcion,
-                    estado_anterior,
-                    estado_nuevo,
-                    entidad_relacionada,
-                    entidad_relacionada_id,
-                    usuario
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    int(expediente_id),
-                    int(row["cliente_id"]),
-                    (
-                        "CLIENTE_CADUCIDAD_"
-                        "RESIDENCIA_ACTUALIZADA"
-                    ),
-                    (
-                        "CADUCIDAD DE RESIDENCIA "
-                        "ACTUALIZADA"
-                    ),
-                    (
-                        "La resolución favorable "
-                        "actualiza la caducidad NIE/TIE "
-                        "del cliente."
-                    ),
-                    decision["existing_date"],
-                    decision["detected_date"],
-                    "expediente_justificantes",
-                    int(justificante_id),
-                    str(usuario or "ERP").strip(),
+            registrar_evento(
+                expediente_id=(
+                    expediente_id
                 ),
+                cliente_id=(
+                    row["cliente_id"]
+                ),
+                tipo_evento=(
+                    "CLIENTE_CADUCIDAD_"
+                    "RESIDENCIA_ACTUALIZADA"
+                ),
+                titulo=(
+                    "CADUCIDAD DE RESIDENCIA "
+                    "ACTUALIZADA"
+                ),
+                descripcion=(
+                    "La resolución favorable "
+                    "actualiza la caducidad NIE/TIE "
+                    "del cliente."
+                ),
+                estado_anterior=(
+                    decision[
+                        "existing_date"
+                    ]
+                ),
+                estado_nuevo=(
+                    decision[
+                        "detected_date"
+                    ]
+                ),
+                entidad_relacionada=(
+                    "expediente_justificantes"
+                ),
+                entidad_relacionada_id=(
+                    justificante_id
+                ),
+                usuario=usuario,
+                conn=conn,
             )
 
         elif (
             decision["status"]
             == "CONFLICT_OLDER_DATE"
         ):
-            conn.execute(
-                """
-                INSERT INTO expediente_eventos (
-                    expediente_id,
-                    cliente_id,
-                    tipo_evento,
-                    titulo,
-                    descripcion,
-                    estado_anterior,
-                    estado_nuevo,
-                    entidad_relacionada,
-                    entidad_relacionada_id,
-                    usuario
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    int(expediente_id),
-                    int(row["cliente_id"]),
-                    (
-                        "CLIENTE_CADUCIDAD_"
-                        "RESIDENCIA_CONFLICTO"
-                    ),
-                    (
-                        "CONFLICTO EN CADUCIDAD "
-                        "DE RESIDENCIA"
-                    ),
-                    (
-                        "La fecha detectada en la "
-                        "resolución es anterior a la "
-                        "fecha vigente del cliente y "
-                        "no se ha sobrescrito."
-                    ),
-                    decision["existing_date"],
-                    decision["detected_date"],
-                    "expediente_justificantes",
-                    int(justificante_id),
-                    str(usuario or "ERP").strip(),
+            registrar_evento(
+                expediente_id=(
+                    expediente_id
                 ),
+                cliente_id=(
+                    row["cliente_id"]
+                ),
+                tipo_evento=(
+                    "CLIENTE_CADUCIDAD_"
+                    "RESIDENCIA_CONFLICTO"
+                ),
+                titulo=(
+                    "CONFLICTO EN CADUCIDAD "
+                    "DE RESIDENCIA"
+                ),
+                descripcion=(
+                    "La fecha detectada en la "
+                    "resolución es anterior a la "
+                    "fecha vigente del cliente y "
+                    "no se ha sobrescrito."
+                ),
+                estado_anterior=(
+                    decision[
+                        "existing_date"
+                    ]
+                ),
+                estado_nuevo=(
+                    decision[
+                        "detected_date"
+                    ]
+                ),
+                entidad_relacionada=(
+                    "expediente_justificantes"
+                ),
+                entidad_relacionada_id=(
+                    justificante_id
+                ),
+                usuario=usuario,
+                conn=conn,
             )
 
-        conn.commit()
+        if owns_connection:
+            conn.commit()
+
         return result
+
+    except Exception:
+        if owns_connection:
+            conn.rollback()
+        raise
+
+    finally:
+        if owns_connection:
+            conn.close()
 
 
 def create_admin_document_event(data):
