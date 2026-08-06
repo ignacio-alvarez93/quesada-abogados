@@ -9,6 +9,8 @@ import flet as ft
 from datetime import datetime
 
 from backend.services import expedient_service
+from backend.services import expedient_evolution_service
+from backend.services import expedient_trajectory_service
 from backend.services import box_watch_service
 from backend.services import document_viewer_service
 from backend.services import document_inbox_service
@@ -267,6 +269,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         "payload_preview_result": {},
         "payload_preview_error": {},
         "traceability_tab": "ANEXOS",
+        "continuity_previous_expedients": [],
     }
 
     content_area = ft.Container(expand=True)
@@ -416,6 +419,198 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     observaciones = multiline_input("Observaciones", width=720)
     observaciones_internas = multiline_input("Observaciones internas", width=720)
     box_folder_path = text_input("Ruta Box futura / observada", width=720)
+
+    continuity_mode_options = [
+        (
+            "INDEPENDENT - "
+            "Actuación independiente"
+        ),
+        (
+            "DIRECT_RELATION - "
+            "Continúa un expediente del CRM"
+        ),
+        (
+            "EXTERNAL_MILESTONE - "
+            "Continúa después de un trámite externo"
+        ),
+    ]
+
+    continuity_mode = select_input(
+        "Modo de apertura",
+        continuity_mode_options,
+        value=continuity_mode_options[0],
+        width=470,
+    )
+
+    continuity_previous_expedient = AppAutocomplete(
+        page=page,
+        label="Expediente anterior",
+        options=[],
+        value="",
+        width=720,
+        max_results=10,
+        allow_free_text=False,
+        helper_text=(
+            "Solo se muestran expedientes activos "
+            "del cliente seleccionado."
+        ),
+    )
+
+    continuity_relation_type = select_input(
+        "Tipo de relación",
+        [
+            (
+                "ACTUACION_POSTERIOR - "
+                "Actuación posterior"
+            ),
+            "CONTINUA - Continuación",
+            "REQUISITO_PREVIO - Requisito previo",
+            "MODIFICACION - Modificación",
+            "RENOVACION - Renovación",
+            "PRORROGA - Prórroga",
+        ],
+        value=(
+            "ACTUACION_POSTERIOR - "
+            "Actuación posterior"
+        ),
+        width=350,
+    )
+
+    continuity_reason = multiline_input(
+        "Motivo de la continuidad",
+        width=720,
+        height=85,
+    )
+
+    milestone_code = text_input(
+        "Código del trámite externo",
+        width=340,
+    )
+
+    milestone_name = text_input(
+        "Nombre del trámite externo",
+        width=500,
+    )
+
+    milestone_family_code = text_input(
+        "Familia de referencia",
+        width=310,
+    )
+
+    milestone_type_code = text_input(
+        "Tipo de referencia",
+        width=360,
+    )
+
+    milestone_state = select_input(
+        "Estado del trámite externo",
+        [
+            "REGISTRADO - Registrado",
+            "EN_TRAMITE - En trámite",
+            "FINALIZADO - Finalizado",
+            "CANCELADO - Cancelado",
+        ],
+        value="FINALIZADO - Finalizado",
+        width=280,
+    )
+
+    milestone_result = select_input(
+        "Resultado",
+        [
+            "SIN_RESULTADO - Sin resultado",
+            "CONCEDIDO - Concedido",
+            "DENEGADO - Denegado",
+            "DESISTIDO - Desistido",
+            "ARCHIVADO - Archivado",
+            "COMPLETADO - Completado",
+        ],
+        value="CONCEDIDO - Concedido",
+        width=260,
+    )
+
+    milestone_date = text_input(
+        "Fecha del trámite DD/MM/AAAA",
+        width=270,
+    )
+
+    milestone_observations = multiline_input(
+        "Observaciones del trámite externo",
+        width=720,
+        height=95,
+    )
+
+    continuity_direct_fields = ft.Container(
+        visible=False,
+        content=ft.Column(
+            controls=[
+                continuity_previous_expedient.control,
+                ft.Row(
+                    controls=[
+                        continuity_relation_type,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                continuity_reason,
+            ],
+            spacing=10,
+        ),
+    )
+
+    continuity_external_fields = ft.Container(
+        visible=False,
+        content=ft.Column(
+            controls=[
+                ft.Text(
+                    "El expediente anterior es opcional. "
+                    "Déjalo vacío cuando todo el procedimiento "
+                    "previo se haya realizado fuera del despacho.",
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                continuity_previous_expedient.control,
+                ft.Row(
+                    controls=[
+                        milestone_code,
+                        milestone_name,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        milestone_family_code,
+                        milestone_type_code,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Row(
+                    controls=[
+                        milestone_state,
+                        milestone_result,
+                        milestone_date,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                milestone_observations,
+            ],
+            spacing=10,
+        ),
+    )
+
+    continuity_form_wrapper = ft.Container(
+        visible=True,
+        content=ft.Column(
+            controls=[
+                continuity_mode,
+                continuity_direct_fields,
+                continuity_external_fields,
+            ],
+            spacing=10,
+        ),
+    )
 
     admin_document_event_options = [
         "JUSTIFICANTE_PRESENTACION - Justificante de presentación",
@@ -1921,7 +2116,180 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     familia_expediente.on_select = on_familia_expediente_change
     tipo_expediente.on_select = on_tipo_expediente_change
 
-    for date_field in [fecha_apertura, fecha_presentacion, fecha_resolucion]:
+    def _coded_option_value(value):
+        raw = str(value or "").strip()
+
+        if not raw:
+            return ""
+
+        if " - " in raw:
+            raw = raw.split(" - ", 1)[0]
+
+        return _norm(raw).replace(" ", "_")
+
+
+    def _continuity_mode_code():
+        return (
+            _coded_option_value(
+                continuity_mode.value
+            )
+            or "INDEPENDENT"
+        )
+
+
+    def _selected_previous_expedient_id():
+        return _option_id(
+            continuity_previous_expedient.get_value()
+        )
+
+
+    def _build_previous_expedient_option(item):
+        number = (
+            item.get("numero_expediente")
+            or f"#{item.get('id')}"
+        )
+
+        family = (
+            item.get("familia_expediente_nombre")
+            or item.get("familia_expediente_codigo")
+            or "SIN FAMILIA"
+        )
+
+        expedient_type = (
+            item.get("tipo_expediente_nombre")
+            or item.get("tipo_expediente_codigo")
+            or "SIN TIPO"
+        )
+
+        admin_state = (
+            item.get("estado_administrativo_nombre")
+            or "SIN ESTADO"
+        )
+
+        return (
+            f"{item['id']} - {number} · "
+            f"{family} · {expedient_type} · "
+            f"{admin_state}"
+        )
+
+
+    def refresh_continuity_previous_options(
+        reset_value=True,
+    ):
+        client_id = _option_id(
+            cliente.get_value()
+        )
+
+        current_id = (
+            state.get("editing_id")
+            or state.get("dialog_expediente_id")
+        )
+
+        items = []
+
+        if client_id:
+            try:
+                items = expedient_service.get_expedientes(
+                    cliente_id=client_id,
+                    active_only=True,
+                )
+            except Exception:
+                items = []
+
+        filtered = []
+
+        for item in items:
+            item_id = int(item.get("id") or 0)
+
+            if current_id and item_id == int(current_id):
+                continue
+
+            filtered.append(item)
+
+        state[
+            "continuity_previous_expedients"
+        ] = filtered
+
+        options = [
+            _build_previous_expedient_option(item)
+            for item in filtered
+        ]
+
+        continuity_previous_expedient.set_options(
+            options,
+            clear_value=reset_value,
+        )
+
+        if reset_value:
+            continuity_previous_expedient.set_value(
+                "",
+                update=False,
+            )
+
+
+    def update_continuity_visibility(
+        update_page=True,
+    ):
+        mode = _continuity_mode_code()
+        is_new = not bool(state.get("editing_id"))
+
+        continuity_form_wrapper.visible = is_new
+
+        continuity_direct_fields.visible = (
+            is_new
+            and mode == "DIRECT_RELATION"
+        )
+
+        continuity_external_fields.visible = (
+            is_new
+            and mode == "EXTERNAL_MILESTONE"
+        )
+
+        if (
+            mode == "INDEPENDENT"
+            or not is_new
+        ):
+            continuity_previous_expedient.set_value(
+                "",
+                update=False,
+            )
+
+        if update_page:
+            page.update()
+
+
+    def on_continuity_mode_change(e=None):
+        update_continuity_visibility(
+            update_page=True,
+        )
+
+
+    def on_continuity_client_change(
+        selected=None,
+    ):
+        refresh_continuity_previous_options(
+            reset_value=True,
+        )
+
+        update_continuity_visibility(
+            update_page=True,
+        )
+
+
+    continuity_mode.on_change = (
+        on_continuity_mode_change
+    )
+
+    cliente.on_select = (
+        on_continuity_client_change
+    )
+
+    for date_field in [
+        fecha_apertura,
+        fecha_presentacion,
+        fecha_resolucion,
+        milestone_date,
+    ]:
         def on_date_change(e, field=date_field):
             formatted = _format_date_typing(field.value)
             if field.value != formatted:
@@ -1966,6 +2334,30 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
     def clear_form():
         state["editing_id"] = None
+        state.pop(
+            "new_expedient_family_id",
+            None,
+        )
+        state.pop(
+            "new_expedient_family_code",
+            None,
+        )
+        state.pop(
+            "new_expedient_family_name",
+            None,
+        )
+        state.pop(
+            "new_expedient_type_id",
+            None,
+        )
+        state.pop(
+            "new_expedient_type_code",
+            None,
+        )
+        state.pop(
+            "new_expedient_type_name",
+            None,
+        )
         numero_expediente.value = ""
         id_presentacion.value = ""
         numero_expediente_extranjeria.value = ""
@@ -1993,6 +2385,48 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         observaciones.value = ""
         observaciones_internas.value = ""
         box_folder_path.value = ""
+
+        continuity_mode.value = (
+            continuity_mode_options[0]
+        )
+
+        continuity_previous_expedient.set_options(
+            [],
+            clear_value=True,
+        )
+
+        continuity_previous_expedient.set_value(
+            "",
+            update=False,
+        )
+
+        continuity_relation_type.value = (
+            "ACTUACION_POSTERIOR - "
+            "Actuación posterior"
+        )
+
+        continuity_reason.value = ""
+
+        milestone_code.value = ""
+        milestone_name.value = ""
+        milestone_family_code.value = ""
+        milestone_type_code.value = ""
+
+        milestone_state.value = (
+            "FINALIZADO - Finalizado"
+        )
+
+        milestone_result.value = (
+            "CONCEDIDO - Concedido"
+        )
+
+        milestone_date.value = ""
+        milestone_observations.value = ""
+
+        update_continuity_visibility(
+            update_page=False,
+        )
+
         clear_form_message()
 
     def load_form(expediente):
@@ -2068,6 +2502,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         observaciones.value = expediente.get("observaciones") or ""
         observaciones_internas.value = expediente.get("observaciones_internas") or ""
         box_folder_path.value = expediente.get("box_folder_path") or ""
+
+        continuity_mode.value = (
+            continuity_mode_options[0]
+        )
+
+        continuity_previous_expedient.set_value(
+            "",
+            update=False,
+        )
+
+        update_continuity_visibility(
+            update_page=False,
+        )
+
         clear_form_message()
 
     def form_data():
@@ -2130,6 +2578,142 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             "activo": 1,
         }
 
+    def continuity_data():
+        mode = _continuity_mode_code()
+
+        previous_id = (
+            _selected_previous_expedient_id()
+        )
+
+        if mode == "INDEPENDENT":
+            return {
+                "mode": "INDEPENDENT",
+                "description": (
+                    "Expediente abierto directamente "
+                    "desde Nuevo expediente."
+                ),
+            }
+
+        if mode == "DIRECT_RELATION":
+            return {
+                "mode": "DIRECT_RELATION",
+                "previous_expedient_id": (
+                    previous_id
+                ),
+                "relation_type": (
+                    _coded_option_value(
+                        continuity_relation_type.value
+                    )
+                    or "ACTUACION_POSTERIOR"
+                ),
+                "reason": (
+                    continuity_reason.value
+                    or ""
+                ).strip(),
+                "description": (
+                    continuity_reason.value
+                    or (
+                        "Expediente creado como "
+                        "continuidad manual."
+                    )
+                ).strip(),
+            }
+
+        result_code = _coded_option_value(
+            milestone_result.value
+        )
+
+        if result_code == "SIN_RESULTADO":
+            result_code = ""
+
+        return {
+            "mode": "EXTERNAL_MILESTONE",
+            "previous_expedient_id": previous_id,
+            "description": (
+                milestone_observations.value
+                or (
+                    "Expediente creado después "
+                    "de un trámite externo."
+                )
+            ).strip(),
+            "milestone": {
+                "codigo": (
+                    milestone_code.value
+                    or ""
+                ).strip(),
+                "nombre": (
+                    milestone_name.value
+                    or ""
+                ).strip(),
+                "familia_referencia_codigo": (
+                    milestone_family_code.value
+                    or ""
+                ).strip(),
+                "tipo_referencia_codigo": (
+                    milestone_type_code.value
+                    or ""
+                ).strip(),
+                "fecha_fin": _date_to_sql(
+                    milestone_date.value
+                ),
+                "estado": (
+                    _coded_option_value(
+                        milestone_state.value
+                    )
+                    or "REGISTRADO"
+                ),
+                "resultado": result_code,
+                "observaciones": (
+                    milestone_observations.value
+                    or ""
+                ).strip(),
+            },
+        }
+
+
+    def validate_continuity(data):
+        errors = []
+
+        if state.get("editing_id"):
+            return errors
+
+        mode = data.get("mode")
+
+        if mode == "DIRECT_RELATION":
+            if not data.get(
+                "previous_expedient_id"
+            ):
+                errors.append(
+                    "Selecciona el expediente anterior"
+                )
+
+        elif mode == "EXTERNAL_MILESTONE":
+            milestone = (
+                data.get("milestone")
+                or {}
+            )
+
+            if not milestone.get("codigo"):
+                errors.append(
+                    "Indica el código del trámite externo"
+                )
+
+            if not milestone.get("nombre"):
+                errors.append(
+                    "Indica el nombre del trámite externo"
+                )
+
+            if (
+                milestone_date.value
+                and not milestone.get("fecha_fin")
+            ):
+                errors.append(
+                    "Fecha del trámite externo inválida"
+                )
+
+        return errors
+
+
     def validate_form(data):
         errors = []
         if not data["cliente_id"]:
@@ -2168,29 +2752,1002 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             return
         page.update()
 
+    def _is_initial_family_reunification(
+        expediente,
+    ):
+        """
+        Comprueba por códigos de catálogo si el expediente
+        es una reagrupación familiar inicial.
+
+        No depende de IDs históricos ni de textos visibles.
+        """
+        expediente = dict(
+            expediente
+            or {}
+        )
+
+        tipo_id = expediente.get(
+            "tipo_expediente_id"
+        )
+
+        subtipo_id = expediente.get(
+            "subtipo_expediente_id"
+        )
+
+        if not tipo_id or not subtipo_id:
+            return False
+
+        try:
+            with sqlite3.connect(
+                _database_path()
+            ) as connection:
+                row = connection.execute(
+                    """
+                    SELECT
+                        f.codigo AS familia_codigo,
+                        t.codigo AS tipo_codigo,
+                        s.codigo AS subtipo_codigo
+                    FROM config_tipos_expediente t
+                    JOIN config_familias_expediente f
+                      ON f.id = t.familia_id
+                    JOIN config_subtipos_expediente s
+                      ON s.id = ?
+                     AND s.tipo_expediente_id = t.id
+                    WHERE t.id = ?
+                      AND COALESCE(f.activo, 1) = 1
+                      AND COALESCE(t.activo, 1) = 1
+                      AND COALESCE(s.activo, 1) = 1
+                    LIMIT 1
+                    """,
+                    (
+                        int(subtipo_id),
+                        int(tipo_id),
+                    ),
+                ).fetchone()
+        except Exception:
+            return False
+
+        if not row:
+            return False
+
+        return (
+            str(row[0] or "").strip().upper()
+            == "EXTRANJERIA"
+            and
+            str(row[1] or "").strip().upper()
+            == "REAGRUPACION_FAMILIAR"
+            and
+            str(row[2] or "").strip().upper()
+            == "INICIAL"
+        )
+
+
+    def _has_linked_housing_report(
+        reagrupacion_id,
+    ):
+        """
+        Evita mostrar el diálogo si la reagrupación ya
+        tiene vinculado un informe de vivienda previo.
+        """
+        try:
+            with sqlite3.connect(
+                _database_path()
+            ) as connection:
+                row = connection.execute(
+                    """
+                    SELECT 1
+                    FROM expediente_relaciones r
+                    JOIN expedientes previo
+                      ON previo.id =
+                         r.expediente_origen_id
+                    JOIN config_tipos_expediente t
+                      ON t.id =
+                         previo.tipo_expediente_id
+                    WHERE r.expediente_destino_id = ?
+                      AND r.tipo_relacion =
+                          'ACTUACION_POSTERIOR'
+                      AND t.codigo =
+                          'INFORME_VIVIENDA_ADECUADA'
+                      AND COALESCE(r.activo, 1) = 1
+                      AND COALESCE(previo.activo, 1) = 1
+                    LIMIT 1
+                    """,
+                    (
+                        int(reagrupacion_id),
+                    ),
+                ).fetchone()
+
+            return row is not None
+
+        except Exception:
+            return False
+
+
+    def _list_client_housing_reports(
+        cliente_id,
+        reagrupacion_id=None,
+    ):
+        """
+        Lista informes de vivienda del mismo cliente.
+
+        Se limita al tipo de expediente exacto y excluye
+        relaciones ya existentes con la reagrupación.
+        """
+        if not cliente_id:
+            return []
+
+        try:
+            with sqlite3.connect(
+                _database_path()
+            ) as connection:
+                connection.row_factory = sqlite3.Row
+
+                rows = connection.execute(
+                    """
+                    SELECT
+                        e.id,
+                        e.numero_expediente,
+                        e.fecha_apertura,
+                        e.fecha_presentacion,
+                        e.fecha_resolucion,
+                        e.estado_presentacion,
+                        e.box_folder_path,
+                        t.nombre AS tipo_nombre
+                    FROM expedientes e
+                    JOIN config_tipos_expediente t
+                      ON t.id = e.tipo_expediente_id
+                    WHERE e.cliente_id = ?
+                      AND t.codigo =
+                          'INFORME_VIVIENDA_ADECUADA'
+                      AND COALESCE(e.activo, 1) = 1
+                      AND (
+                          ? IS NULL
+                          OR NOT EXISTS (
+                              SELECT 1
+                              FROM expediente_relaciones r
+                              WHERE r.expediente_origen_id =
+                                    e.id
+                                AND r.expediente_destino_id =
+                                    ?
+                                AND r.tipo_relacion =
+                                    'ACTUACION_POSTERIOR'
+                                AND COALESCE(r.activo, 1) = 1
+                          )
+                      )
+                    ORDER BY
+                        COALESCE(
+                            e.fecha_apertura,
+                            e.created_at
+                        ) DESC,
+                        e.id DESC
+                    """,
+                    (
+                        int(cliente_id),
+                        (
+                            int(reagrupacion_id)
+                            if reagrupacion_id
+                            else None
+                        ),
+                        (
+                            int(reagrupacion_id)
+                            if reagrupacion_id
+                            else None
+                        ),
+                    ),
+                ).fetchall()
+
+            return [
+                dict(row)
+                for row in rows
+            ]
+
+        except Exception:
+            return []
+
+
+    def _close_housing_report_prompt(
+        e=None,
+    ):
+        housing_report_prompt_dialog.open = False
+        state.pop(
+            "housing_report_reagrupacion_id",
+            None,
+        )
+        page.update()
+
+
+    def _link_housing_report_to_reagrupacion(
+        housing_report_id,
+        reagrupacion_id,
+        e=None,
+    ):
+        try:
+            (
+                expedient_trajectory_service
+                .create_manual_expedient_relation(
+                    expediente_origen_id=int(
+                        housing_report_id
+                    ),
+                    expediente_destino_id=int(
+                        reagrupacion_id
+                    ),
+                    tipo_relacion=(
+                        "ACTUACION_POSTERIOR"
+                    ),
+                    motivo=(
+                        "Informe de vivienda adecuado "
+                        "vinculado como expediente previo "
+                        "de la reagrupación familiar inicial."
+                    ),
+                    usuario="ERP",
+                )
+            )
+
+            housing_report_prompt_dialog.open = False
+
+            state.pop(
+                "housing_report_reagrupacion_id",
+                None,
+            )
+
+            set_message(
+                success_alert(
+                    "Informe de vivienda vinculado "
+                    "como expediente previo"
+                )
+            )
+
+            refresh_table()
+            page.update()
+
+        except Exception as exc:
+            housing_report_prompt_dialog.content = (
+                ft.Container(
+                    width=620,
+                    content=ft.Column(
+                        controls=[
+                            error_alert(
+                                "No se pudo vincular el "
+                                f"informe de vivienda: {exc}"
+                            ),
+                        ],
+                        tight=True,
+                    ),
+                )
+            )
+            page.update()
+
+
+    def _show_existing_housing_reports(
+        reagrupacion,
+        e=None,
+    ):
+        reagrupacion = dict(
+            reagrupacion
+            or {}
+        )
+
+        reagrupacion_id = reagrupacion.get(
+            "id"
+        )
+
+        cliente_id = reagrupacion.get(
+            "cliente_id"
+        )
+
+        reports = _list_client_housing_reports(
+            cliente_id,
+            reagrupacion_id=reagrupacion_id,
+        )
+
+        cards = []
+
+        for report in reports:
+            report_id = int(
+                report["id"]
+            )
+
+            report_number = (
+                report.get("numero_expediente")
+                or f"Expediente {report_id}"
+            )
+
+            date_text = (
+                _date_to_display(
+                    report.get("fecha_apertura")
+                )
+                or "-"
+            )
+
+            box_text = (
+                report.get("box_folder_path")
+                or "Sin ruta Box asignada"
+            )
+
+            cards.append(
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=12,
+                    padding=12,
+                    ink=True,
+                    on_click=(
+                        lambda event,
+                        selected_report_id=report_id,
+                        selected_reagrupacion_id=int(
+                            reagrupacion_id
+                        ):
+                        _link_housing_report_to_reagrupacion(
+                            selected_report_id,
+                            selected_reagrupacion_id,
+                            event,
+                        )
+                    ),
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=42,
+                                height=42,
+                                border_radius=21,
+                                bgcolor="#F2F4F7",
+                                alignment=ft.Alignment(
+                                    0,
+                                    0,
+                                ),
+                                content=ft.Icon(
+                                    ft.Icons.HOME_OUTLINED,
+                                    color="#344054",
+                                ),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        report_number,
+                                        size=14,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Informe de vivienda "
+                                            f"· Apertura: {date_text}"
+                                        ),
+                                        size=12,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        box_text,
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Icon(
+                                ft.Icons.LINK,
+                                color=Q_PRIMARY,
+                            ),
+                        ],
+                        spacing=12,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
+        if cards:
+            result_content = ft.Column(
+                controls=cards,
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            )
+        else:
+            result_content = ft.Container(
+                bgcolor="#FFFAEB",
+                border=ft.border.all(
+                    1,
+                    "#FEDF89",
+                ),
+                border_radius=12,
+                padding=14,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                "No existen informes de "
+                                "vivienda para este cliente"
+                            ),
+                            size=14,
+                            weight=ft.FontWeight.BOLD,
+                            color="#B54708",
+                        ),
+                        ft.Text(
+                            (
+                                "En el siguiente incremento "
+                                "podrás crear el informe desde "
+                                "este mismo diálogo y dejarlo "
+                                "vinculado automáticamente."
+                            ),
+                            size=12,
+                            color="#B54708",
+                        ),
+                    ],
+                    spacing=5,
+                ),
+            )
+
+        housing_report_prompt_dialog.title = ft.Text(
+            "Seleccionar informe de vivienda",
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        )
+
+        housing_report_prompt_dialog.content = (
+            ft.Container(
+                width=650,
+                height=480,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                "Selecciona el expediente "
+                                "previo que corresponde a "
+                                "esta reagrupación."
+                            ),
+                            size=13,
+                            color=Q_MUTED,
+                        ),
+                        result_content,
+                    ],
+                    spacing=12,
+                    expand=True,
+                ),
+            )
+        )
+
+        housing_report_prompt_dialog.actions = [
+            secondary_button(
+                "Volver",
+                lambda event:
+                _open_housing_report_prompt(
+                    reagrupacion,
+                    event,
+                ),
+            ),
+            secondary_button(
+                "Decidir más tarde",
+                _close_housing_report_prompt,
+            ),
+        ]
+
+        housing_report_prompt_dialog.open = True
+        page.update()
+
+
+    def _housing_report_catalog_context():
+        """
+        Devuelve la familia Administración Local y el tipo
+        Informe de vivienda adecuada por códigos estables.
+        """
+        try:
+            with sqlite3.connect(
+                _database_path()
+            ) as connection:
+                connection.row_factory = sqlite3.Row
+
+                row = connection.execute(
+                    """
+                    SELECT
+                        f.id AS familia_id,
+                        f.codigo AS familia_codigo,
+                        f.nombre AS familia_nombre,
+                        t.id AS tipo_id,
+                        t.codigo AS tipo_codigo,
+                        t.nombre AS tipo_nombre
+                    FROM config_familias_expediente f
+                    JOIN config_tipos_expediente t
+                      ON t.familia_id = f.id
+                    WHERE f.codigo =
+                          'ADMINISTRACION_LOCAL'
+                      AND t.codigo =
+                          'INFORME_VIVIENDA_ADECUADA'
+                      AND COALESCE(f.activo, 1) = 1
+                      AND COALESCE(t.activo, 1) = 1
+                    LIMIT 1
+                    """
+                ).fetchone()
+
+            if not row:
+                return None
+
+            return {
+                "family": {
+                    "id": row["familia_id"],
+                    "codigo": row["familia_codigo"],
+                    "nombre": row["familia_nombre"],
+                },
+                "type": {
+                    "id": row["tipo_id"],
+                    "codigo": row["tipo_codigo"],
+                    "nombre": row["tipo_nombre"],
+                },
+            }
+
+        except Exception:
+            return None
+
+
+    def _is_housing_report_expedient(
+        expediente,
+    ):
+        expediente = dict(
+            expediente
+            or {}
+        )
+
+        tipo_id = expediente.get(
+            "tipo_expediente_id"
+        )
+
+        if not tipo_id:
+            return False
+
+        try:
+            with sqlite3.connect(
+                _database_path()
+            ) as connection:
+                row = connection.execute(
+                    """
+                    SELECT codigo
+                    FROM config_tipos_expediente
+                    WHERE id = ?
+                      AND COALESCE(activo, 1) = 1
+                    LIMIT 1
+                    """,
+                    (
+                        int(tipo_id),
+                    ),
+                ).fetchone()
+
+            return bool(
+                row
+                and str(
+                    row[0]
+                    or ""
+                ).strip().upper()
+                == "INFORME_VIVIENDA_ADECUADA"
+            )
+
+        except Exception:
+            return False
+
+
+    def _cancel_housing_report_creation(
+        reagrupacion,
+        e=None,
+    ):
+        housing_report_prompt_dialog.open = False
+
+        state.pop(
+            "pending_housing_report_reagrupacion_id",
+            None,
+        )
+
+        state.pop(
+            "pending_housing_report_box_root",
+            None,
+        )
+
+        set_message(
+            success_alert(
+                "La reagrupación se ha creado "
+                "sin expediente de informe de vivienda"
+            )
+        )
+
+        page.update()
+
+
+    def _start_housing_report_creation(
+        reagrupacion,
+        e=None,
+    ):
+        """
+        Abre una nueva ficha de informe de vivienda.
+
+        El cliente y la ruta raíz Box se heredan de la
+        reagrupación. La relación se materializa cuando
+        el nuevo informe se guarda correctamente.
+        """
+        reagrupacion = dict(
+            reagrupacion
+            or {}
+        )
+
+        reagrupacion_id = reagrupacion.get(
+            "id"
+        )
+
+        cliente_id = reagrupacion.get(
+            "cliente_id"
+        )
+
+        if not reagrupacion_id or not cliente_id:
+            show_form_error(
+                "No se pudo recuperar la reagrupación "
+                "o su cliente"
+            )
+            return
+
+        catalog = _housing_report_catalog_context()
+
+        if not catalog:
+            show_form_error(
+                "No está disponible el catálogo del "
+                "informe de vivienda adecuada"
+            )
+            return
+
+        housing_report_prompt_dialog.open = False
+
+        family = catalog["family"]
+        expedient_type = catalog["type"]
+
+        # Inicializa la familia y limpia el formulario.
+        open_new_for_family(
+            family,
+            cliente_id=int(cliente_id),
+        )
+
+        # clear_form() se ejecuta dentro de open_new_for_family,
+        # por lo que el contexto pendiente se guarda después.
+        state[
+            "pending_housing_report_reagrupacion_id"
+        ] = int(
+            reagrupacion_id
+        )
+
+        state[
+            "pending_housing_report_box_root"
+        ] = (
+            reagrupacion.get("box_folder_path")
+            or ""
+        )
+
+        if state[
+            "pending_housing_report_box_root"
+        ]:
+            box_folder_path.value = state[
+                "pending_housing_report_box_root"
+            ]
+
+        _open_new_expedient_form_after_type(
+            expedient_type,
+            cliente_id=int(cliente_id),
+        )
+
+
+    def _complete_pending_housing_report_relation(
+        expediente,
+    ):
+        """
+        Si el expediente recién creado es el informe que
+        estaba pendiente, lo vincula automáticamente con
+        la reagrupación que originó el flujo.
+        """
+        reagrupacion_id = state.get(
+            "pending_housing_report_reagrupacion_id"
+        )
+
+        if not reagrupacion_id:
+            return False
+
+        if not _is_housing_report_expedient(
+            expediente
+        ):
+            return False
+
+        informe_id = expediente.get("id")
+
+        if not informe_id:
+            return False
+
+        try:
+            (
+                expedient_trajectory_service
+                .create_manual_expedient_relation(
+                    expediente_origen_id=int(
+                        informe_id
+                    ),
+                    expediente_destino_id=int(
+                        reagrupacion_id
+                    ),
+                    tipo_relacion=(
+                        "ACTUACION_POSTERIOR"
+                    ),
+                    motivo=(
+                        "Informe de vivienda creado "
+                        "como expediente previo de la "
+                        "reagrupación familiar inicial."
+                    ),
+                    usuario="ERP",
+                )
+            )
+
+            state.pop(
+                "pending_housing_report_reagrupacion_id",
+                None,
+            )
+
+            state.pop(
+                "pending_housing_report_box_root",
+                None,
+            )
+
+            return True
+
+        except Exception as exc:
+            show_form_error(
+                "El informe se creó, pero no pudo "
+                "vincularse con la reagrupación: "
+                f"{exc}"
+            )
+
+            return False
+
+
+    def _open_housing_report_prompt(
+        reagrupacion,
+        e=None,
+    ):
+        reagrupacion = dict(
+            reagrupacion
+            or {}
+        )
+
+        reagrupacion_id = reagrupacion.get(
+            "id"
+        )
+
+        if not reagrupacion_id:
+            return
+
+        if _has_linked_housing_report(
+            reagrupacion_id
+        ):
+            return
+
+        state[
+            "housing_report_reagrupacion_id"
+        ] = int(
+            reagrupacion_id
+        )
+
+        numero = (
+            reagrupacion.get("numero_expediente")
+            or f"Expediente {reagrupacion_id}"
+        )
+
+        housing_report_prompt_dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.HOME_WORK_OUTLINED,
+                    color=Q_PRIMARY,
+                ),
+                ft.Text(
+                    "Informe de vivienda previo",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=10,
+        )
+
+        housing_report_prompt_dialog.content = (
+            ft.Container(
+                width=620,
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            bgcolor="#EFF8FF",
+                            border=ft.border.all(
+                                1,
+                                "#B2CCFF",
+                            ),
+                            border_radius=12,
+                            padding=12,
+                            content=ft.Text(
+                                (
+                                    f"Se ha creado {numero}. "
+                                    "Puedes vincular ahora el "
+                                    "informe de vivienda que "
+                                    "actúa como expediente previo."
+                                ),
+                                size=13,
+                                color="#1849A9",
+                            ),
+                        ),
+                        ft.Text(
+                            (
+                                "La relación quedará registrada "
+                                "en la trayectoria administrativa "
+                                "del cliente."
+                            ),
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                        ft.Text(
+                            (
+                                "La ruta de Box no se modifica "
+                                "en esta fase."
+                            ),
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            )
+        )
+
+        housing_report_prompt_dialog.actions = [
+            secondary_button(
+                "Decidir más tarde",
+                _close_housing_report_prompt,
+            ),
+            secondary_button(
+                "No crear informe",
+                lambda event:
+                _cancel_housing_report_creation(
+                    reagrupacion,
+                    event,
+                ),
+            ),
+            secondary_button(
+                "Vincular existente",
+                lambda event:
+                _show_existing_housing_reports(
+                    reagrupacion,
+                    event,
+                ),
+            ),
+            primary_button(
+                "Crear informe de vivienda",
+                lambda event:
+                _start_housing_report_creation(
+                    reagrupacion,
+                    event,
+                ),
+            ),
+        ]
+
+        housing_report_prompt_dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        housing_report_prompt_dialog.open = True
+        page.update()
+
+
     def save_expediente(e=None):
         data = form_data()
         errors = validate_form(data)
+
+        continuity = None
+
+        if not state.get("editing_id"):
+            continuity = continuity_data()
+            errors.extend(
+                validate_continuity(continuity)
+            )
+
         if errors:
             show_form_error("\n".join(errors))
             return
 
         try:
             if state["editing_id"]:
-                expedient_service.update_expediente(state["editing_id"], data)
-                set_message(success_alert("Expediente actualizado"))
+                expedient_service.update_expediente(
+                    state["editing_id"],
+                    data,
+                )
+
+                set_message(
+                    success_alert(
+                        "Expediente actualizado"
+                    )
+                )
+
                 close_dialog()
                 refresh_table()
+
             else:
-                new_expediente_id = expedient_service.create_expediente(data)
-                set_message(success_alert("Expediente creado"))
+                creation = (
+                    expedient_trajectory_service
+                    .create_expedient_with_continuity(
+                        expediente_data=data,
+                        continuity=continuity,
+                        usuario="ERP",
+                    )
+                )
+
+                new_expediente_id = int(
+                    creation["expediente"]["id"]
+                )
+
+                mode = creation.get("mode")
+
+                success_by_mode = {
+                    "INDEPENDENT": (
+                        "Expediente independiente creado"
+                    ),
+                    "DIRECT_RELATION": (
+                        "Expediente creado y vinculado "
+                        "con su expediente anterior"
+                    ),
+                    "EXTERNAL_MILESTONE": (
+                        "Expediente creado con el "
+                        "trámite externo registrado"
+                    ),
+                }
+
+                set_message(
+                    success_alert(
+                        success_by_mode.get(
+                            mode,
+                            "Expediente creado",
+                        )
+                    )
+                )
+
                 refresh_table()
 
-                expediente = expedient_service.get_expediente(new_expediente_id)
+                expediente = (
+                    expedient_service
+                    .get_expediente(
+                        new_expediente_id
+                    )
+                )
+
                 if expediente:
+                    housing_report_linked = (
+                        _complete_pending_housing_report_relation(
+                            expediente
+                        )
+                    )
+
                     open_edit(expediente)
+
+                    if housing_report_linked:
+                        set_message(
+                            success_alert(
+                                "Informe de vivienda creado "
+                                "y vinculado como expediente "
+                                "previo de la reagrupación"
+                            )
+                        )
+
+                        page.update()
+
+                    elif (
+                        _is_initial_family_reunification(
+                            expediente
+                        )
+                    ):
+                        _open_housing_report_prompt(
+                            expediente
+                        )
                 else:
                     close_dialog()
+
         except Exception as exc:
             show_form_error(str(exc))
 
@@ -7630,37 +9187,503 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             ),
         )
 
+    def current_expedient_family():
+        """
+        Devuelve la familia activa del formulario.
+
+        Funciona tanto:
+        - durante una nueva alta;
+        - al editar un expediente existente.
+        """
+
+        selected_family_id = _option_id(
+            familia_expediente.get_value()
+        )
+
+        if not selected_family_id:
+            selected_family_id = state.get(
+                "new_expedient_family_id"
+            )
+
+        for family in (familias or []):
+            try:
+                family_id = int(
+                    family.get("id")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                family_id = 0
+
+            if (
+                selected_family_id
+                and family_id
+                == int(selected_family_id)
+            ):
+                return dict(family)
+
+        fallback_code = state.get(
+            "new_expedient_family_code"
+        )
+
+        fallback_name = state.get(
+            "new_expedient_family_name"
+        )
+
+        if fallback_code or fallback_name:
+            return {
+                "id": selected_family_id,
+                "codigo": fallback_code,
+                "nombre": (
+                    fallback_name
+                    or fallback_code
+                ),
+            }
+
+        return {}
+
+
+    def current_expedient_family_code():
+        family = current_expedient_family()
+
+        return _norm(
+            family.get("codigo")
+            or family.get("nombre")
+        ).replace(" ", "_")
+
+
+    def current_expedient_family_name():
+        family = current_expedient_family()
+
+        return (
+            family.get("nombre")
+            or family.get("codigo")
+            or "Expediente"
+        )
+
+
+    def is_immigration_expedient():
+        return (
+            current_expedient_family_code()
+            == "EXTRANJERIA"
+        )
+
+
+    def get_family_dialog_sections():
+        """
+        Secciones habilitadas según la familia.
+
+        Extranjería conserva las herramientas históricas.
+        Las demás familias parten de una ficha genérica,
+        formularios dinámicos, documentación y trazabilidad.
+        """
+
+        common_sections = [
+            (
+                "Ficha",
+                "ficha",
+                ft.Icons.ARTICLE,
+                "Datos base",
+            ),
+            (
+                "Datos específicos",
+                "datos_especificos",
+                ft.Icons.DYNAMIC_FORM,
+                "Formulario",
+            ),
+            (
+                "Documentación",
+                "documentacion",
+                ft.Icons.FOLDER_OPEN,
+                "Box y documentos",
+            ),
+        ]
+
+        if is_immigration_expedient():
+            common_sections.extend(
+                [
+                    (
+                        "Plantillas y formularios",
+                        "plantillas",
+                        ft.Icons.DESCRIPTION,
+                        "EX / DOCX",
+                    ),
+                    (
+                        "Diagnóstico",
+                        "diagnostico",
+                        ft.Icons.FACT_CHECK,
+                        "Estado documental",
+                    ),
+                    (
+                        "Automatización",
+                        "automatizacion",
+                        ft.Icons.ROCKET_LAUNCH,
+                        "Mercurio / payload",
+                    ),
+                ]
+            )
+
+        common_sections.append(
+            (
+                "Trazabilidad",
+                "trazabilidad",
+                ft.Icons.TIMELINE,
+                "Historial",
+            )
+        )
+
+        return common_sections
+
+
+    def _family_form_header():
+        family_code = (
+            current_expedient_family_code()
+        )
+
+        family_name = (
+            current_expedient_family_name()
+        )
+
+        styles = {
+            "EXTRANJERIA": {
+                "icon": ft.Icons.PUBLIC,
+                "background": "#EAF3FF",
+                "border": "#B9D7FF",
+                "foreground": Q_PRIMARY,
+                "title": (
+                    "Ficha de Extranjería"
+                ),
+                "subtitle": (
+                    "Residencia, presentación, "
+                    "documentación y automatización."
+                ),
+            },
+            "NACIONALIDAD": {
+                "icon": ft.Icons.BADGE_OUTLINED,
+                "background": "#F4F3FF",
+                "border": "#D9D6FE",
+                "foreground": "#6941C6",
+                "title": (
+                    "Ficha de Nacionalidad"
+                ),
+                "subtitle": (
+                    "Datos generales y seguimiento "
+                    "del procedimiento de nacionalidad."
+                ),
+            },
+            "UGE": {
+                "icon": (
+                    ft.Icons.BUSINESS_CENTER_OUTLINED
+                ),
+                "background": "#F0F9FF",
+                "border": "#B9E6FE",
+                "foreground": "#026AA2",
+                "title": "Ficha UGE",
+                "subtitle": (
+                    "Expediente tramitado ante la "
+                    "Unidad de Grandes Empresas."
+                ),
+            },
+            "DOCUMENTACION_EXTRANJEROS": {
+                "icon": ft.Icons.FINGERPRINT,
+                "background": "#ECFDF3",
+                "border": "#A6F4C5",
+                "foreground": "#027A48",
+                "title": (
+                    "Ficha de documentación "
+                    "de extranjeros"
+                ),
+                "subtitle": (
+                    "Huellas, TIE, certificados "
+                    "y actuaciones documentales."
+                ),
+            },
+            "TRAMITES_CONSULARES": {
+                "icon": ft.Icons.TRAVEL_EXPLORE,
+                "background": "#FFFAEB",
+                "border": "#FEDF89",
+                "foreground": "#B54708",
+                "title": (
+                    "Ficha de trámites consulares"
+                ),
+                "subtitle": (
+                    "Visados y actuaciones ante "
+                    "consulados o proveedores."
+                ),
+            },
+            "REGISTRO_CIVIL": {
+                "icon": (
+                    ft.Icons.ACCOUNT_BALANCE_OUTLINED
+                ),
+                "background": "#FDF2FA",
+                "border": "#FCCEEE",
+                "foreground": "#C11574",
+                "title": (
+                    "Ficha de Registro Civil"
+                ),
+                "subtitle": (
+                    "Certificaciones, inscripciones "
+                    "y actuaciones registrales."
+                ),
+            },
+        }
+
+        style = styles.get(
+            family_code,
+            {
+                "icon": ft.Icons.FOLDER_SPECIAL,
+                "background": "#F8FAFC",
+                "border": Q_BORDER,
+                "foreground": Q_PRIMARY,
+                "title": (
+                    f"Ficha · {family_name}"
+                ),
+                "subtitle": (
+                    "Datos generales y seguimiento "
+                    "del expediente."
+                ),
+            },
+        )
+
+        return ft.Container(
+            bgcolor=style["background"],
+            border=ft.border.all(
+                1,
+                style["border"],
+            ),
+            border_radius=16,
+            padding=14,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(
+                            style["icon"],
+                            size=24,
+                            color=style["foreground"],
+                        ),
+                        bgcolor="#FFFFFF",
+                        border_radius=24,
+                        width=48,
+                        height=48,
+                        alignment=ft.alignment.Alignment(
+                            0,
+                            0,
+                        ),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                style["title"],
+                                size=20,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                style["subtitle"],
+                                size=13,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                    ft.Container(
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(
+                            1,
+                            style["border"],
+                        ),
+                        border_radius=10,
+                        padding=ft.padding.symmetric(
+                            horizontal=10,
+                            vertical=6,
+                        ),
+                        content=ft.Text(
+                            family_name,
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color=style["foreground"],
+                        ),
+                    ),
+                ],
+                spacing=12,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
+
+    def build_generic_expedient_edit_content():
+        """
+        Ficha base para familias todavía sin formulario
+        principal especializado.
+
+        No muestra identificadores ni herramientas
+        específicos de otras familias.
+        """
+
+        return ft.Column(
+            controls=[
+                _family_form_header(),
+                _form_card(
+                    "Datos principales",
+                    (
+                        "Cliente, familia, tipo, subtipo "
+                        "y estado operativo."
+                    ),
+                    [
+                        ft.Row(
+                            controls=[
+                                numero_expediente,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        cliente.control,
+                        ft.Row(
+                            controls=[
+                                familia_expediente.control,
+                                tipo_expediente.control,
+                                subtipo_expediente.control,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        ft.Row(
+                            controls=[
+                                prioridad,
+                                estado_documental,
+                                estado_administrativo,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        ft.Row(
+                            controls=[
+                                estado_presentacion,
+                                responsable,
+                                provincia.control,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                    ],
+                    ft.Icons.ACCOUNT_TREE,
+                ),
+                _form_card(
+                    "Continuidad y origen",
+                    (
+                        "Indica si el expediente es "
+                        "independiente, continúa otro asunto "
+                        "o sucede a un trámite externo."
+                    ),
+                    [
+                        continuity_form_wrapper,
+                        ft.Text(
+                            (
+                                "Los vínculos se conservan "
+                                "en la trayectoria administrativa "
+                                "del cliente."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    ft.Icons.ROUTE,
+                ),
+                _form_card(
+                    "Fechas y tramitación",
+                    (
+                        "Control temporal y referencias "
+                        "administrativas generales."
+                    ),
+                    [
+                        ft.Row(
+                            controls=[
+                                fecha_apertura,
+                                fecha_presentacion,
+                                fecha_resolucion,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        ft.Row(
+                            controls=[
+                                numero_registro,
+                                organo_presentacion,
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                    ],
+                    ft.Icons.EVENT_NOTE,
+                ),
+                _form_card(
+                    "Box y observaciones",
+                    (
+                        "Ruta documental y notas "
+                        "del expediente."
+                    ),
+                    [
+                        box_folder_path,
+                        ft.Row(
+                            controls=[
+                                secondary_button(
+                                    "Buscar carpetas Box",
+                                    lambda e:
+                                    cargar_box_folder_options(
+                                        False
+                                    ),
+                                ),
+                                primary_button(
+                                    "Escanear ruta y buscar",
+                                    lambda e:
+                                    cargar_box_folder_options(
+                                        True
+                                    ),
+                                ),
+                                secondary_button(
+                                    "Vincular ruta escrita",
+                                    vincular_box_folder_desde_ficha,
+                                ),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                        ft.Text(
+                            (
+                                "El ERP vincula la ruta en SQLite. "
+                                "No mueve, renombra ni elimina "
+                                "documentos de Box."
+                            ),
+                            size=12,
+                            color=Q_MUTED,
+                        ),
+                        observaciones,
+                        observaciones_internas,
+                    ],
+                    ft.Icons.FOLDER_OPEN,
+                ),
+                form_message,
+            ],
+            width=920,
+            height=620,
+            scroll=ft.ScrollMode.AUTO,
+            spacing=12,
+        )
+
+
+    def build_family_edit_content():
+        if is_immigration_expedient():
+            return build_edit_content()
+
+        return build_generic_expedient_edit_content()
+
+
     def build_edit_content():
         return ft.Column(
             controls=[
-                ft.Container(
-                    bgcolor="#EAF3FF",
-                    border=ft.border.all(1, "#B9D7FF"),
-                    border_radius=16,
-                    padding=14,
-                    content=ft.Row(
-                        controls=[
-                            ft.Container(
-                                content=ft.Icon(ft.Icons.FOLDER_SPECIAL, size=24, color=Q_PRIMARY),
-                                bgcolor="#FFFFFF",
-                                border_radius=24,
-                                width=48,
-                                height=48,
-                                alignment=ft.alignment.Alignment(0, 0),
-                            ),
-                            ft.Column(
-                                controls=[
-                                    ft.Text("Ficha principal del expediente", size=20, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                                    ft.Text("Datos base, estados, presentación y vinculación documental.", size=13, color=Q_MUTED),
-                                ],
-                                spacing=2,
-                                expand=True,
-                            ),
-                        ],
-                        spacing=12,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                ),
+                _family_form_header(),
                 _form_card(
                     "Datos principales",
                     "Cliente, tipo, subtipo y estado operativo del asunto.",
@@ -7693,6 +9716,28 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         ft.Row([responsable, provincia.control], wrap=True, spacing=10),
                     ],
                     ft.Icons.ACCOUNT_TREE,
+                ),
+                _form_card(
+                    "Continuidad y origen",
+                    (
+                        "Indica si el nuevo expediente es "
+                        "independiente, continúa otro expediente "
+                        "o sucede a un trámite externo."
+                    ),
+                    [
+                        continuity_form_wrapper,
+                        ft.Text(
+                            (
+                                "Esta sección solo se utiliza "
+                                "durante la creación. Una actuación "
+                                "externa se registra como hito, "
+                                "no como expediente del despacho."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    ft.Icons.ROUTE,
                 ),
                 _form_card(
                     "Fechas y presentación",
@@ -10965,6 +13010,2274 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         page.update()
 
 
+    def _close_derivation_proposal_dialog(
+        dialog,
+        e=None,
+    ):
+        try:
+            dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    def _open_related_expedient(
+        dialog,
+        expediente_destino_id,
+        e=None,
+    ):
+        try:
+            dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            expediente_dialog.open = False
+        except Exception:
+            pass
+
+        page.open_expediente_id = int(
+            expediente_destino_id
+        )
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        refresh_table()
+        open_pending_expediente_from_navigation()
+
+
+    CREATION_ORIGIN_LABELS = {
+        "APERTURA_MANUAL": (
+            "Abierto directamente"
+        ),
+        "DERIVACION_INTERNA": (
+            "Creado desde una derivación interna"
+        ),
+        "CONTINUIDAD_MANUAL": (
+            "Continuación manual de otro expediente"
+        ),
+        "CONTINUIDAD_CON_HITO_EXTERNO": (
+            "Abierto después de un trámite externo"
+        ),
+        "MIGRACION_LEGACY": (
+            "Procedente de datos históricos"
+        ),
+        "IMPORTACION": (
+            "Expediente importado"
+        ),
+    }
+
+
+    def _creation_origin_label(origin):
+        code = _norm(
+            (origin or {}).get("origen_creacion")
+        )
+
+        return (
+            CREATION_ORIGIN_LABELS.get(code)
+            or code.replace("_", " ").title()
+            or "Origen no especificado"
+        )
+
+
+    def _external_milestone_direction(
+        milestone,
+        expediente_id,
+    ):
+        previous_id = milestone.get(
+            "expediente_anterior_id"
+        )
+
+        posterior_id = milestone.get(
+            "expediente_posterior_id"
+        )
+
+        expediente_id = int(expediente_id)
+
+        if (
+            posterior_id is not None
+            and int(posterior_id) == expediente_id
+        ):
+            return "INCOMING"
+
+        if (
+            previous_id is not None
+            and int(previous_id) == expediente_id
+        ):
+            return "OUTGOING"
+
+        return "RELATED"
+
+
+    EXTERNAL_MILESTONE_STATE_OPTIONS = [
+        "REGISTRADO",
+        "EN_TRAMITE",
+        "FINALIZADO",
+        "CANCELADO",
+    ]
+
+    EXTERNAL_MILESTONE_RESULT_OPTIONS = [
+        "SIN_RESULTADO",
+        "CONCEDIDO",
+        "DENEGADO",
+        "COMPLETADO",
+        "DESISTIDO",
+        "ARCHIVADO",
+        "CANCELADO",
+    ]
+
+
+    def _close_external_milestone_dialog(
+        dialog,
+        e=None,
+    ):
+        try:
+            dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    def _refresh_expedient_after_milestone_change(
+        expediente_id=None,
+    ):
+        expediente_id = (
+            expediente_id
+            or state.get("dialog_expediente_id")
+            or state.get("editing_id")
+        )
+
+        if not expediente_id:
+            return
+
+        expediente_dialog.content = (
+            build_expediente_dialog_content(
+                int(expediente_id)
+            )
+        )
+
+        refresh_table()
+        page.update()
+
+
+    def _milestone_reference_summary(milestone):
+        previous_number = (
+            milestone.get(
+                "expediente_anterior_numero"
+            )
+            or "Sin expediente anterior"
+        )
+
+        posterior_number = (
+            milestone.get(
+                "expediente_posterior_numero"
+            )
+            or "Sin expediente posterior"
+        )
+
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=10,
+            padding=10,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Vínculos de trayectoria",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Anterior: "
+                        + str(previous_number),
+                        size=11,
+                        color=Q_MUTED,
+                        selectable=True,
+                    ),
+                    ft.Text(
+                        "Posterior: "
+                        + str(posterior_number),
+                        size=11,
+                        color=Q_MUTED,
+                        selectable=True,
+                    ),
+                    ft.Text(
+                        (
+                            "Estos vínculos no se modifican "
+                            "desde la edición ordinaria."
+                        ),
+                        size=10,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=4,
+            ),
+        )
+
+
+    def open_external_milestone_edit_dialog(
+        milestone,
+        e=None,
+    ):
+        milestone_id = int(
+            (milestone or {}).get("id")
+        )
+
+        try:
+            current = (
+                expedient_trajectory_service
+                .get_external_milestone(
+                    milestone_id,
+                    active_only=True,
+                )
+            )
+        except Exception as exc:
+            show_form_error(str(exc))
+            return
+
+        if not current:
+            show_form_error(
+                "El trámite externo ya no está disponible"
+            )
+            return
+
+        code_field = text_input(
+            "Código",
+            width=330,
+        )
+
+        name_field = text_input(
+            "Nombre",
+            width=520,
+        )
+
+        family_field = text_input(
+            "Familia de referencia",
+            width=310,
+        )
+
+        type_field = text_input(
+            "Tipo de referencia",
+            width=310,
+        )
+
+        subtype_field = text_input(
+            "Subtipo de referencia",
+            width=310,
+        )
+
+        state_field = select_input(
+            "Estado",
+            EXTERNAL_MILESTONE_STATE_OPTIONS,
+            width=240,
+        )
+
+        result_field = select_input(
+            "Resultado",
+            EXTERNAL_MILESTONE_RESULT_OPTIONS,
+            width=240,
+        )
+
+        start_date_field = text_input(
+            "Fecha de inicio",
+            width=220,
+        )
+
+        end_date_field = text_input(
+            "Fecha de finalización",
+            width=220,
+        )
+
+        document_field = text_input(
+            "Documento de referencia",
+            width=650,
+        )
+
+        order_field = text_input(
+            "Orden",
+            width=160,
+        )
+
+        observations_field = multiline_input(
+            "Observaciones",
+            width=720,
+            height=150,
+        )
+
+        code_field.value = (
+            current.get("codigo")
+            or ""
+        )
+
+        name_field.value = (
+            current.get("nombre")
+            or ""
+        )
+
+        family_field.value = (
+            current.get(
+                "familia_referencia_codigo"
+            )
+            or ""
+        )
+
+        type_field.value = (
+            current.get(
+                "tipo_referencia_codigo"
+            )
+            or ""
+        )
+
+        subtype_field.value = (
+            current.get(
+                "subtipo_referencia_codigo"
+            )
+            or ""
+        )
+
+        state_field.value = (
+            current.get("estado")
+            or "REGISTRADO"
+        )
+
+        result_field.value = (
+            current.get("resultado")
+            or "SIN_RESULTADO"
+        )
+
+        start_date_field.value = _date_to_display(
+            current.get("fecha_inicio")
+        )
+
+        end_date_field.value = _date_to_display(
+            current.get("fecha_fin")
+        )
+
+        document_field.value = (
+            current.get("documento_referencia")
+            or ""
+        )
+
+        order_field.value = str(
+            current.get("orden")
+            or 0
+        )
+
+        observations_field.value = (
+            current.get("observaciones")
+            or ""
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+        )
+
+        def save_changes(event=None):
+            start_date = _date_to_sql(
+                start_date_field.value
+            )
+
+            end_date = _date_to_sql(
+                end_date_field.value
+            )
+
+            if (
+                start_date_field.value
+                and not start_date
+            ):
+                show_form_error(
+                    "La fecha de inicio no es válida"
+                )
+                return
+
+            if (
+                end_date_field.value
+                and not end_date
+            ):
+                show_form_error(
+                    "La fecha de finalización no es válida"
+                )
+                return
+
+            try:
+                order = int(
+                    str(
+                        order_field.value
+                        or "0"
+                    ).strip()
+                )
+            except ValueError:
+                show_form_error(
+                    "El orden debe ser un número entero"
+                )
+                return
+
+            try:
+                (
+                    expedient_trajectory_service
+                    .update_external_milestone(
+                        milestone_id,
+                        {
+                            "codigo":
+                                code_field.value,
+                            "nombre":
+                                name_field.value,
+                            "familia_referencia_codigo":
+                                family_field.value,
+                            "tipo_referencia_codigo":
+                                type_field.value,
+                            "subtipo_referencia_codigo":
+                                subtype_field.value,
+                            "estado":
+                                state_field.value,
+                            "resultado":
+                                result_field.value,
+                            "fecha_inicio":
+                                start_date,
+                            "fecha_fin":
+                                end_date,
+                            "documento_referencia":
+                                document_field.value,
+                            "observaciones":
+                                observations_field.value,
+                            "orden":
+                                order,
+                        },
+                        usuario="ERP",
+                    )
+                )
+
+                _close_external_milestone_dialog(
+                    dialog
+                )
+
+                set_message(
+                    success_alert(
+                        "Trámite externo actualizado"
+                    )
+                )
+
+                _refresh_expedient_after_milestone_change()
+
+            except Exception as exc:
+                show_form_error(str(exc))
+
+        dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.EDIT_OUTLINED,
+                    color=Q_PRIMARY,
+                ),
+                ft.Text(
+                    "Editar trámite externo",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=10,
+        )
+
+        dialog.content = ft.Container(
+            width=780,
+            height=570,
+            content=ft.Column(
+                controls=[
+                    _milestone_reference_summary(
+                        current
+                    ),
+                    ft.Row(
+                        controls=[
+                            code_field,
+                            name_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            family_field,
+                            type_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    subtype_field,
+                    ft.Row(
+                        controls=[
+                            state_field,
+                            result_field,
+                            order_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            start_date_field,
+                            end_date_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    document_field,
+                    observations_field,
+                ],
+                spacing=12,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        )
+
+        dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                lambda event: (
+                    _close_external_milestone_dialog(
+                        dialog,
+                        event,
+                    )
+                ),
+            ),
+            primary_button(
+                "Guardar cambios",
+                save_changes,
+            ),
+        ]
+
+        dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def open_external_milestone_complete_dialog(
+        milestone,
+        e=None,
+    ):
+        milestone_id = int(
+            (milestone or {}).get("id")
+        )
+
+        result_field = select_input(
+            "Resultado",
+            [
+                "CONCEDIDO",
+                "DENEGADO",
+                "COMPLETADO",
+                "DESISTIDO",
+                "ARCHIVADO",
+                "CANCELADO",
+            ],
+            width=280,
+        )
+
+        result_field.value = (
+            milestone.get("resultado")
+            or "COMPLETADO"
+        )
+
+        end_date_field = text_input(
+            "Fecha de finalización",
+            width=240,
+        )
+
+        end_date_field.value = (
+            _date_to_display(
+                milestone.get("fecha_fin")
+            )
+            or datetime.now().strftime(
+                "%d/%m/%Y"
+            )
+        )
+
+        observations_field = multiline_input(
+            "Observaciones",
+            width=610,
+            height=150,
+        )
+
+        observations_field.value = (
+            milestone.get("observaciones")
+            or ""
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+        )
+
+        def complete_milestone(event=None):
+            final_date = _date_to_sql(
+                end_date_field.value
+            )
+
+            if not final_date:
+                show_form_error(
+                    "Indica una fecha final válida"
+                )
+                return
+
+            if not result_field.value:
+                show_form_error(
+                    "Selecciona el resultado"
+                )
+                return
+
+            try:
+                (
+                    expedient_trajectory_service
+                    .complete_external_milestone(
+                        milestone_id,
+                        resultado=result_field.value,
+                        fecha_fin=final_date,
+                        observaciones=(
+                            observations_field.value
+                        ),
+                        usuario="ERP",
+                    )
+                )
+
+                _close_external_milestone_dialog(
+                    dialog
+                )
+
+                set_message(
+                    success_alert(
+                        "Trámite externo finalizado"
+                    )
+                )
+
+                _refresh_expedient_after_milestone_change()
+
+            except Exception as exc:
+                show_form_error(str(exc))
+
+        dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.TASK_ALT,
+                    color="#027A48",
+                ),
+                ft.Text(
+                    "Finalizar trámite externo",
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+            ],
+            spacing=10,
+        )
+
+        dialog.content = ft.Container(
+            width=650,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        str(
+                            milestone.get("nombre")
+                            or "Trámite externo"
+                        ),
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Row(
+                        controls=[
+                            result_field,
+                            end_date_field,
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    observations_field,
+                ],
+                spacing=12,
+                tight=True,
+            ),
+        )
+
+        dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                lambda event: (
+                    _close_external_milestone_dialog(
+                        dialog,
+                        event,
+                    )
+                ),
+            ),
+            primary_button(
+                "Finalizar",
+                complete_milestone,
+            ),
+        ]
+
+        dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def confirm_deactivate_external_milestone(
+        milestone,
+        e=None,
+    ):
+        milestone_id = int(
+            (milestone or {}).get("id")
+        )
+
+        reason_field = multiline_input(
+            "Motivo de la desactivación",
+            width=590,
+            height=130,
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+        )
+
+        def execute_deactivation(event=None):
+            try:
+                (
+                    expedient_trajectory_service
+                    .deactivate_external_milestone(
+                        milestone_id,
+                        usuario="ERP",
+                        motivo=reason_field.value,
+                    )
+                )
+
+                _close_external_milestone_dialog(
+                    dialog
+                )
+
+                set_message(
+                    success_alert(
+                        "Trámite externo desactivado"
+                    )
+                )
+
+                _refresh_expedient_after_milestone_change()
+
+            except Exception as exc:
+                show_form_error(str(exc))
+
+        dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.DELETE_OUTLINE,
+                    color="#B42318",
+                ),
+                ft.Text(
+                    "Desactivar trámite externo",
+                    weight=ft.FontWeight.BOLD,
+                    color="#B42318",
+                ),
+            ],
+            spacing=10,
+        )
+
+        dialog.content = ft.Container(
+            width=620,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        (
+                            "El trámite dejará de aparecer "
+                            "en la trayectoria ordinaria, "
+                            "pero se conservará para auditoría."
+                        ),
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        str(
+                            milestone.get("nombre")
+                            or "Trámite externo"
+                        ),
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    reason_field,
+                ],
+                spacing=12,
+                tight=True,
+            ),
+        )
+
+        dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                lambda event: (
+                    _close_external_milestone_dialog(
+                        dialog,
+                        event,
+                    )
+                ),
+            ),
+            ft.TextButton(
+                "Desactivar",
+                on_click=execute_deactivation,
+                style=ft.ButtonStyle(
+                    color="#B42318",
+                ),
+            ),
+        ]
+
+        dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def _external_milestone_management_menu(
+        milestone,
+    ):
+        milestone = dict(milestone or {})
+
+        is_finalized = (
+            _norm(milestone.get("estado"))
+            == "FINALIZADO"
+        )
+
+        return ft.PopupMenuButton(
+            icon=ft.Icons.MORE_VERT,
+            tooltip="Gestionar trámite externo",
+            items=[
+                ft.PopupMenuItem(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.EDIT_OUTLINED,
+                                size=17,
+                                color=Q_PRIMARY,
+                            ),
+                            ft.Text(
+                                "Editar trámite externo"
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    on_click=(
+                        lambda event,
+                        item=dict(milestone):
+                        open_external_milestone_edit_dialog(
+                            item,
+                            event,
+                        )
+                    ),
+                ),
+                ft.PopupMenuItem(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.TASK_ALT,
+                                size=17,
+                                color="#027A48",
+                            ),
+                            ft.Text(
+                                "Marcar como finalizado"
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    disabled=is_finalized,
+                    on_click=(
+                        lambda event,
+                        item=dict(milestone):
+                        open_external_milestone_complete_dialog(
+                            item,
+                            event,
+                        )
+                    ),
+                ),
+                ft.PopupMenuItem(),
+                ft.PopupMenuItem(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.DELETE_OUTLINE,
+                                size=17,
+                                color="#B42318",
+                            ),
+                            ft.Text(
+                                "Desactivar",
+                                color="#B42318",
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    on_click=(
+                        lambda event,
+                        item=dict(milestone):
+                        confirm_deactivate_external_milestone(
+                            item,
+                            event,
+                        )
+                    ),
+                ),
+            ],
+        )
+
+
+    def _build_external_milestone_card(
+        milestone,
+        direction="RELATED",
+        compact=False,
+        allow_management=False,
+    ):
+        milestone = dict(milestone or {})
+
+        direction = _norm(direction)
+
+        if direction == "INCOMING":
+            direction_label = (
+                "TRÁMITE EXTERNO ANTERIOR"
+            )
+            background = "#FFF7ED"
+            border_color = "#FDBA74"
+            foreground = "#C2410C"
+
+        elif direction == "OUTGOING":
+            direction_label = (
+                "TRÁMITE EXTERNO POSTERIOR"
+            )
+            background = "#F0FDF4"
+            border_color = "#86EFAC"
+            foreground = "#15803D"
+
+        else:
+            direction_label = "TRÁMITE EXTERNO"
+            background = "#FFFAEB"
+            border_color = "#FEC84B"
+            foreground = "#B54708"
+
+        name = (
+            milestone.get("nombre")
+            or milestone.get("codigo")
+            or "Trámite externo"
+        )
+
+        code = (
+            milestone.get("codigo")
+            or ""
+        )
+
+        state_label = str(
+            milestone.get("estado")
+            or "REGISTRADO"
+        ).replace("_", " ")
+
+        result_label = str(
+            milestone.get("resultado")
+            or "SIN RESULTADO"
+        ).replace("_", " ")
+
+        date_value = (
+            milestone.get("fecha_fin")
+            or milestone.get("fecha_inicio")
+            or ""
+        )
+
+        observations = str(
+            milestone.get("observaciones")
+            or ""
+        ).strip()
+
+        previous_number = (
+            milestone.get(
+                "expediente_anterior_numero"
+            )
+            or ""
+        )
+
+        posterior_number = (
+            milestone.get(
+                "expediente_posterior_numero"
+            )
+            or ""
+        )
+
+        detail_controls = [
+            ft.Text(
+                f"Estado: {state_label}",
+                size=11,
+                color=foreground,
+            ),
+            ft.Text(
+                f"Resultado: {result_label}",
+                size=11,
+                color=foreground,
+            ),
+        ]
+
+        if date_value:
+            detail_controls.append(
+                ft.Text(
+                    "Fecha: "
+                    + _date_to_display(
+                        str(date_value)
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                )
+            )
+
+        if previous_number:
+            detail_controls.append(
+                ft.Text(
+                    "Expediente anterior: "
+                    + str(previous_number),
+                    size=11,
+                    color=Q_MUTED,
+                    selectable=True,
+                )
+            )
+
+        if posterior_number:
+            detail_controls.append(
+                ft.Text(
+                    "Expediente posterior: "
+                    + str(posterior_number),
+                    size=11,
+                    color=Q_MUTED,
+                    selectable=True,
+                )
+            )
+
+        return ft.Container(
+            bgcolor=background,
+            border=ft.border.all(
+                1,
+                border_color,
+            ),
+            border_radius=14,
+            padding=12 if compact else 14,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=40,
+                                height=40,
+                                border_radius=12,
+                                bgcolor="#FFFFFF",
+                                alignment=ft.Alignment(
+                                    0,
+                                    0,
+                                ),
+                                content=ft.Icon(
+                                    ft.Icons.PUBLIC,
+                                    color=foreground,
+                                    size=21,
+                                ),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        direction_label,
+                                        size=9,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color=foreground,
+                                    ),
+                                    ft.Text(
+                                        str(name),
+                                        size=14,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            f"Código: {code}"
+                                            if code
+                                            else (
+                                                "Actuación realizada "
+                                                "fuera del despacho"
+                                            )
+                                        ),
+                                        size=10,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Container(
+                                padding=ft.padding.symmetric(
+                                    horizontal=8,
+                                    vertical=4,
+                                ),
+                                border_radius=12,
+                                bgcolor="#FFFFFF",
+                                border=ft.border.all(
+                                    1,
+                                    border_color,
+                                ),
+                                content=ft.Text(
+                                    result_label,
+                                    size=9,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=foreground,
+                                ),
+                            ),
+                            *(
+                                [
+                                    _external_milestone_management_menu(
+                                        milestone
+                                    )
+                                ]
+                                if allow_management
+                                else []
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                    ft.Row(
+                        controls=detail_controls,
+                        spacing=14,
+                        wrap=True,
+                    ),
+                    *(
+                        [
+                            ft.Container(
+                                padding=10,
+                                border_radius=10,
+                                bgcolor="#FFFFFF",
+                                content=ft.Text(
+                                    observations,
+                                    size=11,
+                                    color="#344054",
+                                    selectable=True,
+                                ),
+                            )
+                        ]
+                        if observations and not compact
+                        else []
+                    ),
+                    ft.Text(
+                        (
+                            "Este elemento forma parte de "
+                            "la trayectoria administrativa, "
+                            "pero no es un expediente "
+                            "gestionado por el despacho."
+                        ),
+                        size=10,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=9,
+            ),
+        )
+
+
+    def _close_full_expedient_chain_dialog(
+        dialog,
+        e=None,
+    ):
+        try:
+            dialog.open = False
+        except Exception:
+            pass
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    def show_full_expedient_chain_dialog(
+        expediente_id,
+        e=None,
+    ):
+        try:
+            chain = (
+                expedient_evolution_service
+                .get_expedient_relation_chain(
+                    int(expediente_id)
+                )
+            )
+        except Exception as exc:
+            show_form_error(
+                "No se pudo cargar la cadena "
+                "de expedientes:\n"
+                + str(exc)
+            )
+            return
+
+        nodes = chain.get("nodes") or []
+        edges = chain.get("edges") or []
+
+        node_ids = {
+            int(node["id"])
+            for node in nodes
+            if node.get("id") is not None
+        }
+
+        try:
+            all_external_milestones = (
+                expedient_trajectory_service
+                .list_external_milestones(
+                    cliente_id=chain.get(
+                        "cliente_id"
+                    ),
+                    active_only=True,
+                )
+            )
+        except Exception:
+            all_external_milestones = []
+
+        external_milestones = [
+            milestone
+            for milestone in all_external_milestones
+            if (
+                (
+                    milestone.get(
+                        "expediente_anterior_id"
+                    )
+                    is not None
+                    and int(
+                        milestone[
+                            "expediente_anterior_id"
+                        ]
+                    )
+                    in node_ids
+                )
+                or (
+                    milestone.get(
+                        "expediente_posterior_id"
+                    )
+                    is not None
+                    and int(
+                        milestone[
+                            "expediente_posterior_id"
+                        ]
+                    )
+                    in node_ids
+                )
+            )
+        ]
+
+        node_controls = []
+        rendered_milestone_ids = set()
+
+        for index, node in enumerate(nodes):
+            node = dict(node or {})
+
+            node_id = int(node["id"])
+            level = int(node.get("nivel") or 0)
+            is_root = bool(node.get("es_raiz"))
+
+            expediente_number = (
+                node.get("numero_expediente")
+                or f"#{node_id}"
+            )
+
+            expediente_type = (
+                node.get(
+                    "tipo_expediente_nombre"
+                )
+                or node.get(
+                    "tipo_expediente_codigo"
+                )
+                or "Expediente"
+            )
+
+            expediente_family = (
+                node.get(
+                    "familia_expediente_nombre"
+                )
+                or node.get(
+                    "familia_expediente_codigo"
+                )
+                or "-"
+            )
+
+            expediente_subtype = (
+                node.get(
+                    "subtipo_expediente_nombre"
+                )
+                or node.get(
+                    "subtipo_expediente_codigo"
+                )
+                or ""
+            )
+
+            expediente_state = (
+                node.get(
+                    "estado_administrativo_nombre"
+                )
+                or "SIN ESTADO"
+            )
+
+            expediente_state_color = (
+                node.get(
+                    "estado_administrativo_color"
+                )
+                or Q_PRIMARY
+            )
+
+            if level < 0:
+                level_label = (
+                    "EXPEDIENTE ANTERIOR"
+                )
+
+            elif level > 0:
+                level_label = (
+                    "EXPEDIENTE POSTERIOR"
+                )
+
+            else:
+                level_label = (
+                    "EXPEDIENTE ACTUAL"
+                )
+
+            incoming_node_milestones = [
+                milestone
+                for milestone in external_milestones
+                if (
+                    milestone.get(
+                        "expediente_posterior_id"
+                    )
+                    is not None
+                    and int(
+                        milestone[
+                            "expediente_posterior_id"
+                        ]
+                    )
+                    == node_id
+                    and int(
+                        milestone.get("id")
+                        or 0
+                    )
+                    not in rendered_milestone_ids
+                )
+            ]
+
+            for milestone in incoming_node_milestones:
+                if node_controls:
+                    node_controls.append(
+                        ft.Container(
+                            alignment=ft.Alignment(
+                                0,
+                                0,
+                            ),
+                            content=ft.Icon(
+                                ft.Icons.ARROW_DOWNWARD,
+                                color=Q_MUTED,
+                                size=24,
+                            ),
+                        )
+                    )
+
+                node_controls.append(
+                    _build_external_milestone_card(
+                        milestone,
+                        direction="INCOMING",
+                    )
+                )
+
+                rendered_milestone_ids.add(
+                    int(milestone["id"])
+                )
+
+            if index or incoming_node_milestones:
+                node_controls.append(
+                    ft.Container(
+                        alignment=ft.Alignment(
+                            0,
+                            0,
+                        ),
+                        content=ft.Icon(
+                            ft.Icons.ARROW_DOWNWARD,
+                            color=Q_MUTED,
+                            size=24,
+                        ),
+                    )
+                )
+
+            node_controls.append(
+                ft.Container(
+                    bgcolor=(
+                        "#EAF3FF"
+                        if is_root
+                        else "#FFFFFF"
+                    ),
+                    border=ft.border.all(
+                        2 if is_root else 1,
+                        (
+                            Q_PRIMARY
+                            if is_root
+                            else Q_BORDER
+                        ),
+                    ),
+                    border_radius=14,
+                    padding=14,
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        width=42,
+                                        height=42,
+                                        border_radius=12,
+                                        bgcolor=(
+                                            Q_PRIMARY
+                                            if is_root
+                                            else "#F2F4F7"
+                                        ),
+                                        alignment=ft.Alignment(
+                                            0,
+                                            0,
+                                        ),
+                                        content=ft.Icon(
+                                            ft.Icons.FOLDER_OPEN,
+                                            color=(
+                                                "#FFFFFF"
+                                                if is_root
+                                                else Q_PRIMARY
+                                            ),
+                                            size=22,
+                                        ),
+                                    ),
+                                    ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                level_label,
+                                                size=10,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color=(
+                                                    Q_PRIMARY
+                                                    if is_root
+                                                    else Q_MUTED
+                                                ),
+                                            ),
+                                            ft.Text(
+                                                expediente_type,
+                                                size=15,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color=Q_PRIMARY_DARK,
+                                            ),
+                                            ft.Text(
+                                                expediente_number,
+                                                size=12,
+                                                color=Q_MUTED,
+                                                selectable=True,
+                                            ),
+                                        ],
+                                        spacing=2,
+                                        expand=True,
+                                    ),
+                                    expedient_status_badge(
+                                        expediente_state,
+                                        expediente_state_color,
+                                    ),
+                                ],
+                                spacing=10,
+                                vertical_alignment=(
+                                    ft.CrossAxisAlignment.CENTER
+                                ),
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        "Familia: "
+                                        + str(
+                                            expediente_family
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Subtipo: "
+                                                + str(
+                                                    expediente_subtype
+                                                ),
+                                                size=11,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if expediente_subtype
+                                        else []
+                                    ),
+                                ],
+                                spacing=18,
+                                wrap=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        expand=True,
+                                    ),
+                                    ft.TextButton(
+                                        (
+                                            "Expediente actual"
+                                            if is_root
+                                            else "Abrir expediente"
+                                        ),
+                                        icon=(
+                                            ft.Icons.CHECK_CIRCLE
+                                            if is_root
+                                            else ft.Icons.OPEN_IN_NEW
+                                        ),
+                                        disabled=is_root,
+                                        on_click=(
+                                            None
+                                            if is_root
+                                            else (
+                                                lambda e,
+                                                eid=node_id: (
+                                                    _open_related_expedient(
+                                                        dialog,
+                                                        eid,
+                                                        e,
+                                                    )
+                                                )
+                                            )
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+                )
+            )
+
+        pending_terminal_milestones = [
+            milestone
+            for milestone in external_milestones
+            if (
+                int(
+                    milestone.get("id")
+                    or 0
+                )
+                not in rendered_milestone_ids
+                and milestone.get(
+                    "expediente_anterior_id"
+                )
+                is not None
+                and int(
+                    milestone[
+                        "expediente_anterior_id"
+                    ]
+                )
+                in node_ids
+            )
+        ]
+
+        for milestone in pending_terminal_milestones:
+            if node_controls:
+                node_controls.append(
+                    ft.Container(
+                        alignment=ft.Alignment(
+                            0,
+                            0,
+                        ),
+                        content=ft.Icon(
+                            ft.Icons.ARROW_DOWNWARD,
+                            color=Q_MUTED,
+                            size=24,
+                        ),
+                    )
+                )
+
+            node_controls.append(
+                _build_external_milestone_card(
+                    milestone,
+                    direction="OUTGOING",
+                )
+            )
+
+        if not node_controls:
+            node_controls = [
+                empty_state(
+                    "No hay expedientes en la cadena"
+                )
+            ]
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.ACCOUNT_TREE,
+                        color=Q_PRIMARY,
+                        size=25,
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Cadena completa de expedientes",
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                f"{len(nodes)} expediente(s) · "
+                                f"{len(edges)} relación(es) · "
+                                f"{len(external_milestones)} "
+                                "trámite(s) externo(s)",
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=1,
+                    ),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                width=720,
+                height=560,
+                content=ft.Column(
+                    controls=node_controls,
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=lambda e: (
+                        _close_full_expedient_chain_dialog(
+                            dialog,
+                            e,
+                        )
+                    ),
+                ),
+            ],
+            actions_alignment=(
+                ft.MainAxisAlignment.END
+            ),
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def _show_derivation_created_dialog(
+        *,
+        expediente_destino,
+        proposal=None,
+    ):
+        expediente_destino = (
+            expediente_destino
+            or {}
+        )
+
+        proposal = (
+            proposal
+            or {}
+        )
+
+        expediente_destino_id = (
+            expediente_destino.get("id")
+        )
+
+        numero_destino = (
+            expediente_destino.get(
+                "numero_expediente"
+            )
+            or (
+                f"#{expediente_destino_id}"
+                if expediente_destino_id
+                else "-"
+            )
+        )
+
+        tipo_destino_nombre = (
+            proposal.get(
+                "tipo_destino_nombre"
+            )
+            or expediente_destino.get(
+                "tipo_expediente_nombre"
+            )
+            or expediente_destino.get(
+                "tipo_nombre"
+            )
+            or proposal.get(
+                "tipo_destino_codigo"
+            )
+            or "EXPEDIENTE POSTERIOR"
+        )
+
+        familia_destino_nombre = (
+            proposal.get(
+                "familia_destino_nombre"
+            )
+            or expediente_destino.get(
+                "familia_expediente_nombre"
+            )
+            or expediente_destino.get(
+                "familia_nombre"
+            )
+            or proposal.get(
+                "familia_destino_codigo"
+            )
+            or ""
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.CHECK_CIRCLE,
+                        color="#027A48",
+                        size=24,
+                    ),
+                    ft.Text(
+                        "Expediente posterior creado",
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                width=500,
+                content=ft.Column(
+                    controls=[
+                        success_alert(
+                            "El expediente posterior "
+                            "se ha creado correctamente."
+                        ),
+                        ft.Container(
+                            padding=12,
+                            border_radius=10,
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        str(
+                                            tipo_destino_nombre
+                                        ),
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Familia: "
+                                                + str(
+                                                    familia_destino_nombre
+                                                ),
+                                                size=12,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if familia_destino_nombre
+                                        else []
+                                    ),
+                                    ft.Text(
+                                        "N.º de expediente: "
+                                        + str(numero_destino),
+                                        size=12,
+                                        color=Q_MUTED,
+                                        selectable=True,
+                                    ),
+                                ],
+                                spacing=4,
+                                tight=True,
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=lambda e: (
+                        _close_derivation_proposal_dialog(
+                            dialog,
+                            e,
+                        )
+                    ),
+                ),
+                ft.ElevatedButton(
+                    "Abrir expediente",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    disabled=not bool(
+                        expediente_destino_id
+                    ),
+                    on_click=lambda e: (
+                        _open_related_expedient(
+                            dialog,
+                            expediente_destino_id,
+                            e,
+                        )
+                    ),
+                ),
+            ],
+            actions_alignment=(
+                ft.MainAxisAlignment.END
+            ),
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def _accept_derivation_from_dialog(
+        dialog,
+        proposal,
+        e=None,
+    ):
+        proposal = proposal or {}
+
+        proposal_id = (
+            proposal.get("id")
+            or proposal.get("proposal_id")
+        )
+
+        if not proposal_id:
+            set_message(
+                error_alert(
+                    "No se pudo identificar la "
+                    "propuesta de derivación."
+                )
+            )
+            page.update()
+            return
+
+        try:
+            result = (
+                expedient_evolution_service
+                .accept_derivation_proposal(
+                    proposal_id=int(proposal_id),
+                    usuario="ERP",
+                )
+            )
+
+            dialog.open = False
+
+            destination = (
+                result.get("expediente_destino")
+                or {}
+            )
+
+            origin_id = (
+                proposal.get(
+                    "expediente_origen_id"
+                )
+                or state.get(
+                    "dialog_expediente_id"
+                )
+                or state.get("editing_id")
+            )
+
+            if origin_id:
+                state["dialog_section"] = (
+                    "trazabilidad"
+                )
+
+                expediente_dialog.content = (
+                    build_expediente_dialog_content(
+                        int(origin_id)
+                    )
+                )
+
+            refresh_table()
+            page.update()
+
+            _show_derivation_created_dialog(
+                expediente_destino=destination,
+                proposal=proposal,
+            )
+
+        except Exception as exc:
+            set_message(
+                error_alert(
+                    "No se pudo crear el expediente "
+                    "posterior:\n"
+                    + str(exc)
+                )
+            )
+            page.update()
+
+
+    def show_derivation_proposal_dialog(
+        proposal_item,
+    ):
+        proposal_item = proposal_item or {}
+
+        proposal = (
+            proposal_item.get("proposal")
+            or proposal_item
+        )
+
+        proposal_id = proposal.get("id")
+
+        if not proposal_id:
+            return
+
+        tipo_destino_nombre = (
+            proposal.get("tipo_destino_nombre")
+            or proposal_item.get(
+                "tipo_destino_nombre"
+            )
+            or "EXPEDIENTE POSTERIOR"
+        )
+
+        familia_destino_nombre = (
+            proposal.get(
+                "familia_destino_nombre"
+            )
+            or proposal_item.get(
+                "familia_destino_nombre"
+            )
+            or proposal.get(
+                "familia_destino_codigo"
+            )
+            or proposal_item.get(
+                "familia_destino_codigo"
+            )
+            or ""
+        )
+
+        subtipo_destino_nombre = (
+            proposal.get(
+                "subtipo_destino_nombre"
+            )
+            or proposal_item.get(
+                "subtipo_destino_nombre"
+            )
+            or proposal.get(
+                "subtipo_destino_codigo"
+            )
+            or proposal_item.get(
+                "subtipo_destino_codigo"
+            )
+            or ""
+        )
+
+        regla_nombre = (
+            proposal.get("regla_nombre")
+            or proposal_item.get("regla_nombre")
+            or ""
+        )
+
+        proposal_reason = (
+            proposal.get("motivo")
+            or proposal_item.get("motivo")
+            or regla_nombre
+            or (
+                "Se ha detectado una actuación "
+                "posterior disponible."
+            )
+        )
+
+        relation_type = str(
+            proposal.get("tipo_relacion")
+            or proposal_item.get("tipo_relacion")
+            or "ACTUACION_POSTERIOR"
+        ).replace("_", " ")
+
+        expediente_origen_numero = (
+            proposal.get(
+                "expediente_origen_numero"
+            )
+            or proposal_item.get(
+                "expediente_origen_numero"
+            )
+            or ""
+        )
+
+        cliente_nombre = ""
+
+        try:
+            expediente_id = int(
+                proposal.get(
+                    "expediente_origen_id"
+                )
+                or state.get(
+                    "dialog_expediente_id"
+                )
+                or state.get("editing_id")
+            )
+
+            expediente = (
+                trace_service.get_expediente_basic(
+                    expediente_id
+                )
+                or {}
+            )
+
+            cliente_nombre = " ".join(
+                part
+                for part in [
+                    expediente.get("nombre"),
+                    expediente.get(
+                        "primer_apellido"
+                    ),
+                    expediente.get(
+                        "segundo_apellido"
+                    ),
+                ]
+                if str(part or "").strip()
+            ).strip()
+
+            if not expediente_origen_numero:
+                expediente_origen_numero = (
+                    expediente.get(
+                        "numero_expediente"
+                    )
+                    or f"#{expediente_id}"
+                )
+
+        except Exception:
+            pass
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.ACCOUNT_TREE,
+                        color=Q_PRIMARY,
+                        size=24,
+                    ),
+                    ft.Text(
+                        "Crear expediente posterior",
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                width=540,
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            str(proposal_reason),
+                            size=13,
+                            color="#344054",
+                            selectable=True,
+                        ),
+                        ft.Text(
+                            "El sistema propone crear el "
+                            "siguiente expediente:",
+                            size=13,
+                            color="#344054",
+                        ),
+                        ft.Container(
+                            padding=14,
+                            border_radius=10,
+                            bgcolor="#F5F9FF",
+                            border=ft.border.all(
+                                1,
+                                "#B2CCFF",
+                            ),
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        str(
+                                            tipo_destino_nombre
+                                        ),
+                                        size=15,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Familia: "
+                                                + str(
+                                                    familia_destino_nombre
+                                                ),
+                                                size=12,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if familia_destino_nombre
+                                        else []
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Subtipo: "
+                                                + str(
+                                                    subtipo_destino_nombre
+                                                ),
+                                                size=12,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if subtipo_destino_nombre
+                                        else []
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Cliente: "
+                                                + cliente_nombre,
+                                                size=12,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if cliente_nombre
+                                        else []
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                "Expediente de origen: "
+                                                + str(
+                                                    expediente_origen_numero
+                                                ),
+                                                size=12,
+                                                color=Q_MUTED,
+                                            )
+                                        ]
+                                        if expediente_origen_numero
+                                        else []
+                                    ),
+                                ],
+                                spacing=5,
+                                tight=True,
+                            ),
+                        ),
+                        ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.LINK,
+                                    size=18,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    "El nuevo expediente quedará "
+                                    "vinculado como "
+                                    + relation_type
+                                    + ".",
+                                    size=12,
+                                    color=Q_MUTED,
+                                    expand=True,
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                    ],
+                    spacing=13,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Ahora no",
+                    on_click=lambda e: (
+                        _close_derivation_proposal_dialog(
+                            dialog,
+                            e,
+                        )
+                    ),
+                ),
+                ft.ElevatedButton(
+                    "Crear "
+                    + str(tipo_destino_nombre),
+                    icon=ft.Icons.ADD_CIRCLE,
+                    on_click=lambda e: (
+                        _accept_derivation_from_dialog(
+                            dialog,
+                            proposal,
+                            e,
+                        )
+                    ),
+                ),
+            ],
+            actions_alignment=(
+                ft.MainAxisAlignment.END
+            ),
+        )
+
+        if dialog not in page.overlay:
+            page.overlay.append(dialog)
+
+        dialog.open = True
+        page.update()
+
+
+    def _get_new_derivation_proposals(
+        result,
+    ):
+        evaluation = (
+            (result or {}).get(
+                "derivation_evaluation"
+            )
+            or {}
+        )
+
+        if not evaluation.get("ok"):
+            return []
+
+        return [
+            item
+            for item in (
+                evaluation.get("proposals")
+                or []
+            )
+            if (
+                item.get("created")
+                and not item.get(
+                    "already_existed"
+                )
+            )
+        ]
+
+
     def close_admin_document_dialog(e=None):
         admin_document_dialog.open = False
         state["admin_document_file"] = None
@@ -11337,10 +15650,50 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         )
                     )
 
+            new_derivation_proposals = (
+                _get_new_derivation_proposals(
+                    result
+                )
+            )
+
+            derivation_evaluation = (
+                result.get(
+                    "derivation_evaluation"
+                )
+                or {}
+            )
+
+            if (
+                derivation_evaluation
+                and not derivation_evaluation.get(
+                    "ok",
+                    True,
+                )
+            ):
+                set_message(
+                    warning_alert(
+                        "El documento se registró "
+                        "correctamente, pero no se "
+                        "pudieron evaluar las actuaciones "
+                        "posteriores:\n"
+                        + str(
+                            derivation_evaluation.get(
+                                "error"
+                            )
+                            or "Error no determinado"
+                        )
+                    )
+                )
+
             state["dialog_section"] = "trazabilidad"
             expediente_dialog.content = build_expediente_dialog_content(expediente_id)
             refresh_table()
             page.update()
+
+            if new_derivation_proposals:
+                show_derivation_proposal_dialog(
+                    new_derivation_proposals[0]
+                )
         except Exception as exc:
             show_form_error(str(exc))
 
@@ -11692,6 +16045,126 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             justificantes = resumen.get("justificantes", [])
             eventos = resumen.get("eventos", [])
             notas = resumen.get("notas", [])
+
+            try:
+                pending_derivation_proposals = (
+                    expedient_evolution_service
+                    .list_derivation_proposals(
+                        expediente_origen_id=int(
+                            expediente_id
+                        ),
+                        estado="PENDIENTE",
+                    )
+                )
+            except Exception as exc:
+                pending_derivation_proposals = []
+                print(
+                    "ERROR CARGANDO PROPUESTAS "
+                    "DE DERIVACIÓN:",
+                    repr(exc),
+                )
+
+            try:
+                incoming_related_expedients = (
+                    expedient_evolution_service
+                    .list_expedient_relations(
+                        int(expediente_id),
+                        direction="INCOMING",
+                    )
+                )
+            except Exception as exc:
+                incoming_related_expedients = []
+                print(
+                    "ERROR CARGANDO EXPEDIENTES "
+                    "DE ORIGEN:",
+                    repr(exc),
+                )
+
+            try:
+                outgoing_related_expedients = (
+                    expedient_evolution_service
+                    .list_expedient_relations(
+                        int(expediente_id),
+                        direction="OUTGOING",
+                    )
+                )
+            except Exception as exc:
+                outgoing_related_expedients = []
+                print(
+                    "ERROR CARGANDO EXPEDIENTES "
+                    "POSTERIORES:",
+                    repr(exc),
+                )
+
+            try:
+                creation_origin = (
+                    expedient_trajectory_service
+                    .get_expedient_creation_origin(
+                        int(expediente_id)
+                    )
+                )
+            except Exception as exc:
+                creation_origin = {
+                    "expediente_id": int(
+                        expediente_id
+                    ),
+                    "origen_creacion": (
+                        "APERTURA_MANUAL"
+                    ),
+                    "descripcion": (
+                        "Origen inferido por "
+                        "compatibilidad histórica."
+                    ),
+                    "inferred": True,
+                }
+
+                print(
+                    "ERROR CARGANDO ORIGEN "
+                    "DEL EXPEDIENTE:",
+                    repr(exc),
+                )
+
+            try:
+                external_milestones = (
+                    expedient_trajectory_service
+                    .list_external_milestones(
+                        expediente_id=int(
+                            expediente_id
+                        ),
+                        active_only=True,
+                    )
+                )
+            except Exception as exc:
+                external_milestones = []
+
+                print(
+                    "ERROR CARGANDO HITOS EXTERNOS:",
+                    repr(exc),
+                )
+
+            incoming_external_milestones = [
+                milestone
+                for milestone in external_milestones
+                if (
+                    _external_milestone_direction(
+                        milestone,
+                        expediente_id,
+                    )
+                    == "INCOMING"
+                )
+            ]
+
+            outgoing_external_milestones = [
+                milestone
+                for milestone in external_milestones
+                if (
+                    _external_milestone_direction(
+                        milestone,
+                        expediente_id,
+                    )
+                    == "OUTGOING"
+                )
+            ]
 
             id_presentacion = (
                 expediente.get("numero_presentacion_registro")
@@ -13869,12 +18342,816 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     )
                 ]
 
+            derivation_cards = []
+
+            for proposal in pending_derivation_proposals:
+                proposal = dict(proposal or {})
+
+                destination_name = (
+                    proposal.get(
+                        "tipo_destino_nombre"
+                    )
+                    or proposal.get(
+                        "tipo_destino_codigo"
+                    )
+                    or "Expediente posterior"
+                )
+
+                destination_family = (
+                    proposal.get(
+                        "familia_destino_nombre"
+                    )
+                    or proposal.get(
+                        "familia_destino_codigo"
+                    )
+                    or "-"
+                )
+
+                destination_subtype = (
+                    proposal.get(
+                        "subtipo_destino_nombre"
+                    )
+                    or proposal.get(
+                        "subtipo_destino_codigo"
+                    )
+                    or ""
+                )
+
+                relation_type = (
+                    proposal.get(
+                        "tipo_relacion"
+                    )
+                    or "ACTUACION_POSTERIOR"
+                )
+
+                proposal_reason = (
+                    proposal.get("motivo")
+                    or proposal.get("regla_nombre")
+                    or (
+                        "Actuación posterior propuesta "
+                        "automáticamente por el sistema."
+                    )
+                )
+
+                proposal_date = (
+                    proposal.get("created_at")
+                    or ""
+                )
+
+                proposal_body = [
+                    ft.Container(
+                        bgcolor="#F5F9FF",
+                        border=ft.border.all(
+                            1,
+                            "#B2CCFF",
+                        ),
+                        border_radius=10,
+                        padding=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        _trace_value(
+                                            "Familia destino",
+                                            destination_family,
+                                        ),
+                                        _trace_value(
+                                            "Relación",
+                                            str(
+                                                relation_type
+                                            ).replace(
+                                                "_",
+                                                " ",
+                                            ),
+                                        ),
+                                    ],
+                                    spacing=24,
+                                    wrap=True,
+                                ),
+                                *(
+                                    [
+                                        _trace_value(
+                                            "Subtipo",
+                                            destination_subtype,
+                                        )
+                                    ]
+                                    if destination_subtype
+                                    else []
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    ft.Text(
+                        proposal_reason,
+                        size=12,
+                        color=Q_MUTED,
+                        selectable=True,
+                    ),
+                ]
+
+                proposal_footer = []
+
+                if proposal_date:
+                    proposal_footer.append(
+                        ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.SCHEDULE,
+                                    size=14,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    str(proposal_date).replace(
+                                        "T",
+                                        " ",
+                                    ),
+                                    size=11,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=6,
+                        )
+                    )
+
+                derivation_cards.append(
+                    card_item(
+                        title=destination_name,
+                        subtitle=(
+                            "ACTUACIÓN POSTERIOR PENDIENTE"
+                        ),
+                        leading=ft.Container(
+                            width=42,
+                            height=42,
+                            border_radius=12,
+                            bgcolor="#EAF3FF",
+                            alignment=ft.Alignment(
+                                0,
+                                0,
+                            ),
+                            content=ft.Icon(
+                                ft.Icons.ACCOUNT_TREE,
+                                color=Q_PRIMARY,
+                                size=22,
+                            ),
+                        ),
+                        badges=[
+                            expedient_status_badge(
+                                "PENDIENTE",
+                                "#B54708",
+                            )
+                        ],
+                        actions=[
+                            ft.ElevatedButton(
+                                "Crear expediente",
+                                icon=ft.Icons.ADD_CIRCLE,
+                                on_click=(
+                                    lambda e,
+                                    p=dict(proposal): (
+                                        show_derivation_proposal_dialog(
+                                            p
+                                        )
+                                    )
+                                ),
+                            )
+                        ],
+                        body=proposal_body,
+                        footer=proposal_footer,
+                        border_color="#B2CCFF",
+                        padding=12,
+                    )
+                )
+
+            if not derivation_cards:
+                derivation_cards = [
+                    empty_state(
+                        "No hay actuaciones posteriores "
+                        "pendientes para este expediente"
+                    )
+                ]
+
+            def _build_related_expedient_cards(
+                relations,
+                *,
+                direction,
+            ):
+                cards = []
+
+                is_incoming = (
+                    direction == "INCOMING"
+                )
+
+                for relation in relations:
+                    relation = dict(
+                        relation
+                        or {}
+                    )
+
+                    related_id = (
+                        relation.get(
+                            "expediente_relacionado_id"
+                        )
+                    )
+
+                    related_number = (
+                        relation.get(
+                            "expediente_relacionado_numero"
+                        )
+                        or (
+                            f"#{related_id}"
+                            if related_id
+                            else "-"
+                        )
+                    )
+
+                    related_type = (
+                        relation.get(
+                            "tipo_relacionado_nombre"
+                        )
+                        or relation.get(
+                            "tipo_relacionado_codigo"
+                        )
+                        or "Expediente relacionado"
+                    )
+
+                    related_family = (
+                        relation.get(
+                            "familia_relacionada_nombre"
+                        )
+                        or relation.get(
+                            "familia_relacionada_codigo"
+                        )
+                        or "-"
+                    )
+
+                    related_subtype = (
+                        relation.get(
+                            "subtipo_relacionado_nombre"
+                        )
+                        or relation.get(
+                            "subtipo_relacionado_codigo"
+                        )
+                        or ""
+                    )
+
+                    related_state = (
+                        relation.get(
+                            "estado_relacionado_nombre"
+                        )
+                        or "SIN ESTADO"
+                    )
+
+                    related_state_color = (
+                        relation.get(
+                            "estado_relacionado_color"
+                        )
+                        or Q_PRIMARY
+                    )
+
+                    relation_label = str(
+                        relation.get(
+                            "tipo_relacion"
+                        )
+                        or "RELACIONADO"
+                    ).replace("_", " ")
+
+                    direction_label = (
+                        "EXPEDIENTE DE ORIGEN"
+                        if is_incoming
+                        else "EXPEDIENTE POSTERIOR"
+                    )
+
+                    relation_body = [
+                        ft.Container(
+                            bgcolor=(
+                                "#F5F9FF"
+                                if is_incoming
+                                else "#F8FAFC"
+                            ),
+                            border=ft.border.all(
+                                1,
+                                (
+                                    "#B2CCFF"
+                                    if is_incoming
+                                    else Q_BORDER
+                                ),
+                            ),
+                            border_radius=10,
+                            padding=12,
+                            content=ft.Row(
+                                controls=[
+                                    _trace_value(
+                                        "N.º expediente",
+                                        related_number,
+                                        selectable=True,
+                                    ),
+                                    _trace_value(
+                                        "Familia",
+                                        related_family,
+                                    ),
+                                    _trace_value(
+                                        "Relación",
+                                        relation_label,
+                                    ),
+                                ],
+                                spacing=24,
+                                wrap=True,
+                            ),
+                        )
+                    ]
+
+                    if related_subtype:
+                        relation_body.append(
+                            _trace_value(
+                                "Subtipo",
+                                related_subtype,
+                            )
+                        )
+
+                    relation_motive = (
+                        relation.get("motivo")
+                        or ""
+                    )
+
+                    if relation_motive:
+                        relation_body.append(
+                            ft.Text(
+                                relation_motive,
+                                size=12,
+                                color=Q_MUTED,
+                                selectable=True,
+                            )
+                        )
+
+                    cards.append(
+                        card_item(
+                            title=related_type,
+                            subtitle=(
+                                f"{direction_label} · "
+                                f"{related_number}"
+                            ),
+                            leading=ft.Container(
+                                width=42,
+                                height=42,
+                                border_radius=12,
+                                bgcolor=(
+                                    "#EAF3FF"
+                                    if is_incoming
+                                    else "#ECFDF3"
+                                ),
+                                alignment=ft.Alignment(
+                                    0,
+                                    0,
+                                ),
+                                content=ft.Icon(
+                                    (
+                                        ft.Icons.ARROW_BACK
+                                        if is_incoming
+                                        else ft.Icons.ARROW_FORWARD
+                                    ),
+                                    color=(
+                                        Q_PRIMARY
+                                        if is_incoming
+                                        else "#027A48"
+                                    ),
+                                    size=22,
+                                ),
+                            ),
+                            badges=[
+                                expedient_status_badge(
+                                    related_state,
+                                    related_state_color,
+                                )
+                            ],
+                            actions=[
+                                ft.ElevatedButton(
+                                    "Abrir expediente",
+                                    icon=ft.Icons.OPEN_IN_NEW,
+                                    disabled=not bool(
+                                        related_id
+                                    ),
+                                    on_click=(
+                                        lambda e,
+                                        eid=related_id: (
+                                            _open_related_expedient(
+                                                None,
+                                                eid,
+                                                e,
+                                            )
+                                        )
+                                    ),
+                                )
+                            ],
+                            body=relation_body,
+                            footer=[
+                                ft.Row(
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.SCHEDULE,
+                                            size=14,
+                                            color=Q_MUTED,
+                                        ),
+                                        ft.Text(
+                                            str(
+                                                relation.get(
+                                                    "created_at"
+                                                )
+                                                or ""
+                                            ).replace(
+                                                "T",
+                                                " ",
+                                            ),
+                                            size=11,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=6,
+                                )
+                            ],
+                            border_color=(
+                                "#B2CCFF"
+                                if is_incoming
+                                else "#A6F4C5"
+                            ),
+                            padding=12,
+                        )
+                    )
+
+                return cards
+
+
+            incoming_related_cards = (
+                _build_related_expedient_cards(
+                    incoming_related_expedients,
+                    direction="INCOMING",
+                )
+            )
+
+            if not incoming_related_cards:
+                incoming_related_cards = [
+                    empty_state(
+                        "Este expediente no procede "
+                        "de otro expediente"
+                    )
+                ]
+
+
+            outgoing_related_cards = (
+                _build_related_expedient_cards(
+                    outgoing_related_expedients,
+                    direction="OUTGOING",
+                )
+            )
+
+            if not outgoing_related_cards:
+                outgoing_related_cards = [
+                    empty_state(
+                        "Todavía no se han creado "
+                        "expedientes posteriores"
+                    )
+                ]
+
+            incoming_external_cards = [
+                _build_external_milestone_card(
+                    milestone,
+                    direction="INCOMING",
+                    compact=True,
+                    allow_management=True,
+                )
+                for milestone
+                in incoming_external_milestones
+            ]
+
+            outgoing_external_cards = [
+                _build_external_milestone_card(
+                    milestone,
+                    direction="OUTGOING",
+                    compact=True,
+                    allow_management=True,
+                )
+                for milestone
+                in outgoing_external_milestones
+            ]
+
+
             active_tab = state.get(
                 "traceability_tab",
                 "ANEXOS",
             )
 
-            if active_tab == "HISTORIA":
+            if active_tab == "ACTUACIONES":
+                active_content = ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Evolución del expediente",
+                                            size=17,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            "Origen, actuaciones pendientes "
+                                            "y expedientes posteriores "
+                                            "vinculados al expediente actual.",
+                                            size=11,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                secondary_button(
+                                    "Ver cadena completa",
+                                    lambda e: (
+                                        show_full_expedient_chain_dialog(
+                                            expediente_id,
+                                            e,
+                                        )
+                                    ),
+                                ),
+                            ],
+                            alignment=(
+                                ft.MainAxisAlignment.SPACE_BETWEEN
+                            ),
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.CENTER
+                            ),
+                        ),
+
+                        ft.Container(
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=12,
+                            padding=12,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        width=40,
+                                        height=40,
+                                        border_radius=12,
+                                        bgcolor="#EAF3FF",
+                                        alignment=ft.Alignment(
+                                            0,
+                                            0,
+                                        ),
+                                        content=ft.Icon(
+                                            ft.Icons.ROUTE,
+                                            color=Q_PRIMARY,
+                                            size=21,
+                                        ),
+                                    ),
+                                    ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                "Origen de apertura",
+                                                size=12,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color=Q_PRIMARY_DARK,
+                                            ),
+                                            ft.Text(
+                                                _creation_origin_label(
+                                                    creation_origin
+                                                ),
+                                                size=13,
+                                                weight=(
+                                                    ft.FontWeight.W_600
+                                                ),
+                                                color=Q_PRIMARY,
+                                            ),
+                                            ft.Text(
+                                                str(
+                                                    creation_origin.get(
+                                                        "descripcion"
+                                                    )
+                                                    or ""
+                                                ),
+                                                size=10,
+                                                color=Q_MUTED,
+                                                visible=bool(
+                                                    creation_origin.get(
+                                                        "descripcion"
+                                                    )
+                                                ),
+                                            ),
+                                        ],
+                                        spacing=2,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=10,
+                                vertical_alignment=(
+                                    ft.CrossAxisAlignment.CENTER
+                                ),
+                            ),
+                        ),
+
+                        ft.Container(
+                            bgcolor="#F5F9FF",
+                            border=ft.border.all(
+                                1,
+                                "#B2CCFF",
+                            ),
+                            border_radius=12,
+                            padding=12,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Expedientes de origen",
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY,
+                                    ),
+                                    ft.Text(
+                                        f"{len(incoming_related_expedients)} "
+                                        "expediente(s) anterior(es).",
+                                        size=11,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                        ),
+                        ft.Column(
+                            controls=incoming_related_cards,
+                            spacing=10,
+                        ),
+
+                        *(
+                            [
+                                ft.Container(
+                                    bgcolor="#FFF7ED",
+                                    border=ft.border.all(
+                                        1,
+                                        "#FDBA74",
+                                    ),
+                                    border_radius=12,
+                                    padding=12,
+                                    content=ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                (
+                                                    "Trámites externos "
+                                                    "anteriores"
+                                                ),
+                                                size=14,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color="#C2410C",
+                                            ),
+                                            ft.Text(
+                                                (
+                                                    f"{len(incoming_external_milestones)} "
+                                                    "trámite(s) externo(s)."
+                                                ),
+                                                size=11,
+                                                color="#9A3412",
+                                            ),
+                                        ],
+                                        spacing=2,
+                                    ),
+                                ),
+                                ft.Column(
+                                    controls=(
+                                        incoming_external_cards
+                                    ),
+                                    spacing=10,
+                                ),
+                            ]
+                            if incoming_external_cards
+                            else []
+                        ),
+
+                        ft.Divider(
+                            height=1,
+                            color=Q_BORDER,
+                        ),
+
+                        ft.Container(
+                            bgcolor="#FFFAEB",
+                            border=ft.border.all(
+                                1,
+                                "#FEDF89",
+                            ),
+                            border_radius=12,
+                            padding=12,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Actuaciones pendientes",
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#B54708",
+                                    ),
+                                    ft.Text(
+                                        f"{len(pending_derivation_proposals)} "
+                                        "propuesta(s) pendiente(s).",
+                                        size=11,
+                                        color="#7A2E0E",
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                        ),
+                        ft.Column(
+                            controls=derivation_cards,
+                            spacing=10,
+                        ),
+
+                        ft.Divider(
+                            height=1,
+                            color=Q_BORDER,
+                        ),
+
+                        ft.Container(
+                            bgcolor="#ECFDF3",
+                            border=ft.border.all(
+                                1,
+                                "#A6F4C5",
+                            ),
+                            border_radius=12,
+                            padding=12,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Expedientes posteriores",
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#027A48",
+                                    ),
+                                    ft.Text(
+                                        f"{len(outgoing_related_expedients)} "
+                                        "expediente(s) posterior(es).",
+                                        size=11,
+                                        color="#05603A",
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                        ),
+                        ft.Column(
+                            controls=outgoing_related_cards,
+                            spacing=10,
+                        ),
+
+                        *(
+                            [
+                                ft.Container(
+                                    bgcolor="#F0FDF4",
+                                    border=ft.border.all(
+                                        1,
+                                        "#86EFAC",
+                                    ),
+                                    border_radius=12,
+                                    padding=12,
+                                    content=ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                (
+                                                    "Trámites externos "
+                                                    "posteriores"
+                                                ),
+                                                size=14,
+                                                weight=(
+                                                    ft.FontWeight.BOLD
+                                                ),
+                                                color="#15803D",
+                                            ),
+                                            ft.Text(
+                                                (
+                                                    f"{len(outgoing_external_milestones)} "
+                                                    "trámite(s) externo(s)."
+                                                ),
+                                                size=11,
+                                                color="#166534",
+                                            ),
+                                        ],
+                                        spacing=2,
+                                    ),
+                                ),
+                                ft.Column(
+                                    controls=(
+                                        outgoing_external_cards
+                                    ),
+                                    spacing=10,
+                                ),
+                            ]
+                            if outgoing_external_cards
+                            else []
+                        ),
+                    ],
+                    spacing=12,
+                )
+
+            elif active_tab == "HISTORIA":
                 active_content = ft.Column(
                     controls=[
                         ft.Column(
@@ -13999,6 +19276,26 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                                 "Notas del expediente",
                                 ft.Icons.EDIT_NOTE,
                                 len(notas),
+                            ),
+                            _traceability_chip(
+                                expediente_id,
+                                "ACTUACIONES",
+                                "Evolución",
+                                ft.Icons.ACCOUNT_TREE,
+                                (
+                                    len(
+                                        incoming_related_expedients
+                                    )
+                                    + len(
+                                        pending_derivation_proposals
+                                    )
+                                    + len(
+                                        outgoing_related_expedients
+                                    )
+                                    + len(
+                                        external_milestones
+                                    )
+                                ),
                             ),
                         ],
                         spacing=8,
@@ -15576,6 +20873,46 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         - menú contextual;
         - generación múltiple.
         """
+        if not expediente_id:
+            return ft.Container(
+                padding=18,
+                border_radius=14,
+                bgcolor="#FFF7ED",
+                border=ft.border.all(
+                    1,
+                    "#FED7AA",
+                ),
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.INFO_OUTLINE,
+                                    color="#C2410C",
+                                ),
+                                ft.Text(
+                                    "Guarda primero el expediente",
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#9A3412",
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                        ft.Text(
+                            (
+                                "Las plantillas y documentos "
+                                "generados necesitan un expediente "
+                                "guardado para poder vincularse "
+                                "correctamente."
+                            ),
+                            size=12,
+                            color="#9A3412",
+                        ),
+                    ],
+                    spacing=8,
+                ),
+            )
+
         expediente_id = int(expediente_id)
         templates = (
             _list_ex_document_templates_for_menu()
@@ -15946,7 +21283,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         if section == "plantillas":
             return build_expedient_templates_content(expediente_id)
 
-        return build_edit_content()
+        return build_family_edit_content()
 
 
     def build_expediente_dialog_content(expediente_id=None):
@@ -15962,15 +21299,20 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         if not state.get("dialog_section"):
             state["dialog_section"] = "ficha"
 
-        menu_items = [
-            ("Ficha", "ficha", ft.Icons.ARTICLE, "Datos base"),
-            ("Datos específicos", "datos_especificos", ft.Icons.DYNAMIC_FORM, "Formulario"),
-            ("Documentación", "documentacion", ft.Icons.FOLDER_OPEN, "Box / PARA PRESENTAR"),
-            ("Plantillas y formularios", "plantillas", ft.Icons.DESCRIPTION, "EX / DOCX"),
-            ("Diagnóstico", "diagnostico", ft.Icons.FACT_CHECK, "Estado documental"),
-            ("Automatización", "automatizacion", ft.Icons.ROCKET_LAUNCH, "Payload mapper"),
-            ("Trazabilidad", "trazabilidad", ft.Icons.TIMELINE, "Historial"),
-        ]
+        menu_items = (
+            get_family_dialog_sections()
+        )
+
+        allowed_sections = {
+            item[1]
+            for item in menu_items
+        }
+
+        if (
+            state.get("dialog_section")
+            not in allowed_sections
+        ):
+            state["dialog_section"] = "ficha"
 
         def _nav_button(label, section, icon, subtitle):
             selected = (state.get("dialog_section") or "ficha") == section
@@ -17056,28 +22398,1608 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     )
     page.overlay.append(box_folder_options_dialog)
 
-    def open_new(e=None, cliente_id=None):
-        if not cliente_options:
-            set_message(error_alert("No hay clientes activos para crear expedientes"))
-            refresh()
+    housing_report_prompt_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Informe de vivienda previo"
+        ),
+        content=ft.Container(
+            width=620,
+        ),
+        actions=[],
+        actions_alignment=(
+            ft.MainAxisAlignment.END
+        ),
+    )
+
+    page.overlay.append(
+        housing_report_prompt_dialog
+    )
+
+
+    new_expedient_family_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Seleccionar familia"
+        ),
+        content=ft.Container(
+            width=780,
+            height=570,
+            content=ft.Text(
+                "Cargando familias..."
+            ),
+        ),
+        actions=[],
+        actions_alignment=(
+            ft.MainAxisAlignment.END
+        ),
+    )
+    page.overlay.append(
+        new_expedient_family_dialog
+    )
+
+    FAMILY_SELECTOR_STYLES = {
+        "EXTRANJERIA": {
+            "icon": ft.Icons.PUBLIC,
+            "foreground": "#175CD3",
+            "background": "#EFF8FF",
+            "border": "#B2CCFF",
+            "description": (
+                "Residencia, estancia, arraigos, "
+                "reagrupación, renovaciones y modificaciones."
+            ),
+        },
+        "NACIONALIDAD": {
+            "icon": ft.Icons.BADGE_OUTLINED,
+            "foreground": "#6941C6",
+            "background": "#F4F3FF",
+            "border": "#D9D6FE",
+            "description": (
+                "Procedimientos de adquisición y "
+                "seguimiento de nacionalidad."
+            ),
+        },
+        "UGE": {
+            "icon": ft.Icons.BUSINESS_CENTER_OUTLINED,
+            "foreground": "#026AA2",
+            "background": "#F0F9FF",
+            "border": "#B9E6FE",
+            "description": (
+                "Procedimientos tramitados ante la "
+                "Unidad de Grandes Empresas."
+            ),
+        },
+        "DOCUMENTACION_EXTRANJEROS": {
+            "icon": ft.Icons.FINGERPRINT,
+            "foreground": "#027A48",
+            "background": "#ECFDF3",
+            "border": "#A6F4C5",
+            "description": (
+                "Huellas, TIE, certificado de registro UE, "
+                "concordancia y otras actuaciones documentales."
+            ),
+        },
+        "TRAMITES_CONSULARES": {
+            "icon": ft.Icons.TRAVEL_EXPLORE,
+            "foreground": "#B54708",
+            "background": "#FFFAEB",
+            "border": "#FEDF89",
+            "description": (
+                "Visados y actuaciones gestionadas "
+                "ante consulados o proveedores consulares."
+            ),
+        },
+        "REGISTRO_CIVIL": {
+            "icon": ft.Icons.ACCOUNT_BALANCE_OUTLINED,
+            "foreground": "#C11574",
+            "background": "#FDF2FA",
+            "border": "#FCCEEE",
+            "description": (
+                "Certificaciones, inscripciones, opción, "
+                "matrimonio y demás actuaciones registrales."
+            ),
+        },
+        "ADMINISTRACION_LOCAL": {
+            "icon": ft.Icons.ACCOUNT_BALANCE_OUTLINED,
+            "foreground": "#344054",
+            "background": "#F2F4F7",
+            "border": "#D0D5DD",
+            "description": (
+                "Informes de vivienda e integración "
+                "vinculados a procedimientos de extranjería."
+            ),
+        },
+    }
+
+
+    def _family_code(family):
+        return _norm(
+            (family or {}).get("codigo")
+            or (family or {}).get("nombre")
+        )
+
+
+    def _family_type_count(family_id):
+        return sum(
+            1
+            for item in (tipos or [])
+            if int(
+                item.get("familia_id")
+                or 0
+            ) == int(family_id or 0)
+            and int(item.get("activo", 1) or 0) == 1
+        )
+
+
+    def _family_selector_style(family):
+        code = _family_code(family)
+
+        return FAMILY_SELECTOR_STYLES.get(
+            code,
+            {
+                "icon": ft.Icons.FOLDER_OPEN,
+                "foreground": Q_PRIMARY,
+                "background": "#F8FAFC",
+                "border": Q_BORDER,
+                "description": (
+                    family.get("descripcion")
+                    or (
+                        "Familia de expedientes "
+                        "configurada en el catálogo."
+                    )
+                ),
+            },
+        )
+
+
+    def close_new_expedient_family_dialog(e=None):
+        new_expedient_family_dialog.open = False
+        page.update()
+
+
+    def open_new_for_family(
+        family,
+        cliente_id=None,
+        e=None,
+    ):
+        family = dict(family or {})
+
+        family_id = family.get("id")
+
+        if not family_id:
+            show_form_error(
+                "La familia seleccionada no es válida"
+            )
             return
+
+        family_option = next(
+            (
+                option
+                for option in familia_options
+                if option.startswith(
+                    str(family_id) + " - "
+                )
+            ),
+            "",
+        )
+
+        if not family_option:
+            show_form_error(
+                "La familia seleccionada no está "
+                "disponible en el catálogo"
+            )
+            return
+
+        new_expedient_family_dialog.open = False
+
         clear_form()
+
+        state["new_expedient_family_id"] = int(
+            family_id
+        )
+
+        state["new_expedient_family_code"] = (
+            _family_code(family)
+        )
+
+        state["new_expedient_family_name"] = (
+            family.get("nombre")
+            or state["new_expedient_family_code"]
+        )
+
+        familia_expediente.set_value(
+            family_option,
+            update=False,
+        )
+
+        refresh_tipo_options_for_familia(
+            familia_value=family_option,
+            reset_value=True,
+        )
+
+        refresh_subtipo_options_for_tipo(
+            tipo_value=tipo_expediente.get_value(),
+            reset_value=True,
+        )
 
         if cliente_id:
             selected_cliente = next(
-                (option for option in cliente_options if option.startswith(str(cliente_id) + " - ")),
+                (
+                    option
+                    for option in cliente_options
+                    if option.startswith(
+                        str(cliente_id) + " - "
+                    )
+                ),
                 "",
             )
-            if selected_cliente:
-                cliente.set_value(selected_cliente, update=False)
 
-        refresh_subtipo_options_for_tipo(tipo_value=tipo_expediente.get_value(), reset_value=True)
+            if selected_cliente:
+                cliente.set_value(
+                    selected_cliente,
+                    update=False,
+                )
+
+        refresh_continuity_previous_options(
+            reset_value=True,
+        )
+
+        update_continuity_visibility(
+            update_page=False,
+        )
+
+        if _family_code(family) in {
+            "EXTRANJERIA",
+            "ADMINISTRACION_LOCAL",
+        }:
+
+            open_new_expedient_subfamily_catalog(
+                family,
+                cliente_id=cliente_id,
+                e=e,
+            )
+            return
+
+        open_new_expedient_type_catalog(
+            family,
+            cliente_id=cliente_id,
+            e=e,
+        )
+
+
+    def _expedient_type_catalog_group(
+        expedient_type,
+    ):
+        _catalog_type_code = str(
+            expedient_type.get("codigo")
+            or ""
+        ).strip().upper()
+
+        if _catalog_type_code == "INFORME_VIVIENDA_ADECUADA":
+            return (
+                101,
+                "Informes de vivienda",
+                ft.Icons.HOME_OUTLINED,
+            )
+
+        if _catalog_type_code in {
+            "INFORME_INTEGRACION_SOCIAL",
+            "INFORME_ESFUERZO_INTEGRACION",
+        }:
+            return (
+                102,
+                "Informes de integración",
+                ft.Icons.GROUP_OUTLINED,
+            )
+
+        code = _norm(
+            expedient_type.get("codigo")
+            or ""
+        ).replace(" ", "_")
+
+        if (
+            code.startswith("ESTANCIA_")
+            or code.startswith(
+                "PRORROGA_ESTANCIA"
+            )
+        ):
+            return (
+                10,
+                "I. Situaciones de estancia",
+                ft.Icons.EVENT_NOTE,
+            )
+
+        if code in {
+            "RESIDENCIA_TEMPORAL_NO_LUCRATIVA",
+            "REAGRUPACION_FAMILIAR",
+            "RESIDENCIA_INDEPENDIENTE_REAGRUPADO",
+            (
+                "RESIDENCIA_INDEPENDIENTE_"
+                "REAGRUPADO_REFORZADA"
+            ),
+            "RESIDENCIA_TRABAJO_CUENTA_AJENA",
+            "RESIDENCIA_TRABAJO_CUENTA_PROPIA",
+            (
+                "RESIDENCIA_EXCEPCION_"
+                "AUTORIZACION_TRABAJO"
+            ),
+            "RESIDENCIA_RETORNO_VOLUNTARIO",
+            (
+                "RESIDENCIA_BUSQUEDA_EMPLEO_"
+                "PROYECTO_EMPRESARIAL"
+            ),
+        }:
+            return (
+                20,
+                (
+                    "II. Residencia temporal "
+                    "— régimen general"
+                ),
+                ft.Icons.ARTICLE,
+            )
+
+        if (
+            "FAMILIAR_PERSONA_ESPANOLA" in code
+            or "FAMILIAR_ESPANOL" in code
+        ):
+            return (
+                30,
+                (
+                    "III. Familiares de "
+                    "personas españolas"
+                ),
+                ft.Icons.ACCOUNT_TREE,
+            )
+
+        if (
+            code.startswith("ARRAIGO_")
+            or code in {
+                "RESIDENCIA_RAZONES_HUMANITARIAS",
+                "COLABORACION_AUTORIDADES",
+                "VICTIMA_VIOLENCIA_GENERO",
+                "VICTIMA_VIOLENCIA_SEXUAL",
+                "COLABORACION_RED_ORGANIZADA",
+                "VICTIMA_TRATA_SERES_HUMANOS",
+                (
+                    "PRORROGA_CIRCUNSTANCIAS_"
+                    "EXCEPCIONALES"
+                ),
+            }
+        ):
+            return (
+                40,
+                (
+                    "IV. Circunstancias "
+                    "excepcionales"
+                ),
+                ft.Icons.FACT_CHECK,
+            )
+
+        if (
+            "CIUDADANO_UE" in code
+            or "RESIDENCIA_UE" in code
+        ):
+            return (
+                50,
+                "V. Régimen comunitario",
+                ft.Icons.PUBLIC,
+            )
+
+        if "LARGA_DURACION" in code:
+            return (
+                60,
+                "VI. Residencia de larga duración",
+                ft.Icons.TIMELINE,
+            )
+
+        if code.startswith("MODIFICACION_"):
+            return (
+                80,
+                "VIII. Modificaciones",
+                ft.Icons.ROUTE,
+            )
+
+        return (
+            70,
+            (
+                "VII. Otros regímenes y "
+                "autorizaciones especiales"
+            ),
+            ft.Icons.FOLDER_OPEN,
+        )
+
+
+    def _expedient_type_catalog_style(
+        group_order,
+    ):
+        styles = {
+            10: {
+                "background": "#EFF8FF",
+                "border": "#B2DDFF",
+                "foreground": "#175CD3",
+            },
+            20: {
+                "background": "#ECFDF3",
+                "border": "#ABEFC6",
+                "foreground": "#067647",
+            },
+            30: {
+                "background": "#F4F3FF",
+                "border": "#D9D6FE",
+                "foreground": "#6941C6",
+            },
+            40: {
+                "background": "#FFF4ED",
+                "border": "#FFD6AE",
+                "foreground": "#B93815",
+            },
+            50: {
+                "background": "#F0F9FF",
+                "border": "#B9E6FE",
+                "foreground": "#026AA2",
+            },
+            60: {
+                "background": "#FDF2FA",
+                "border": "#FCCEEE",
+                "foreground": "#C11574",
+            },
+            70: {
+                "background": "#FFFAEB",
+                "border": "#FEDF89",
+                "foreground": "#B54708",
+            },
+            80: {
+                "background": "#F8FAFC",
+                "border": "#D0D5DD",
+                "foreground": "#344054",
+            },
+        }
+
+        return styles.get(
+            int(group_order or 0),
+            styles[70],
+        )
+
+
+    def _active_types_for_family(
+        family_id,
+    ):
+        try:
+            family_id = int(family_id)
+        except (TypeError, ValueError):
+            return []
+
+        try:
+            rows = config_service.get_tipos_expediente(
+                active_only=True,
+                familia_id=family_id,
+            )
+        except Exception:
+            rows = [
+                item
+                for item in (tipos or [])
+                if int(
+                    item.get("familia_id")
+                    or 0
+                ) == family_id
+                and int(
+                    item.get("activo", 1)
+                    or 0
+                ) == 1
+            ]
+
+        return [
+            dict(item)
+            for item in (rows or [])
+            if int(
+                item.get("activo", 1)
+                or 0
+            ) == 1
+        ]
+
+
+    def _active_subtype_count_for_type(
+        type_id,
+    ):
+        try:
+            type_id = int(type_id)
+        except (TypeError, ValueError):
+            return 0
+
+        return sum(
+            1
+            for subtype in (subtipos or [])
+            if int(
+                subtype.get("tipo_expediente_id")
+                or 0
+            ) == type_id
+            and int(
+                subtype.get("activo", 1)
+                or 0
+            ) == 1
+        )
+
+
+    def _open_new_expedient_form_after_type(
+        expedient_type,
+        cliente_id=None,
+        e=None,
+    ):
+        """
+        Convierte el diálogo del catálogo en la ficha.
+
+        No se cierra ni sustituye el AlertDialog activo:
+        expediente_dialog se reutiliza durante todo el flujo.
+        """
+        expedient_type = dict(
+            expedient_type
+            or {}
+        )
+
+        type_id = expedient_type.get("id")
+
+        if not type_id:
+            show_form_error(
+                "El trámite seleccionado no es válido"
+            )
+            return
+
+        type_option = next(
+            (
+                option
+                for option in (
+                    tipo_expediente.options
+                    or []
+                )
+                if str(option).startswith(
+                    str(type_id) + " - "
+                )
+            ),
+            "",
+        )
+
+        if not type_option:
+            type_option = (
+                f"{type_id} - "
+                + str(
+                    expedient_type.get("nombre")
+                    or expedient_type.get("codigo")
+                    or "Trámite"
+                )
+            )
+
+        state["new_expedient_type_id"] = int(
+            type_id
+        )
+
+        state["new_expedient_type_code"] = (
+            expedient_type.get("codigo")
+            or ""
+        )
+
+        state["new_expedient_type_name"] = (
+            expedient_type.get("nombre")
+            or state["new_expedient_type_code"]
+        )
+
+        tipo_expediente.set_value(
+            type_option,
+            update=False,
+        )
+
+        refresh_subtipo_options_for_tipo(
+            tipo_value=type_option,
+            reset_value=True,
+        )
+
         state["dialog_section"] = "ficha"
         state["dialog_expediente_id"] = None
-        state.pop("payload_preview_fullscreen", None)
-        expediente_dialog.title = ft.Text("Nuevo expediente", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
-        expediente_dialog.content = build_expediente_dialog_content()
+
+        state.pop(
+            "payload_preview_fullscreen",
+            None,
+        )
+
+        expediente_dialog.title = ft.Text(
+            (
+                "Nuevo expediente · "
+                + str(
+                    state.get(
+                        "new_expedient_family_name"
+                    )
+                    or ""
+                )
+                + " · "
+                + str(
+                    state.get(
+                        "new_expedient_type_name"
+                    )
+                    or ""
+                )
+            ),
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        )
+
+        expediente_dialog.content = (
+            build_expediente_dialog_content()
+        )
+
+        expediente_dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                close_dialog,
+            ),
+            primary_button(
+                "Guardar",
+                save_expediente,
+            ),
+        ]
+
+        expediente_dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        # El catálogo y la ficha usan el mismo diálogo.
+        # Solo sustituimos su contenido.
         expediente_dialog.open = True
+        page.update()
+
+
+
+    def _build_new_expedient_type_card(expedient_type, cliente_id=None):
+        expedient_type = dict(expedient_type or {})
+        group_order, group_name, group_icon = _expedient_type_catalog_group(expedient_type)
+        style = _expedient_type_catalog_style(group_order)
+        subtype_count = _active_subtype_count_for_type(expedient_type.get('id'))
+        description = str(expedient_type.get('descripcion') or '').strip()
+        if len(description) > 180:
+            description = description[:177].rstrip() + '...'
+        if not description:
+            description = 'Procedimiento de ' + str(state.get('new_expedient_family_name') or 'expediente').lower() + '.'
+        subtype_label = f'{subtype_count} modalidades' if subtype_count != 1 else '1 modalidad'
+        if subtype_count == 0:
+            subtype_label = 'Sin modalidades configuradas'
+        return ft.Container(padding=14, border_radius=16, bgcolor='#FFFFFF', border=ft.border.all(1, style['border']), ink=True, on_click=lambda event, selected_type=dict(expedient_type), selected_client_id=cliente_id: _open_new_expedient_form_after_type(selected_type, cliente_id=selected_client_id, e=event), content=ft.Row(controls=[ft.Container(width=48, height=48, border_radius=13, bgcolor=style['background'], alignment=ft.Alignment(0, 0), content=ft.Icon(group_icon, color=style['foreground'], size=24)), ft.Column(controls=[ft.Row(controls=[ft.Text(str(expedient_type.get('nombre') or 'Trámite'), size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK, expand=True), ft.Container(padding=ft.padding.symmetric(horizontal=9, vertical=4), border_radius=20, bgcolor=style['background'], content=ft.Text(subtype_label, size=10, weight=ft.FontWeight.W_600, color=style['foreground']))], spacing=10), ft.Text(description, size=11, color=Q_MUTED)], spacing=5, expand=True), ft.Icon(ft.Icons.CHEVRON_RIGHT, size=22, color=style['foreground'])], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER))
+
+
+
+    def _build_expedient_type_catalog_content(
+        family,
+        cliente_id=None,
+        search_text="",
+    ):
+        family = dict(family or {})
+
+        family_id = family.get("id")
+
+        available_types = (
+            _active_types_for_family(
+                family_id
+            )
+        )
+
+        query = _norm(
+            search_text
+            or ""
+        )
+
+        if query:
+            available_types = [
+                item
+                for item in available_types
+                if query in _norm(
+                    " ".join(
+                        [
+                            str(
+                                item.get("codigo")
+                                or ""
+                            ),
+                            str(
+                                item.get("nombre")
+                                or ""
+                            ),
+                            str(
+                                item.get("descripcion")
+                                or ""
+                            ),
+                            str(
+                                _expedient_type_catalog_group(
+                                    item
+                                )[1]
+                            ),
+                        ]
+                    )
+                )
+            ]
+
+        grouped = {}
+
+        for item in available_types:
+            group = (
+                _expedient_type_catalog_group(
+                    item
+                )
+            )
+
+            grouped.setdefault(
+                group,
+                [],
+            ).append(item)
+
+        controls = []
+
+        if not available_types:
+            controls.append(
+                empty_state(
+                "No se encontraron trámites para "
+                "los criterios de búsqueda indicados."
+            )
+            )
+
+        for group in sorted(
+            grouped,
+            key=lambda value: value[0],
+        ):
+            group_order, group_name, group_icon = (
+                group
+            )
+
+            style = (
+                _expedient_type_catalog_style(
+                    group_order
+                )
+            )
+
+            controls.append(
+                ft.Container(
+                    bgcolor=style["background"],
+                    border=ft.border.all(
+                        1,
+                        style["border"],
+                    ),
+                    border_radius=12,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                group_icon,
+                                color=style[
+                                    "foreground"
+                                ],
+                                size=20,
+                            ),
+                            ft.Text(
+                                group_name,
+                                size=14,
+                                weight=(
+                                    ft.FontWeight.BOLD
+                                ),
+                                color=style[
+                                    "foreground"
+                                ],
+                            ),
+                            ft.Container(
+                                expand=True,
+                            ),
+                            ft.Text(
+                                (
+                                    f"{len(grouped[group])} "
+                                    "trámite(s)"
+                                ),
+                                size=10,
+                                weight=(
+                                    ft.FontWeight.W_600
+                                ),
+                                color=style[
+                                    "foreground"
+                                ],
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                )
+            )
+
+            controls.append(
+                ft.Row(
+                    controls=[
+                        _build_new_expedient_type_card(
+                            item,
+                            cliente_id=cliente_id,
+                        )
+                        for item in sorted(
+                            grouped[group],
+                            key=lambda row: _norm(
+                                row.get("nombre")
+                                or ""
+                            ),
+                        )
+                    ],
+                    wrap=True,
+                    spacing=12,
+                    run_spacing=12,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.START
+                    ),
+                )
+            )
+
+        return ft.Column(
+            controls=controls,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+
+    def _active_type_groups_for_family(
+        family_id,
+    ):
+        """
+        Agrupa los tipos activos de una familia según
+        la clasificación visual existente.
+        """
+        grouped = {}
+
+        for expedient_type in (
+            _active_types_for_family(
+                family_id
+            )
+        ):
+            (
+                group_order,
+                group_name,
+                group_icon,
+            ) = _expedient_type_catalog_group(
+                expedient_type
+            )
+
+            group = grouped.setdefault(
+                group_order,
+                {
+                    "order": group_order,
+                    "name": group_name,
+                    "icon": group_icon,
+                    "types": [],
+                },
+            )
+
+            group["types"].append(
+                dict(expedient_type)
+            )
+
+        return [
+            grouped[key]
+            for key in sorted(
+                grouped,
+                key=lambda value: (
+                    int(value)
+                    if str(value).isdigit()
+                    else str(value)
+                ),
+            )
+        ]
+
+
+    def _expedient_subfamily_description(
+        group_order,
+        group_name,
+    ):
+        if str(group_name) == "Informes de vivienda":
+            return (
+                "Solicitudes de informes sobre la adecuación "
+                "de la vivienda."
+            )
+
+        if str(group_name) == "Informes de integración":
+            return (
+                "Informes de integración social y esfuerzo "
+                "de integración."
+            )
+
+        descriptions = {
+            1: (
+                "Estudios, movilidad, prácticas, "
+                "voluntariado y demás situaciones "
+                "de estancia."
+            ),
+            2: (
+                "Autorizaciones ordinarias de residencia "
+                "y trabajo dentro del régimen general."
+            ),
+            3: (
+                "Autorizaciones vinculadas a ciudadanos "
+                "españoles y a su unidad familiar."
+            ),
+            4: (
+                "Arraigos, razones humanitarias, víctimas "
+                "y otras circunstancias excepcionales."
+            ),
+            5: (
+                "Tarjetas y autorizaciones derivadas del "
+                "régimen de ciudadanos de la Unión."
+            ),
+            6: (
+                "Residencia de larga duración, larga "
+                "duración UE y recuperaciones."
+            ),
+            7: (
+                "Otros regímenes, autorizaciones especiales "
+                "y procedimientos complementarios."
+            ),
+            8: (
+                "Modificaciones entre autorizaciones, "
+                "situaciones de estancia y residencia."
+            ),
+        }
+
+        return descriptions.get(
+            group_order,
+            (
+                "Procedimientos incluidos en "
+                + str(group_name or "este bloque")
+                + "."
+            ),
+        )
+
+
+    def _build_new_expedient_subfamily_card(family, group, cliente_id=None):
+        family = dict(family or {})
+        group = dict(group or {})
+        group_order = group.get('order')
+        group_name = group.get('name') or 'Subfamilia'
+        group_icon = group.get('icon') or ft.Icons.FOLDER_OUTLINED
+        group_types = group.get('types') or []
+        style = _expedient_type_catalog_style(group_order)
+        return ft.Container(padding=14, border_radius=16, bgcolor='#FFFFFF', border=ft.border.all(1, style['border']), ink=True, on_click=lambda event, selected_order=group_order, selected_name=group_name, selected_family=dict(family), selected_client_id=cliente_id: open_new_expedient_type_catalog(selected_family, group_order=selected_order, group_name=selected_name, cliente_id=selected_client_id, e=event), content=ft.Row(controls=[ft.Container(width=48, height=48, border_radius=13, bgcolor=style['background'], alignment=ft.Alignment(0, 0), content=ft.Icon(group_icon, color=style['foreground'], size=24)), ft.Column(controls=[ft.Row(controls=[ft.Text(str(group_name), size=14, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK, expand=True), ft.Container(padding=ft.padding.symmetric(horizontal=9, vertical=4), border_radius=20, bgcolor=style['background'], content=ft.Text(f'{len(group_types)} trámite(s)', size=10, weight=ft.FontWeight.W_600, color=style['foreground']))], spacing=10), ft.Text(_expedient_subfamily_description(group_order, group_name), size=11, color=Q_MUTED)], spacing=5, expand=True), ft.Icon(ft.Icons.CHEVRON_RIGHT, size=22, color=style['foreground'])], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER))
+
+
+
+    def open_new_expedient_subfamily_catalog(
+        family,
+        cliente_id=None,
+        e=None,
+    ):
+        """
+        Muestra los bloques jurídicos de Extranjería antes
+        de cargar el catálogo de trámites concretos.
+        """
+        family = dict(family or {})
+
+        family_id = family.get("id")
+
+        groups = _active_type_groups_for_family(
+            family_id
+        )
+
+        if not groups:
+            show_form_error(
+                (
+                    "La familia seleccionada no tiene "
+                    "subfamilias activas configuradas"
+                )
+            )
+            return
+
+        state.pop(
+            "new_expedient_subfamily_order",
+            None,
+        )
+        state.pop(
+            "new_expedient_subfamily_name",
+            None,
+        )
+
+        cards = [
+            _build_new_expedient_subfamily_card(
+                family,
+                group,
+                cliente_id=cliente_id,
+            )
+            for group in groups
+        ]
+
+        expediente_dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.ACCOUNT_TREE_OUTLINED,
+                    color=Q_PRIMARY,
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                "Subfamilias · "
+                                + str(
+                                    family.get("nombre")
+                                    or "Extranjería"
+                                )
+                            ),
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            (
+                                "Selecciona el bloque jurídico "
+                                "del procedimiento."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=1,
+                ),
+            ],
+            spacing=10,
+        )
+
+        expediente_dialog.content = ft.Container(
+            width=790,
+            height=650,
+            content=ft.Column(
+                controls=[
+                    ft.Container(
+                        bgcolor="#EFF8FF",
+                        border=ft.border.all(
+                            1,
+                            "#B2CCFF",
+                        ),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Text(
+                            (
+                                f"{len(groups)} bloques activos. "
+                                "Cada bloque muestra únicamente "
+                                "sus trámites correspondientes."
+                            ),
+                            size=12,
+                            color="#1849A9",
+                        ),
+                    ),
+                    ft.Container(
+                        expand=True,
+                        content=ft.Column(
+                            controls=cards,
+                            spacing=12,
+                            scroll=ft.ScrollMode.AUTO,
+                        ),
+                    ),
+                ],
+                spacing=12,
+                expand=True,
+            ),
+        )
+
+        def back_to_families(
+            event=None,
+        ):
+            expediente_dialog.open = False
+            page.update()
+
+            open_new(
+                cliente_id=cliente_id,
+            )
+
+        expediente_dialog.actions = [
+            secondary_button(
+                "Volver a familias",
+                back_to_families,
+            ),
+            secondary_button(
+                "Cancelar",
+                close_dialog,
+            ),
+        ]
+
+        expediente_dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        new_expedient_family_dialog.open = False
+        expediente_dialog.open = True
+        page.update()
+
+
+    def open_new_expedient_type_catalog(
+        family,
+        group_order=None,
+        group_name=None,
+        cliente_id=None,
+        e=None,
+    ):
+        """
+        Abre los trámites activos de una familia.
+
+        En Extranjería puede limitarse a una subfamilia
+        concreta mediante group_order.
+        """
+        family = dict(family or {})
+
+        family_id = family.get("id")
+
+        available_types = (
+            _active_types_for_family(
+                family_id
+            )
+        )
+
+        if group_order is not None:
+            available_types = [
+                expedient_type
+                for expedient_type in available_types
+                if (
+                    _expedient_type_catalog_group(
+                        expedient_type
+                    )[0]
+                    == group_order
+                )
+            ]
+
+        if not available_types:
+            show_form_error(
+                (
+                    "La selección no tiene trámites "
+                    "activos configurados"
+                )
+            )
+            return
+
+        state[
+            "pending_new_expedient_client_id"
+        ] = (
+            int(cliente_id)
+            if cliente_id
+            else None
+        )
+
+        if group_order is not None:
+            state[
+                "new_expedient_subfamily_order"
+            ] = group_order
+            state[
+                "new_expedient_subfamily_name"
+            ] = (
+                group_name
+                or "Subfamilia"
+            )
+
+        search_control = text_input(
+            "Buscar por nombre, código o descripción",
+            width=760,
+        )
+
+        catalog_host = ft.Container(
+            expand=True,
+        )
+
+        def build_filtered_catalog(
+            search_text="",
+        ):
+            normalized_search = _norm(
+                search_text
+            )
+
+            filtered_types = [
+                expedient_type
+                for expedient_type in available_types
+                if (
+                    not normalized_search
+                    or normalized_search in _norm(
+                        " ".join(
+                            [
+                                str(
+                                    expedient_type.get(
+                                        "nombre"
+                                    )
+                                    or ""
+                                ),
+                                str(
+                                    expedient_type.get(
+                                        "codigo"
+                                    )
+                                    or ""
+                                ),
+                                str(
+                                    expedient_type.get(
+                                        "descripcion"
+                                    )
+                                    or ""
+                                ),
+                                str(
+                                    group_name
+                                    or ""
+                                ),
+                            ]
+                        )
+                    )
+                )
+            ]
+
+            if not filtered_types:
+                return empty_state(
+                    (
+                        "No se encontraron trámites para "
+                        "los criterios de búsqueda indicados."
+                    )
+                )
+
+            return ft.Column(
+                controls=[
+                             _build_new_expedient_type_card(
+                                 expedient_type,
+                                 cliente_id=cliente_id,
+                             )
+                             for expedient_type in filtered_types
+                         ],
+                spacing=12,
+                scroll=ft.ScrollMode.AUTO,
+            )
+
+        def refresh_catalog(
+            event=None,
+        ):
+            catalog_host.content = (
+                build_filtered_catalog(
+                    search_control.value
+                    or ""
+                )
+            )
+
+            page.update()
+
+        search_control.on_change = refresh_catalog
+
+        catalog_host.content = (
+            build_filtered_catalog()
+        )
+
+        title_suffix = (
+            str(group_name)
+            if group_order is not None
+            else str(
+                family.get("nombre")
+                or "Familia"
+            )
+        )
+
+        expediente_dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.ARTICLE,
+                    color=Q_PRIMARY,
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            (
+                                "Catálogo de trámites · "
+                                + title_suffix
+                            ),
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            (
+                                "Selecciona el procedimiento "
+                                "que deseas tramitar."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=1,
+                ),
+            ],
+            spacing=10,
+        )
+
+        expediente_dialog.content = ft.Container(
+            width=790,
+            height=650,
+            content=ft.Column(
+                controls=[
+                    ft.Container(
+                        bgcolor="#EFF8FF",
+                        border=ft.border.all(
+                            1,
+                            "#B2CCFF",
+                        ),
+                        border_radius=12,
+                        padding=12,
+                        content=ft.Text(
+                            (
+                                f"{len(available_types)} "
+                                "trámite(s) activo(s). "
+                                "Los procedimientos históricos "
+                                "no se muestran para nuevas altas."
+                            ),
+                            size=12,
+                            color="#1849A9",
+                        ),
+                    ),
+                    search_control,
+                    catalog_host,
+                ],
+                spacing=12,
+                expand=True,
+            ),
+        )
+
+        def back_to_previous_level(
+            event=None,
+        ):
+            if (
+                group_order is not None
+                and _family_code(family)
+                == "EXTRANJERIA"
+            ):
+                open_new_expedient_subfamily_catalog(
+                    family,
+                    cliente_id=cliente_id,
+                )
+                return
+
+            expediente_dialog.open = False
+            page.update()
+
+            open_new(
+                cliente_id=cliente_id,
+            )
+
+        back_label = (
+            "Volver a subfamilias"
+            if group_order is not None
+            else "Volver a familias"
+        )
+
+        expediente_dialog.actions = [
+            secondary_button(
+                back_label,
+                back_to_previous_level,
+            ),
+            secondary_button(
+                "Cancelar",
+                close_dialog,
+            ),
+        ]
+
+        expediente_dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        new_expedient_family_dialog.open = False
+        expediente_dialog.open = True
+        page.update()
+
+
+
+
+    def _build_new_expedient_family_card(
+        family,
+        cliente_id=None,
+    ):
+        family = dict(family or {})
+
+        style = _family_selector_style(
+            family
+        )
+
+        family_id = int(
+            family.get("id")
+            or 0
+        )
+
+        type_count = _family_type_count(
+            family_id
+        )
+
+        description = (
+            style.get("description")
+            or family.get("descripcion")
+            or ""
+        )
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                style["border"],
+            ),
+            border_radius=16,
+            padding=14,
+            ink=True,
+            on_click=(
+                lambda event,
+                selected_family=dict(family),
+                selected_client_id=cliente_id:
+                open_new_for_family(
+                    selected_family,
+                    cliente_id=selected_client_id,
+                    e=event,
+                )
+            ),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=48,
+                        height=48,
+                        border_radius=14,
+                        bgcolor=style["background"],
+                        alignment=ft.Alignment(
+                            0,
+                            0,
+                        ),
+                        content=ft.Icon(
+                            style["icon"],
+                            color=style["foreground"],
+                            size=25,
+                        ),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                str(
+                                    family.get("nombre")
+                                    or "Familia"
+                                ),
+                                size=15,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                str(description),
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                (
+                                    f"{type_count} tipo(s) "
+                                    "de expediente disponible(s)"
+                                ),
+                                size=10,
+                                weight=ft.FontWeight.W_600,
+                                color=style["foreground"],
+                            ),
+                        ],
+                        spacing=3,
+                        expand=True,
+                    ),
+                    ft.Icon(
+                        ft.Icons.CHEVRON_RIGHT,
+                        color=style["foreground"],
+                    ),
+                ],
+                spacing=12,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
+
+    def open_new(
+        e=None,
+        cliente_id=None,
+    ):
+        if not cliente_options:
+            set_message(
+                error_alert(
+                    "No hay clientes activos "
+                    "para crear expedientes"
+                )
+            )
+            refresh()
+            return
+
+        active_families = [
+            dict(family)
+            for family in (familias or [])
+            if int(
+                family.get("activo", 1)
+                or 0
+            ) == 1
+        ]
+
+        if not active_families:
+            set_message(
+                error_alert(
+                    "No hay familias de expediente "
+                    "activas"
+                )
+            )
+            refresh()
+            return
+
+        state["pending_new_expedient_client_id"] = (
+            int(cliente_id)
+            if cliente_id
+            else None
+        )
+
+        family_cards = [
+            _build_new_expedient_family_card(
+                family,
+                cliente_id=cliente_id,
+            )
+            for family in active_families
+        ]
+
+        new_expedient_family_dialog.title = ft.Row(
+            controls=[
+                ft.Icon(
+                    ft.Icons.ACCOUNT_TREE_OUTLINED,
+                    color=Q_PRIMARY,
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Text(
+                            "Seleccionar familia",
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            (
+                                "La familia determinará el catálogo, "
+                                "el formulario y el flujo del expediente."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=1,
+                ),
+            ],
+            spacing=10,
+        )
+
+        new_expedient_family_dialog.content = (
+            ft.Container(
+                width=780,
+                height=570,
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            bgcolor="#EFF8FF",
+                            border=ft.border.all(
+                                1,
+                                "#B2CCFF",
+                            ),
+                            border_radius=12,
+                            padding=12,
+                            content=ft.Text(
+                                (
+                                    "Selecciona primero la familia. "
+                                    "Después solo se mostrarán sus "
+                                    "tipos y su formulario específico."
+                                ),
+                                size=12,
+                                color="#1849A9",
+                            ),
+                        ),
+                        *family_cards,
+                    ],
+                    spacing=10,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            )
+        )
+
+        new_expedient_family_dialog.actions = [
+            secondary_button(
+                "Cancelar",
+                close_new_expedient_family_dialog,
+            ),
+        ]
+
+        new_expedient_family_dialog.actions_alignment = (
+            ft.MainAxisAlignment.END
+        )
+
+        new_expedient_family_dialog.open = True
         page.update()
 
     def open_edit(expediente):

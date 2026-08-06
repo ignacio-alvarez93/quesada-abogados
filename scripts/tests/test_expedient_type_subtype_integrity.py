@@ -298,6 +298,118 @@ class ExpedientTypeSubtypeIntegrityTest(unittest.TestCase):
         self.assertEqual(row[0], 100)
         self.assertEqual(row[1], "SUBTIPO A1")
 
+    def test_create_with_external_connection_does_not_commit(self):
+        data = self._expedient_data(
+            tipo_id=10,
+            subtipo_id=100,
+        )
+        data["numero_expediente"] = "EXP-TRANSACTION-001"
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        try:
+            expediente_id = (
+                expedient_service
+                ._create_expediente_with_connection(
+                    conn,
+                    data,
+                )
+            )
+
+            row_same_connection = conn.execute(
+                """
+                SELECT id
+                FROM expedientes
+                WHERE id = ?
+                """,
+                (expediente_id,),
+            ).fetchone()
+
+            self.assertIsNotNone(row_same_connection)
+
+            conn.rollback()
+        finally:
+            conn.close()
+
+        with closing(sqlite3.connect(self.db_path)) as check_conn:
+            persisted = check_conn.execute(
+                """
+                SELECT id
+                FROM expedientes
+                WHERE numero_expediente =
+                    'EXP-TRANSACTION-001'
+                """
+            ).fetchone()
+
+        self.assertIsNone(persisted)
+
+    def test_create_with_external_connection_can_commit(self):
+        data = self._expedient_data(
+            tipo_id=10,
+            subtipo_id=100,
+        )
+        data["numero_expediente"] = "EXP-TRANSACTION-002"
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        try:
+            expediente_id = (
+                expedient_service
+                ._create_expediente_with_connection(
+                    conn,
+                    data,
+                )
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with closing(sqlite3.connect(self.db_path)) as check_conn:
+            persisted = check_conn.execute(
+                """
+                SELECT
+                    id,
+                    tipo_expediente_id,
+                    subtipo_expediente_id,
+                    subtipo_expediente
+                FROM expedientes
+                WHERE id = ?
+                """,
+                (expediente_id,),
+            ).fetchone()
+
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted[1], 10)
+        self.assertEqual(persisted[2], 100)
+        self.assertEqual(persisted[3], "SUBTIPO A1")
+
+    def test_public_create_expediente_still_commits(self):
+        data = self._expedient_data(
+            tipo_id=10,
+            subtipo_id=100,
+        )
+        data["numero_expediente"] = "EXP-PUBLIC-001"
+
+        expediente_id = expedient_service.create_expediente(
+            data
+        )
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                """
+                SELECT id
+                FROM expedientes
+                WHERE id = ?
+                """,
+                (expediente_id,),
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+
     def test_required_document_rejects_subtype_from_other_type(self):
         with self.assertRaisesRegex(ValueError, "no pertenece"):
             config_service.create_documento_requerido(
