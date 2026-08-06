@@ -150,6 +150,14 @@ def _sync_linked_contact_rows_for_client(cursor, client_id, data):
 def create_client(data):
     data = normalize_client_data(data)
     conn = get_connection()
+
+    from backend.services import (
+        client_administrative_status_service
+    )
+
+    client_administrative_status_service.ensure_client_administrative_schema(
+        conn=conn
+    )
     cursor = conn.cursor()
     ensure_client_hubspot_columns(cursor)
 
@@ -222,8 +230,22 @@ def create_client(data):
         ),
     ))
 
+    client_id = int(
+        cursor.lastrowid
+    )
+
+    client_administrative_status_service.update_client_administrative_snapshot(
+        client_id=client_id,
+        data=data,
+        conn=conn,
+    )
+
     conn.commit()
+
+    return_client_id = client_id
     conn.close()
+
+    return return_client_id
 
 
 def get_all_clients():
@@ -253,6 +275,14 @@ def get_client_by_id(client_id):
 def update_client(client_id, data):
     data = normalize_client_data(data)
     conn = get_connection()
+
+    from backend.services import (
+        client_administrative_status_service
+    )
+
+    client_administrative_status_service.ensure_client_administrative_schema(
+        conn=conn
+    )
     cursor = conn.cursor()
     ensure_client_hubspot_columns(cursor)
 
@@ -415,6 +445,13 @@ def update_client(client_id, data):
     ))
 
     _sync_linked_contact_rows_for_client(cursor, client_id, data)
+
+
+    client_administrative_status_service.update_client_administrative_snapshot(
+        client_id=client_id,
+        data=data,
+        conn=conn,
+    )
 
     conn.commit()
     conn.close()
