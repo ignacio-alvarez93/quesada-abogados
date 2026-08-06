@@ -888,7 +888,11 @@ def db_table_exists_global(conn, table_name):
         return False
 
 
-def clients_view(page: ft.Page, on_create_expediente=None):
+def clients_view(
+    page: ft.Page,
+    on_create_expediente=None,
+    on_open_expediente=None,
+):
     state = {
         "editing_id": None,
         "clients": [],
@@ -3169,6 +3173,7 @@ def clients_view(page: ft.Page, on_create_expediente=None):
             cliente,
             on_back=show_client_list,
             on_edit=lambda e, c=cliente: abrir_editar_cliente(c),
+            on_open_expediente=on_open_expediente,
         )
         page.update()
 
@@ -3516,6 +3521,7 @@ def clients_view(page: ft.Page, on_create_expediente=None):
                     cliente,
                     on_back=show_client_list,
                     on_edit=lambda e, c=cliente: abrir_editar_cliente(c),
+                    on_open_expediente=on_open_expediente,
                 ),
             ],
             spacing=12,

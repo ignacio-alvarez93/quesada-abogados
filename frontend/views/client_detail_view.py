@@ -27,6 +27,10 @@ from backend.services.client_administrative_status_service import (
     list_administrative_situations,
     list_client_authorizations,
 )
+from backend.services.expedient_traceability_service import (
+    get_admin_document,
+)
+from backend.services import document_viewer_service
 
 try:
     from frontend.views.company_detail_view import company_detail_view
@@ -1231,7 +1235,11 @@ def _legal_residence_warning(client):
     return None
 
 
-def _administrative_summary_card(client):
+def _administrative_summary_card(
+    client,
+    page=None,
+    on_open_expediente=None,
+):
     try:
         authorization = get_current_authorization(
             client.get("id")
@@ -1406,6 +1414,14 @@ def _administrative_summary_card(client):
                     color=Q_MUTED,
                 ),
 
+                _authorization_origin_actions(
+                    authorization,
+                    page=page,
+                    on_open_expediente=(
+                        on_open_expediente
+                    ),
+                ),
+
                 ft.Divider(),
 
                 ft.Text(
@@ -1505,6 +1521,219 @@ def _administrative_summary_card(client):
     )
 
 
+def _show_authorization_origin_message(
+    page,
+    message,
+):
+    if page is None:
+        return
+
+    page.snack_bar = ft.SnackBar(
+        content=ft.Text(
+            str(message)
+        )
+    )
+    page.snack_bar.open = True
+    page.update()
+
+
+def _open_authorization_resolution(
+    authorization,
+    page,
+):
+    document_id = authorization.get(
+        "documento_origen_id"
+    )
+
+    expediente_id = authorization.get(
+        "expediente_origen_id"
+    )
+
+    if not document_id:
+        _show_authorization_origin_message(
+            page,
+            (
+                "La autorización no tiene una "
+                "resolución de origen vinculada."
+            ),
+        )
+        return
+
+    try:
+        document = get_admin_document(
+            int(document_id)
+        )
+    except Exception as exc:
+        _show_authorization_origin_message(
+            page,
+            (
+                "No se pudo recuperar la "
+                f"resolución: {exc}"
+            ),
+        )
+        return
+
+    if not document:
+        _show_authorization_origin_message(
+            page,
+            (
+                "La resolución vinculada no "
+                "existe o está archivada."
+            ),
+        )
+        return
+
+    file_path = str(
+        document.get("archivo_ruta")
+        or ""
+    ).strip()
+
+    if not file_path:
+        _show_authorization_origin_message(
+            page,
+            (
+                "La resolución vinculada no "
+                "tiene una ruta de archivo "
+                "informada."
+            ),
+        )
+        return
+
+    try:
+        document_viewer_service.open_document(
+            file_path,
+            expediente_id=(
+                int(expediente_id)
+                if expediente_id
+                else None
+            ),
+        )
+
+    except FileNotFoundError:
+        _show_authorization_origin_message(
+            page,
+            (
+                "El archivo de la resolución "
+                "ya no está disponible en la "
+                "ruta registrada."
+            ),
+        )
+
+    except Exception as exc:
+        _show_authorization_origin_message(
+            page,
+            (
+                "No se pudo abrir la "
+                f"resolución: {exc}"
+            ),
+        )
+
+
+def _open_authorization_expedient(
+    authorization,
+    page,
+    on_open_expediente,
+):
+    expediente_id = authorization.get(
+        "expediente_origen_id"
+    )
+
+    if not expediente_id:
+        _show_authorization_origin_message(
+            page,
+            (
+                "La autorización no tiene un "
+                "expediente de origen vinculado."
+            ),
+        )
+        return
+
+    if not callable(
+        on_open_expediente
+    ):
+        _show_authorization_origin_message(
+            page,
+            (
+                "La navegación al expediente "
+                "no está disponible desde esta "
+                "vista."
+            ),
+        )
+        return
+
+    try:
+        on_open_expediente(
+            int(expediente_id)
+        )
+
+    except Exception as exc:
+        _show_authorization_origin_message(
+            page,
+            (
+                "No se pudo abrir el "
+                f"expediente: {exc}"
+            ),
+        )
+
+
+def _authorization_origin_actions(
+    authorization,
+    *,
+    page=None,
+    on_open_expediente=None,
+):
+    if not authorization:
+        return ft.Row(
+            controls=[],
+            visible=False,
+        )
+
+    document_id = authorization.get(
+        "documento_origen_id"
+    )
+
+    expediente_id = authorization.get(
+        "expediente_origen_id"
+    )
+
+    controls = []
+
+    if document_id:
+        controls.append(
+            secondary_button(
+                "Ver resolución",
+                lambda e, item=authorization: (
+                    _open_authorization_resolution(
+                        item,
+                        page,
+                    )
+                ),
+            )
+        )
+
+    if expediente_id:
+        controls.append(
+            secondary_button(
+                "Ir al expediente",
+                lambda e, item=authorization: (
+                    _open_authorization_expedient(
+                        item,
+                        page,
+                        on_open_expediente,
+                    )
+                ),
+            )
+        )
+
+    return ft.Row(
+        controls=controls,
+        spacing=10,
+        wrap=True,
+        tight=True,
+        visible=bool(controls),
+    )
+
+
 def _authorization_history_status(
     authorization,
 ):
@@ -1582,6 +1811,8 @@ def _authorization_history_origin(
 
 def _authorization_history_card(
     authorization,
+    page=None,
+    on_open_expediente=None,
 ):
     badge_text, badge_fg, badge_bg = (
         _authorization_history_status(
@@ -1779,6 +2010,14 @@ def _authorization_history_card(
                     ),
                 ),
 
+                _authorization_origin_actions(
+                    authorization,
+                    page=page,
+                    on_open_expediente=(
+                        on_open_expediente
+                    ),
+                ),
+
                 ft.Text(
                     authorization.get(
                         "observaciones"
@@ -1801,6 +2040,8 @@ def _authorization_history_card(
 
 def _build_authorization_history_section(
     client_id,
+    page=None,
+    on_open_expediente=None,
 ):
     try:
         authorizations = (
@@ -1856,7 +2097,11 @@ def _build_authorization_history_section(
 
     cards = [
         _authorization_history_card(
-            authorization
+            authorization,
+            page=page,
+            on_open_expediente=(
+                on_open_expediente
+            ),
         )
         for authorization in authorizations
     ]
@@ -2236,7 +2481,13 @@ def _photo_placeholder(client):
     )
 
 
-def client_detail_view(page, client, on_back=None, on_edit=None):
+def client_detail_view(
+    page,
+    client,
+    on_back=None,
+    on_edit=None,
+    on_open_expediente=None,
+):
     sidebar_actions = []
 
     if on_back:
@@ -2376,7 +2627,11 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
                     ],
                 ),
                 _administrative_summary_card(
-                    client
+                    client,
+                    page=page,
+                    on_open_expediente=(
+                        on_open_expediente
+                    ),
                 ),
                 detail_section(
                     "Observaciones",
@@ -2819,7 +3074,12 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             content_container.content = client_detail_view(
                 page,
                 referenced_client,
-                on_back=lambda e=None: set_section("contactos"),
+                on_back=lambda e=None: set_section(
+                    "contactos"
+                ),
+                on_open_expediente=(
+                    on_open_expediente
+                ),
             )
             page.update()
 
@@ -3638,7 +3898,11 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
 
     def build_administrative_history_section():
         return _build_authorization_history_section(
-            cliente_id
+            cliente_id,
+            page=page,
+            on_open_expediente=(
+                on_open_expediente
+            ),
         )
 
     def build_historial_section():

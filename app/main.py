@@ -74,6 +74,10 @@ def main(page: ft.Page):
                     "Expedientes",
                     new_for_client_id=cliente_id,
                 ),
+                on_open_expediente=lambda expediente_id: navigate(
+                    "Expedientes",
+                    open_expediente_id=expediente_id,
+                ),
             )
         elif view_name == "Empresas":
             content = companies_view(page)

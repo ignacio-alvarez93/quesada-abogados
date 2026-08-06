@@ -130,7 +130,7 @@ class ClientAuthorizationHistoryViewTest(
                 self.source,
             )
 
-    def test_history_is_read_only(
+    def test_history_has_no_edit_actions(
         self,
     ):
         history_start = self.source.find(
@@ -151,10 +151,15 @@ class ClientAuthorizationHistoryViewTest(
             history_source,
         )
 
-        self.assertNotIn(
-            "on_click=",
-            history_source,
-        )
+        for forbidden in (
+            "Editar autorización",
+            "Eliminar autorización",
+            "Guardar autorización",
+        ):
+            self.assertNotIn(
+                forbidden,
+                history_source,
+            )
 
 
 if __name__ == "__main__":
