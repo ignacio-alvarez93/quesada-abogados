@@ -121,8 +121,11 @@ class ReagrupacionVisaFingerprintsEndToEndTest(
             CREATE TABLE config_tipos_autorizacion (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 codigo TEXT NOT NULL UNIQUE,
-                nombre TEXT NOT NULL
-            );
+                nombre TEXT NOT NULL,
+                categoria TEXT DEFAULT 'RESIDENCIA_TEMPORAL',
+
+                activo INTEGER NOT NULL DEFAULT 1,
+                familia_codigo TEXT DEFAULT 'EXTRANJERIA');
 
             CREATE TABLE config_estados_documentales (
                 id INTEGER PRIMARY KEY,

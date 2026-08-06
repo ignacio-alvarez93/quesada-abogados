@@ -228,7 +228,7 @@ class TraceabilityAuthorizationIntegrationTest(
             ]
         )
 
-    def test_authorization_error_does_not_lose_document(
+    def test_authorization_error_aborts_core_transaction(
         self,
     ):
         patches = self._common_patches()
@@ -257,39 +257,18 @@ class TraceabilityAuthorizationIntegrationTest(
                 ),
             ),
         ):
-            result = (
-                expedient_traceability_service
-                .create_admin_document_event(
-                    self._base_data(
-                        "RESOLUCION_FAVORABLE"
+            with self.assertRaisesRegex(
+                ValueError,
+                "Configuración incompleta",
+            ):
+                (
+                    expedient_traceability_service
+                    .create_admin_document_event(
+                        self._base_data(
+                            "RESOLUCION_FAVORABLE"
+                        )
                     )
                 )
-            )
-
-        self.assertEqual(
-            result["justificante_id"],
-            500,
-        )
-
-        self.assertFalse(
-            result[
-                "authorization_transition"
-            ]["ok"]
-        )
-
-        self.assertEqual(
-            result[
-                "authorization_transition"
-            ]["reason"],
-            "ERROR_APLICANDO_AUTORIZACION",
-        )
-
-        self.assertIn(
-            "Configuración incompleta",
-            result[
-                "authorization_transition"
-            ]["error"],
-        )
 
 
 if __name__ == "__main__":

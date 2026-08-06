@@ -2642,70 +2642,98 @@ def create_admin_document_event(data):
             or ""
         )
 
-    justificante_id = create_justificante(
-        {
-            "expediente_id": expediente_id,
-            "archivo_nombre":
-                file_name or Path(file_path).name,
-            "archivo_ruta": file_path,
-            "tipo_justificante": event_code,
-
-            # Compatibilidad con campos legacy.
-            "fecha_presentacion": fecha_documento,
-            "numero_registro":
-                numero_registro_documento,
-            "organo_presentacion":
-                organo_documento,
-
-            # Metadatos propios del PDF.
-            "fecha_documento": fecha_documento,
-            "csv_documento": csv_documento,
-            "dir3_documento": dir3_documento,
-            "organo_documento": organo_documento,
-            "nie_documento": nie_documento,
-            "numero_expediente_documento":
-                numero_expediente_documento,
-            "metadata_documento":
-                document_metadata,
-
-            "estado_conciliacion": "PENDIENTE",
-            "observaciones": observaciones,
-        }
-    )
-
-    if event_code == "JUSTIFICANTE_PRESENTACION" and presentation_extraction:
-        persist_presentation_registry_data(
-            expediente_id,
-            presentation_extraction,
-        )
-
-    residence_expiry_update = None
-
-    if (
-        event_code == "RESOLUCION_FAVORABLE"
-        and favorable_resolution_extraction
-    ):
-        residence_expiry_update = (
-            _update_client_residence_expiry_from_resolution(
-                expediente_id=expediente_id,
-                justificante_id=justificante_id,
-                extraction=favorable_resolution_extraction,
-                usuario=_raw(
-                    data.get("usuario")
-                    or "ERP"
-                ),
-            )
-        )
-
-    transition = _apply_admin_document_transition(
-        expediente_id,
-        event_code,
+    usuario = _raw(
+        data.get("usuario")
+        or "ERP"
     )
 
     authorization_transition = None
+    residence_expiry_update = None
 
-    if event_code == "RESOLUCION_FAVORABLE":
-        try:
+    connection = _connect()
+
+    try:
+        connection.execute(
+            "BEGIN IMMEDIATE"
+        )
+
+        justificante_id = create_justificante(
+            {
+                "expediente_id":
+                    expediente_id,
+                "archivo_nombre":
+                    file_name
+                    or Path(file_path).name,
+                "archivo_ruta":
+                    file_path,
+                "tipo_justificante":
+                    event_code,
+
+                # Compatibilidad con campos legacy.
+                "fecha_presentacion":
+                    fecha_documento,
+                "numero_registro":
+                    numero_registro_documento,
+                "organo_presentacion":
+                    organo_documento,
+
+                # Metadatos propios del PDF.
+                "fecha_documento":
+                    fecha_documento,
+                "csv_documento":
+                    csv_documento,
+                "dir3_documento":
+                    dir3_documento,
+                "organo_documento":
+                    organo_documento,
+                "nie_documento":
+                    nie_documento,
+                "numero_expediente_documento":
+                    numero_expediente_documento,
+                "metadata_documento":
+                    document_metadata,
+
+                "estado_conciliacion":
+                    "PENDIENTE",
+                "observaciones":
+                    observaciones,
+            },
+            conn=connection,
+        )
+
+        if (
+            event_code
+            == "RESOLUCION_FAVORABLE"
+            and favorable_resolution_extraction
+        ):
+            residence_expiry_update = (
+                _update_client_residence_expiry_from_resolution(
+                    expediente_id=(
+                        expediente_id
+                    ),
+                    justificante_id=(
+                        justificante_id
+                    ),
+                    extraction=(
+                        favorable_resolution_extraction
+                    ),
+                    usuario=usuario,
+                    conn=connection,
+                )
+            )
+
+        transition = (
+            _apply_admin_document_transition(
+                expediente_id,
+                event_code,
+                conn=connection,
+            )
+        )
+
+        if (
+            event_code
+            == "RESOLUCION_FAVORABLE"
+        ):
             from backend.services import (
                 client_authorization_transition_service
             )
@@ -2753,13 +2781,17 @@ def create_admin_document_event(data):
             authorization_transition = (
                 client_authorization_transition_service
                 .apply_favorable_resolution_to_client(
-                    expediente_id=expediente_id,
-                    documento_id=justificante_id,
-                    resolution_data=resolution_data,
-                    usuario=_raw(
-                        data.get("usuario")
-                        or "ERP"
+                    expediente_id=(
+                        expediente_id
                     ),
+                    documento_id=(
+                        justificante_id
+                    ),
+                    resolution_data=(
+                        resolution_data
+                    ),
+                    usuario=usuario,
+                    conn=connection,
                 )
             )
 
@@ -2771,15 +2803,113 @@ def create_admin_document_event(data):
                 ),
             }
 
-        except Exception as exc:
-            authorization_transition = {
-                "ok": False,
-                "applied": False,
-                "already_applied": False,
-                "reason":
-                    "ERROR_APLICANDO_AUTORIZACION",
-                "error": str(exc),
-            }
+        transition_text = ""
+
+        if transition.get("changed"):
+            transition_text = (
+                "\nTransición administrativa: "
+                f"{transition.get('estado_anterior') or 'SIN ESTADO'}"
+                " → "
+                f"{transition.get('estado_nuevo')}"
+            )
+
+        evento_id = registrar_evento(
+            expediente_id=expediente_id,
+            cliente_id=(
+                expediente["cliente_id"]
+            ),
+            tipo_evento=(
+                "DOCUMENTO_ADMINISTRATIVO"
+            ),
+            titulo=(
+                "DOCUMENTO ADMINISTRATIVO "
+                f"ANEXADO · {label}"
+            ),
+            descripcion=(
+                "Documento: "
+                + str(
+                    file_name
+                    or Path(file_path).name
+                    or file_path
+                )
+                + (
+                    f"\nRuta: {file_path}"
+                    if file_path
+                    else ""
+                )
+                + (
+                    "\nObservaciones: "
+                    + str(observaciones)
+                    if observaciones
+                    else ""
+                )
+                + (
+                    "\nN.º presentación: "
+                    + str(
+                        presentation_extraction.get(
+                            "numero_presentacion_registro"
+                        )
+                        or "-"
+                    )
+                    + "\nREGAGE: "
+                    + str(
+                        presentation_extraction.get(
+                            "numero_registro_regage"
+                        )
+                        or "-"
+                    )
+                    + "\nCSV GEISER: "
+                    + str(
+                        presentation_extraction.get(
+                            "registro_csv_geiser"
+                        )
+                        or "-"
+                    )
+                    if presentation_extraction
+                    else ""
+                )
+                + transition_text
+            ),
+            estado_anterior=(
+                transition.get(
+                    "estado_anterior"
+                )
+                or ""
+            ),
+            estado_nuevo=(
+                transition.get(
+                    "estado_nuevo"
+                )
+                or ""
+            ),
+            entidad_relacionada=(
+                "expediente_justificantes"
+            ),
+            entidad_relacionada_id=(
+                justificante_id
+            ),
+            usuario=usuario,
+            conn=connection,
+        )
+
+        connection.commit()
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
+
+    if (
+        event_code
+        == "JUSTIFICANTE_PRESENTACION"
+        and presentation_extraction
+    ):
+        persist_presentation_registry_data(
+            expediente_id,
+            presentation_extraction,
+        )
 
     transition_text = ""
     if transition.get("changed"):
@@ -2803,34 +2933,6 @@ def create_admin_document_event(data):
                 "changed": False,
                 "error": str(exc),
             }
-
-    evento_id = registrar_evento(
-        expediente_id=expediente_id,
-        cliente_id=expediente["cliente_id"],
-        tipo_evento="DOCUMENTO_ADMINISTRATIVO",
-        titulo=f"DOCUMENTO ADMINISTRATIVO ANEXADO · {label}",
-        descripcion=(
-            f"Documento: {file_name or Path(file_path).name or file_path}"
-            + (f"\nRuta: {file_path}" if file_path else "")
-            + (f"\nObservaciones: {observaciones}" if observaciones else "")
-            + (
-                "\nN.º presentación: "
-                + str(presentation_extraction.get("numero_presentacion_registro") or "-")
-                + "\nREGAGE: "
-                + str(presentation_extraction.get("numero_registro_regage") or "-")
-                + "\nCSV GEISER: "
-                + str(presentation_extraction.get("registro_csv_geiser") or "-")
-                if presentation_extraction
-                else ""
-            )
-            + transition_text
-        ),
-        estado_anterior=transition.get("estado_anterior") or "",
-        estado_nuevo=transition.get("estado_nuevo") or "",
-        entidad_relacionada="expediente_justificantes",
-        entidad_relacionada_id=justificante_id,
-        usuario=_raw(data.get("usuario") or "ERP"),
-    )
 
     dehu_confirmation = None
 
