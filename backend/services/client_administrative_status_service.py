@@ -665,7 +665,8 @@ def update_current_authorization_details(
     return dict(row)
 
 
-def set_current_authorization(
+def _set_current_authorization_with_connection(
+    conn,
     client_id,
     authorization_data,
     usuario="ERP",
@@ -677,8 +678,6 @@ def set_current_authorization(
     conserva en el historial. Después sincroniza clientes:
     situación, autorización actual y fecha de caducidad.
     """
-    ensure_client_administrative_schema()
-
     data = dict(
         authorization_data
         or {}
@@ -697,266 +696,295 @@ def set_current_authorization(
             "Selecciona la situación administrativa"
         )
 
-    with _connection() as conn:
-        client = conn.execute(
+    client = conn.execute(
+        """
+        SELECT id
+        FROM clientes
+        WHERE id = ?
+          AND COALESCE(activo, 1) = 1
+        """,
+        (
+            int(client_id),
+        ),
+    ).fetchone()
+
+    if not client:
+        raise ValueError(
+            "No existe el cliente activo"
+        )
+
+    situation = conn.execute(
+        """
+        SELECT id
+        FROM config_situaciones_administrativas
+        WHERE id = ?
+          AND COALESCE(activo, 1) = 1
+        """,
+        (
+            int(situation_id),
+        ),
+    ).fetchone()
+
+    if not situation:
+        raise ValueError(
+            "La situación administrativa "
+            "no es válida"
+        )
+
+    if authorization_type_id:
+        authorization_type = conn.execute(
             """
             SELECT id
-            FROM clientes
+            FROM config_tipos_autorizacion
             WHERE id = ?
               AND COALESCE(activo, 1) = 1
             """,
             (
-                int(client_id),
+                int(authorization_type_id),
             ),
         ).fetchone()
 
-        if not client:
+        if not authorization_type:
             raise ValueError(
-                "No existe el cliente activo"
+                "El tipo de autorización "
+                "no es válido"
             )
 
-        situation = conn.execute(
-            """
-            SELECT id
-            FROM config_situaciones_administrativas
-            WHERE id = ?
-              AND COALESCE(activo, 1) = 1
-            """,
-            (
-                int(situation_id),
-            ),
-        ).fetchone()
+    previous = conn.execute(
+        """
+        SELECT id
+        FROM cliente_autorizaciones
+        WHERE cliente_id = ?
+          AND es_actual = 1
+          AND activo = 1
+        LIMIT 1
+        """,
+        (
+            int(client_id),
+        ),
+    ).fetchone()
 
-        if not situation:
-            raise ValueError(
-                "La situación administrativa "
-                "no es válida"
-            )
-
-        if authorization_type_id:
-            authorization_type = conn.execute(
-                """
-                SELECT id
-                FROM config_tipos_autorizacion
-                WHERE id = ?
-                  AND COALESCE(activo, 1) = 1
-                """,
-                (
-                    int(authorization_type_id),
-                ),
-            ).fetchone()
-
-            if not authorization_type:
-                raise ValueError(
-                    "El tipo de autorización "
-                    "no es válido"
-                )
-
-        previous = conn.execute(
-            """
-            SELECT id
-            FROM cliente_autorizaciones
-            WHERE cliente_id = ?
-              AND es_actual = 1
-              AND activo = 1
-            LIMIT 1
-            """,
-            (
-                int(client_id),
-            ),
-        ).fetchone()
-
-        if previous:
-            conn.execute(
-                """
-                UPDATE cliente_autorizaciones
-                SET
-                    es_actual = 0,
-                    motivo_fin = COALESCE(
-                        ?,
-                        motivo_fin
-                    ),
-                    updated_at =
-                        CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (
-                    (
-                        data.get(
-                            "motivo_fin_anterior"
-                        )
-                        or (
-                            "Sustituida por una nueva "
-                            "situación o autorización actual."
-                        )
-                    ),
-                    int(previous["id"]),
-                ),
-            )
-
-        cursor = conn.execute(
-            """
-            INSERT INTO cliente_autorizaciones (
-                cliente_id,
-                situacion_administrativa_id,
-                tipo_autorizacion_id,
-                estado_autorizacion,
-                fecha_solicitud,
-                fecha_presentacion,
-                fecha_concesion,
-                fecha_notificacion,
-                fecha_vigencia_desde,
-                fecha_vigencia_hasta,
-                numero_expediente_administrativo,
-                organismo_concedente,
-                provincia,
-                expediente_origen_id,
-                documento_origen_id,
-                motivo_inicio,
-                es_actual,
-                activo,
-                observaciones
-            )
-            VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, 1, 1, ?
-            )
-            """,
-            (
-                int(client_id),
-                int(situation_id),
-                (
-                    int(authorization_type_id)
-                    if authorization_type_id
-                    else None
-                ),
-                (
-                    str(
-                        data.get(
-                            "estado_autorizacion"
-                        )
-                        or "VIGENTE"
-                    ).strip().upper()
-                ),
-                data.get("fecha_solicitud") or None,
-                data.get("fecha_presentacion") or None,
-                data.get("fecha_concesion") or None,
-                data.get("fecha_notificacion") or None,
-                data.get("fecha_vigencia_desde") or None,
-                data.get("fecha_vigencia_hasta") or None,
-                (
-                    data.get(
-                        "numero_expediente_administrativo"
-                    )
-                    or None
-                ),
-                (
-                    data.get(
-                        "organismo_concedente"
-                    )
-                    or None
-                ),
-                data.get("provincia") or None,
-                (
-                    int(
-                        data["expediente_origen_id"]
-                    )
-                    if data.get(
-                        "expediente_origen_id"
-                    )
-                    else None
-                ),
-                (
-                    int(
-                        data["documento_origen_id"]
-                    )
-                    if data.get(
-                        "documento_origen_id"
-                    )
-                    else None
-                ),
-                data.get("motivo_inicio") or None,
-                data.get("observaciones") or None,
-            ),
-        )
-
-        authorization_id = int(
-            cursor.lastrowid
-        )
-
+    if previous:
         conn.execute(
             """
-            UPDATE clientes
+            UPDATE cliente_autorizaciones
             SET
-                situacion_administrativa_id = ?,
-                autorizacion_actual_id = ?,
-                fecha_caducidad_residencia =
-                    COALESCE(
-                        ?,
-                        fecha_caducidad_residencia
-                    ),
-                fecha_caducidad_origen =
-                    CASE
-                        WHEN ? IS NOT NULL
-                        THEN 'AUTORIZACION_CLIENTE'
-                        ELSE fecha_caducidad_origen
-                    END,
-                fecha_caducidad_expediente_id =
-                    COALESCE(
-                        ?,
-                        fecha_caducidad_expediente_id
-                    ),
-                fecha_caducidad_actualizada_at =
-                    CURRENT_TIMESTAMP,
+                es_actual = 0,
+                motivo_fin = COALESCE(
+                    ?,
+                    motivo_fin
+                ),
                 updated_at =
                     CURRENT_TIMESTAMP
             WHERE id = ?
             """,
             (
-                int(situation_id),
-                authorization_id,
-                data.get(
-                    "fecha_vigencia_hasta"
-                ),
-                data.get(
-                    "fecha_vigencia_hasta"
-                ),
                 (
-                    int(
-                        data["expediente_origen_id"]
+                    data.get(
+                        "motivo_fin_anterior"
                     )
-                    if data.get(
-                        "expediente_origen_id"
+                    or (
+                        "Sustituida por una nueva "
+                        "situación o autorización actual."
                     )
-                    else None
                 ),
-                int(client_id),
+                int(previous["id"]),
             ),
         )
 
-        row = conn.execute(
-            """
-            SELECT
-                ca.*,
-                sa.codigo AS situacion_codigo,
-                sa.nombre AS situacion_nombre,
-                ta.codigo AS autorizacion_codigo,
-                ta.nombre AS autorizacion_nombre
-            FROM cliente_autorizaciones ca
-            LEFT JOIN config_situaciones_administrativas sa
-              ON sa.id =
-                 ca.situacion_administrativa_id
-            LEFT JOIN config_tipos_autorizacion ta
-              ON ta.id =
-                 ca.tipo_autorizacion_id
-            WHERE ca.id = ?
-            """,
+    cursor = conn.execute(
+        """
+        INSERT INTO cliente_autorizaciones (
+            cliente_id,
+            situacion_administrativa_id,
+            tipo_autorizacion_id,
+            estado_autorizacion,
+            fecha_solicitud,
+            fecha_presentacion,
+            fecha_concesion,
+            fecha_notificacion,
+            fecha_vigencia_desde,
+            fecha_vigencia_hasta,
+            numero_expediente_administrativo,
+            organismo_concedente,
+            provincia,
+            expediente_origen_id,
+            documento_origen_id,
+            motivo_inicio,
+            es_actual,
+            activo,
+            observaciones
+        )
+        VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, 1, 1, ?
+        )
+        """,
+        (
+            int(client_id),
+            int(situation_id),
             (
-                authorization_id,
+                int(authorization_type_id)
+                if authorization_type_id
+                else None
             ),
-        ).fetchone()
+            (
+                str(
+                    data.get(
+                        "estado_autorizacion"
+                    )
+                    or "VIGENTE"
+                ).strip().upper()
+            ),
+            data.get("fecha_solicitud") or None,
+            data.get("fecha_presentacion") or None,
+            data.get("fecha_concesion") or None,
+            data.get("fecha_notificacion") or None,
+            data.get("fecha_vigencia_desde") or None,
+            data.get("fecha_vigencia_hasta") or None,
+            (
+                data.get(
+                    "numero_expediente_administrativo"
+                )
+                or None
+            ),
+            (
+                data.get(
+                    "organismo_concedente"
+                )
+                or None
+            ),
+            data.get("provincia") or None,
+            (
+                int(
+                    data["expediente_origen_id"]
+                )
+                if data.get(
+                    "expediente_origen_id"
+                )
+                else None
+            ),
+            (
+                int(
+                    data["documento_origen_id"]
+                )
+                if data.get(
+                    "documento_origen_id"
+                )
+                else None
+            ),
+            data.get("motivo_inicio") or None,
+            data.get("observaciones") or None,
+        ),
+    )
+
+    authorization_id = int(
+        cursor.lastrowid
+    )
+
+    conn.execute(
+        """
+        UPDATE clientes
+        SET
+            situacion_administrativa_id = ?,
+            autorizacion_actual_id = ?,
+            fecha_caducidad_residencia =
+                COALESCE(
+                    ?,
+                    fecha_caducidad_residencia
+                ),
+            fecha_caducidad_origen =
+                CASE
+                    WHEN ? IS NOT NULL
+                    THEN 'AUTORIZACION_CLIENTE'
+                    ELSE fecha_caducidad_origen
+                END,
+            fecha_caducidad_expediente_id =
+                COALESCE(
+                    ?,
+                    fecha_caducidad_expediente_id
+                ),
+            fecha_caducidad_actualizada_at =
+                CURRENT_TIMESTAMP,
+            updated_at =
+                CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (
+            int(situation_id),
+            authorization_id,
+            data.get(
+                "fecha_vigencia_hasta"
+            ),
+            data.get(
+                "fecha_vigencia_hasta"
+            ),
+            (
+                int(
+                    data["expediente_origen_id"]
+                )
+                if data.get(
+                    "expediente_origen_id"
+                )
+                else None
+            ),
+            int(client_id),
+        ),
+    )
+
+    row = conn.execute(
+        """
+        SELECT
+            ca.*,
+            sa.codigo AS situacion_codigo,
+            sa.nombre AS situacion_nombre,
+            ta.codigo AS autorizacion_codigo,
+            ta.nombre AS autorizacion_nombre
+        FROM cliente_autorizaciones ca
+        LEFT JOIN config_situaciones_administrativas sa
+          ON sa.id =
+             ca.situacion_administrativa_id
+        LEFT JOIN config_tipos_autorizacion ta
+          ON ta.id =
+             ca.tipo_autorizacion_id
+        WHERE ca.id = ?
+        """,
+        (
+            authorization_id,
+        ),
+    ).fetchone()
 
     return dict(row)
+
+def set_current_authorization(
+    client_id,
+    authorization_data,
+    usuario="ERP",
+    conn=None,
+):
+    """
+    Registra una autorización como actual.
+
+    Si recibe una conexión, participa en la transacción
+    superior sin confirmar ni cerrar esa conexión.
+    """
+    if conn is not None:
+        return _set_current_authorization_with_connection(
+            conn=conn,
+            client_id=client_id,
+            authorization_data=authorization_data,
+            usuario=usuario,
+        )
+
+    ensure_client_administrative_schema()
+
+    with _connection() as owned_conn:
+        return _set_current_authorization_with_connection(
+            conn=owned_conn,
+            client_id=client_id,
+            authorization_data=authorization_data,
+            usuario=usuario,
+        )
 
 
 def get_current_authorization(client_id):
