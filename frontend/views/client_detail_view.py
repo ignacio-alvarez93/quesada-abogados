@@ -25,6 +25,7 @@ from frontend.components.app_autocomplete import AppAutocomplete
 from backend.services.client_administrative_status_service import (
     get_current_authorization,
     list_administrative_situations,
+    list_client_authorizations,
 )
 
 try:
@@ -1385,7 +1386,10 @@ def _administrative_summary_card(client):
 
                 ft.Text(
                     authorization_name
-                    or "No se ha informado una autorización actual",
+                    or (
+                        "Situación administrativa "
+                        "sin autorización actual asociada"
+                    ),
                     size=15,
                     weight=ft.FontWeight.BOLD,
                     color=Q_PRIMARY_DARK,
@@ -1498,6 +1502,406 @@ def _administrative_summary_card(client):
             spacing=12,
             tight=True,
         ),
+    )
+
+
+def _authorization_history_status(
+    authorization,
+):
+    if int(
+        authorization.get("es_actual")
+        or 0
+    ) == 1:
+        return (
+            "AUTORIZACIÓN ACTUAL",
+            "#027A48",
+            "#ECFDF3",
+        )
+
+    state = str(
+        authorization.get(
+            "estado_autorizacion"
+        )
+        or ""
+    ).strip().upper()
+
+    if state in {
+        "CADUCADA",
+        "EXTINGUIDA",
+        "DENEGADA",
+        "REVOCADA",
+    }:
+        return (
+            state,
+            "#B42318",
+            "#FEF3F2",
+        )
+
+    return (
+        "AUTORIZACIÓN ANTERIOR",
+        "#475467",
+        "#F2F4F7",
+    )
+
+
+def _authorization_history_origin(
+    authorization,
+):
+    items = []
+
+    expediente_id = authorization.get(
+        "expediente_origen_id"
+    )
+
+    documento_id = authorization.get(
+        "documento_origen_id"
+    )
+
+    administrative_number = authorization.get(
+        "numero_expediente_administrativo"
+    )
+
+    if administrative_number:
+        items.append(
+            f"Expediente administrativo: "
+            f"{administrative_number}"
+        )
+
+    if expediente_id:
+        items.append(
+            f"Expediente CRM #{expediente_id}"
+        )
+
+    if documento_id:
+        items.append(
+            f"Documento CRM #{documento_id}"
+        )
+
+    return " · ".join(items)
+
+
+def _authorization_history_card(
+    authorization,
+):
+    badge_text, badge_fg, badge_bg = (
+        _authorization_history_status(
+            authorization
+        )
+    )
+
+    situation = (
+        authorization.get(
+            "situacion_nombre"
+        )
+        or "Situación no informada"
+    )
+
+    authorization_name = (
+        authorization.get(
+            "autorizacion_nombre"
+        )
+        or (
+            "Situación administrativa "
+            "sin autorización asociada"
+        )
+    )
+
+    start = _fecha_display(
+        authorization.get(
+            "fecha_vigencia_desde"
+        )
+    )
+
+    end = _fecha_display(
+        authorization.get(
+            "fecha_vigencia_hasta"
+        )
+    )
+
+    state = (
+        authorization.get(
+            "estado_autorizacion"
+        )
+        or "No informado"
+    )
+
+    origin = _authorization_history_origin(
+        authorization
+    )
+
+    secondary_controls = []
+
+    if authorization.get("motivo_inicio"):
+        secondary_controls.append(
+            _administrative_info_block(
+                "Motivo de inicio",
+                authorization.get(
+                    "motivo_inicio"
+                ),
+                width=360,
+            )
+        )
+
+    if authorization.get("motivo_fin"):
+        secondary_controls.append(
+            _administrative_info_block(
+                "Motivo de finalización",
+                authorization.get(
+                    "motivo_fin"
+                ),
+                width=360,
+            )
+        )
+
+    if authorization.get("organismo_concedente"):
+        secondary_controls.append(
+            _administrative_info_block(
+                "Organismo",
+                authorization.get(
+                    "organismo_concedente"
+                ),
+                secondary=(
+                    authorization.get(
+                        "provincia"
+                    )
+                    or ""
+                ),
+                width=300,
+            )
+        )
+
+    if origin:
+        secondary_controls.append(
+            _administrative_info_block(
+                "Origen",
+                origin,
+                width=420,
+            )
+        )
+
+    return ft.Container(
+        bgcolor=Q_WHITE,
+        border=ft.border.all(
+            1,
+            "#B9D7FF"
+            if int(
+                authorization.get("es_actual")
+                or 0
+            ) == 1
+            else Q_BORDER,
+        ),
+        border_radius=14,
+        padding=16,
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        _administrative_status_badge(
+                            badge_text,
+                            badge_fg,
+                            badge_bg,
+                        ),
+                        _administrative_status_badge(
+                            str(state).upper(),
+                            "#175CD3",
+                            "#EFF8FF",
+                        ),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                    tight=True,
+                ),
+
+                ft.Text(
+                    situation,
+                    size=13,
+                    color=Q_MUTED,
+                ),
+
+                ft.Text(
+                    authorization_name,
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+
+                ft.Row(
+                    controls=[
+                        _administrative_info_block(
+                            "Vigencia desde",
+                            start or "No informada",
+                            width=190,
+                        ),
+                        _administrative_info_block(
+                            "Vigencia hasta",
+                            end or "No informada",
+                            width=190,
+                        ),
+                        _administrative_info_block(
+                            "Fecha de concesión",
+                            _fecha_display(
+                                authorization.get(
+                                    "fecha_concesion"
+                                )
+                            )
+                            or "No informada",
+                            width=200,
+                        ),
+                        _administrative_info_block(
+                            "Fecha de notificación",
+                            _fecha_display(
+                                authorization.get(
+                                    "fecha_notificacion"
+                                )
+                            )
+                            or "No informada",
+                            width=210,
+                        ),
+                    ],
+                    spacing=14,
+                    wrap=True,
+                    tight=True,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.START
+                    ),
+                ),
+
+                ft.Row(
+                    controls=secondary_controls,
+                    spacing=14,
+                    wrap=True,
+                    tight=True,
+                    visible=bool(
+                        secondary_controls
+                    ),
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.START
+                    ),
+                ),
+
+                ft.Text(
+                    authorization.get(
+                        "observaciones"
+                    )
+                    or "",
+                    size=12,
+                    color=Q_MUTED,
+                    visible=bool(
+                        authorization.get(
+                            "observaciones"
+                        )
+                    ),
+                ),
+            ],
+            spacing=10,
+            tight=True,
+        ),
+    )
+
+
+def _build_authorization_history_section(
+    client_id,
+):
+    try:
+        authorizations = (
+            list_client_authorizations(
+                client_id,
+                active_only=False,
+            )
+        )
+    except Exception:
+        authorizations = []
+
+    if not authorizations:
+        return ft.Column(
+            controls=[
+                ft.Text(
+                    "Trayectoria administrativa",
+                    size=20,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Text(
+                    "Historial de situaciones y autorizaciones "
+                    "administrativas del cliente.",
+                    size=13,
+                    color=Q_MUTED,
+                ),
+                _section_card(
+                    "Autorizaciones",
+                    empty_state(
+                        "Este cliente no tiene autorizaciones "
+                        "administrativas registradas"
+                    ),
+                ),
+            ],
+            spacing=14,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    current_count = sum(
+        1
+        for item in authorizations
+        if int(
+            item.get("es_actual")
+            or 0
+        ) == 1
+    )
+
+    previous_count = (
+        len(authorizations)
+        - current_count
+    )
+
+    cards = [
+        _authorization_history_card(
+            authorization
+        )
+        for authorization in authorizations
+    ]
+
+    return ft.Column(
+        controls=[
+            ft.Text(
+                "Trayectoria administrativa",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=Q_PRIMARY_DARK,
+            ),
+            ft.Text(
+                "Evolución de las situaciones y autorizaciones "
+                "administrativas registradas para este cliente.",
+                size=13,
+                color=Q_MUTED,
+            ),
+            ft.Row(
+                controls=[
+                    _administrative_status_badge(
+                        f"REGISTROS: {len(authorizations)}",
+                        "#175CD3",
+                        "#EFF8FF",
+                    ),
+                    _administrative_status_badge(
+                        f"ACTUAL: {current_count}",
+                        "#027A48",
+                        "#ECFDF3",
+                    ),
+                    _administrative_status_badge(
+                        f"ANTERIORES: {previous_count}",
+                        "#475467",
+                        "#F2F4F7",
+                    ),
+                ],
+                spacing=8,
+                wrap=True,
+                tight=True,
+            ),
+            *cards,
+        ],
+        spacing=14,
+        scroll=ft.ScrollMode.AUTO,
+        expand=True,
     )
 
 
@@ -3232,6 +3636,11 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             expand=True,
         )
 
+    def build_administrative_history_section():
+        return _build_authorization_history_section(
+            cliente_id
+        )
+
     def build_historial_section():
         return ft.Column(
             controls=[
@@ -3259,6 +3668,8 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
             return build_contactos_section()
         if section == "empleadores":
             return build_empleadores_section()
+        if section == "trayectoria_administrativa":
+            return build_administrative_history_section()
         if section == "historial":
             return build_historial_section()
 
@@ -3294,6 +3705,10 @@ def client_detail_view(page, client, on_back=None, on_edit=None):
         ("Documentos Box", "documentos"),
         ("Contactos", "contactos"),
         ("Empleadores", "empleadores"),
+        (
+            "Trayectoria administrativa",
+            "trayectoria_administrativa",
+        ),
         ("Historial / relaciones", "historial"),
     ]
 
