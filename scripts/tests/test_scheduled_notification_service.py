@@ -1,7 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from backend.services import task_service
@@ -93,15 +93,32 @@ class ScheduledNotificationServiceTestCase(
     def tearDown(self):
         self.tmpdir.cleanup()
 
-    def _task(self):
+    def _task(
+        self,
+        *,
+        due_at=None,
+        prioridad="ALTA",
+    ):
+        if due_at is None:
+            due_at = (
+                datetime.now()
+                + timedelta(days=3)
+            )
+
+        if isinstance(
+            due_at,
+            datetime,
+        ):
+            due_at = due_at.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+
         return task_service.create_task(
             titulo="Presentar expediente",
             cliente_id=1,
             expediente_id=10,
-            prioridad="ALTA",
-            fecha_vencimiento=(
-                "2026-01-13 12:00"
-            ),
+            prioridad=prioridad,
+            fecha_vencimiento=due_at,
             db_path=self.db_path,
         )["task"]
 
@@ -174,6 +191,166 @@ class ScheduledNotificationServiceTestCase(
             1,
         )
 
+    def test_high_priority_future_more_than_24h(
+        self,
+    ):
+        task = self._task(
+            due_at=(
+                datetime.now()
+                + timedelta(days=3)
+            ),
+            prioridad="ALTA",
+        )
+
+        rows = (
+            scheduled_notification_service
+            .schedule_task_notifications(
+                task,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            len(rows),
+            2,
+        )
+
+        types = {
+            row["notification"]["notification_type"]
+            for row in rows
+        }
+
+        self.assertEqual(
+            types,
+            {
+                "24H_ANTES",
+                "VENCIMIENTO",
+            },
+        )
+
+
+    def test_high_priority_less_than_24h(
+        self,
+    ):
+        task = self._task(
+            due_at=(
+                datetime.now()
+                + timedelta(hours=6)
+            ),
+            prioridad="ALTA",
+        )
+
+        rows = (
+            scheduled_notification_service
+            .schedule_task_notifications(
+                task,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            len(rows),
+            1,
+        )
+
+        self.assertEqual(
+            rows[0]["notification"]["notification_type"],
+            "VENCIMIENTO",
+        )
+
+
+    def test_high_priority_already_overdue(
+        self,
+    ):
+        before = datetime.now()
+
+        task = self._task(
+            due_at=(
+                before
+                - timedelta(hours=2)
+            ),
+            prioridad="ALTA",
+        )
+
+        rows = (
+            scheduled_notification_service
+            .schedule_task_notifications(
+                task,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            len(rows),
+            1,
+        )
+
+        self.assertEqual(
+            rows[0]["notification"]["notification_type"],
+            "VENCIMIENTO",
+        )
+
+        scheduled_at = datetime.fromisoformat(
+            str(
+                rows[0]["notification"]["scheduled_at"]
+            ).replace("T", " ")
+        )
+
+        after = datetime.now()
+
+        before_second = (
+            before.replace(
+                microsecond=0
+            )
+        )
+
+        after_second = (
+            after.replace(
+                microsecond=0
+            )
+        )
+
+        self.assertGreaterEqual(
+            scheduled_at,
+            before_second,
+        )
+
+        self.assertLessEqual(
+            scheduled_at,
+            after_second,
+        )
+
+
+    def test_normal_priority_future(
+        self,
+    ):
+        task = self._task(
+            due_at=(
+                datetime.now()
+                + timedelta(days=3)
+            ),
+            prioridad="NORMAL",
+        )
+
+        rows = (
+            scheduled_notification_service
+            .schedule_task_notifications(
+                task,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            len(rows),
+            1,
+        )
+
+        self.assertEqual(
+            rows[0]["notification"]["notification_type"],
+            "VENCIMIENTO",
+        )
+
+
     def test_alert_notification_is_idempotent(
         self,
     ):
@@ -232,7 +409,14 @@ class ScheduledNotificationServiceTestCase(
     def test_due_returns_task_context(
         self,
     ):
-        task = self._task()
+        base_now = datetime.now()
+
+        task = self._task(
+            due_at=(
+                base_now
+                + timedelta(hours=2)
+            )
+        )
 
         scheduled_notification_service \
             .schedule_task_notifications(
@@ -243,12 +427,9 @@ class ScheduledNotificationServiceTestCase(
         due = (
             scheduled_notification_service
             .list_due_notifications(
-                now=datetime(
-                    2026,
-                    1,
-                    13,
-                    13,
-                    0,
+                now=(
+                    base_now
+                    + timedelta(hours=3)
                 ),
                 db_path=self.db_path,
             )

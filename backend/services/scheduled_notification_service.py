@@ -877,19 +877,41 @@ def schedule_task_notifications(
         db_path=db_path,
     ) as connection:
 
+        now = datetime.now()
+
         for (
             notification_type,
             offset,
         ) in _task_policy(
             task.get("prioridad")
         ):
+            scheduled_at = (
+                due_at - offset
+            )
+
+            # Nunca generamos preavisos históricos.
+            if (
+                scheduled_at <= now
+                and notification_type
+                != "VENCIMIENTO"
+            ):
+                continue
+
+            # Si la tarea ya está vencida,
+            # el aviso de vencimiento se convierte
+            # en un único aviso inmediato.
+            if (
+                notification_type
+                == "VENCIMIENTO"
+                and scheduled_at <= now
+            ):
+                scheduled_at = now
+
             results.append(
                 create_notification(
                     source_type=SOURCE_TASK,
                     source_id=task_id,
-                    scheduled_at=(
-                        due_at - offset
-                    ),
+                    scheduled_at=scheduled_at,
                     notification_type=(
                         notification_type
                     ),
