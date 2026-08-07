@@ -34,6 +34,7 @@ MENU_GROUPS = [
         "open": True,
         "items": [
             ("Expedientes", "📁"),
+            ("Calendario", "📅"),
             ("Colas de presentación", "⏳"),
             ("Notificaciones", "🔔"),
         ],
@@ -135,7 +136,6 @@ MENU_GROUPS = [
             ("Búsquedas internet", "🌐"),
             ("NotebookLM", "📓"),
             ("OCR documental", "🔎"),
-            ("Tareas programadas", "⏱️"),
         ],
     },
     {
@@ -156,6 +156,7 @@ KNOWN_ACTIVE_VIEWS = {
     "Proveedores",
     "Trabajadores",
     "Expedientes",
+    "Calendario",
     "Colas de presentación",
     "Notificaciones",
     "Cobros",

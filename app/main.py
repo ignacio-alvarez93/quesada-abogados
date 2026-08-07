@@ -31,6 +31,7 @@ from frontend.views.box_watch_view import box_watch_view
 from frontend.views.reporting_view import reporting_view
 from frontend.views.presentation_queue_view import presentation_queue_view
 from frontend.views.notifications_view import notifications_view
+from frontend.views.calendar_view import calendar_view
 from frontend.views.document_inbox_view import document_inbox_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
@@ -104,6 +105,17 @@ def main(page: ft.Page):
                     "Bandeja documental",
                     open_item_id=item_id,
                     open_batch_id=batch_id,
+                ),
+            )
+        elif view_name == "Calendario":
+            content = calendar_view(
+                page,
+                on_open_expediente=lambda expediente_id: navigate(
+                    "Expedientes",
+                    open_expediente_id=expediente_id,
+                ),
+                on_open_cliente=lambda cliente_id: navigate(
+                    "Clientes",
                 ),
             )
         elif view_name == "Colas de presentación":
