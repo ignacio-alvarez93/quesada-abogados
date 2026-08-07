@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from pathlib import Path
+from backend.services import expedient_consistency_service
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "database" / "expedient_dynamic_forms_schema.sql"
@@ -750,6 +751,14 @@ def save_datos_especificos(expediente_id, formulario_id, values):
     values = values or {}
 
     with _connect() as conn:
+        if "tipo_de_solicitud" in values:
+            expedient_consistency_service\
+                .validate_reagrupacion_request_for_expedient(
+                    conn,
+                    int(expediente_id),
+                    values.get("tipo_de_solicitud"),
+                )
+
         campos = [
             _dict(row)
             for row in conn.execute(
@@ -816,6 +825,14 @@ def save_datos_especificos_patch(expediente_id, formulario_id, values):
     values = values or {}
 
     with _connect() as conn:
+        if "tipo_de_solicitud" in values:
+            expedient_consistency_service\
+                .validate_reagrupacion_request_for_expedient(
+                    conn,
+                    int(expediente_id),
+                    values.get("tipo_de_solicitud"),
+                )
+
         for codigo, valor in values.items():
             codigo = str(codigo or "").strip()
             if not codigo:
