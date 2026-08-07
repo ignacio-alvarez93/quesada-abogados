@@ -844,6 +844,7 @@ def _task_policy(priority):
 def schedule_task_notifications(
     task,
     *,
+    revision_key=None,
     conn=None,
     db_path=DEFAULT_DB_PATH,
 ):
@@ -863,6 +864,10 @@ def schedule_task_notifications(
             "T",
             " ",
         )
+    )
+
+    clean_revision_key = _text(
+        revision_key
     )
 
     results = []
@@ -892,6 +897,11 @@ def schedule_task_notifications(
                         f"TASK:{task_id}:"
                         f"TELEGRAM:"
                         f"{notification_type}"
+                        + (
+                            f":{clean_revision_key}"
+                            if clean_revision_key
+                            else ""
+                        )
                     ),
                     conn=connection,
                     db_path=db_path,
