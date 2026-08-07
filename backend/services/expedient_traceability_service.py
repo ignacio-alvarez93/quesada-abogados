@@ -946,11 +946,17 @@ def _recalculate_admin_state_after_document_archive(
             UPDATE expedientes
             SET estado_administrativo_id = ?,
                 estado_presentacion = ?,
+                fecha_presentacion = CASE
+                    WHEN ? = 'NO PRESENTADO'
+                    THEN NULL
+                    ELSE fecha_presentacion
+                END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
             (
                 int(estado_nuevo_id),
+                estado_presentacion,
                 estado_presentacion,
                 int(expediente_id),
             ),
@@ -1105,11 +1111,17 @@ def recalculate_expedient_admin_state(
             UPDATE expedientes
             SET estado_administrativo_id = ?,
                 estado_presentacion = ?,
+                fecha_presentacion = CASE
+                    WHEN ? = 'NO PRESENTADO'
+                    THEN NULL
+                    ELSE fecha_presentacion
+                END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
             (
                 int(estado_nuevo_id),
+                estado_presentacion,
                 estado_presentacion,
                 expediente_id,
             ),

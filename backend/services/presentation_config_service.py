@@ -1,4 +1,5 @@
 import json
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 
@@ -49,7 +50,7 @@ def _build_reglas_json(data):
     return json.dumps(reglas, ensure_ascii=False) if reglas else None
 
 def get_presentacion_config(tipo_id, subtipo_id=None):
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         if subtipo_id:
             row = conn.execute(
                 "SELECT * FROM config_presentaciones_asistidas WHERE tipo_expediente_id=? AND subtipo_expediente_id=? AND activo=1",
@@ -106,7 +107,7 @@ def list_presentacion_configs(active_only=False):
         params.append(1)
     sql += " ORDER BY t.nombre ASC, s.orden ASC, s.nombre ASC, p.nombre_configuracion ASC"
 
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = [_row_to_dict(r) for r in conn.execute(sql, params).fetchall()]
 
     for row in rows:
@@ -118,7 +119,7 @@ def list_presentacion_configs(active_only=False):
 
 
 def get_presentacion_config_by_id(config_id):
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         row = _row_to_dict(
             conn.execute(
                 "SELECT * FROM config_presentaciones_asistidas WHERE id = ?",
@@ -136,7 +137,7 @@ def get_presentacion_config_by_id(config_id):
 
 def create_presentacion_config(data):
     reglas_json = _build_reglas_json(data)
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         cur = conn.execute(
             """
             INSERT INTO config_presentaciones_asistidas (
@@ -168,7 +169,7 @@ def create_presentacion_config(data):
 
 def update_presentacion_config(config_id, data):
     reglas_json = _build_reglas_json(data)
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         conn.execute(
             """
             UPDATE config_presentaciones_asistidas
@@ -199,7 +200,7 @@ def update_presentacion_config(config_id, data):
 
 
 def delete_presentacion_config(config_id):
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         conn.execute(
             "DELETE FROM config_presentaciones_asistidas WHERE id = ?",
             (int(config_id),),
@@ -224,8 +225,23 @@ def seed_presentaciones_asistidas_defaults():
     defaults = [
         {
             "tipo_codigo": "REAGRUPACION_FAMILIAR",
-            "subtipo_codigo": "CONYUGE",
-            "nombre_configuracion": "Mercurio EX02 - Reagrupación familiar cónyuge",
+            "subtipo_codigo": "INICIAL",
+            "nombre_configuracion": (
+                "Mercurio EX02 - Reagrupación familiar inicial"
+            ),
+            "portal": "MERCURIO",
+            "flujo": "BI_PRESENTAR_NUEVA_SOLICITUD",
+            "reglas": {
+                "tipo_formulario_objetivo": "EX02",
+                "mapper_codigo": "MERCURIO_EX02",
+            },
+        },
+        {
+            "tipo_codigo": "REAGRUPACION_FAMILIAR",
+            "subtipo_codigo": "RENOVACION",
+            "nombre_configuracion": (
+                "Mercurio EX02 - Reagrupación familiar renovación"
+            ),
             "portal": "MERCURIO",
             "flujo": "BI_PRESENTAR_NUEVA_SOLICITUD",
             "reglas": {
@@ -235,7 +251,7 @@ def seed_presentaciones_asistidas_defaults():
         },
     ]
 
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         for item in defaults:
             tipo = conn.execute(
                 """

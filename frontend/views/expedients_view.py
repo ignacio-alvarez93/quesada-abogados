@@ -7987,18 +7987,59 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             saved_values,
             width=520,
         )
+        # El subtipo canónico gobierna el tipo de solicitud EX02.
+        #
+        # INICIAL permite las dos variantes iniciales.
+        # RENOVACION fuerza exclusivamente la casilla de renovación.
+        #
+        # No se duplica ni el EX02 ni el mapper: MERCURIO_EX02 ya
+        # contiene las casillas 111, 112 y 113.
+        from backend.services import (
+            expedient_consistency_service
+            as expedient_consistency,
+        )
+
+        ex02_request_contract = (
+            expedient_consistency
+            .get_reagrupacion_request_options(
+                subtipo_label
+            )
+        )
+
+        normalized_request_value = (
+            expedient_consistency
+            .normalize_reagrupacion_request_for_subtype(
+                subtipo_label,
+                _specific_field_value(
+                    saved_values,
+                    "tipo_de_solicitud",
+                    "",
+                ),
+            )
+        )
+
+        saved_values = dict(saved_values)
+        saved_values["tipo_de_solicitud"] = (
+            normalized_request_value
+        )
+
         tipo_solicitud = _specific_value_select(
             "tipo_de_solicitud",
             "Tipo de solicitud",
-            [
-                "REAGRUPACIÓN FAMILIAR INICIAL",
-                "REAGRUPACIÓN FAMILIAR INICIAL COMO FAMILIAR DE RESIDENTE DE LARGA DURACIÓN-UE EN OTRO ESTADO\rMIEMBRO DE LA UNIÓN EUROPEA",
-                "REAGRUPACIÓN FAMILIAR RENOVACIÓN",
-            ],
+            ex02_request_contract["options"],
             saved_values,
             width=620,
-            default="REAGRUPACIÓN FAMILIAR INICIAL",
+            default=ex02_request_contract["default"],
         )
+
+        # En renovación no existe elección funcional:
+        # el subtipo ya determina que debe marcarse RENOVACIÓN.
+        try:
+            tipo_solicitud.disabled = bool(
+                ex02_request_contract["locked"]
+            )
+        except Exception:
+            pass
         simultaneas = _specific_value_select(
             "presentan_simultáneamente_otras_solicitudes_por_reagrupación_familiar",
             "Presentan simultáneamente otras solicitudes por reagrupación familiar",

@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import date
 
 from backend.services import expedient_family_service
+from backend.services import expedient_consistency_service
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
@@ -403,6 +404,17 @@ def _create_expediente_with_connection(conn, data):
         data.get("subtipo_expediente_id"),
     )
 
+    (
+        normalized_presentation_state,
+        normalized_presentation_date,
+    ) = (
+        expedient_consistency_service
+        .normalize_presentation_fields(
+            data.get("estado_presentacion"),
+            data.get("fecha_presentacion"),
+        )
+    )
+
     subtipo_legacy = (
         _normalize_text(subtipo.get("nombre"))
         if subtipo
@@ -452,14 +464,11 @@ def _create_expediente_with_connection(conn, data):
             subtipo_legacy,
             _int_or_none(data.get("estado_documental_id")),
             _int_or_none(data.get("estado_administrativo_id")),
-            _normalize_text(
-                data.get("estado_presentacion")
-                or "NO PRESENTADO"
-            ),
+            normalized_presentation_state,
             _int_or_none(data.get("prioridad_id")),
             _normalize_text(data.get("responsable")),
             _date_or_none(data.get("fecha_apertura")),
-            _date_or_none(data.get("fecha_presentacion")),
+            _date_or_none(normalized_presentation_date),
             _date_or_none(data.get("fecha_resolucion")),
             _normalize_text(data.get("numero_registro")),
             _normalize_text(data.get("organo_presentacion")),
@@ -504,10 +513,42 @@ def update_expediente(expediente_id, data):
     )
 
     with _connect() as conn:
+        current = conn.execute(
+            """
+            SELECT
+                subtipo_expediente_id,
+                estado_presentacion
+            FROM expedientes
+            WHERE id = ?
+            """,
+            (int(expediente_id),),
+        ).fetchone()
+
+        if not current:
+            raise ValueError("Expediente no encontrado")
+
         tipo, subtipo = _resolve_expedient_type_and_subtype(
             conn,
             data.get("tipo_expediente_id"),
             data.get("subtipo_expediente_id"),
+        )
+
+        expedient_consistency_service\
+            .validate_subtype_change_after_presentation(
+                current["subtipo_expediente_id"],
+                int(subtipo["id"]) if subtipo else None,
+                current["estado_presentacion"],
+            )
+
+        (
+            normalized_presentation_state,
+            normalized_presentation_date,
+        ) = (
+            expedient_consistency_service
+            .normalize_presentation_fields(
+                data.get("estado_presentacion"),
+                data.get("fecha_presentacion"),
+            )
         )
 
         subtipo_legacy = (
@@ -556,11 +597,11 @@ def update_expediente(expediente_id, data):
                 subtipo_legacy,
                 _int_or_none(data.get("estado_documental_id")),
                 _int_or_none(data.get("estado_administrativo_id")),
-                _normalize_text(data.get("estado_presentacion") or "NO PRESENTADO"),
+                normalized_presentation_state,
                 _int_or_none(data.get("prioridad_id")),
                 _normalize_text(data.get("responsable")),
                 _date_or_none(data.get("fecha_apertura")),
-                _date_or_none(data.get("fecha_presentacion")),
+                _date_or_none(normalized_presentation_date),
                 _date_or_none(data.get("fecha_resolucion")),
                 _normalize_text(data.get("numero_registro")),
                 _normalize_text(data.get("organo_presentacion")),

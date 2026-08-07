@@ -844,6 +844,523 @@ SEMANTIC_PLAN = [
             },
         ],
     },
+    # --------------------------------------------------------
+    # REAGRUPACIÓN FAMILIAR / RENOVACIÓN
+    #
+    # La configuración incluye documentación adicional
+    # exigida por la política operativa del despacho.
+    # No representa exclusivamente el mínimo documental
+    # publicado por la Administración.
+    # --------------------------------------------------------
+    {
+        "tipo_codigo": "REAGRUPACION_FAMILIAR",
+        "subtipo_codigo": "RENOVACION",
+        "allow_missing_scope": True,
+        "codigo": "IDENTIDAD_PARTES",
+        "nombre": "IDENTIDAD DE LAS PARTES",
+        "regla": "ALL",
+        "legacy_ids": [],
+        "orden": 10,
+        "extra_options": [
+            {
+                "codigo": "PASAPORTE",
+                "nombre": "PASAPORTE",
+                "descripcion": (
+                    "Pasaporte completo y en vigor."
+                ),
+                "categoria": "IDENTIDAD",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "Pasaporte del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Pasaporte completo del familiar "
+                    "que mantiene la reagrupación."
+                ),
+                "orden": 10,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "PASAPORTE REAGRUPANTE",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "NIE",
+                "nombre": "NIE",
+                "descripcion": (
+                    "Documento acreditativo del NIE."
+                ),
+                "categoria": "IDENTIDAD",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito": (
+                    "NIE del reagrupante"
+                ),
+                "descripcion_requisito": (
+                    "Documento de identidad de extranjero "
+                    "del reagrupante."
+                ),
+                "orden": 20,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "NIE REAGRUPANTE",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre":
+                            "TIE REAGRUPANTE",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 20,
+                    },
+                ],
+            },
+            {
+                "codigo": "PASAPORTE",
+                "nombre": "PASAPORTE",
+                "descripcion": (
+                    "Pasaporte completo y en vigor."
+                ),
+                "categoria": "IDENTIDAD",
+                "rol_documental": "REAGRUPADO",
+                "etiqueta_requisito": (
+                    "Pasaporte del reagrupado"
+                ),
+                "descripcion_requisito": (
+                    "Pasaporte completo de la persona "
+                    "cuya autorización se renueva."
+                ),
+                "orden": 30,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "PASAPORTE REAGRUPADO",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "NIE",
+                "nombre": "NIE",
+                "descripcion": (
+                    "Documento acreditativo del NIE."
+                ),
+                "categoria": "IDENTIDAD",
+                "rol_documental": "REAGRUPADO",
+                "etiqueta_requisito": (
+                    "NIE del reagrupado"
+                ),
+                "descripcion_requisito": (
+                    "NIE/TIE de la persona cuya "
+                    "autorización se renueva."
+                ),
+                "orden": 40,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "NIE REAGRUPADO",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre":
+                            "TIE REAGRUPADO",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 20,
+                    },
+                ],
+            },
+        ],
+    },
+    {
+        "tipo_codigo": "REAGRUPACION_FAMILIAR",
+        "subtipo_codigo": "RENOVACION",
+        "allow_missing_scope": True,
+        "codigo": "DOMICILIO_CONVIVENCIA",
+        "nombre": "DOMICILIO Y CONVIVENCIA",
+        "regla": "ANY",
+        "legacy_ids": [],
+        "orden": 20,
+        "extra_options": [
+            {
+                "codigo": "EMPADRONAMIENTO_CONJUNTO",
+                "nombre": "EMPADRONAMIENTO CONJUNTO",
+                "descripcion": (
+                    "Certificado o volante de "
+                    "empadronamiento conjunto."
+                ),
+                "categoria": "DOMICILIO",
+                "rol_documental": None,
+                "etiqueta_requisito": (
+                    "Empadronamiento conjunto"
+                ),
+                "descripcion_requisito": (
+                    "Acreditación de domicilio y "
+                    "convivencia familiar."
+                ),
+                "orden": 10,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "EMPADRONAMIENTO CONJUNTO",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "EMPADRONAMIENTO",
+                "nombre": "EMPADRONAMIENTO",
+                "descripcion": (
+                    "Certificado o volante de "
+                    "empadronamiento."
+                ),
+                "categoria": "DOMICILIO",
+                "rol_documental": None,
+                "etiqueta_requisito": (
+                    "Empadronamiento"
+                ),
+                "descripcion_requisito": (
+                    "Documento alternativo para "
+                    "acreditar domicilio."
+                ),
+                "orden": 20,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "EMPADRONAMIENTO",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 20,
+                    },
+                ],
+            },
+        ],
+    },
+    {
+        "tipo_codigo": "REAGRUPACION_FAMILIAR",
+        "subtipo_codigo": "RENOVACION",
+        "allow_missing_scope": True,
+        "codigo": "VINCULO_FAMILIAR",
+        "nombre": "MANTENIMIENTO DEL VÍNCULO FAMILIAR",
+        "regla": "ANY",
+        "legacy_ids": [],
+        "orden": 30,
+        "extra_options": [
+            {
+                "codigo": "CERTIFICADO_MATRIMONIO",
+                "nombre": "CERTIFICADO MATRIMONIO",
+                "descripcion": (
+                    "Documento acreditativo del "
+                    "vínculo matrimonial."
+                ),
+                "categoria": "ESTADO_CIVIL",
+                "rol_documental": None,
+                "etiqueta_requisito": (
+                    "Certificado de matrimonio"
+                ),
+                "descripcion_requisito": (
+                    "Aplicable cuando el vínculo "
+                    "sea matrimonial."
+                ),
+                "orden": 10,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "CERTIFICADO MATRIMONIO",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "ACTA_NACIMIENTO",
+                "nombre": "ACTA DE NACIMIENTO",
+                "descripcion": (
+                    "Documento acreditativo de filiación."
+                ),
+                "categoria": "ESTADO_CIVIL",
+                "rol_documental": None,
+                "etiqueta_requisito": (
+                    "Acta de nacimiento"
+                ),
+                "descripcion_requisito": (
+                    "Aplicable cuando el vínculo "
+                    "se acredite mediante filiación."
+                ),
+                "orden": 20,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "ACTA DE NACIMIENTO",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+        ],
+    },
+    {
+        "tipo_codigo": "REAGRUPACION_FAMILIAR",
+        "subtipo_codigo": "RENOVACION",
+        "allow_missing_scope": True,
+        "codigo": "MEDIOS_ECONOMICOS",
+        "nombre": "ACREDITACIÓN DE MEDIOS ECONÓMICOS",
+        "regla": "ANY",
+        "legacy_ids": [],
+        "orden": 40,
+        "extra_options": [
+            {
+                "codigo": "NOMINAS",
+                "nombre": "NÓMINAS",
+                "descripcion": (
+                    "Nóminas acreditativas de ingresos."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito":
+                    "Nóminas del reagrupante",
+                "descripcion_requisito": (
+                    "Evidencia de ingresos periódicos."
+                ),
+                "orden": 10,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "NOMINA REAGRUPANTE",
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre":
+                            "NOMINAS REAGRUPANTE",
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "CONTRATO_TRABAJO",
+                "nombre": "CONTRATO DE TRABAJO",
+                "descripcion": (
+                    "Contrato laboral del reagrupante."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito":
+                    "Contrato de trabajo",
+                "descripcion_requisito": (
+                    "Acreditación de relación laboral."
+                ),
+                "orden": 20,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "CONTRATO TRABAJO REAGRUPANTE",
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "VIDA_LABORAL",
+                "nombre": "VIDA LABORAL",
+                "descripcion": (
+                    "Informe de vida laboral."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito":
+                    "Vida laboral del reagrupante",
+                "descripcion_requisito": (
+                    "Acreditación de situación y "
+                    "trayectoria laboral."
+                ),
+                "orden": 30,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "VIDA LABORAL REAGRUPANTE",
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "DECLARACION_IRPF",
+                "nombre": "DECLARACIÓN DE LA RENTA",
+                "descripcion": (
+                    "Declaración de IRPF."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito":
+                    "Declaración de la renta",
+                "descripcion_requisito": (
+                    "Evidencia fiscal de ingresos."
+                ),
+                "orden": 40,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "RENTA REAGRUPANTE",
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre":
+                            "IRPF REAGRUPANTE",
+                        "extension_permitida": "pdf",
+                        "prioridad": 20,
+                    },
+                ],
+            },
+            {
+                "codigo": "EXTRACTOS_BANCARIOS",
+                "nombre": "EXTRACTOS BANCARIOS",
+                "descripcion": (
+                    "Extractos bancarios acreditativos "
+                    "de fondos o ingresos."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito":
+                    "Extractos bancarios",
+                "descripcion_requisito": (
+                    "Evidencia bancaria de fondos."
+                ),
+                "orden": 50,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "EXTRACTOS BANCARIOS REAGRUPANTE",
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+            {
+                "codigo": "CERTIFICADO_BANCARIO",
+                "nombre": "CERTIFICADO BANCARIO",
+                "descripcion": (
+                    "Certificado bancario de saldo, "
+                    "titularidad o fondos."
+                ),
+                "categoria": "MEDIOS_ECONOMICOS",
+                "rol_documental": "REAGRUPANTE",
+                "etiqueta_requisito":
+                    "Certificado bancario",
+                "descripcion_requisito": (
+                    "Evidencia bancaria emitida "
+                    "por entidad financiera."
+                ),
+                "orden": 60,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "CERTIFICADO BANCARIO REAGRUPANTE",
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                    {
+                        "patron_nombre":
+                            "CERTIFICADO SALDO REAGRUPANTE",
+                        "extension_permitida": "pdf",
+                        "prioridad": 20,
+                    },
+                ],
+            },
+        ],
+    },
+    {
+        "tipo_codigo": "REAGRUPACION_FAMILIAR",
+        "subtipo_codigo": "RENOVACION",
+        "allow_missing_scope": True,
+        "codigo": "ESCOLARIZACION",
+        "nombre": "ESCOLARIZACIÓN DE MENORES",
+        "regla": "OPTIONAL",
+        "legacy_ids": [],
+        "orden": 50,
+        "extra_options": [
+            {
+                "codigo": "CERTIFICADO_ESCOLARIZACION",
+                "nombre": "CERTIFICADO DE ESCOLARIZACIÓN",
+                "descripcion": (
+                    "Documento acreditativo de "
+                    "escolarización de menores."
+                ),
+                "categoria": "EDUCACION",
+                "rol_documental": "REAGRUPADO",
+                "etiqueta_requisito":
+                    "Certificado de escolarización",
+                "descripcion_requisito": (
+                    "Aplicable cuando existan menores "
+                    "en edad de escolarización."
+                ),
+                "orden": 10,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "CERTIFICADO ESCOLARIZACION",
+                        "extension_permitida":
+                            "pdf,jpg,jpeg,png",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+        ],
+    },
+    {
+        "tipo_codigo": "REAGRUPACION_FAMILIAR",
+        "subtipo_codigo": "RENOVACION",
+        "allow_missing_scope": True,
+        "codigo": "ESFUERZO_INTEGRACION",
+        "nombre": "ESFUERZO DE INTEGRACIÓN",
+        "regla": "OPTIONAL",
+        "legacy_ids": [],
+        "orden": 60,
+        "extra_options": [
+            {
+                "codigo": "INFORME_ESFUERZO_INTEGRACION",
+                "nombre": "INFORME DE ESFUERZO DE INTEGRACIÓN",
+                "descripcion": (
+                    "Informe relativo al esfuerzo "
+                    "de integración."
+                ),
+                "categoria": "INFORME",
+                "rol_documental": "REAGRUPADO",
+                "etiqueta_requisito":
+                    "Informe de esfuerzo de integración",
+                "descripcion_requisito": (
+                    "Documento contextual para los "
+                    "supuestos en los que proceda."
+                ),
+                "orden": 10,
+                "nomenclatures": [
+                    {
+                        "patron_nombre":
+                            "INFORME ESFUERZO INTEGRACION",
+                        "extension_permitida": "pdf",
+                        "prioridad": 10,
+                    },
+                ],
+            },
+        ],
+    },
+
 ]
 
 
@@ -869,6 +1386,9 @@ def _resolve_procedure(conn, definition):
     ).fetchone()
 
     if not tipo:
+        if definition.get("allow_missing_scope"):
+            return None
+
         raise ValueError(
             f"No existe el tipo {definition['tipo_codigo']}"
         )
@@ -890,6 +1410,9 @@ def _resolve_procedure(conn, definition):
     ).fetchone()
 
     if not subtipo:
+        if definition.get("allow_missing_scope"):
+            return None
+
         raise ValueError(
             "No existe el subtipo "
             f"{subtipo_code} para {definition['tipo_codigo']}"
@@ -922,10 +1445,15 @@ def preview_semantic_consolidation():
         result = []
 
         for definition in SEMANTIC_PLAN:
-            tipo_id, subtipo_id = _resolve_procedure(
+            resolved_scope = _resolve_procedure(
                 conn,
                 definition,
             )
+
+            if resolved_scope is None:
+                continue
+
+            tipo_id, subtipo_id = resolved_scope
 
             legacy_groups = [
                 _find_legacy_group(conn, legacy_id)
@@ -1602,10 +2130,15 @@ def consolidate_semantic_groups(
         }
 
         for definition in SEMANTIC_PLAN:
-            tipo_id, subtipo_id = _resolve_procedure(
+            resolved_scope = _resolve_procedure(
                 conn,
                 definition,
             )
+
+            if resolved_scope is None:
+                continue
+
+            tipo_id, subtipo_id = resolved_scope
 
             semantic_group_id, created = (
                 _get_or_create_semantic_group(
