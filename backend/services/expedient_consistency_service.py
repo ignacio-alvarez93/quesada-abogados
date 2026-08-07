@@ -135,6 +135,90 @@ def validate_subtype_change_after_presentation(
         )
 
 
+REAGRUPACION_REQUEST_INITIAL = (
+    "REAGRUPACIÓN FAMILIAR INICIAL"
+)
+
+REAGRUPACION_REQUEST_INITIAL_LONG_TERM_EU = (
+    "REAGRUPACIÓN FAMILIAR INICIAL COMO FAMILIAR "
+    "DE RESIDENTE DE LARGA DURACIÓN-UE EN OTRO ESTADO\r"
+    "MIEMBRO DE LA UNIÓN EUROPEA"
+)
+
+REAGRUPACION_REQUEST_RENEWAL = (
+    "REAGRUPACIÓN FAMILIAR RENOVACIÓN"
+)
+
+
+def get_reagrupacion_request_options(
+    subtype_code: Any,
+) -> dict[str, Any]:
+    """
+    Devuelve el contrato UI/EX02 correspondiente al subtipo.
+
+    INICIAL:
+    - solicitud inicial ordinaria;
+    - supuesto inicial de familiar de residente de
+      larga duración-UE en otro Estado miembro.
+
+    RENOVACION:
+    - únicamente renovación.
+
+    El subtipo del expediente es la fuente de verdad.
+    """
+    subtype = _normalized_code(subtype_code)
+
+    if subtype == REAGRUPACION_RENEWAL_SUBTYPE:
+        options = [
+            REAGRUPACION_REQUEST_RENEWAL,
+        ]
+
+        return {
+            "subtype_code":
+                REAGRUPACION_RENEWAL_SUBTYPE,
+            "options": options,
+            "default":
+                REAGRUPACION_REQUEST_RENEWAL,
+            "locked": True,
+        }
+
+    options = [
+        REAGRUPACION_REQUEST_INITIAL,
+        REAGRUPACION_REQUEST_INITIAL_LONG_TERM_EU,
+    ]
+
+    return {
+        "subtype_code":
+            REAGRUPACION_INITIAL_SUBTYPE,
+        "options": options,
+        "default":
+            REAGRUPACION_REQUEST_INITIAL,
+        "locked": False,
+    }
+
+
+def normalize_reagrupacion_request_for_subtype(
+    subtype_code: Any,
+    current_value: Any,
+) -> str:
+    """
+    Conserva el valor EX02 si pertenece al subtipo actual.
+
+    Si el valor guardado pertenece a otro subtipo o está vacío,
+    devuelve el valor canónico por defecto.
+    """
+    contract = get_reagrupacion_request_options(
+        subtype_code
+    )
+
+    current = _text(current_value)
+
+    if current in contract["options"]:
+        return current
+
+    return str(contract["default"])
+
+
 def classify_reagrupacion_request(
     request_value: Any,
 ) -> str:
