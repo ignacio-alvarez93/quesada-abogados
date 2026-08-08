@@ -1328,6 +1328,13 @@ def archive_admin_document(justificante_id):
         )
     )
 
+    calendar_tasks = (
+        _project_admin_event_tasks_to_calendar(
+            expediente_id,
+            event_code,
+        )
+    )
+
     return {
         "ok": True,
         "justificante_id": justificante_id,
@@ -1338,6 +1345,8 @@ def archive_admin_document(justificante_id):
             notification_tracking,
         "calendar_tracking":
             calendar_tracking,
+        "calendar_tasks":
+            calendar_tasks,
         "estado_anterior":
             transition.get("estado_anterior") or "",
         "estado_nuevo":
@@ -3085,6 +3094,13 @@ def create_admin_document_event(data):
         )
     )
 
+    calendar_tasks = (
+        _project_admin_event_tasks_to_calendar(
+            expediente_id,
+            event_code,
+        )
+    )
+
     derivation_evaluation = (
         _evaluate_derivations_after_admin_event(
             expediente_id=expediente_id,
@@ -3111,6 +3127,8 @@ def create_admin_document_event(data):
             notification_tracking,
         "calendar_tracking":
             calendar_tracking,
+        "calendar_tasks":
+            calendar_tasks,
         "derivation_evaluation":
             derivation_evaluation,
         "dehu_confirmation":
@@ -3158,6 +3176,17 @@ def _project_tracking_to_calendar(
             "alert": None,
         }
 
+    if not notification_tracking.get("ok"):
+        return {
+            "ok": False,
+            "action": "TRACKING_UNAVAILABLE",
+            "alert": None,
+            "error": (
+                notification_tracking.get("error")
+                or ""
+            ),
+        }
+
     try:
         from backend.services import (
             calendar_tracking_producer_service
@@ -3176,6 +3205,56 @@ def _project_tracking_to_calendar(
             "ok": False,
             "action": "CALENDAR_PROJECTION_ERROR",
             "alert": None,
+            "error": str(exc),
+        }
+
+
+def _project_admin_event_tasks_to_calendar(
+    expediente_id,
+    event_code,
+):
+    """
+    Proyecta obligaciones operativas derivadas de
+    documentos administrativos sobre TASK de Calendar.
+
+    Calendar es una proyección secundaria:
+    un fallo nunca invalida la trazabilidad.
+    """
+    normalized_event = _text(
+        event_code
+    )
+
+    supported = {
+        "ADMISION_TRAMITE_TASA",
+        "JUSTIFICANTE_APORTACION_TASA",
+    }
+
+    if normalized_event not in supported:
+        return {
+            "ok": True,
+            "action": "NO_APLICABLE",
+            "task": None,
+        }
+
+    try:
+        from backend.services import (
+            calendar_traceability_task_producer_service
+        )
+
+        return (
+            calendar_traceability_task_producer_service
+            .sync_tax_obligation(
+                expediente_id,
+                db_path=DB_PATH,
+            )
+        )
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "action":
+                "CALENDAR_TASK_PROJECTION_ERROR",
+            "task": None,
             "error": str(exc),
         }
 

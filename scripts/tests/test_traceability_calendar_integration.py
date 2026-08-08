@@ -1,5 +1,7 @@
+import gc
 import sqlite3
 import tempfile
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -8,8 +10,10 @@ from unittest.mock import patch
 from backend.services import (
     calendar_alert_service,
     calendar_tracking_producer_service,
+    calendar_traceability_task_producer_service,
     expedient_traceability_service,
     notification_tracking_service,
+    task_service,
 )
 
 
@@ -80,7 +84,23 @@ class TraceabilityCalendarIntegrationTest(
         ):
             item.stop()
 
-        self.temp_dir.cleanup()
+        gc.collect()
+
+        cleanup_error = None
+
+        for _ in range(5):
+            try:
+                self.temp_dir.cleanup()
+                cleanup_error = None
+                break
+
+            except PermissionError as exc:
+                cleanup_error = exc
+                gc.collect()
+                time.sleep(0.05)
+
+        if cleanup_error is not None:
+            raise cleanup_error
 
     def _connect(self):
         conn = sqlite3.connect(
@@ -432,6 +452,20 @@ class TraceabilityCalendarIntegrationTest(
                         'PRESENTADO',
                         20,
                         1
+                    ),
+                    (
+                        3,
+                        'ADMITIDO_CON_TASA',
+                        'ADMITIDO CON TASA',
+                        30,
+                        1
+                    ),
+                    (
+                        4,
+                        'TASA_APORTADA',
+                        'TASA APORTADA',
+                        40,
+                        1
                     );
 
                 INSERT INTO
@@ -494,6 +528,16 @@ class TraceabilityCalendarIntegrationTest(
         return (
             calendar_alert_service
             .list_alerts(
+                expediente_id=1000,
+                include_archived=True,
+                db_path=self.db_path,
+            )
+        )
+
+    def _all_tasks(self):
+        return (
+            task_service
+            .list_tasks(
                 expediente_id=1000,
                 include_archived=True,
                 db_path=self.db_path,
@@ -824,6 +868,518 @@ class TraceabilityCalendarIntegrationTest(
             ],
             "NO PRESENTADO",
         )
+
+    def test_failed_tracking_is_not_projected_to_calendar(
+        self,
+    ):
+        """
+        Un fallo de notification_tracking no puede
+        alimentar al productor de Calendar.
+        """
+        target = (
+            "backend.services."
+            "calendar_tracking_producer_service."
+            "sync_from_tracking_result"
+        )
+
+        with patch(
+            target
+        ) as producer_mock:
+            result = (
+                expedient_traceability_service
+                ._project_tracking_to_calendar(
+                    {
+                        "ok": False,
+                        "changed": False,
+                        "error": "TRACKING TEST",
+                    }
+                )
+            )
+
+        producer_mock.assert_not_called()
+
+        self.assertFalse(
+            result["ok"]
+        )
+
+        self.assertEqual(
+            result["action"],
+            "TRACKING_UNAVAILABLE",
+        )
+
+        self.assertEqual(
+            result["error"],
+            "TRACKING TEST",
+        )
+
+
+    def test_tax_obligation_calendar_task_lifecycle(
+        self,
+    ):
+        """
+        E2E real:
+
+        ADMISION_TRAMITE_TASA
+            -> NEEDS_DUE_DATE
+            -> confirmación humana
+            -> TASK PENDIENTE
+
+        JUSTIFICANTE_APORTACION_TASA
+            -> misma TASK COMPLETADA
+
+        archivado justificante
+            -> obligación reaparece
+            -> NEEDS_DUE_DATE_FOR_REOPEN
+
+        nueva confirmación
+            -> misma TASK PENDIENTE
+
+        archivado admisión
+            -> misma TASK CANCELADA
+        """
+
+        # -------------------------------------------------
+        # 1. ADMISIÓN CON TASA
+        # -------------------------------------------------
+
+        admission = (
+            expedient_traceability_service
+            .create_admin_document_event(
+                {
+                    "expediente_id": 1000,
+                    "file_name": (
+                        "admision_con_tasa_test.pdf"
+                    ),
+                    "event_code": (
+                        "ADMISION_TRAMITE_TASA"
+                    ),
+                    "usuario": "TEST",
+                    "admission_extraction": {
+                        "fecha_admision_tramite":
+                            "2026-05-01",
+                        "csv_admision_tramite":
+                            "CSV-ADMISION-TASA-TEST",
+                        "numero_expediente_extranjeria":
+                            "330020260004082",
+                        "nie_detectado":
+                            "X0000000T",
+                        "tasa_requerida": True,
+                        "tasa_modelo": "790",
+                        "tasa_codigo": "052",
+                        "tasa_importe_centimos":
+                            3828,
+                        "plazo_pago_dias_habiles":
+                            10,
+                        "plazo_aportacion_dias":
+                            15,
+                        "estado_tasa":
+                            "PENDIENTE",
+                    },
+                }
+            )
+        )
+
+        self.assertEqual(
+            admission["event_code"],
+            "ADMISION_TRAMITE_TASA",
+        )
+
+        self.assertEqual(
+            admission["estado_nuevo"],
+            "ADMITIDO CON TASA",
+        )
+
+        self.assertTrue(
+            admission["calendar_tasks"]["ok"]
+        )
+
+        self.assertEqual(
+            admission[
+                "calendar_tasks"
+            ]["action"],
+            "NEEDS_DUE_DATE",
+        )
+
+        self.assertTrue(
+            admission[
+                "calendar_tasks"
+            ]["requires_due_date"]
+        )
+
+        admission_id = (
+            admission["justificante_id"]
+        )
+
+        self.assertEqual(
+            len(self._all_tasks()),
+            0,
+        )
+
+        # Estado administrativo real.
+        with closing(
+            self._connect()
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    a.nombre AS estado_nombre
+                FROM expedientes e
+                LEFT JOIN
+                    config_estados_administrativos a
+                  ON a.id =
+                     e.estado_administrativo_id
+                WHERE e.id = 1000
+                """
+            ).fetchone()
+
+        self.assertEqual(
+            row["estado_nombre"],
+            "ADMITIDO CON TASA",
+        )
+
+        # -------------------------------------------------
+        # 2. FECHA CONFIRMADA
+        #
+        # 2099 se utiliza exclusivamente para el test.
+        # No representa ninguna regla jurídica.
+        # -------------------------------------------------
+
+        confirmed = (
+            calendar_traceability_task_producer_service
+            .sync_tax_obligation(
+                1000,
+                due_at=(
+                    "2099-05-15 12:00:00"
+                ),
+                usuario="TEST",
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            confirmed["action"],
+            "CREATED",
+        )
+
+        task = confirmed["task"]
+        task_id = task["id"]
+
+        self.assertEqual(
+            task["titulo"],
+            "Aportar tasa",
+        )
+
+        self.assertEqual(
+            task["tipo"],
+            "APORTACION_TASA",
+        )
+
+        self.assertEqual(
+            task["estado"],
+            "PENDIENTE",
+        )
+
+        self.assertEqual(
+            task["source_key"],
+            (
+                "TRACEABILITY:TASK:"
+                "TAX:EXP:1000"
+            ),
+        )
+
+        self.assertEqual(
+            task["fecha_vencimiento"],
+            "2099-05-15 12:00:00",
+        )
+
+        tasks = self._all_tasks()
+
+        self.assertEqual(
+            len(tasks),
+            1,
+        )
+
+        self.assertEqual(
+            tasks[0]["id"],
+            task_id,
+        )
+
+        # -------------------------------------------------
+        # 3. JUSTIFICANTE DE APORTACIÓN
+        # -------------------------------------------------
+
+        submission = (
+            expedient_traceability_service
+            .create_admin_document_event(
+                {
+                    "expediente_id": 1000,
+                    "file_name": (
+                        "justificante_"
+                        "aportacion_tasa_test.pdf"
+                    ),
+                    "event_code": (
+                        "JUSTIFICANTE_APORTACION_TASA"
+                    ),
+                    "usuario": "TEST",
+                    "tax_submission_extraction": {
+                        "fecha_registro":
+                            "2026-05-06 10:00:00",
+                        "fecha_presentacion":
+                            "2026-05-06 09:59:00",
+                        "csv_geiser":
+                            "CSV-APORTACION-TASA-TEST",
+                        "numero_registro_regage":
+                            "REGAGE-TEST-TASA",
+                        "numero_expediente_extranjeria":
+                            "330020260004082",
+                        "nie_detectado":
+                            "X0000000T",
+                        "aportacion_tasa_confirmada":
+                            True,
+                        "estado_tasa":
+                            "APORTADA",
+                    },
+                }
+            )
+        )
+
+        self.assertEqual(
+            submission["event_code"],
+            (
+                "JUSTIFICANTE_APORTACION_TASA"
+            ),
+        )
+
+        self.assertEqual(
+            submission["estado_nuevo"],
+            "TASA APORTADA",
+        )
+
+        self.assertEqual(
+            submission[
+                "calendar_tasks"
+            ]["action"],
+            "COMPLETED",
+        )
+
+        submission_id = (
+            submission["justificante_id"]
+        )
+
+        tasks = self._all_tasks()
+
+        self.assertEqual(
+            len(tasks),
+            1,
+        )
+
+        self.assertEqual(
+            tasks[0]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            tasks[0]["estado"],
+            "COMPLETADA",
+        )
+
+        # Estado administrativo real.
+        with closing(
+            self._connect()
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    a.nombre AS estado_nombre
+                FROM expedientes e
+                LEFT JOIN
+                    config_estados_administrativos a
+                  ON a.id =
+                     e.estado_administrativo_id
+                WHERE e.id = 1000
+                """
+            ).fetchone()
+
+        self.assertEqual(
+            row["estado_nombre"],
+            "TASA APORTADA",
+        )
+
+        # -------------------------------------------------
+        # 4. ARCHIVAR JUSTIFICANTE DE TASA
+        # -------------------------------------------------
+
+        archived_submission = (
+            expedient_traceability_service
+            .archive_admin_document(
+                submission_id
+            )
+        )
+
+        self.assertTrue(
+            archived_submission["ok"]
+        )
+
+        self.assertEqual(
+            archived_submission[
+                "calendar_tasks"
+            ]["action"],
+            (
+                "NEEDS_DUE_DATE_FOR_REOPEN"
+            ),
+        )
+
+        self.assertTrue(
+            archived_submission[
+                "calendar_tasks"
+            ]["requires_due_date"]
+        )
+
+        # La obligación vuelve a existir, pero no
+        # reabrimos con una fecha antigua implícita.
+        tasks = self._all_tasks()
+
+        self.assertEqual(
+            len(tasks),
+            1,
+        )
+
+        self.assertEqual(
+            tasks[0]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            tasks[0]["estado"],
+            "COMPLETADA",
+        )
+
+        with closing(
+            self._connect()
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    a.nombre AS estado_nombre
+                FROM expedientes e
+                LEFT JOIN
+                    config_estados_administrativos a
+                  ON a.id =
+                     e.estado_administrativo_id
+                WHERE e.id = 1000
+                """
+            ).fetchone()
+
+        self.assertEqual(
+            row["estado_nombre"],
+            "ADMITIDO CON TASA",
+        )
+
+        # -------------------------------------------------
+        # 5. NUEVA FECHA CONFIRMADA / REAPERTURA
+        # -------------------------------------------------
+
+        reopened = (
+            calendar_traceability_task_producer_service
+            .sync_tax_obligation(
+                1000,
+                due_at=(
+                    "2099-05-16 12:00:00"
+                ),
+                usuario="TEST",
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            reopened["action"],
+            "REOPENED",
+        )
+
+        self.assertEqual(
+            reopened["task"]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            reopened["task"]["estado"],
+            "PENDIENTE",
+        )
+
+        self.assertEqual(
+            reopened["task"][
+                "fecha_vencimiento"
+            ],
+            "2099-05-16 12:00:00",
+        )
+
+        self.assertEqual(
+            len(self._all_tasks()),
+            1,
+        )
+
+        # -------------------------------------------------
+        # 6. ARCHIVAR LA PROPIA ADMISIÓN
+        # -------------------------------------------------
+
+        archived_admission = (
+            expedient_traceability_service
+            .archive_admin_document(
+                admission_id
+            )
+        )
+
+        self.assertTrue(
+            archived_admission["ok"]
+        )
+
+        self.assertEqual(
+            archived_admission[
+                "calendar_tasks"
+            ]["action"],
+            "CANCELLED",
+        )
+
+        tasks = self._all_tasks()
+
+        self.assertEqual(
+            len(tasks),
+            1,
+        )
+
+        self.assertEqual(
+            tasks[0]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            tasks[0]["estado"],
+            "CANCELADA",
+        )
+
+        # Al no quedar ningún documento administrativo
+        # activo, reconstruye el estado inicial.
+        with closing(
+            self._connect()
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    a.nombre AS estado_nombre
+                FROM expedientes e
+                LEFT JOIN
+                    config_estados_administrativos a
+                  ON a.id =
+                     e.estado_administrativo_id
+                WHERE e.id = 1000
+                """
+            ).fetchone()
+
+        self.assertEqual(
+            row["estado_nombre"],
+            "NO PRESENTADO",
+        )
+
 
 
 if __name__ == "__main__":
