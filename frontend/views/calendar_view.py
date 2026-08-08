@@ -1,12 +1,20 @@
 from datetime import datetime, timedelta
+import time
 
 import flet as ft
 
 from backend.services import calendar_service
+from backend.services import expedient_service
+from backend.services import task_service
+from backend.services import (
+    calendar_task_application_service
+    as calendar_task_app,
+)
 
 from frontend.components.app_button import (
     primary_button,
     secondary_button,
+    danger_button,
 )
 
 from frontend.components.app_card import (
@@ -19,6 +27,16 @@ from frontend.components.app_dropdown import (
 
 from frontend.components.app_text_field import (
     text_input,
+    required_text_input,
+    multiline_input,
+)
+
+from frontend.components.app_dialog import (
+    form_dialog,
+)
+
+from frontend.components.app_autocomplete import (
+    AppAutocomplete,
 )
 
 from frontend.components.listing.status_chip import (
@@ -101,6 +119,108 @@ def _date_display(value):
         return raw
 
 
+
+def _option_id(value):
+    raw = str(value or "").strip()
+
+    if not raw or " - " not in raw:
+        return None
+
+    try:
+        return int(
+            raw.split(" - ", 1)[0]
+        )
+    except Exception:
+        return None
+
+
+def _task_form_datetime(
+    date_value,
+    time_value,
+):
+    date_raw = str(
+        date_value or ""
+    ).strip()
+
+    time_raw = str(
+        time_value or ""
+    ).strip()
+
+    if not date_raw:
+        raise ValueError(
+            "La fecha de vencimiento es obligatoria."
+        )
+
+    if not time_raw:
+        time_raw = "09:00"
+
+    for fmt in (
+        "%d/%m/%Y %H:%M",
+        "%Y-%m-%d %H:%M",
+    ):
+        try:
+            return datetime.strptime(
+                f"{date_raw} {time_raw}",
+                fmt,
+            ).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        except ValueError:
+            pass
+
+    raise ValueError(
+        "Fecha u hora no válida. "
+        "Usa DD/MM/AAAA y HH:MM."
+    )
+
+
+def _task_projection(task):
+    return {
+        "item_type": "TASK",
+        "source_id": task.get("id"),
+        "title": task.get("titulo") or "",
+        "description":
+            task.get("descripcion") or "",
+        "date":
+            task.get("fecha_vencimiento") or "",
+        "warning_date": None,
+        "priority":
+            task.get("prioridad") or "NORMAL",
+        "status":
+            task.get("estado") or "PENDIENTE",
+        "responsible":
+            task.get("responsable") or "",
+        "cliente_id":
+            task.get("cliente_id"),
+        "client_name": " ".join(
+            value
+            for value in (
+                task.get("cliente_nombre"),
+                task.get(
+                    "cliente_primer_apellido"
+                ),
+                task.get(
+                    "cliente_segundo_apellido"
+                ),
+            )
+            if value
+        ),
+        "expediente_id":
+            task.get("expediente_id"),
+        "expedient_number":
+            task.get("numero_expediente")
+            or "",
+        "origin_type":
+            task.get("origen_tipo")
+            or "MANUAL",
+        "origin_id":
+            task.get("origen_id"),
+        "source_key":
+            task.get("source_key")
+            or "",
+    }
+
+
 def calendar_view(
     page: ft.Page,
     on_open_expediente=None,
@@ -113,11 +233,94 @@ def calendar_view(
         "items": [],
         "summary": {},
         "selected_item": None,
+        "last_upcoming_click_key": None,
+        "last_upcoming_click_at": 0.0,
     }
 
     content = ft.Container(
         expand=True,
     )
+
+    # ==============================================================
+    # FORMULARIO NUEVA TAREA
+    # ==============================================================
+
+    client_rows = (
+        expedient_service
+        .get_clientes_for_select()
+    )
+
+    client_options = [
+        row["display"]
+        for row in client_rows
+    ]
+
+    task_title = required_text_input(
+        "Título",
+        width=720,
+    )
+
+    task_description = multiline_input(
+        "Descripción",
+        width=720,
+        height=100,
+    )
+
+    task_client = AppAutocomplete(
+        page=page,
+        label="Cliente",
+        options=client_options,
+        width=720,
+        max_results=8,
+        allow_free_text=False,
+        helper_text=(
+            "Opcional. Al seleccionar cliente "
+            "se filtran sus expedientes."
+        ),
+    )
+
+    task_expedient = AppAutocomplete(
+        page=page,
+        label="Expediente",
+        options=[],
+        width=720,
+        max_results=8,
+        allow_free_text=False,
+        helper_text=(
+            "Opcional. Solo expedientes activos "
+            "del cliente seleccionado."
+        ),
+    )
+
+    task_priority = select_input(
+        "Prioridad",
+        [
+            "BAJA",
+            "NORMAL",
+            "ALTA",
+            "URGENTE",
+        ],
+        value="NORMAL",
+        width=220,
+    )
+
+    task_responsible = text_input(
+        "Responsable",
+        width=300,
+    )
+
+    task_due_date = required_text_input(
+        "Fecha vencimiento DD/MM/AAAA",
+        width=300,
+    )
+
+    task_due_time = required_text_input(
+        "Hora HH:MM",
+        value="09:00",
+        width=180,
+    )
+
+    task_dialog = None
 
     search_input = text_input(
         "Buscar tarea / aviso / expediente / cliente",
@@ -177,6 +380,480 @@ def calendar_view(
         except Exception:
             pass
 
+    def _show_message(
+        message,
+        *,
+        error=False,
+    ):
+        page.snack_bar = ft.SnackBar(
+            content=ft.Text(
+                str(message),
+                color=(
+                    "#FFFFFF"
+                    if error
+                    else "#0F172A"
+                ),
+            ),
+            bgcolor=(
+                "#B42318"
+                if error
+                else "#ECFDF3"
+            ),
+        )
+
+        page.snack_bar.open = True
+        page.update()
+
+
+    def _expedient_label(expedient):
+        number = (
+            expedient.get(
+                "numero_expediente"
+            )
+            or f"EXP {expedient.get('id')}"
+        )
+
+        tipo = (
+            expedient.get(
+                "tipo_expediente_nombre"
+            )
+            or ""
+        )
+
+        subtipo = (
+            expedient.get(
+                "subtipo_expediente_nombre"
+            )
+            or ""
+        )
+
+        suffix = " · ".join(
+            value
+            for value in (
+                tipo,
+                subtipo,
+            )
+            if value
+        )
+
+        return (
+            f"{expedient['id']} - {number}"
+            + (
+                f" · {suffix}"
+                if suffix
+                else ""
+            )
+        )
+
+
+    def _refresh_task_expedients():
+        client_id = _option_id(
+            task_client.input.value
+        )
+
+        if not client_id:
+            task_expedient.options = []
+            task_expedient.input.value = ""
+            task_expedient.selected_option = None
+
+            try:
+                task_expedient.control.update()
+            except Exception:
+                pass
+
+            return
+
+        expedients = (
+            expedient_service
+            .get_expedientes(
+                cliente_id=client_id,
+                active_only=True,
+            )
+        )
+
+        task_expedient.options = [
+            _expedient_label(item)
+            for item in expedients
+        ]
+
+        task_expedient.input.value = ""
+        task_expedient.selected_option = None
+
+        try:
+            task_expedient.control.update()
+        except Exception:
+            pass
+
+
+    def _on_task_client_select(*args):
+        _refresh_task_expedients()
+
+
+    task_client.on_select = (
+        _on_task_client_select
+    )
+
+
+    def _reset_task_form():
+        task_title.value = ""
+        task_description.value = ""
+
+        task_client.input.value = ""
+        task_client.selected_option = None
+
+        task_expedient.options = []
+        task_expedient.input.value = ""
+        task_expedient.selected_option = None
+
+        task_priority.value = "NORMAL"
+        task_responsible.value = ""
+
+        now = datetime.now()
+
+        task_due_date.value = (
+            now.strftime("%d/%m/%Y")
+        )
+
+        task_due_time.value = "09:00"
+
+
+    def _close_task_dialog(e=None):
+        nonlocal task_dialog
+
+        if task_dialog is None:
+            return
+
+        page.pop_dialog()
+        page.update()
+
+        task_dialog = None
+
+
+    def _clear_calendar_filters(
+        *,
+        update=False,
+    ):
+        search_input.value = ""
+        responsible_filter.value = "Todos"
+        priority_filter.value = "Todos"
+        status_filter.value = "Todos"
+        type_filter.value = "Todos"
+
+        if update:
+            render()
+            safe_update()
+
+
+    def _save_task(e=None):
+        nonlocal task_dialog
+
+        try:
+            title = str(
+                task_title.value or ""
+            ).strip()
+
+            if not title:
+                raise ValueError(
+                    "El título es obligatorio."
+                )
+
+            due_at = _task_form_datetime(
+                task_due_date.value,
+                task_due_time.value,
+            )
+
+            client_id = _option_id(
+                task_client.input.value
+            )
+
+            expedient_id = _option_id(
+                task_expedient.input.value
+            )
+
+            # Seguridad relacional:
+            # un expediente seleccionado debe pertenecer
+            # al cliente seleccionado.
+            if expedient_id:
+                expedient = (
+                    expedient_service
+                    .get_expediente(
+                        expedient_id
+                    )
+                )
+
+                if not expedient:
+                    raise ValueError(
+                        "El expediente seleccionado "
+                        "no existe."
+                    )
+
+                expedient_client_id = (
+                    expedient.get(
+                        "cliente_id"
+                    )
+                )
+
+                if (
+                    client_id
+                    and expedient_client_id
+                    and int(client_id)
+                    != int(expedient_client_id)
+                ):
+                    raise ValueError(
+                        "El expediente no pertenece "
+                        "al cliente seleccionado."
+                    )
+
+                if not client_id:
+                    client_id = (
+                        expedient_client_id
+                    )
+
+            result = (
+                calendar_task_app
+                .create_calendar_task(
+                    titulo=title,
+                    descripcion=str(
+                        task_description.value
+                        or ""
+                    ).strip(),
+                    cliente_id=client_id,
+                    expediente_id=(
+                        expedient_id
+                    ),
+                    prioridad=(
+                        task_priority.value
+                        or "NORMAL"
+                    ),
+                    responsable=str(
+                        task_responsible.value
+                        or ""
+                    ).strip(),
+                    fecha_vencimiento=due_at,
+                )
+            )
+
+            created_task = result["task"]
+
+            _close_task_dialog()
+
+            # Si la fecha cae fuera de la semana visible,
+            # saltamos automáticamente a su semana.
+            due_dt = datetime.fromisoformat(
+                created_task[
+                    "fecha_vencimiento"
+                ].replace("T", " ")
+            )
+
+            state["week_start"] = _monday(
+                due_dt
+            )
+
+            state["selected_item"] = (
+                _task_projection(
+                    created_task
+                )
+            )
+
+            # Una tarea recién creada no debe quedar
+            # aparentemente oculta por filtros antiguos.
+            _clear_calendar_filters(
+                update=False,
+            )
+
+            refresh()
+
+            # refresh conserva una selección canónica
+            # si el elemento está en la semana cargada.
+            for item in state["items"]:
+                if (
+                    item.get("item_type")
+                    == "TASK"
+                    and int(
+                        item.get("source_id")
+                        or 0
+                    )
+                    == int(
+                        created_task["id"]
+                    )
+                ):
+                    state[
+                        "selected_item"
+                    ] = item
+                    break
+
+            render()
+            safe_update()
+
+            _show_message(
+                "Tarea creada y "
+                "notificaciones Telegram programadas."
+            )
+
+        except Exception as exc:
+            _show_message(
+                str(exc),
+                error=True,
+            )
+
+
+    def _open_new_task_dialog(e=None):
+        nonlocal task_dialog
+
+        _reset_task_form()
+
+        task_dialog = form_dialog(
+            "Nueva tarea",
+            ft.Container(
+                width=760,
+                content=ft.Column(
+                    controls=[
+                        task_title,
+                        task_description,
+                        task_client.control,
+                        task_expedient.control,
+                        ft.Row(
+                            controls=[
+                                task_priority,
+                                task_responsible,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Row(
+                            controls=[
+                                task_due_date,
+                                task_due_time,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Container(
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            padding=12,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        ft.Icons
+                                        .SEND_ROUNDED,
+                                        size=18,
+                                        color=Q_PRIMARY,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Al guardar, Telegram "
+                                            "se programa automáticamente "
+                                            "según la prioridad."
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                secondary_button(
+                    "Cancelar",
+                    _close_task_dialog,
+                ),
+                primary_button(
+                    "Guardar tarea",
+                    _save_task,
+                ),
+            ],
+        )
+
+        page.show_dialog(
+            task_dialog
+        )
+        page.update()
+
+
+    def _reload_selected_task(task_id):
+        task = task_service.get_task(
+            task_id
+        )
+
+        if task:
+            state[
+                "selected_item"
+            ] = _task_projection(
+                task
+            )
+
+
+    def _refresh_detail_dialog():
+        nonlocal detail_dialog
+
+        if detail_dialog is None:
+            return
+
+        detail_dialog.content = ft.Container(
+            width=820,
+            content=detail_panel(),
+        )
+
+        page.update()
+
+
+    def _run_task_action(
+        action,
+        success_message,
+    ):
+        item = state.get(
+            "selected_item"
+        ) or {}
+
+        if (
+            item.get("item_type")
+            != "TASK"
+        ):
+            return
+
+        task_id = int(
+            item["source_id"]
+        )
+
+        try:
+            action(task_id)
+
+            refresh()
+
+            _reload_selected_task(
+                task_id
+            )
+
+            render()
+            safe_update()
+
+            # Si la acción procede del modal,
+            # reconstruimos el detalle con el estado
+            # recién persistido.
+            _refresh_detail_dialog()
+
+            _show_message(
+                success_message
+            )
+
+        except Exception as exc:
+            _show_message(
+                str(exc),
+                error=True,
+            )
+
+
     def show_placeholder(
         message,
     ):
@@ -210,9 +887,17 @@ def calendar_view(
         refresh()
 
     def select_item(item):
+        if not item:
+            return
+
         state["selected_item"] = item
+
+        # detail_panel() se construye dentro de render().
+        # Un simple update() no basta: hay que regenerar
+        # el árbol visual para mostrar el nuevo elemento.
         render()
         safe_update()
+
 
     def open_selected_expedient(
         e=None,
@@ -329,6 +1014,110 @@ def calendar_view(
 
         return result
 
+    detail_dialog = None
+
+
+    def _close_detail_dialog(e=None):
+        nonlocal detail_dialog
+
+        if detail_dialog is None:
+            return
+
+        page.pop_dialog()
+        page.update()
+
+        detail_dialog = None
+
+
+    def _open_detail_dialog(item):
+        nonlocal detail_dialog
+
+        if not item:
+            return
+
+        state["selected_item"] = item
+
+        detail_dialog = ft.AlertDialog(
+            modal=True,
+            content=ft.Container(
+                width=820,
+                content=detail_panel(),
+            ),
+            actions=[
+                secondary_button(
+                    "Cerrar",
+                    _close_detail_dialog,
+                ),
+            ],
+            actions_alignment=(
+                ft.MainAxisAlignment.END
+            ),
+        )
+
+        page.show_dialog(
+            detail_dialog
+        )
+
+        page.update()
+
+
+    def _handle_upcoming_click(item):
+        if not item:
+            return
+
+        item_key = (
+            str(
+                item.get("item_type")
+                or ""
+            ),
+            int(
+                item.get("source_id")
+                or 0
+            ),
+        )
+
+        now = time.monotonic()
+
+        previous_key = state.get(
+            "last_upcoming_click_key"
+        )
+
+        previous_at = float(
+            state.get(
+                "last_upcoming_click_at"
+            )
+            or 0.0
+        )
+
+        is_double_click = (
+            previous_key == item_key
+            and (
+                now - previous_at
+            ) <= 0.45
+        )
+
+        state[
+            "last_upcoming_click_key"
+        ] = item_key
+
+        state[
+            "last_upcoming_click_at"
+        ] = now
+
+        if is_double_click:
+            state[
+                "last_upcoming_click_key"
+            ] = None
+
+            state[
+                "last_upcoming_click_at"
+            ] = 0.0
+
+            _open_detail_dialog(
+                item
+            )
+
+
     def upcoming_table(items):
         rows = []
 
@@ -353,7 +1142,7 @@ def calendar_view(
                     on_click=(
                         lambda e,
                         current=item:
-                            select_item(
+                            _handle_upcoming_click(
                                 current
                             )
                     ),
@@ -534,11 +1323,22 @@ def calendar_view(
             ),
             content=ft.Column(
                 controls=[
-                    ft.Text(
-                        "Próximas actuaciones",
-                        size=14,
-                        weight=ft.FontWeight.BOLD,
-                        color=Q_PRIMARY_DARK,
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                "Próximas actuaciones",
+                                size=14,
+                                weight=ft.FontWeight.BOLD,
+                                color=Q_PRIMARY_DARK,
+                                expand=True,
+                            ),
+                            ft.Text(
+                                "Doble clic para abrir detalle",
+                                size=10,
+                                color=Q_MUTED,
+                                italic=True,
+                            ),
+                        ],
                     ),
                     ft.Row(
                         controls=[
@@ -581,9 +1381,13 @@ def calendar_view(
                         ],
                         spacing=8,
                     ),
-                    ft.Column(
-                        controls=rows,
-                        spacing=0,
+                    ft.Container(
+                        height=230,
+                        content=ft.Column(
+                            controls=rows,
+                            spacing=0,
+                            scroll=ft.ScrollMode.AUTO,
+                        ),
                     ),
                 ],
                 spacing=8,
@@ -597,6 +1401,7 @@ def calendar_view(
 
         if not item:
             return ft.Container(
+                height=400,
                 bgcolor="#FFFFFF",
                 border=ft.border.all(
                     1,
@@ -628,6 +1433,7 @@ def calendar_view(
             )
 
         return ft.Container(
+            height=400,
             bgcolor="#FFFFFF",
             border=ft.border.all(
                 1,
@@ -654,13 +1460,43 @@ def calendar_view(
                         ),
                         color=Q_PRIMARY_DARK,
                     ),
-                    status_chip(
-                        item.get(
-                            "priority"
-                        ),
-                        status_map=(
-                            PRIORITY_STATUS_MAP
-                        ),
+                    ft.Row(
+                        controls=[
+                            status_chip(
+                                item.get(
+                                    "priority"
+                                ),
+                                status_map=(
+                                    PRIORITY_STATUS_MAP
+                                ),
+                            ),
+                            ft.Container(
+                                bgcolor="#F8FAFC",
+                                border=ft.border.all(
+                                    1,
+                                    Q_BORDER,
+                                ),
+                                border_radius=999,
+                                padding=ft.padding.symmetric(
+                                    horizontal=10,
+                                    vertical=4,
+                                ),
+                                content=ft.Text(
+                                    (
+                                        item.get("status")
+                                        or "-"
+                                    ).replace(
+                                        "_",
+                                        " ",
+                                    ).title(),
+                                    size=10,
+                                    weight=ft.FontWeight.W_600,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                            ),
+                        ],
+                        spacing=8,
+                        wrap=True,
                     ),
                     ft.Divider(
                         color=Q_BORDER,
@@ -715,6 +1551,101 @@ def calendar_view(
                         color="#334155",
                     ),
                     (
+                        ft.Row(
+                            controls=[
+                                (
+                                    primary_button(
+                                        "Iniciar",
+                                        lambda e:
+                                            _run_task_action(
+                                                calendar_task_app
+                                                .start_calendar_task,
+                                                "Tarea iniciada.",
+                                            ),
+                                    )
+                                    if item.get(
+                                        "status"
+                                    )
+                                    == "PENDIENTE"
+                                    else ft.Container()
+                                ),
+                                (
+                                    primary_button(
+                                        "Completar",
+                                        lambda e:
+                                            _run_task_action(
+                                                calendar_task_app
+                                                .complete_calendar_task,
+                                                (
+                                                    "Tarea completada. "
+                                                    "Avisos pendientes cancelados."
+                                                ),
+                                            ),
+                                    )
+                                    if item.get(
+                                        "status"
+                                    )
+                                    in {
+                                        "PENDIENTE",
+                                        "EN_CURSO",
+                                    }
+                                    else ft.Container()
+                                ),
+                                (
+                                    secondary_button(
+                                        "Reabrir",
+                                        lambda e:
+                                            _run_task_action(
+                                                calendar_task_app
+                                                .reopen_calendar_task,
+                                                (
+                                                    "Tarea reabierta y "
+                                                    "Telegram reprogramado."
+                                                ),
+                                            ),
+                                    )
+                                    if item.get(
+                                        "status"
+                                    )
+                                    in {
+                                        "COMPLETADA",
+                                        "CANCELADA",
+                                    }
+                                    else ft.Container()
+                                ),
+                                (
+                                    danger_button(
+                                        "Cancelar tarea",
+                                        lambda e:
+                                            _run_task_action(
+                                                calendar_task_app
+                                                .cancel_calendar_task,
+                                                (
+                                                    "Tarea cancelada. "
+                                                    "Avisos pendientes cancelados."
+                                                ),
+                                            ),
+                                    )
+                                    if item.get(
+                                        "status"
+                                    )
+                                    in {
+                                        "PENDIENTE",
+                                        "EN_CURSO",
+                                    }
+                                    else ft.Container()
+                                ),
+                            ],
+                            spacing=8,
+                            wrap=True,
+                        )
+                        if item.get(
+                            "item_type"
+                        )
+                        == "TASK"
+                        else ft.Container()
+                    ),
+                    (
                         secondary_button(
                             "Abrir expediente",
                             open_selected_expedient,
@@ -726,6 +1657,7 @@ def calendar_view(
                     ),
                 ],
                 spacing=8,
+                scroll=ft.ScrollMode.AUTO,
             ),
         )
 
@@ -766,6 +1698,13 @@ def calendar_view(
                     expand=True,
                 ),
                 secondary_button(
+                    "Ver agenda completa",
+                    lambda e:
+                        show_placeholder(
+                            "Agenda completa: siguiente fase."
+                        ),
+                ),
+                secondary_button(
                     "Nuevo aviso",
                     lambda e:
                         show_placeholder(
@@ -774,50 +1713,12 @@ def calendar_view(
                 ),
                 primary_button(
                     "Nueva tarea",
-                    lambda e:
-                        show_placeholder(
-                            "Formulario de tarea: siguiente fase."
-                        ),
+                    _open_new_task_dialog,
                 ),
             ],
             vertical_alignment=(
                 ft.CrossAxisAlignment.START
             ),
-        )
-
-        metrics = ft.Row(
-            controls=[
-                metric_card(
-                    "Tareas pendientes",
-                    state["summary"].get(
-                        "pending_tasks",
-                        0,
-                    ),
-                ),
-                metric_card(
-                    "Vencen hoy",
-                    state["summary"].get(
-                        "due_today",
-                        0,
-                    ),
-                ),
-                metric_card(
-                    "Próximos 7 días",
-                    state["summary"].get(
-                        "next_7_days",
-                        0,
-                    ),
-                ),
-                metric_card(
-                    "Avisos críticos",
-                    state["summary"].get(
-                        "critical_alerts",
-                        0,
-                    ),
-                ),
-            ],
-            spacing=12,
-            wrap=True,
         )
 
         controls_bar = ft.Container(
@@ -850,6 +1751,14 @@ def calendar_view(
                     priority_filter,
                     status_filter,
                     type_filter,
+                    secondary_button(
+                        "Limpiar",
+                        lambda e: (
+                            _clear_calendar_filters(
+                                update=True,
+                            )
+                        ),
+                    ),
                 ],
                 spacing=10,
                 wrap=True,
@@ -880,21 +1789,38 @@ def calendar_view(
             spacing=8,
         )
 
+        calendar_workspace = ft.Container(
+            height=460,
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=14,
+            padding=12,
+            content=ft.Column(
+                controls=[
+                    calendar_header,
+                    calendar_week_grid(
+                        items,
+                        week_start,
+                        on_item_click=(
+                            select_item
+                        ),
+                    ),
+                ],
+                spacing=10,
+            ),
+        )
+
         left = ft.Column(
             controls=[
-                calendar_header,
-                calendar_week_grid(
-                    items,
-                    week_start,
-                    on_item_click=(
-                        select_item
-                    ),
-                ),
+                calendar_workspace,
                 upcoming_table(
                     calendar_service
                     .get_upcoming_items(
                         days=7,
-                        limit=8,
+                        limit=20,
                     )
                 ),
             ],
@@ -904,6 +1830,7 @@ def calendar_view(
 
         right = ft.Container(
             width=330,
+            height=460,
             content=ft.Column(
                 controls=[
                     calendar_summary_panel(
@@ -911,12 +1838,15 @@ def calendar_view(
                         calendar_service
                         .get_upcoming_items(
                             days=7,
-                            limit=5,
+                            limit=20,
+                        ),
+                        on_select_item=(
+                            select_item
                         ),
                     ),
-                    detail_panel(),
                 ],
                 spacing=12,
+                expand=True,
             ),
         )
 
@@ -927,7 +1857,6 @@ def calendar_view(
             content=ft.Column(
                 controls=[
                     header,
-                    metrics,
                     controls_bar,
                     ft.Row(
                         controls=[

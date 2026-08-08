@@ -278,7 +278,7 @@ def calendar_week_grid(
             controls.append(
                 ft.Container(
                     expand=True,
-                    height=58,
+                    height=54,
                     padding=4,
                     border=ft.border.only(
                         right=ft.BorderSide(
@@ -295,7 +295,7 @@ def calendar_week_grid(
                     bgcolor="#FFFFFF",
                     content=ft.Column(
                         controls=event_controls,
-                        spacing=3,
+                        spacing=2,
                         scroll=(
                             ft.ScrollMode.AUTO
                             if event_controls
@@ -317,7 +317,7 @@ def calendar_week_grid(
         )
 
     return ft.Container(
-        height=400,
+        height=390,
         bgcolor="#FFFFFF",
         border=ft.border.all(
             1,

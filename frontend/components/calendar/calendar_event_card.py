@@ -59,55 +59,58 @@ def calendar_event_card(
         or "NORMAL"
     )
 
+    title = (
+        _text(item.get("title"))
+        or "Sin título"
+    )
+
     return ft.Container(
+        height=24,
         bgcolor=colors["bg"],
         border=ft.border.all(
             1,
             colors["border"],
         ),
-        border_radius=10,
-        padding=8,
+        border_radius=7,
+        padding=ft.padding.symmetric(
+            horizontal=6,
+            vertical=2,
+        ),
         ink=True,
         on_click=on_click,
-        content=ft.Column(
+        content=ft.Row(
             controls=[
                 ft.Text(
                     _time_label(
                         item.get("date")
                     ),
-                    size=10,
+                    size=9,
                     color=colors["fg"],
                     weight=ft.FontWeight.W_600,
                 ),
                 ft.Text(
-                    _text(item.get("title"))
-                    or "Sin título",
-                    size=11,
+                    title,
+                    size=9,
                     color=colors["fg"],
-                    weight=ft.FontWeight.BOLD,
-                    max_lines=2,
-                    overflow=ft.TextOverflow.ELLIPSIS,
+                    weight=ft.FontWeight.W_600,
+                    max_lines=1,
+                    overflow=(
+                        ft.TextOverflow.ELLIPSIS
+                    ),
+                    expand=True,
                 ),
-                ft.Row(
-                    controls=[
-                        ft.Text(
-                            "●",
-                            size=9,
-                            color=PRIORITY_COLORS.get(
-                                priority,
-                                "#64748B",
-                            ),
-                        ),
-                        ft.Text(
-                            priority.title(),
-                            size=9,
-                            color="#64748B",
-                        ),
-                    ],
-                    spacing=4,
-                    tight=True,
+                ft.Text(
+                    "●",
+                    size=7,
+                    color=PRIORITY_COLORS.get(
+                        priority,
+                        "#64748B",
+                    ),
                 ),
             ],
-            spacing=3,
+            spacing=4,
+            vertical_alignment=(
+                ft.CrossAxisAlignment.CENTER
+            ),
         ),
     )

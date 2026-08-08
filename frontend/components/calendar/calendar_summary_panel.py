@@ -3,9 +3,6 @@ import flet as ft
 from frontend.components.app_card import (
     info_card,
 )
-from frontend.components.app_button import (
-    secondary_button,
-)
 
 
 Q_PRIMARY = "#0057B8"
@@ -41,7 +38,7 @@ def _summary_row(
 def calendar_summary_panel(
     summary,
     upcoming,
-    on_open_all=None,
+    on_select_item=None,
 ):
     summary = summary or {}
     upcoming = upcoming or []
@@ -86,43 +83,60 @@ def calendar_summary_panel(
 
     expiry_controls = []
 
-    for item in upcoming[:3]:
+    for item in upcoming:
         expiry_controls.append(
-            ft.Row(
-                controls=[
-                    ft.Text(
-                        "●",
-                        size=10,
-                        color=(
-                            Q_WARNING
-                            if item.get(
-                                "item_type"
-                            )
-                            == "ALERT"
-                            else Q_PRIMARY
+            ft.Container(
+                ink=True,
+                border_radius=8,
+                padding=ft.padding.symmetric(
+                    horizontal=4,
+                    vertical=4,
+                ),
+                on_click=(
+                    None
+                    if on_select_item is None
+                    else lambda e,
+                    current=item:
+                        on_select_item(
+                            current
+                        )
+                ),
+                content=ft.Row(
+                    controls=[
+                        ft.Text(
+                            "●",
+                            size=10,
+                            color=(
+                                Q_WARNING
+                                if item.get(
+                                    "item_type"
+                                )
+                                == "ALERT"
+                                else Q_PRIMARY
+                            ),
                         ),
-                    ),
-                    ft.Text(
-                        item.get("title")
-                        or "-",
-                        size=11,
-                        color="#0F172A",
-                        expand=True,
-                        overflow=(
-                            ft.TextOverflow
-                            .ELLIPSIS
+                        ft.Text(
+                            item.get("title")
+                            or "-",
+                            size=11,
+                            color="#0F172A",
+                            expand=True,
+                            overflow=(
+                                ft.TextOverflow
+                                .ELLIPSIS
+                            ),
                         ),
-                    ),
-                    ft.Text(
-                        str(
-                            item.get("date")
-                            or ""
-                        )[:10],
-                        size=10,
-                        color=Q_MUTED,
-                    ),
-                ],
-                spacing=6,
+                        ft.Text(
+                            str(
+                                item.get("date")
+                                or ""
+                            )[:10],
+                            size=10,
+                            color=Q_MUTED,
+                        ),
+                    ],
+                    spacing=6,
+                ),
             )
         )
 
@@ -137,9 +151,13 @@ def calendar_summary_panel(
 
     expiry_card = info_card(
         "Próximos vencimientos",
-        ft.Column(
-            controls=expiry_controls,
-            spacing=8,
+        ft.Container(
+            height=125,
+            content=ft.Column(
+                controls=expiry_controls,
+                spacing=4,
+                scroll=ft.ScrollMode.AUTO,
+            ),
         ),
     )
 
@@ -172,28 +190,11 @@ def calendar_summary_panel(
         ),
     )
 
-    quick_controls = [
-        secondary_button(
-            "Ver agenda completa",
-            on_open_all
-            or (lambda e: None),
-        )
-    ]
-
-    quick_card = info_card(
-        "Acciones rápidas",
-        ft.Column(
-            controls=quick_controls,
-            spacing=8,
-        ),
-    )
-
     return ft.Column(
         controls=[
             day_card,
             expiry_card,
             telegram_card,
-            quick_card,
         ],
         spacing=12,
     )
