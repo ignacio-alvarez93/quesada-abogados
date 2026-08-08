@@ -489,8 +489,10 @@ def calendar_view(
             "PENDIENTE",
             "EN_CURSO",
             "COMPLETADA",
+            "CANCELADA",
             "ACTIVO",
             "RESUELTO",
+            "CANCELADO",
         ],
         value="Todos",
         width=180,
@@ -506,6 +508,124 @@ def calendar_view(
         value="Todos",
         width=160,
     )
+
+
+    # ==============================================================
+    # AGENDA COMPLETA
+    # ==============================================================
+
+    agenda_search = text_input(
+        "Buscar",
+        width=280,
+    )
+
+    agenda_type_filter = select_input(
+        "Tipo",
+        [
+            "Todos",
+            "TASK",
+            "ALERT",
+        ],
+        value="Todos",
+        width=150,
+    )
+
+    agenda_status_filter = select_input(
+        "Estado",
+        [
+            "Todos",
+            "PENDIENTE",
+            "EN_CURSO",
+            "COMPLETADA",
+            "CANCELADA",
+            "ACTIVO",
+            "RESUELTO",
+            "CANCELADO",
+        ],
+        value="Todos",
+        width=180,
+    )
+
+    agenda_priority_filter = select_input(
+        "Prioridad",
+        [
+            "Todos",
+            "BAJA",
+            "NORMAL",
+            "ALTA",
+            "URGENTE",
+        ],
+        value="Todos",
+        width=160,
+    )
+
+    agenda_date_from = text_input(
+        "Desde DD/MM/AAAA",
+        width=170,
+    )
+
+    agenda_date_to = text_input(
+        "Hasta DD/MM/AAAA",
+        width=170,
+    )
+
+    agenda_include_archived = ft.Checkbox(
+        label="Incluir archivados",
+        value=False,
+    )
+
+    agenda_dialog = None
+
+    def _agenda_parse_date(
+        value,
+        *,
+        end_of_day=False,
+    ):
+        raw = str(
+            value or ""
+        ).strip()
+
+        if not raw:
+            return None
+
+        for fmt in (
+            "%d/%m/%Y",
+            "%Y-%m-%d",
+        ):
+            try:
+                parsed = datetime.strptime(
+                    raw,
+                    fmt,
+                )
+
+                if end_of_day:
+                    parsed = parsed.replace(
+                        hour=23,
+                        minute=59,
+                        second=59,
+                    )
+
+                return parsed
+
+            except ValueError:
+                pass
+
+        raise ValueError(
+            "Fecha no válida. Usa DD/MM/AAAA."
+        )
+
+
+    def _agenda_task_item(task):
+        return _task_projection(
+            task
+        )
+
+
+    def _agenda_alert_item(alert):
+        return _alert_projection(
+            alert
+        )
+
 
     def safe_update():
         try:
@@ -2294,6 +2414,673 @@ def calendar_view(
             )
 
 
+    def _agenda_table(
+        items,
+    ):
+        header = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.only(
+                bottom=ft.BorderSide(
+                    1,
+                    Q_BORDER,
+                )
+            ),
+            padding=ft.padding.symmetric(
+                horizontal=10,
+                vertical=8,
+            ),
+            content=ft.Row(
+                controls=[
+                    ft.Text(
+                        "Fecha",
+                        size=10,
+                        weight=ft.FontWeight.W_600,
+                        width=135,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Tipo",
+                        size=10,
+                        weight=ft.FontWeight.W_600,
+                        width=70,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Título",
+                        size=10,
+                        weight=ft.FontWeight.W_600,
+                        width=260,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Cliente / expediente",
+                        size=10,
+                        weight=ft.FontWeight.W_600,
+                        width=230,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Prioridad",
+                        size=10,
+                        weight=ft.FontWeight.W_600,
+                        width=95,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    ft.Text(
+                        "Estado",
+                        size=10,
+                        weight=ft.FontWeight.W_600,
+                        width=110,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=8,
+            ),
+        )
+
+        rows = []
+
+        for item in items:
+            item_type = item.get(
+                "item_type"
+            )
+
+            relation = (
+                item.get("client_name")
+                or item.get(
+                    "expedient_number"
+                )
+                or "-"
+            )
+
+            row = ft.Container(
+                ink=True,
+                on_click=(
+                    lambda e,
+                    current=item:
+                        _open_agenda_item(
+                            current
+                        )
+                ),
+                padding=ft.padding.symmetric(
+                    horizontal=10,
+                    vertical=9,
+                ),
+                border=ft.border.only(
+                    bottom=ft.BorderSide(
+                        1,
+                        Q_BORDER,
+                    )
+                ),
+                content=ft.Row(
+                    controls=[
+                        ft.Text(
+                            _date_display(
+                                item.get(
+                                    "date"
+                                )
+                            ),
+                            size=10,
+                            width=135,
+                            color="#334155",
+                        ),
+                        ft.Text(
+                            (
+                                "Aviso"
+                                if item_type
+                                == "ALERT"
+                                else "Tarea"
+                            ),
+                            size=10,
+                            width=70,
+                            color=(
+                                "#B54708"
+                                if item_type
+                                == "ALERT"
+                                else Q_PRIMARY
+                            ),
+                            weight=(
+                                ft.FontWeight.W_600
+                            ),
+                        ),
+                        ft.Text(
+                            item.get(
+                                "title"
+                            )
+                            or "-",
+                            size=10,
+                            width=260,
+                            color=Q_PRIMARY_DARK,
+                            weight=(
+                                ft.FontWeight.W_600
+                            ),
+                            overflow=(
+                                ft.TextOverflow
+                                .ELLIPSIS
+                            ),
+                        ),
+                        ft.Text(
+                            relation,
+                            size=10,
+                            width=230,
+                            color="#475569",
+                            overflow=(
+                                ft.TextOverflow
+                                .ELLIPSIS
+                            ),
+                        ),
+                        ft.Container(
+                            width=95,
+                            content=status_chip(
+                                item.get(
+                                    "priority"
+                                ),
+                                status_map=(
+                                    PRIORITY_STATUS_MAP
+                                ),
+                            ),
+                        ),
+                        ft.Text(
+                            (
+                                item.get(
+                                    "status"
+                                )
+                                or "-"
+                            ).replace(
+                                "_",
+                                " ",
+                            ).title(),
+                            size=10,
+                            width=110,
+                            color="#334155",
+                        ),
+                    ],
+                    spacing=8,
+                ),
+            )
+
+            rows.append(
+                row
+            )
+
+        if not rows:
+            rows = [
+                ft.Container(
+                    padding=20,
+                    alignment=(
+                        ft.alignment.center
+                    ),
+                    content=ft.Text(
+                        (
+                            "No hay elementos que "
+                            "coincidan con los filtros."
+                        ),
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                )
+            ]
+
+        return ft.Container(
+            height=430,
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=12,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            content=ft.Column(
+                controls=[
+                    header,
+                    ft.Container(
+                        expand=True,
+                        content=ft.Column(
+                            controls=rows,
+                            spacing=0,
+                            scroll=(
+                                ft.ScrollMode.AUTO
+                            ),
+                        ),
+                    ),
+                ],
+                spacing=0,
+            ),
+        )
+
+
+    def _load_agenda_items():
+        include_archived = bool(
+            agenda_include_archived.value
+        )
+
+        tasks = (
+            task_service
+            .list_tasks(
+                include_archived=(
+                    include_archived
+                )
+            )
+        )
+
+        alerts = (
+            calendar_alert_service
+            .list_alerts(
+                include_archived=(
+                    include_archived
+                )
+            )
+        )
+
+        items = [
+            _agenda_task_item(task)
+            for task in tasks
+        ]
+
+        items.extend(
+            _agenda_alert_item(alert)
+            for alert in alerts
+        )
+
+        search = str(
+            agenda_search.value
+            or ""
+        ).strip().upper()
+
+        item_type = str(
+            agenda_type_filter.value
+            or "Todos"
+        )
+
+        status = str(
+            agenda_status_filter.value
+            or "Todos"
+        )
+
+        priority = str(
+            agenda_priority_filter.value
+            or "Todos"
+        )
+
+        date_from = _agenda_parse_date(
+            agenda_date_from.value,
+        )
+
+        date_to = _agenda_parse_date(
+            agenda_date_to.value,
+            end_of_day=True,
+        )
+
+        filtered = []
+
+        for item in items:
+            if (
+                item_type != "Todos"
+                and item.get(
+                    "item_type"
+                )
+                != item_type
+            ):
+                continue
+
+            if (
+                status != "Todos"
+                and item.get(
+                    "status"
+                )
+                != status
+            ):
+                continue
+
+            if (
+                priority != "Todos"
+                and item.get(
+                    "priority"
+                )
+                != priority
+            ):
+                continue
+
+            item_date = None
+
+            raw_date = str(
+                item.get("date")
+                or ""
+            ).strip()
+
+            if raw_date:
+                try:
+                    item_date = (
+                        datetime.fromisoformat(
+                            raw_date.replace(
+                                "T",
+                                " ",
+                            )
+                        )
+                    )
+                except ValueError:
+                    item_date = None
+
+            if (
+                date_from
+                and (
+                    not item_date
+                    or item_date < date_from
+                )
+            ):
+                continue
+
+            if (
+                date_to
+                and (
+                    not item_date
+                    or item_date > date_to
+                )
+            ):
+                continue
+
+            if search:
+                haystack = " ".join(
+                    (
+                        str(
+                            item.get("title")
+                            or ""
+                        ),
+                        str(
+                            item.get(
+                                "description"
+                            )
+                            or ""
+                        ),
+                        str(
+                            item.get(
+                                "client_name"
+                            )
+                            or ""
+                        ),
+                        str(
+                            item.get(
+                                "expedient_number"
+                            )
+                            or ""
+                        ),
+                        str(
+                            item.get(
+                                "status"
+                            )
+                            or ""
+                        ),
+                    )
+                ).upper()
+
+                if search not in haystack:
+                    continue
+
+            filtered.append(
+                item
+            )
+
+        filtered.sort(
+            key=lambda item: (
+                str(
+                    item.get("date")
+                    or ""
+                ),
+                str(
+                    item.get(
+                        "item_type"
+                    )
+                    or ""
+                ),
+                int(
+                    item.get(
+                        "source_id"
+                    )
+                    or 0
+                ),
+            )
+        )
+
+        return filtered
+
+
+    def _close_agenda_dialog(
+        e=None,
+    ):
+        nonlocal agenda_dialog
+
+        if agenda_dialog is None:
+            return
+
+        page.pop_dialog()
+        page.update()
+
+        agenda_dialog = None
+
+
+    def _open_agenda_item(
+        item,
+    ):
+        nonlocal agenda_dialog
+
+        if not item:
+            return
+
+        # Cerramos Agenda para evitar diálogos
+        # superpuestos y reutilizamos el detalle
+        # operativo ya existente.
+        if agenda_dialog is not None:
+            page.pop_dialog()
+            agenda_dialog = None
+
+        state[
+            "selected_item"
+        ] = item
+
+        _open_detail_dialog(
+            item
+        )
+
+
+    def _refresh_agenda_dialog(
+        e=None,
+    ):
+        nonlocal agenda_dialog
+
+        if agenda_dialog is None:
+            return
+
+        try:
+            items = _load_agenda_items()
+        except Exception as exc:
+            _show_message(
+                str(exc),
+                error=True,
+            )
+            return
+
+        agenda_dialog.content = (
+            _agenda_dialog_content(
+                items
+            )
+        )
+
+        page.update()
+
+
+    def _clear_agenda_filters(
+        e=None,
+    ):
+        agenda_search.value = ""
+        agenda_type_filter.value = (
+            "Todos"
+        )
+        agenda_status_filter.value = (
+            "Todos"
+        )
+        agenda_priority_filter.value = (
+            "Todos"
+        )
+        agenda_date_from.value = ""
+        agenda_date_to.value = ""
+        agenda_include_archived.value = (
+            False
+        )
+
+        _refresh_agenda_dialog()
+
+
+    def _agenda_dialog_content(
+        items,
+    ):
+        return ft.Container(
+            width=980,
+            height=610,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Agenda completa",
+                                        size=20,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color=(
+                                            Q_PRIMARY_DARK
+                                        ),
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Tareas y avisos "
+                                            "operativos e históricos"
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Container(
+                                bgcolor="#EEF4FF",
+                                border_radius=999,
+                                padding=(
+                                    ft.padding.symmetric(
+                                        horizontal=12,
+                                        vertical=5,
+                                    )
+                                ),
+                                content=ft.Text(
+                                    (
+                                        f"{len(items)} "
+                                        "elementos"
+                                    ),
+                                    size=10,
+                                    weight=(
+                                        ft.FontWeight.W_600
+                                    ),
+                                    color=Q_PRIMARY,
+                                ),
+                            ),
+                        ],
+                    ),
+                    ft.Container(
+                        bgcolor="#F8FAFC",
+                        border=ft.border.all(
+                            1,
+                            Q_BORDER,
+                        ),
+                        border_radius=12,
+                        padding=10,
+                        content=ft.Column(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        agenda_search,
+                                        agenda_type_filter,
+                                        agenda_status_filter,
+                                        agenda_priority_filter,
+                                    ],
+                                    spacing=8,
+                                    wrap=True,
+                                ),
+                                ft.Row(
+                                    controls=[
+                                        agenda_date_from,
+                                        agenda_date_to,
+                                        agenda_include_archived,
+                                        secondary_button(
+                                            "Aplicar",
+                                            _refresh_agenda_dialog,
+                                        ),
+                                        secondary_button(
+                                            "Limpiar",
+                                            _clear_agenda_filters,
+                                        ),
+                                    ],
+                                    spacing=8,
+                                    wrap=True,
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                    ),
+                    _agenda_table(
+                        items
+                    ),
+                    ft.Text(
+                        (
+                            "Haz clic en una fila para "
+                            "abrir su detalle operativo."
+                        ),
+                        size=9,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=12,
+            ),
+        )
+
+
+    def _open_full_agenda(
+        e=None,
+    ):
+        nonlocal agenda_dialog
+
+        try:
+            items = _load_agenda_items()
+        except Exception as exc:
+            _show_message(
+                str(exc),
+                error=True,
+            )
+            return
+
+        agenda_dialog = ft.AlertDialog(
+            modal=True,
+            content=_agenda_dialog_content(
+                items
+            ),
+            actions=[
+                secondary_button(
+                    "Cerrar",
+                    _close_agenda_dialog,
+                ),
+            ],
+            actions_alignment=(
+                ft.MainAxisAlignment.END
+            ),
+        )
+
+        page.show_dialog(
+            agenda_dialog
+        )
+
+        page.update()
+
+
     def show_placeholder(
         message,
     ):
@@ -3756,10 +4543,7 @@ def calendar_view(
                 ),
                 secondary_button(
                     "Ver agenda completa",
-                    lambda e:
-                        show_placeholder(
-                            "Agenda completa: siguiente fase."
-                        ),
+                    _open_full_agenda,
                 ),
                 secondary_button(
                     "Nuevo aviso",
