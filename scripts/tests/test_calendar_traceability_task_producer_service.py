@@ -1072,5 +1072,993 @@ class CalendarTraceabilityTaskProducerTest(
 
 
 
+    def _requirement_metadata(
+        self,
+        *,
+        csv_value="CSV-REQ-001",
+    ):
+        return {
+            "fecha_requerimiento":
+                "2026-05-01",
+            "csv_requerimiento":
+                csv_value,
+            "numero_expediente_extranjeria":
+                "330020260004082",
+            "nie_detectado":
+                "X0000000T",
+            "plazo_dias":
+                10,
+            "documentacion_requerida_original":
+                "Pasaporte y certificado.",
+            "documentacion_requerida_abogado":
+                "Pasaporte y certificado.",
+            "estado_requerimiento":
+                "PENDIENTE",
+        }
+
+
+    def test_requirement_creates_operational_task(
+        self,
+    ):
+        requirement_id = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(),
+            )
+        )
+
+        result = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_id,
+                usuario="TEST",
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            result["action"],
+            "CREATED",
+        )
+
+        task = result["task"]
+
+        self.assertEqual(
+            task["titulo"],
+            "Atender requerimiento",
+        )
+
+        self.assertEqual(
+            task["tipo"],
+            "ATENCION_REQUERIMIENTO",
+        )
+
+        self.assertEqual(
+            task["estado"],
+            "PENDIENTE",
+        )
+
+        self.assertEqual(
+            task["fecha_vencimiento"],
+            "2026-05-11 12:00:00",
+        )
+
+        self.assertEqual(
+            task["origen_id"],
+            str(requirement_id),
+        )
+
+        self.assertEqual(
+            task["source_key"],
+            (
+                "TRACEABILITY:TASK:"
+                "REQUIREMENT:EXP:1000:REQ:"
+                + str(requirement_id)
+            ),
+        )
+
+        self.assertEqual(
+            len(self._tasks()),
+            1,
+        )
+
+
+    def test_reprocessing_requirement_does_not_duplicate(
+        self,
+    ):
+        requirement_id = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(),
+            )
+        )
+
+        first = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        second = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            first["action"],
+            "CREATED",
+        )
+
+        self.assertEqual(
+            second["action"],
+            "UNCHANGED",
+        )
+
+        self.assertEqual(
+            first["task"]["id"],
+            second["task"]["id"],
+        )
+
+        self.assertEqual(
+            len(self._tasks()),
+            1,
+        )
+
+
+    def test_two_requirements_create_two_distinct_tasks(
+        self,
+    ):
+        requirement_a = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(
+                    csv_value="CSV-REQ-A",
+                ),
+            )
+        )
+
+        requirement_b = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(
+                    csv_value="CSV-REQ-B",
+                ),
+            )
+        )
+
+        result_a = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_a,
+                db_path=self.db_path,
+            )
+        )
+
+        result_b = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_b,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            result_a["action"],
+            "CREATED",
+        )
+
+        self.assertEqual(
+            result_b["action"],
+            "CREATED",
+        )
+
+        self.assertNotEqual(
+            result_a["task"]["id"],
+            result_b["task"]["id"],
+        )
+
+        self.assertNotEqual(
+            result_a["task"]["source_key"],
+            result_b["task"]["source_key"],
+        )
+
+        self.assertEqual(
+            len(self._tasks()),
+            2,
+        )
+
+
+
+    def _document_submission_metadata(
+        self,
+        *,
+        requirement_document_id=None,
+    ):
+        metadata = {
+            "fecha_registro":
+                "2026-05-06 10:00:00",
+            "fecha_presentacion":
+                "2026-05-06 09:59:00",
+            "csv_geiser":
+                "CSV-APORTACION-DOC-001",
+            "numero_registro_regage":
+                "REGAGE-APORTACION-001",
+            "numero_expediente_extranjeria":
+                "330020260004082",
+            "nie_detectado":
+                "X0000000T",
+            "documentos_aportados_texto":
+                "Pasaporte y certificado.",
+            "estado_aportacion":
+                "APORTADA",
+        }
+
+        if requirement_document_id is not None:
+            metadata[
+                "requerimiento_documento_id"
+            ] = int(
+                requirement_document_id
+            )
+
+        return metadata
+
+
+    def test_document_submission_completes_single_open_requirement(
+        self,
+    ):
+        requirement_id = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(),
+            )
+        )
+
+        created = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        task_id = created["task"]["id"]
+
+        submission_id = (
+            self._insert_document(
+                producer.DOCUMENT_SUBMISSION_EVENT,
+                self._document_submission_metadata(),
+            )
+        )
+
+        result = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.DOCUMENT_SUBMISSION_EVENT
+                ),
+                document_id=submission_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            result["action"],
+            "COMPLETED",
+        )
+
+        self.assertEqual(
+            result[
+                "requirement_document_id"
+            ],
+            requirement_id,
+        )
+
+        self.assertEqual(
+            result["task"]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            result["task"]["estado"],
+            "COMPLETADA",
+        )
+
+        # No ha sido necesario pasar por EN_CURSO.
+        self.assertEqual(
+            len(self._tasks()),
+            1,
+        )
+
+        with closing(
+            self._connect()
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT metadata_documento_json
+                FROM expediente_justificantes
+                WHERE id = ?
+                """,
+                (
+                    submission_id,
+                ),
+            ).fetchone()
+
+        metadata = json.loads(
+            row["metadata_documento_json"]
+            or "{}"
+        )
+
+        self.assertEqual(
+            metadata[
+                "requerimiento_documento_id"
+            ],
+            requirement_id,
+        )
+
+
+    def test_document_submission_is_ambiguous_with_two_open_requirements(
+        self,
+    ):
+        requirement_a = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(
+                    csv_value="CSV-REQ-A",
+                ),
+            )
+        )
+
+        requirement_b = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(
+                    csv_value="CSV-REQ-B",
+                ),
+            )
+        )
+
+        for requirement_id in (
+            requirement_a,
+            requirement_b,
+        ):
+            (
+                producer
+                .sync_requirement_obligation(
+                    1000,
+                    event_code=(
+                        producer.REQUIREMENT_EVENT
+                    ),
+                    document_id=requirement_id,
+                    db_path=self.db_path,
+                )
+            )
+
+        submission_id = (
+            self._insert_document(
+                producer.DOCUMENT_SUBMISSION_EVENT,
+                self._document_submission_metadata(),
+            )
+        )
+
+        result = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.DOCUMENT_SUBMISSION_EVENT
+                ),
+                document_id=submission_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            result["action"],
+            "AMBIGUOUS_REQUIREMENT",
+        )
+
+        self.assertEqual(
+            sorted(
+                result[
+                    "candidate_requirement_ids"
+                ]
+            ),
+            sorted(
+                [
+                    requirement_a,
+                    requirement_b,
+                ]
+            ),
+        )
+
+        states = {
+            task["estado"]
+            for task in self._tasks()
+        }
+
+        self.assertEqual(
+            states,
+            {"PENDIENTE"},
+        )
+
+
+    def test_explicit_requirement_link_completes_correct_task(
+        self,
+    ):
+        requirement_a = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(
+                    csv_value="CSV-REQ-A",
+                ),
+            )
+        )
+
+        requirement_b = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(
+                    csv_value="CSV-REQ-B",
+                ),
+            )
+        )
+
+        created = {}
+
+        for requirement_id in (
+            requirement_a,
+            requirement_b,
+        ):
+            result = (
+                producer
+                .sync_requirement_obligation(
+                    1000,
+                    event_code=(
+                        producer.REQUIREMENT_EVENT
+                    ),
+                    document_id=requirement_id,
+                    db_path=self.db_path,
+                )
+            )
+
+            created[
+                requirement_id
+            ] = result["task"]
+
+        submission_id = (
+            self._insert_document(
+                producer.DOCUMENT_SUBMISSION_EVENT,
+                self._document_submission_metadata(
+                    requirement_document_id=(
+                        requirement_b
+                    ),
+                ),
+            )
+        )
+
+        result = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.DOCUMENT_SUBMISSION_EVENT
+                ),
+                document_id=submission_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            result["action"],
+            "COMPLETED",
+        )
+
+        self.assertEqual(
+            result[
+                "requirement_document_id"
+            ],
+            requirement_b,
+        )
+
+        tasks = {
+            task["id"]: task
+            for task in self._tasks()
+        }
+
+        self.assertEqual(
+            tasks[
+                created[
+                    requirement_a
+                ]["id"]
+            ]["estado"],
+            "PENDIENTE",
+        )
+
+        self.assertEqual(
+            tasks[
+                created[
+                    requirement_b
+                ]["id"]
+            ]["estado"],
+            "COMPLETADA",
+        )
+
+
+    def test_archiving_linked_submission_requires_new_due_date(
+        self,
+    ):
+        requirement_id = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(),
+            )
+        )
+
+        created = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        task_id = created["task"]["id"]
+
+        submission_id = (
+            self._insert_document(
+                producer.DOCUMENT_SUBMISSION_EVENT,
+                self._document_submission_metadata(
+                    requirement_document_id=(
+                        requirement_id
+                    ),
+                ),
+            )
+        )
+
+        completed = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.DOCUMENT_SUBMISSION_EVENT
+                ),
+                document_id=submission_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            completed["action"],
+            "COMPLETED",
+        )
+
+        self._archive_document(
+            submission_id
+        )
+
+        archived = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.DOCUMENT_SUBMISSION_EVENT
+                ),
+                document_id=submission_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            archived["action"],
+            "NEEDS_DUE_DATE_FOR_REOPEN",
+        )
+
+        self.assertTrue(
+            archived[
+                "requires_due_date"
+            ]
+        )
+
+        self.assertEqual(
+            archived["task"]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            archived["task"]["estado"],
+            "COMPLETADA",
+        )
+
+
+
+    def test_confirm_requirement_due_date_reopens_same_task(
+        self,
+    ):
+        requirement_id = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(),
+            )
+        )
+
+        created = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        task_id = created["task"]["id"]
+
+        submission_id = (
+            self._insert_document(
+                producer.DOCUMENT_SUBMISSION_EVENT,
+                self._document_submission_metadata(
+                    requirement_document_id=(
+                        requirement_id
+                    ),
+                ),
+            )
+        )
+
+        completed = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.DOCUMENT_SUBMISSION_EVENT
+                ),
+                document_id=submission_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            completed["task"]["estado"],
+            "COMPLETADA",
+        )
+
+        self._archive_document(
+            submission_id
+        )
+
+        archived = (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.DOCUMENT_SUBMISSION_EVENT
+                ),
+                document_id=submission_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            archived["action"],
+            "NEEDS_DUE_DATE_FOR_REOPEN",
+        )
+
+        reopened = (
+            producer
+            .confirm_requirement_due_date(
+                1000,
+                requirement_id,
+                "2099-05-20T09:30:00",
+                usuario="TEST",
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            reopened["action"],
+            "REOPENED",
+        )
+
+        self.assertEqual(
+            reopened["task"]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            reopened["task"]["estado"],
+            "PENDIENTE",
+        )
+
+        self.assertEqual(
+            reopened["task"][
+                "fecha_vencimiento"
+            ],
+            "2099-05-20 09:30:00",
+        )
+
+        self.assertEqual(
+            len(self._tasks()),
+            1,
+        )
+
+
+    def test_confirm_requirement_due_date_rejects_active_submission(
+        self,
+    ):
+        requirement_id = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(),
+            )
+        )
+
+        (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        submission_id = (
+            self._insert_document(
+                producer.DOCUMENT_SUBMISSION_EVENT,
+                self._document_submission_metadata(
+                    requirement_document_id=(
+                        requirement_id
+                    ),
+                ),
+            )
+        )
+
+        (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.DOCUMENT_SUBMISSION_EVENT
+                ),
+                document_id=submission_id,
+                db_path=self.db_path,
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "ya está atendido",
+        ):
+            (
+                producer
+                .confirm_requirement_due_date(
+                    1000,
+                    requirement_id,
+                    "2099-05-20 09:30:00",
+                    usuario="TEST",
+                    db_path=self.db_path,
+                )
+            )
+
+
+
+    def test_requirement_status_reports_active_task(
+        self,
+    ):
+        requirement_id = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(),
+            )
+        )
+
+        (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        snapshot = (
+            producer
+            .get_requirement_obligation_status(
+                1000,
+                requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            snapshot["status"],
+            "TASK_ACTIVE",
+        )
+
+        self.assertEqual(
+            snapshot["task"]["estado"],
+            "PENDIENTE",
+        )
+
+
+    def test_requirement_status_reports_satisfied(
+        self,
+    ):
+        requirement_id = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(),
+            )
+        )
+
+        (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        submission_id = (
+            self._insert_document(
+                producer.DOCUMENT_SUBMISSION_EVENT,
+                self._document_submission_metadata(
+                    requirement_document_id=(
+                        requirement_id
+                    ),
+                ),
+            )
+        )
+
+        (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.DOCUMENT_SUBMISSION_EVENT
+                ),
+                document_id=submission_id,
+                db_path=self.db_path,
+            )
+        )
+
+        snapshot = (
+            producer
+            .get_requirement_obligation_status(
+                1000,
+                requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            snapshot["status"],
+            "SATISFIED",
+        )
+
+        self.assertEqual(
+            snapshot["task"]["estado"],
+            "COMPLETADA",
+        )
+
+
+    def test_requirement_status_requires_due_after_archived_submission(
+        self,
+    ):
+        requirement_id = (
+            self._insert_document(
+                producer.REQUIREMENT_EVENT,
+                self._requirement_metadata(),
+            )
+        )
+
+        (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.REQUIREMENT_EVENT
+                ),
+                document_id=requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        submission_id = (
+            self._insert_document(
+                producer.DOCUMENT_SUBMISSION_EVENT,
+                self._document_submission_metadata(
+                    requirement_document_id=(
+                        requirement_id
+                    ),
+                ),
+            )
+        )
+
+        (
+            producer
+            .sync_requirement_obligation(
+                1000,
+                event_code=(
+                    producer.DOCUMENT_SUBMISSION_EVENT
+                ),
+                document_id=submission_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self._archive_document(
+            submission_id
+        )
+
+        snapshot = (
+            producer
+            .get_requirement_obligation_status(
+                1000,
+                requirement_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            snapshot["status"],
+            "NEEDS_DUE_DATE_FOR_REOPEN",
+        )
+
+        self.assertTrue(
+            snapshot["requires_due_date"]
+        )
+
+        self.assertEqual(
+            snapshot["task"]["estado"],
+            "COMPLETADA",
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()

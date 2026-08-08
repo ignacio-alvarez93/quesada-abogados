@@ -17442,6 +17442,303 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                             )
                         )
 
+                    # ---------------------------------------------
+                    # Calendar · obligación operativa del
+                    # requerimiento concreto.
+                    # ---------------------------------------------
+
+                    requirement_document_id = (
+                        justificante.get("id")
+                    )
+
+                    try:
+                        requirement_snapshot = (
+                            traceability_task_producer
+                            .get_requirement_obligation_status(
+                                expediente_id,
+                                requirement_document_id,
+                            )
+                        )
+
+                    except Exception as exc:
+                        requirement_snapshot = {
+                            "ok": False,
+                            "status": "ERROR",
+                            "task": None,
+                            "error": str(exc),
+                            "requirement_document_id":
+                                requirement_document_id,
+                        }
+
+                    requirement_status = (
+                        requirement_snapshot.get(
+                            "status"
+                        )
+                        or ""
+                    )
+
+                    requirement_task = (
+                        requirement_snapshot.get(
+                            "task"
+                        )
+                        or {}
+                    )
+
+                    calendar_body = [
+                        ft.Text(
+                            "Calendar",
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        )
+                    ]
+
+                    if (
+                        requirement_status
+                        == "TASK_NOT_CREATED"
+                    ):
+                        calendar_body.append(
+                            ft.Text(
+                                (
+                                    "⚠ El requerimiento está activo "
+                                    "pero Calendar no tiene la tarea "
+                                    "asociada."
+                                ),
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color="#B42318",
+                            )
+                        )
+
+                        calendar_body.append(
+                            ft.Text(
+                                (
+                                    "Revisa la sincronización de "
+                                    "Trazabilidad. La vista no crea "
+                                    "tareas por sí sola."
+                                ),
+                                size=11,
+                                color="#7A271A",
+                            )
+                        )
+
+                    elif (
+                        requirement_status
+                        == "TASK_ACTIVE"
+                    ):
+                        due_value = (
+                            requirement_task.get(
+                                "fecha_vencimiento"
+                            )
+                            or ""
+                        )
+
+                        due_display = due_value
+
+                        if due_value:
+                            try:
+                                due_display = (
+                                    datetime
+                                    .fromisoformat(
+                                        str(
+                                            due_value
+                                        ).replace(
+                                            "T",
+                                            " ",
+                                        )
+                                    )
+                                    .strftime(
+                                        "%d/%m/%Y %H:%M"
+                                    )
+                                )
+                            except Exception:
+                                pass
+
+                        calendar_body.append(
+                            ft.Text(
+                                (
+                                    "Atender requerimiento · "
+                                    + str(
+                                        requirement_task.get(
+                                            "estado"
+                                        )
+                                        or "PENDIENTE"
+                                    )
+                                ),
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color="#027A48",
+                            )
+                        )
+
+                        calendar_body.append(
+                            ft.Text(
+                                (
+                                    "Vencimiento operativo: "
+                                    + (
+                                        due_display
+                                        or "-"
+                                    )
+                                ),
+                                size=11,
+                                color=Q_PRIMARY_DARK,
+                            )
+                        )
+
+                        calendar_body.append(
+                            secondary_button(
+                                "Cambiar vencimiento",
+                                lambda e,
+                                exp_id=expediente_id,
+                                req_id=requirement_document_id,
+                                snapshot=requirement_snapshot: (
+                                    open_requirement_due_date_dialog(
+                                        exp_id,
+                                        req_id,
+                                        snapshot,
+                                    )
+                                ),
+                            )
+                        )
+
+                    elif (
+                        requirement_status
+                        == (
+                            "NEEDS_DUE_DATE_"
+                            "FOR_REOPEN"
+                        )
+                    ):
+                        calendar_body.append(
+                            ft.Text(
+                                (
+                                    "⚠ La obligación ha vuelto "
+                                    "a quedar pendiente."
+                                ),
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color="#B54708",
+                            )
+                        )
+
+                        calendar_body.append(
+                            ft.Text(
+                                (
+                                    "La aportación asociada fue "
+                                    "archivada. Confirma un nuevo "
+                                    "vencimiento operativo antes "
+                                    "de reabrir la tarea."
+                                ),
+                                size=11,
+                                color="#7A2E0E",
+                            )
+                        )
+
+                        calendar_body.append(
+                            primary_button(
+                                (
+                                    "Confirmar nuevo "
+                                    "vencimiento"
+                                ),
+                                lambda e,
+                                exp_id=expediente_id,
+                                req_id=requirement_document_id,
+                                snapshot=requirement_snapshot: (
+                                    open_requirement_due_date_dialog(
+                                        exp_id,
+                                        req_id,
+                                        snapshot,
+                                    )
+                                ),
+                            )
+                        )
+
+                    elif (
+                        requirement_status
+                        == "SATISFIED"
+                    ):
+                        calendar_body.append(
+                            ft.Text(
+                                "✓ Requerimiento atendido",
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color="#027A48",
+                            )
+                        )
+
+                        if requirement_task:
+                            calendar_body.append(
+                                ft.Text(
+                                    (
+                                        "Tarea Calendar: "
+                                        + str(
+                                            requirement_task.get(
+                                                "estado"
+                                            )
+                                            or "COMPLETADA"
+                                        )
+                                    ),
+                                    size=11,
+                                    color="#027A48",
+                                )
+                            )
+
+                    elif (
+                        requirement_status == "ERROR"
+                        or not requirement_snapshot.get(
+                            "ok",
+                            True,
+                        )
+                    ):
+                        calendar_body.append(
+                            ft.Text(
+                                (
+                                    "No se pudo consultar "
+                                    "el estado de Calendar."
+                                ),
+                                size=11,
+                                color="#B42318",
+                            )
+                        )
+
+                    elif (
+                        requirement_status
+                        == "REQUIREMENT_ARCHIVED"
+                    ):
+                        calendar_body.append(
+                            ft.Text(
+                                "Requerimiento archivado",
+                                size=11,
+                                color=Q_MUTED,
+                            )
+                        )
+
+                    body.append(
+                        ft.Container(
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            padding=10,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        ft.Icons.EVENT_NOTE_OUTLINED,
+                                        color=Q_PRIMARY,
+                                        size=20,
+                                    ),
+                                    ft.Column(
+                                        controls=calendar_body,
+                                        spacing=5,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=9,
+                            ),
+                        )
+                    )
+
                 if event_code == (
                     "JUSTIFICANTE_APORTACION_DOCUMENTACION"
                 ):
@@ -22053,6 +22350,340 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
     page.overlay.append(
         tax_due_date_dialog
+    )
+
+
+    requirement_due_date_input = text_input(
+        "Vencimiento operativo",
+        width=240,
+    )
+
+    requirement_due_time_input = text_input(
+        "Hora",
+        value="12:00",
+        width=160,
+    )
+
+
+    def close_requirement_due_date_dialog(
+        e=None,
+    ):
+        requirement_due_date_dialog.open = False
+        page.update()
+
+
+    def open_requirement_due_date_dialog(
+        expediente_id,
+        requirement_document_id,
+        snapshot=None,
+    ):
+        snapshot = snapshot or {}
+
+        state[
+            "requirement_due_date_expediente_id"
+        ] = int(
+            expediente_id
+        )
+
+        state[
+            "requirement_due_date_document_id"
+        ] = int(
+            requirement_document_id
+        )
+
+        task = snapshot.get("task") or {}
+
+        current_due = (
+            task.get("fecha_vencimiento")
+            or ""
+        )
+
+        requirement_due_date_input.value = ""
+        requirement_due_time_input.value = "12:00"
+
+        if current_due:
+            try:
+                parsed = datetime.fromisoformat(
+                    str(current_due).replace(
+                        "T",
+                        " ",
+                    )
+                )
+
+                requirement_due_date_input.value = (
+                    parsed.strftime(
+                        "%d/%m/%Y"
+                    )
+                )
+
+                requirement_due_time_input.value = (
+                    parsed.strftime(
+                        "%H:%M"
+                    )
+                )
+
+            except Exception:
+                pass
+
+        status = (
+            snapshot.get("status")
+            or ""
+        )
+
+        if status == "TASK_ACTIVE":
+            title = (
+                "Cambiar vencimiento operativo "
+                "del requerimiento"
+            )
+
+        elif (
+            status
+            == "NEEDS_DUE_DATE_FOR_REOPEN"
+        ):
+            title = (
+                "Confirmar nuevo vencimiento "
+                "del requerimiento"
+            )
+
+        else:
+            title = (
+                "Confirmar vencimiento "
+                "del requerimiento"
+            )
+
+        requirement_due_date_dialog.title = (
+            ft.Text(
+                title,
+                weight=ft.FontWeight.BOLD,
+                color=Q_PRIMARY_DARK,
+            )
+        )
+
+        requirement_due_date_dialog.open = True
+        page.update()
+
+
+    def save_requirement_due_date(
+        e=None,
+    ):
+        expediente_id = state.get(
+            "requirement_due_date_expediente_id"
+        )
+
+        requirement_document_id = state.get(
+            "requirement_due_date_document_id"
+        )
+
+        if not expediente_id:
+            show_form_error(
+                "No hay expediente activo"
+            )
+            return
+
+        if not requirement_document_id:
+            show_form_error(
+                "No hay requerimiento activo"
+            )
+            return
+
+        date_value = (
+            requirement_due_date_input.value
+            or ""
+        ).strip()
+
+        time_value = (
+            requirement_due_time_input.value
+            or ""
+        ).strip()
+
+        if not date_value:
+            show_form_error(
+                "Indica el vencimiento operativo"
+            )
+            return
+
+        if not time_value:
+            show_form_error(
+                "Indica la hora"
+            )
+            return
+
+        try:
+            parsed_date = datetime.strptime(
+                date_value,
+                "%d/%m/%Y",
+            )
+
+        except ValueError:
+            show_form_error(
+                "La fecha debe tener formato "
+                "DD/MM/AAAA"
+            )
+            return
+
+        try:
+            parsed_time = datetime.strptime(
+                time_value,
+                "%H:%M",
+            )
+
+        except ValueError:
+            show_form_error(
+                "La hora debe tener formato HH:MM"
+            )
+            return
+
+        due_at = (
+            parsed_date.strftime(
+                "%Y-%m-%d"
+            )
+            + " "
+            + parsed_time.strftime(
+                "%H:%M"
+            )
+            + ":00"
+        )
+
+        try:
+            result = (
+                traceability_task_producer
+                .confirm_requirement_due_date(
+                    expediente_id,
+                    requirement_document_id,
+                    due_at,
+                    usuario="ERP",
+                )
+            )
+
+            requirement_due_date_dialog.open = False
+
+            expediente_dialog.content = (
+                build_expediente_dialog_content(
+                    expediente_id
+                )
+            )
+
+            refresh_table()
+
+            action = (
+                result.get("action")
+                or ""
+            )
+
+            if action == "CREATED":
+                message = (
+                    "Tarea del requerimiento creada"
+                )
+
+            elif action == "REOPENED":
+                message = (
+                    "Tarea del requerimiento reabierta"
+                )
+
+            elif action == "UPDATED":
+                message = (
+                    "Vencimiento operativo "
+                    "actualizado"
+                )
+
+            else:
+                message = (
+                    "Vencimiento operativo "
+                    "confirmado"
+                )
+
+            set_message(
+                success_alert(
+                    message
+                    + "\nVencimiento: "
+                    + parsed_date.strftime(
+                        "%d/%m/%Y"
+                    )
+                    + " "
+                    + parsed_time.strftime(
+                        "%H:%M"
+                    )
+                )
+            )
+
+            page.update()
+
+        except Exception as exc:
+            show_form_error(
+                str(exc)
+            )
+
+
+    requirement_due_date_dialog = form_dialog(
+        "Vencimiento operativo del requerimiento",
+        ft.Column(
+            controls=[
+                ft.Container(
+                    bgcolor="#FFFAEB",
+                    border=ft.border.all(
+                        1,
+                        "#FEDF89",
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.INFO_OUTLINE,
+                                color="#B54708",
+                                size=20,
+                            ),
+                            ft.Text(
+                                (
+                                    "Este vencimiento es un "
+                                    "objetivo operativo interno "
+                                    "de Calendar. No sustituye "
+                                    "ni calcula el plazo jurídico "
+                                    "del requerimiento."
+                                ),
+                                size=11,
+                                color="#7A2E0E",
+                                expand=True,
+                            ),
+                        ],
+                        spacing=9,
+                    ),
+                ),
+                ft.Row(
+                    controls=[
+                        requirement_due_date_input,
+                        requirement_due_time_input,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Text(
+                    (
+                        "Fecha: DD/MM/AAAA · "
+                        "Hora: HH:MM"
+                    ),
+                    size=10,
+                    color=Q_MUTED,
+                ),
+            ],
+            width=560,
+            spacing=12,
+        ),
+        actions=[
+            secondary_button(
+                "Cancelar",
+                close_requirement_due_date_dialog,
+            ),
+            primary_button(
+                "Confirmar",
+                save_requirement_due_date,
+            ),
+        ],
+    )
+
+
+    page.overlay.append(
+        requirement_due_date_dialog
     )
 
 

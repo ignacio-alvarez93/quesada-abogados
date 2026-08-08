@@ -1,4 +1,5 @@
 import gc
+import json
 import sqlite3
 import tempfile
 import time
@@ -465,6 +466,20 @@ class TraceabilityCalendarIntegrationTest(
                         'TASA_APORTADA',
                         'TASA APORTADA',
                         40,
+                        1
+                    ),
+                    (
+                        5,
+                        'REQUERIDO',
+                        'REQUERIDO',
+                        50,
+                        1
+                    ),
+                    (
+                        6,
+                        'REQUERIMIENTO_APORTADO',
+                        'REQUERIMIENTO APORTADO',
+                        60,
                         1
                     );
 
@@ -1370,6 +1385,451 @@ class TraceabilityCalendarIntegrationTest(
         self.assertEqual(
             row["estado_nombre"],
             "NO PRESENTADO",
+        )
+
+
+
+    def test_requirement_calendar_task_lifecycle(
+        self,
+    ):
+        """
+        E2E real:
+
+        REQUERIMIENTO
+            -> TASK automática
+            -> PENDIENTE
+            -> vencimiento operativo +10 días
+
+        JUSTIFICANTE_APORTACION_DOCUMENTACION
+            -> misma TASK COMPLETADA
+
+        archivado de la aportación
+            -> obligación reaparece
+            -> NEEDS_DUE_DATE_FOR_REOPEN
+
+        nueva fecha operativa
+            -> misma TASK REOPENED / PENDIENTE
+
+        archivado del requerimiento
+            -> misma TASK CANCELADA
+        """
+
+        # -------------------------------------------------
+        # 1. REQUERIMIENTO
+        # -------------------------------------------------
+
+        requirement = (
+            expedient_traceability_service
+            .create_admin_document_event(
+                {
+                    "expediente_id": 1000,
+                    "file_name": (
+                        "requerimiento_test.pdf"
+                    ),
+                    "event_code":
+                        "REQUERIMIENTO",
+                    "usuario": "TEST",
+                    "requirement_extraction": {
+                        "fecha_requerimiento":
+                            "2026-06-01",
+                        "csv_requerimiento":
+                            "CSV-REQUERIMIENTO-TEST",
+                        "numero_expediente_extranjeria":
+                            "330020260004082",
+                        "nie_detectado":
+                            "X0000000T",
+                        "solicitante_detectado":
+                            "CLIENTE PRUEBA",
+                        "unidad_tramitacion_codigo":
+                            "EA0040203",
+                        "unidad_tramitacion_nombre":
+                            "OFICINA DE EXTRANJERÍA",
+                        "plazo_dias":
+                            10,
+                        "documentacion_requerida_original":
+                            (
+                                "Aporte pasaporte y "
+                                "certificado."
+                            ),
+                        "documentacion_requerida_abogado":
+                            (
+                                "Pasaporte y certificado."
+                            ),
+                        "estado_requerimiento":
+                            "PENDIENTE",
+                    },
+                }
+            )
+        )
+
+        self.assertEqual(
+            requirement["event_code"],
+            "REQUERIMIENTO",
+        )
+
+        self.assertEqual(
+            requirement["estado_nuevo"],
+            "REQUERIDO",
+        )
+
+        self.assertTrue(
+            requirement[
+                "calendar_tasks"
+            ]["ok"]
+        )
+
+        self.assertEqual(
+            requirement[
+                "calendar_tasks"
+            ]["action"],
+            "CREATED",
+        )
+
+        requirement_id = (
+            requirement["justificante_id"]
+        )
+
+        task = (
+            requirement[
+                "calendar_tasks"
+            ]["task"]
+        )
+
+        task_id = task["id"]
+
+        self.assertEqual(
+            task["titulo"],
+            "Atender requerimiento",
+        )
+
+        self.assertEqual(
+            task["tipo"],
+            "ATENCION_REQUERIMIENTO",
+        )
+
+        self.assertEqual(
+            task["estado"],
+            "PENDIENTE",
+        )
+
+        self.assertEqual(
+            task["origen_id"],
+            str(requirement_id),
+        )
+
+        self.assertEqual(
+            task["source_key"],
+            (
+                "TRACEABILITY:TASK:"
+                "REQUIREMENT:EXP:1000:REQ:"
+                + str(requirement_id)
+            ),
+        )
+
+        self.assertEqual(
+            task["fecha_vencimiento"],
+            "2026-06-11 12:00:00",
+        )
+
+        tasks = self._all_tasks()
+
+        self.assertEqual(
+            len(tasks),
+            1,
+        )
+
+        self.assertEqual(
+            tasks[0]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            tasks[0]["estado"],
+            "PENDIENTE",
+        )
+
+        # -------------------------------------------------
+        # 2. APORTACIÓN DE DOCUMENTACIÓN
+        #
+        # Existe un único requerimiento abierto:
+        # el productor debe enlazarlo automáticamente.
+        # -------------------------------------------------
+
+        submission = (
+            expedient_traceability_service
+            .create_admin_document_event(
+                {
+                    "expediente_id": 1000,
+                    "file_name": (
+                        "aportacion_"
+                        "requerimiento_test.pdf"
+                    ),
+                    "event_code": (
+                        "JUSTIFICANTE_"
+                        "APORTACION_DOCUMENTACION"
+                    ),
+                    "usuario": "TEST",
+                    "document_submission_extraction": {
+                        "fecha_registro":
+                            "2026-06-05 10:00:00",
+                        "fecha_presentacion":
+                            "2026-06-05 09:59:00",
+                        "csv_geiser":
+                            "CSV-APORTACION-REQ-TEST",
+                        "numero_registro_regage":
+                            "REGAGE-REQ-TEST",
+                        "numero_expediente_extranjeria":
+                            "330020260004082",
+                        "nie_detectado":
+                            "X0000000T",
+                        "unidad_tramitacion_codigo":
+                            "EA0040203",
+                        "unidad_tramitacion_nombre":
+                            "OFICINA DE EXTRANJERÍA",
+                        "documentos_aportados_texto":
+                            (
+                                "Pasaporte y certificado."
+                            ),
+                        "notas_aportacion_abogado":
+                            "",
+                        "estado_aportacion":
+                            "APORTADA",
+                    },
+                }
+            )
+        )
+
+        self.assertEqual(
+            submission["event_code"],
+            (
+                "JUSTIFICANTE_"
+                "APORTACION_DOCUMENTACION"
+            ),
+        )
+
+        self.assertEqual(
+            submission["estado_nuevo"],
+            "REQUERIMIENTO APORTADO",
+        )
+
+        self.assertTrue(
+            submission[
+                "calendar_tasks"
+            ]["ok"]
+        )
+
+        self.assertEqual(
+            submission[
+                "calendar_tasks"
+            ]["action"],
+            "COMPLETED",
+        )
+
+        self.assertEqual(
+            submission[
+                "calendar_tasks"
+            ][
+                "requirement_document_id"
+            ],
+            requirement_id,
+        )
+
+        submission_id = (
+            submission["justificante_id"]
+        )
+
+        tasks = self._all_tasks()
+
+        self.assertEqual(
+            len(tasks),
+            1,
+        )
+
+        self.assertEqual(
+            tasks[0]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            tasks[0]["estado"],
+            "COMPLETADA",
+        )
+
+        # El enlace automático debe haber quedado
+        # persistido en metadata para poder reconstruir
+        # posteriormente el ciclo.
+        with closing(
+            self._connect()
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT metadata_documento_json
+                FROM expediente_justificantes
+                WHERE id = ?
+                """,
+                (
+                    submission_id,
+                ),
+            ).fetchone()
+
+        submission_metadata = json.loads(
+            row[
+                "metadata_documento_json"
+            ]
+            or "{}"
+        )
+
+        self.assertEqual(
+            submission_metadata[
+                "requerimiento_documento_id"
+            ],
+            requirement_id,
+        )
+
+        # -------------------------------------------------
+        # 3. ARCHIVAR APORTACIÓN
+        # -------------------------------------------------
+
+        archived_submission = (
+            expedient_traceability_service
+            .archive_admin_document(
+                submission_id
+            )
+        )
+
+        self.assertTrue(
+            archived_submission["ok"]
+        )
+
+        self.assertEqual(
+            archived_submission[
+                "calendar_tasks"
+            ]["action"],
+            (
+                "NEEDS_DUE_DATE_FOR_REOPEN"
+            ),
+        )
+
+        self.assertTrue(
+            archived_submission[
+                "calendar_tasks"
+            ]["requires_due_date"]
+        )
+
+        self.assertEqual(
+            archived_submission[
+                "calendar_tasks"
+            ][
+                "requirement_document_id"
+            ],
+            requirement_id,
+        )
+
+        # No reutilizamos silenciosamente la
+        # fecha antigua.
+        tasks = self._all_tasks()
+
+        self.assertEqual(
+            len(tasks),
+            1,
+        )
+
+        self.assertEqual(
+            tasks[0]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            tasks[0]["estado"],
+            "COMPLETADA",
+        )
+
+        self.assertEqual(
+            archived_submission[
+                "estado_nuevo"
+            ],
+            "REQUERIDO",
+        )
+
+        # -------------------------------------------------
+        # 4. NUEVA FECHA / REAPERTURA
+        # -------------------------------------------------
+
+        reopened = (
+            calendar_traceability_task_producer_service
+            .confirm_requirement_due_date(
+                1000,
+                requirement_id,
+                "2099-06-20 12:00:00",
+                usuario="TEST",
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            reopened["action"],
+            "REOPENED",
+        )
+
+        self.assertEqual(
+            reopened["task"]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            reopened["task"]["estado"],
+            "PENDIENTE",
+        )
+
+        self.assertEqual(
+            reopened["task"][
+                "fecha_vencimiento"
+            ],
+            "2099-06-20 12:00:00",
+        )
+
+        self.assertEqual(
+            len(self._all_tasks()),
+            1,
+        )
+
+        # -------------------------------------------------
+        # 5. ARCHIVAR EL REQUERIMIENTO
+        # -------------------------------------------------
+
+        archived_requirement = (
+            expedient_traceability_service
+            .archive_admin_document(
+                requirement_id
+            )
+        )
+
+        self.assertTrue(
+            archived_requirement["ok"]
+        )
+
+        self.assertEqual(
+            archived_requirement[
+                "calendar_tasks"
+            ]["action"],
+            "CANCELLED",
+        )
+
+        tasks = self._all_tasks()
+
+        self.assertEqual(
+            len(tasks),
+            1,
+        )
+
+        self.assertEqual(
+            tasks[0]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            tasks[0]["estado"],
+            "CANCELADA",
         )
 
 

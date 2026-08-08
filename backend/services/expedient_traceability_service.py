@@ -1332,6 +1332,7 @@ def archive_admin_document(justificante_id):
         _project_admin_event_tasks_to_calendar(
             expediente_id,
             event_code,
+            document_id=justificante_id,
         )
     )
 
@@ -3098,6 +3099,7 @@ def create_admin_document_event(data):
         _project_admin_event_tasks_to_calendar(
             expediente_id,
             event_code,
+            document_id=justificante_id,
         )
     )
 
@@ -3212,6 +3214,8 @@ def _project_tracking_to_calendar(
 def _project_admin_event_tasks_to_calendar(
     expediente_id,
     event_code,
+    *,
+    document_id=None,
 ):
     """
     Proyecta obligaciones operativas derivadas de
@@ -3227,6 +3231,8 @@ def _project_admin_event_tasks_to_calendar(
     supported = {
         "ADMISION_TRAMITE_TASA",
         "JUSTIFICANTE_APORTACION_TASA",
+        "REQUERIMIENTO",
+        "JUSTIFICANTE_APORTACION_DOCUMENTACION",
     }
 
     if normalized_event not in supported:
@@ -3241,10 +3247,24 @@ def _project_admin_event_tasks_to_calendar(
             calendar_traceability_task_producer_service
         )
 
+        if normalized_event in {
+            "ADMISION_TRAMITE_TASA",
+            "JUSTIFICANTE_APORTACION_TASA",
+        }:
+            return (
+                calendar_traceability_task_producer_service
+                .sync_tax_obligation(
+                    expediente_id,
+                    db_path=DB_PATH,
+                )
+            )
+
         return (
             calendar_traceability_task_producer_service
-            .sync_tax_obligation(
+            .sync_requirement_obligation(
                 expediente_id,
+                event_code=normalized_event,
+                document_id=document_id,
                 db_path=DB_PATH,
             )
         )
