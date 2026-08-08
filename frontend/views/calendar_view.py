@@ -11,6 +11,10 @@ from backend.services import (
     as calendar_task_app,
 )
 
+from backend.services import (
+    scheduled_notification_service,
+)
+
 from frontend.components.app_button import (
     primary_button,
     secondary_button,
@@ -321,6 +325,7 @@ def calendar_view(
     )
 
     task_dialog = None
+    editing_task_id = None
 
     search_input = text_input(
         "Buscar tarea / aviso / expediente / cliente",
@@ -494,6 +499,167 @@ def calendar_view(
     )
 
 
+    def _client_label_by_id(client_id):
+        if not client_id:
+            return ""
+
+        prefix = f"{int(client_id)} - "
+
+        for row in client_rows:
+            display = str(
+                row.get("display")
+                or ""
+            )
+
+            if display.startswith(prefix):
+                return display
+
+        return ""
+
+
+    def _load_task_form_for_edit(task):
+        task_title.value = str(
+            task.get("titulo")
+            or ""
+        )
+
+        task_description.value = str(
+            task.get("descripcion")
+            or ""
+        )
+
+        client_id = task.get(
+            "cliente_id"
+        )
+
+        client_label = (
+            _client_label_by_id(
+                client_id
+            )
+        )
+
+        task_client.set_value(
+            client_label,
+            update=False,
+        )
+
+        task_expedient.set_options(
+            [],
+            clear_value=True,
+        )
+
+        if client_id:
+            expedients = (
+                expedient_service
+                .get_expedientes(
+                    cliente_id=int(
+                        client_id
+                    ),
+                    active_only=False,
+                )
+            )
+
+            labels = [
+                _expedient_label(item)
+                for item in expedients
+            ]
+
+            task_expedient.set_options(
+                labels,
+                clear_value=False,
+            )
+
+            current_expedient_id = (
+                task.get(
+                    "expediente_id"
+                )
+            )
+
+            if current_expedient_id:
+                prefix = (
+                    f"{int(current_expedient_id)} - "
+                )
+
+                current_label = next(
+                    (
+                        label
+                        for label in labels
+                        if str(label).startswith(
+                            prefix
+                        )
+                    ),
+                    "",
+                )
+
+                if not current_label:
+                    expedient = (
+                        expedient_service
+                        .get_expediente(
+                            int(
+                                current_expedient_id
+                            )
+                        )
+                    )
+
+                    if expedient:
+                        current_label = (
+                            _expedient_label(
+                                expedient
+                            )
+                        )
+
+                        task_expedient.options = [
+                            current_label,
+                            *task_expedient.options,
+                        ]
+
+                task_expedient.set_value(
+                    current_label,
+                    update=False,
+                )
+
+        task_priority.value = (
+            task.get("prioridad")
+            or "NORMAL"
+        )
+
+        task_responsible.value = str(
+            task.get("responsable")
+            or ""
+        )
+
+        due_raw = str(
+            task.get(
+                "fecha_vencimiento"
+            )
+            or ""
+        )
+
+        try:
+            due_dt = datetime.fromisoformat(
+                due_raw.replace(
+                    "T",
+                    " ",
+                )
+            )
+
+            task_due_date.value = (
+                due_dt.strftime(
+                    "%d/%m/%Y"
+                )
+            )
+
+            task_due_time.value = (
+                due_dt.strftime(
+                    "%H:%M"
+                )
+            )
+
+        except Exception:
+            task_due_date.value = ""
+            task_due_time.value = "09:00"
+
+
     def _reset_task_form():
         task_title.value = ""
         task_description.value = ""
@@ -542,6 +708,133 @@ def calendar_view(
         if update:
             render()
             safe_update()
+
+
+    def _save_task_edit(e=None):
+        nonlocal task_dialog
+        nonlocal editing_task_id
+
+        if not editing_task_id:
+            return
+
+        task_id = int(
+            editing_task_id
+        )
+
+        try:
+            title = str(
+                task_title.value
+                or ""
+            ).strip()
+
+            if not title:
+                raise ValueError(
+                    "El título es obligatorio."
+                )
+
+            due_at = _task_form_datetime(
+                task_due_date.value,
+                task_due_time.value,
+            )
+
+            client_id = _option_id(
+                task_client.input.value
+            )
+
+            expedient_id = _option_id(
+                task_expedient.input.value
+            )
+
+            # Mantener la misma seguridad relacional
+            # que ya usamos al crear una tarea.
+            if expedient_id:
+                expedient = (
+                    expedient_service
+                    .get_expediente(
+                        expedient_id
+                    )
+                )
+
+                if not expedient:
+                    raise ValueError(
+                        "El expediente seleccionado "
+                        "no existe."
+                    )
+
+                expedient_client_id = (
+                    expedient.get(
+                        "cliente_id"
+                    )
+                )
+
+                if (
+                    client_id
+                    and expedient_client_id
+                    and int(client_id)
+                    != int(
+                        expedient_client_id
+                    )
+                ):
+                    raise ValueError(
+                        "El expediente no pertenece "
+                        "al cliente seleccionado."
+                    )
+
+                if not client_id:
+                    client_id = (
+                        expedient_client_id
+                    )
+
+            calendar_task_app.update_calendar_task(
+                task_id,
+                titulo=title,
+                descripcion=str(
+                    task_description.value
+                    or ""
+                ).strip(),
+                cliente_id=client_id,
+                expediente_id=(
+                    expedient_id
+                ),
+                prioridad=(
+                    task_priority.value
+                    or "NORMAL"
+                ),
+                responsable=str(
+                    task_responsible.value
+                    or ""
+                ).strip(),
+                fecha_vencimiento=due_at,
+            )
+
+            # Cerramos únicamente el diálogo de edición.
+            _close_task_dialog()
+
+            editing_task_id = None
+
+            refresh()
+
+            _reload_selected_task(
+                task_id
+            )
+
+            render()
+            safe_update()
+
+            # El detalle permanece debajo del formulario
+            # de edición y se reconstruye con la tarea
+            # recién actualizada.
+            _refresh_detail_dialog()
+
+            _show_message(
+                "Tarea actualizada correctamente."
+            )
+
+        except Exception as exc:
+            _show_message(
+                str(exc),
+                error=True,
+            )
 
 
     def _save_task(e=None):
@@ -697,9 +990,132 @@ def calendar_view(
             )
 
 
+    def _open_edit_task_dialog(e=None):
+        nonlocal task_dialog
+        nonlocal editing_task_id
+
+        item = state.get(
+            "selected_item"
+        ) or {}
+
+        if (
+            item.get("item_type")
+            != "TASK"
+        ):
+            return
+
+        task_id = int(
+            item.get("source_id")
+            or 0
+        )
+
+        if not task_id:
+            return
+
+        task = task_service.get_task(
+            task_id
+        )
+
+        if not task:
+            _show_message(
+                "No se ha podido cargar la tarea.",
+                error=True,
+            )
+            return
+
+        editing_task_id = task_id
+
+        _load_task_form_for_edit(
+            task
+        )
+
+        task_dialog = form_dialog(
+            "Editar tarea",
+            ft.Container(
+                width=760,
+                content=ft.Column(
+                    controls=[
+                        task_title,
+                        task_description,
+                        task_client.control,
+                        task_expedient.control,
+                        ft.Row(
+                            controls=[
+                                task_priority,
+                                task_responsible,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Row(
+                            controls=[
+                                task_due_date,
+                                task_due_time,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Container(
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            padding=12,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        ft.Icons
+                                        .SYNC_ROUNDED,
+                                        size=18,
+                                        color=Q_PRIMARY,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Si cambias el vencimiento "
+                                            "o la prioridad, las "
+                                            "notificaciones Telegram "
+                                            "se recalcularán "
+                                            "automáticamente."
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                secondary_button(
+                    "Cancelar",
+                    _close_task_dialog,
+                ),
+                primary_button(
+                    "Guardar cambios",
+                    _save_task_edit,
+                ),
+            ],
+        )
+
+        page.show_dialog(
+            task_dialog
+        )
+
+        page.update()
+
+
     def _open_new_task_dialog(e=None):
         nonlocal task_dialog
+        nonlocal editing_task_id
 
+        editing_task_id = None
         _reset_task_form()
 
         task_dialog = form_dialog(
@@ -1394,6 +1810,392 @@ def calendar_view(
             ),
         )
 
+    def _notification_status_style(
+        status,
+    ):
+        value = str(
+            status or ""
+        ).upper()
+
+        styles = {
+            "PENDIENTE": (
+                "#FFF7E6",
+                "#B54708",
+            ),
+            "PROCESANDO": (
+                "#EEF4FF",
+                "#0057B8",
+            ),
+            "ENVIADA": (
+                "#ECFDF3",
+                "#027A48",
+            ),
+            "CANCELADA": (
+                "#F2F4F7",
+                "#667085",
+            ),
+            "ERROR": (
+                "#FEF3F2",
+                "#B42318",
+            ),
+        }
+
+        return styles.get(
+            value,
+            (
+                "#F2F4F7",
+                "#475467",
+            ),
+        )
+
+
+    def _notification_badge(status):
+        bg, fg = (
+            _notification_status_style(
+                status
+            )
+        )
+
+        label = (
+            str(status or "-")
+            .replace("_", " ")
+            .title()
+        )
+
+        return ft.Container(
+            bgcolor=bg,
+            border_radius=999,
+            padding=ft.padding.symmetric(
+                horizontal=9,
+                vertical=3,
+            ),
+            content=ft.Text(
+                label,
+                size=9,
+                weight=ft.FontWeight.W_600,
+                color=fg,
+            ),
+        )
+
+
+    def _notification_row(
+        notification,
+        *,
+        historical=False,
+    ):
+        notification_type = (
+            str(
+                notification.get(
+                    "notification_type"
+                )
+                or "-"
+            )
+            .replace("_", " ")
+            .title()
+        )
+
+        scheduled_at = _date_display(
+            notification.get(
+                "scheduled_at"
+            )
+        )
+
+        status = notification.get(
+            "estado"
+        )
+
+        attempt_count = int(
+            notification.get(
+                "attempt_count"
+            )
+            or 0
+        )
+
+        sent_at = notification.get(
+            "sent_at"
+        )
+
+        last_error = str(
+            notification.get(
+                "last_error"
+            )
+            or ""
+        ).strip()
+
+        details = []
+
+        if sent_at:
+            details.append(
+                "Enviada: "
+                + _date_display(
+                    sent_at
+                )
+            )
+
+        if attempt_count:
+            details.append(
+                (
+                    "Intentos: "
+                    f"{attempt_count}"
+                )
+            )
+
+        if last_error:
+            details.append(
+                (
+                    "Último error: "
+                    + last_error
+                )
+            )
+
+        return ft.Container(
+            bgcolor=(
+                "#FAFAFA"
+                if historical
+                else "#FFFFFF"
+            ),
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=10,
+            padding=10,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                (
+                                    ft.Icons
+                                    .HISTORY_ROUNDED
+                                    if historical
+                                    else ft.Icons
+                                    .SEND_ROUNDED
+                                ),
+                                size=16,
+                                color=(
+                                    Q_MUTED
+                                    if historical
+                                    else Q_PRIMARY
+                                ),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        notification_type,
+                                        size=11,
+                                        weight=(
+                                            ft.FontWeight
+                                            .W_600
+                                        ),
+                                        color="#0F172A",
+                                    ),
+                                    ft.Text(
+                                        scheduled_at
+                                        or "-",
+                                        size=10,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=1,
+                                expand=True,
+                            ),
+                            _notification_badge(
+                                status
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment
+                            .CENTER
+                        ),
+                    ),
+                    (
+                        ft.Text(
+                            " · ".join(
+                                details
+                            ),
+                            size=9,
+                            color=(
+                                "#B42318"
+                                if last_error
+                                else Q_MUTED
+                            ),
+                        )
+                        if details
+                        else ft.Container()
+                    ),
+                ],
+                spacing=5,
+            ),
+        )
+
+
+    def _task_notification_section(
+        task_id,
+    ):
+        try:
+            notifications = (
+                scheduled_notification_service
+                .list_for_source(
+                    "TASK",
+                    int(task_id),
+                    include_inactive=True,
+                )
+            )
+        except Exception as exc:
+            return ft.Container(
+                bgcolor="#FEF3F2",
+                border=ft.border.all(
+                    1,
+                    "#FDA29B",
+                ),
+                border_radius=10,
+                padding=10,
+                content=ft.Text(
+                    (
+                        "No se pudieron cargar "
+                        "las notificaciones Telegram: "
+                        + str(exc)
+                    ),
+                    size=10,
+                    color="#B42318",
+                ),
+            )
+
+        notifications = list(
+            notifications or []
+        )
+
+        notifications.sort(
+            key=lambda item: int(
+                item.get("id")
+                or 0
+            ),
+            reverse=True,
+        )
+
+        active = [
+            item
+            for item in notifications
+            if int(
+                item.get("activo")
+                or 0
+            )
+            == 1
+        ]
+
+        history = [
+            item
+            for item in notifications
+            if int(
+                item.get("activo")
+                or 0
+            )
+            != 1
+        ]
+
+        controls = [
+            ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons
+                        .TELEGRAM,
+                        size=18,
+                        color=Q_PRIMARY,
+                    ),
+                    ft.Text(
+                        "Notificaciones Telegram",
+                        size=12,
+                        weight=(
+                            ft.FontWeight.BOLD
+                        ),
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=7,
+            ),
+        ]
+
+        controls.append(
+            ft.Text(
+                (
+                    "Planificación vigente"
+                    f" ({len(active)})"
+                ),
+                size=10,
+                weight=ft.FontWeight.W_600,
+                color="#475467",
+            )
+        )
+
+        if active:
+            controls.extend(
+                [
+                    _notification_row(
+                        item
+                    )
+                    for item in active
+                ]
+            )
+        else:
+            controls.append(
+                ft.Text(
+                    (
+                        "No hay notificaciones "
+                        "activas programadas."
+                    ),
+                    size=10,
+                    color=Q_MUTED,
+                    italic=True,
+                )
+            )
+
+        if history:
+            controls.extend(
+                [
+                    ft.Container(
+                        height=4,
+                    ),
+                    ft.Text(
+                        (
+                            "Histórico"
+                            f" ({len(history)})"
+                        ),
+                        size=10,
+                        weight=(
+                            ft.FontWeight.W_600
+                        ),
+                        color="#475467",
+                    ),
+                ]
+            )
+
+            controls.extend(
+                [
+                    _notification_row(
+                        item,
+                        historical=True,
+                    )
+                    for item in history
+                ]
+            )
+
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=controls,
+                spacing=8,
+            ),
+        )
+
+
     def detail_panel():
         item = state.get(
             "selected_item"
@@ -1551,8 +2353,39 @@ def calendar_view(
                         color="#334155",
                     ),
                     (
+                        _task_notification_section(
+                            item.get(
+                                "source_id"
+                            )
+                        )
+                        if (
+                            item.get(
+                                "item_type"
+                            )
+                            == "TASK"
+                            and item.get(
+                                "source_id"
+                            )
+                        )
+                        else ft.Container()
+                    ),
+                    (
                         ft.Row(
                             controls=[
+                                (
+                                    secondary_button(
+                                        "Editar",
+                                        _open_edit_task_dialog,
+                                    )
+                                    if item.get(
+                                        "status"
+                                    )
+                                    in {
+                                        "PENDIENTE",
+                                        "EN_CURSO",
+                                    }
+                                    else ft.Container()
+                                ),
                                 (
                                     primary_button(
                                         "Iniciar",
