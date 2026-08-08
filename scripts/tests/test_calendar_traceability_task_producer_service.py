@@ -249,7 +249,7 @@ class CalendarTraceabilityTaskProducerTest(
             0,
         )
 
-    def test_admission_without_due_date_does_not_invent_task(
+    def test_admission_without_due_date_creates_operational_task(
         self,
     ):
         self._insert_document(
@@ -270,22 +270,49 @@ class CalendarTraceabilityTaskProducerTest(
 
         self.assertEqual(
             result["action"],
-            "NEEDS_DUE_DATE",
+            "CREATED",
         )
 
-        self.assertTrue(
+        self.assertFalse(
             result[
                 "requires_due_date"
             ]
         )
 
-        self.assertIsNone(
-            result["task"]
+        self.assertEqual(
+            result[
+                "due_date_source"
+            ],
+            "OPERATIONAL_DEFAULT",
+        )
+
+        task = result["task"]
+
+        self.assertIsNotNone(
+            task
+        )
+
+        self.assertEqual(
+            task["titulo"],
+            "Aportar tasa",
+        )
+
+        self.assertEqual(
+            task["estado"],
+            "PENDIENTE",
+        )
+
+        # El fixture registra el documento el
+        # 01/05/2026. El objetivo operativo interno
+        # es +10 días naturales a las 12:00.
+        self.assertEqual(
+            task["fecha_vencimiento"],
+            "2026-05-11 12:00:00",
         )
 
         self.assertEqual(
             len(self._tasks()),
-            0,
+            1,
         )
 
         self.assertEqual(
@@ -759,6 +786,290 @@ class CalendarTraceabilityTaskProducerTest(
             len(self._tasks()),
             0,
         )
+
+    def test_tax_status_without_admission_has_no_obligation(
+        self,
+    ):
+        snapshot = (
+            producer
+            .get_tax_obligation_status(
+                1000,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertTrue(
+            snapshot["ok"]
+        )
+
+        self.assertEqual(
+            snapshot["status"],
+            "NO_OBLIGATION",
+        )
+
+        self.assertFalse(
+            snapshot[
+                "obligation_exists"
+            ]
+        )
+
+        self.assertFalse(
+            snapshot[
+                "requires_due_date"
+            ]
+        )
+
+
+    def test_tax_status_detects_unsynchronized_obligation(
+        self,
+    ):
+        self._insert_document(
+            producer.TAX_ADMISSION_EVENT,
+            self._tax_metadata(),
+        )
+
+        snapshot = (
+            producer
+            .get_tax_obligation_status(
+                1000,
+                db_path=self.db_path,
+            )
+        )
+
+        # El snapshot es SOLO LECTURA.
+        # Al insertar directamente el documento en
+        # el fixture, todavía no ha pasado por sync.
+        self.assertEqual(
+            snapshot["status"],
+            "TASK_NOT_CREATED",
+        )
+
+        self.assertTrue(
+            snapshot[
+                "obligation_exists"
+            ]
+        )
+
+        self.assertFalse(
+            snapshot[
+                "requires_due_date"
+            ]
+        )
+
+        self.assertIsNone(
+            snapshot["task"]
+        )
+
+        self.assertEqual(
+            snapshot["metadata"][
+                "tasa_codigo"
+            ],
+            "052",
+        )
+
+        # Consultar nunca puede crear la TASK.
+        self.assertEqual(
+            len(self._tasks()),
+            0,
+        )
+
+
+    def test_confirm_tax_due_date_creates_task(
+        self,
+    ):
+        self._insert_document(
+            producer.TAX_ADMISSION_EVENT,
+            self._tax_metadata(),
+        )
+
+        result = (
+            producer
+            .confirm_tax_due_date(
+                1000,
+                "2099-05-15T12:30:00",
+                usuario="TEST",
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            result["action"],
+            "CREATED",
+        )
+
+        self.assertEqual(
+            result[
+                "confirmed_due_at"
+            ],
+            "2099-05-15 12:30:00",
+        )
+
+        self.assertEqual(
+            result["task"][
+                "fecha_vencimiento"
+            ],
+            "2099-05-15 12:30:00",
+        )
+
+        self.assertEqual(
+            len(self._tasks()),
+            1,
+        )
+
+        snapshot = (
+            producer
+            .get_tax_obligation_status(
+                1000,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            snapshot["status"],
+            "TASK_ACTIVE",
+        )
+
+        self.assertFalse(
+            snapshot[
+                "requires_due_date"
+            ]
+        )
+
+
+    def test_confirm_tax_due_date_updates_existing_task(
+        self,
+    ):
+        self._insert_document(
+            producer.TAX_ADMISSION_EVENT,
+            self._tax_metadata(),
+        )
+
+        created = (
+            producer
+            .confirm_tax_due_date(
+                1000,
+                "2099-05-15 12:00:00",
+                usuario="TEST",
+                db_path=self.db_path,
+            )
+        )
+
+        task_id = (
+            created["task"]["id"]
+        )
+
+        updated = (
+            producer
+            .confirm_tax_due_date(
+                1000,
+                "2099-05-16 09:45:00",
+                usuario="TEST",
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            updated["action"],
+            "UPDATED",
+        )
+
+        self.assertEqual(
+            updated["task"]["id"],
+            task_id,
+        )
+
+        self.assertEqual(
+            updated["task"][
+                "fecha_vencimiento"
+            ],
+            "2099-05-16 09:45:00",
+        )
+
+        self.assertEqual(
+            len(self._tasks()),
+            1,
+        )
+
+
+    def test_tax_status_is_satisfied_after_submission(
+        self,
+    ):
+        self._insert_document(
+            producer.TAX_ADMISSION_EVENT,
+            self._tax_metadata(),
+        )
+
+        self._insert_document(
+            producer.TAX_SUBMISSION_EVENT,
+            {
+                "aportacion_tasa_confirmada":
+                    True,
+                "estado_tasa":
+                    "APORTADA",
+            },
+        )
+
+        snapshot = (
+            producer
+            .get_tax_obligation_status(
+                1000,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            snapshot["status"],
+            "SATISFIED",
+        )
+
+        self.assertTrue(
+            snapshot["satisfied"]
+        )
+
+        self.assertFalse(
+            snapshot[
+                "requires_due_date"
+            ]
+        )
+
+
+    def test_confirm_due_date_rejects_satisfied_obligation(
+        self,
+    ):
+        self._insert_document(
+            producer.TAX_ADMISSION_EVENT,
+            self._tax_metadata(),
+        )
+
+        self._insert_document(
+            producer.TAX_SUBMISSION_EVENT,
+            {
+                "aportacion_tasa_confirmada":
+                    True,
+                "estado_tasa":
+                    "APORTADA",
+            },
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "ya está satisfecha",
+        ):
+            (
+                producer
+                .confirm_tax_due_date(
+                    1000,
+                    "2099-05-15 12:00:00",
+                    usuario="TEST",
+                    db_path=self.db_path,
+                )
+            )
+
+        self.assertEqual(
+            len(self._tasks()),
+            0,
+        )
+
 
 
 if __name__ == "__main__":

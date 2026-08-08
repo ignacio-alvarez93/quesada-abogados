@@ -21,6 +21,10 @@ from backend.services import (
     as document_target_service,
 )
 from backend.services import expedient_traceability_service as trace_service
+from backend.services import (
+    calendar_traceability_task_producer_service
+    as traceability_task_producer,
+)
 from backend.services import presentation_assistant_service
 from backend.services import presentation_queue_service
 from backend.services import presentation_config_service
@@ -16772,6 +16776,250 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                                 )
                             )
 
+                        if (
+                            event_code
+                            == "ADMISION_TRAMITE_TASA"
+                        ):
+                            try:
+                                tax_snapshot = (
+                                    traceability_task_producer
+                                    .get_tax_obligation_status(
+                                        expediente_id
+                                    )
+                                )
+
+                            except Exception as exc:
+                                tax_snapshot = {
+                                    "ok": False,
+                                    "status": "ERROR",
+                                    "error": str(exc),
+                                }
+
+                            tax_status = (
+                                tax_snapshot.get("status")
+                                or ""
+                            )
+
+                            tax_task = (
+                                tax_snapshot.get("task")
+                                or {}
+                            )
+
+                            tax_body.append(
+                                ft.Divider(
+                                    height=8,
+                                    color="#FEDF89",
+                                )
+                            )
+
+                            tax_body.append(
+                                ft.Text(
+                                    "Calendar",
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                )
+                            )
+
+                            if (
+                                tax_status
+                                == "TASK_NOT_CREATED"
+                            ):
+                                tax_body.append(
+                                    ft.Text(
+                                        (
+                                            "⚠ La obligación existe "
+                                            "pero Calendar no tiene "
+                                            "la tarea asociada."
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#B42318",
+                                    )
+                                )
+
+                                tax_body.append(
+                                    ft.Text(
+                                        (
+                                            "Revisa la sincronización "
+                                            "de Trazabilidad. La vista "
+                                            "no crea tareas por sí sola."
+                                        ),
+                                        size=11,
+                                        color="#7A271A",
+                                    )
+                                )
+
+                            elif (
+                                tax_status
+                                == "TASK_ACTIVE"
+                            ):
+                                due_value = (
+                                    tax_task.get(
+                                        "fecha_vencimiento"
+                                    )
+                                    or ""
+                                )
+
+                                due_display = due_value
+
+                                if due_value:
+                                    try:
+                                        due_display = (
+                                            datetime
+                                            .fromisoformat(
+                                                str(
+                                                    due_value
+                                                ).replace(
+                                                    "T",
+                                                    " ",
+                                                )
+                                            )
+                                            .strftime(
+                                                "%d/%m/%Y %H:%M"
+                                            )
+                                        )
+                                    except Exception:
+                                        pass
+
+                                tax_body.append(
+                                    ft.Text(
+                                        (
+                                            "Aportar tasa · "
+                                            + str(
+                                                tax_task.get(
+                                                    "estado"
+                                                )
+                                                or "PENDIENTE"
+                                            )
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#027A48",
+                                    )
+                                )
+
+                                tax_body.append(
+                                    ft.Text(
+                                        (
+                                            "Vencimiento operativo: "
+                                            + (
+                                                due_display
+                                                or "-"
+                                            )
+                                        ),
+                                        size=11,
+                                        color=Q_PRIMARY_DARK,
+                                    )
+                                )
+
+                                tax_body.append(
+                                    secondary_button(
+                                        "Cambiar vencimiento",
+                                        lambda e,
+                                        exp_id=expediente_id,
+                                        snapshot=tax_snapshot: (
+                                            open_tax_due_date_dialog(
+                                                exp_id,
+                                                snapshot,
+                                            )
+                                        ),
+                                    )
+                                )
+
+                            elif (
+                                tax_status
+                                == (
+                                    "NEEDS_DUE_DATE_"
+                                    "FOR_REOPEN"
+                                )
+                            ):
+                                tax_body.append(
+                                    ft.Text(
+                                        (
+                                            "⚠ La obligación "
+                                            "ha vuelto a quedar "
+                                            "pendiente."
+                                        ),
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#B54708",
+                                    )
+                                )
+
+                                tax_body.append(
+                                    ft.Text(
+                                        (
+                                            "Confirma un nuevo "
+                                            "vencimiento antes de "
+                                            "reabrir la tarea."
+                                        ),
+                                        size=11,
+                                        color="#7A2E0E",
+                                    )
+                                )
+
+                                tax_body.append(
+                                    primary_button(
+                                        (
+                                            "Confirmar nuevo "
+                                            "vencimiento"
+                                        ),
+                                        lambda e,
+                                        exp_id=expediente_id,
+                                        snapshot=tax_snapshot: (
+                                            open_tax_due_date_dialog(
+                                                exp_id,
+                                                snapshot,
+                                            )
+                                        ),
+                                    )
+                                )
+
+                            elif (
+                                tax_status
+                                == "SATISFIED"
+                            ):
+                                tax_body.append(
+                                    ft.Text(
+                                        "✓ Obligación satisfecha",
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#027A48",
+                                    )
+                                )
+
+                                if tax_task:
+                                    tax_body.append(
+                                        ft.Text(
+                                            (
+                                                "Tarea Calendar: "
+                                                + str(
+                                                    tax_task.get(
+                                                        "estado"
+                                                    )
+                                                    or "COMPLETADA"
+                                                )
+                                            ),
+                                            size=11,
+                                            color="#027A48",
+                                        )
+                                    )
+
+                            elif (
+                                tax_status == "ERROR"
+                            ):
+                                tax_body.append(
+                                    ft.Text(
+                                        (
+                                            "No se pudo consultar "
+                                            "el estado de Calendar."
+                                        ),
+                                        size=11,
+                                        color="#B42318",
+                                    )
+                                )
+
                         body.append(
                             ft.Container(
                                 bgcolor="#FFFAEB",
@@ -16790,7 +17038,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                                         ),
                                         ft.Column(
                                             controls=tax_body,
-                                            spacing=3,
+                                            spacing=5,
                                             expand=True,
                                         ),
                                     ],
@@ -21501,6 +21749,311 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
+
+
+    tax_due_date_input = text_input(
+        "Fecha límite",
+        width=240,
+    )
+
+    tax_due_time_input = text_input(
+        "Hora",
+        value="12:00",
+        width=160,
+    )
+
+
+    def close_tax_due_date_dialog(e=None):
+        tax_due_date_dialog.open = False
+        page.update()
+
+
+    def open_tax_due_date_dialog(
+        expediente_id,
+        snapshot=None,
+    ):
+        snapshot = snapshot or {}
+
+        state[
+            "tax_due_date_expediente_id"
+        ] = int(
+            expediente_id
+        )
+
+        task = snapshot.get("task") or {}
+
+        current_due = (
+            task.get("fecha_vencimiento")
+            or ""
+        )
+
+        tax_due_date_input.value = ""
+        tax_due_time_input.value = "12:00"
+
+        if current_due:
+            try:
+                parsed = datetime.fromisoformat(
+                    str(current_due).replace(
+                        "T",
+                        " ",
+                    )
+                )
+
+                tax_due_date_input.value = (
+                    parsed.strftime(
+                        "%d/%m/%Y"
+                    )
+                )
+
+                tax_due_time_input.value = (
+                    parsed.strftime(
+                        "%H:%M"
+                    )
+                )
+
+            except Exception:
+                pass
+
+        status = (
+            snapshot.get("status")
+            or ""
+        )
+
+        if status == "TASK_ACTIVE":
+            title = (
+                "Cambiar vencimiento "
+                "de la tasa"
+            )
+        elif (
+            status
+            == "NEEDS_DUE_DATE_FOR_REOPEN"
+        ):
+            title = (
+                "Confirmar nuevo vencimiento "
+                "de la tasa"
+            )
+        else:
+            title = (
+                "Confirmar vencimiento "
+                "de la tasa"
+            )
+
+        tax_due_date_dialog.title = ft.Text(
+            title,
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        )
+
+        tax_due_date_dialog.open = True
+        page.update()
+
+
+    def save_tax_due_date(e=None):
+        expediente_id = state.get(
+            "tax_due_date_expediente_id"
+        )
+
+        if not expediente_id:
+            show_form_error(
+                "No hay expediente activo"
+            )
+            return
+
+        date_value = (
+            tax_due_date_input.value
+            or ""
+        ).strip()
+
+        time_value = (
+            tax_due_time_input.value
+            or ""
+        ).strip()
+
+        if not date_value:
+            show_form_error(
+                "Indica la fecha límite"
+            )
+            return
+
+        if not time_value:
+            show_form_error(
+                "Indica la hora"
+            )
+            return
+
+        try:
+            parsed_date = datetime.strptime(
+                date_value,
+                "%d/%m/%Y",
+            )
+
+        except ValueError:
+            show_form_error(
+                "La fecha debe tener formato "
+                "DD/MM/AAAA"
+            )
+            return
+
+        try:
+            parsed_time = datetime.strptime(
+                time_value,
+                "%H:%M",
+            )
+
+        except ValueError:
+            show_form_error(
+                "La hora debe tener formato HH:MM"
+            )
+            return
+
+        due_at = (
+            parsed_date.strftime(
+                "%Y-%m-%d"
+            )
+            + " "
+            + parsed_time.strftime(
+                "%H:%M"
+            )
+            + ":00"
+        )
+
+        try:
+            result = (
+                traceability_task_producer
+                .confirm_tax_due_date(
+                    expediente_id,
+                    due_at,
+                    usuario="ERP",
+                )
+            )
+
+            tax_due_date_dialog.open = False
+
+            expediente_dialog.content = (
+                build_expediente_dialog_content(
+                    expediente_id
+                )
+            )
+
+            refresh_table()
+
+            action = (
+                result.get("action")
+                or ""
+            )
+
+            if action == "CREATED":
+                message = (
+                    "Tarea de aportación de tasa creada"
+                )
+            elif action == "REOPENED":
+                message = (
+                    "Tarea de aportación de tasa "
+                    "reabierta"
+                )
+            elif action == "UPDATED":
+                message = (
+                    "Vencimiento de la tarea "
+                    "actualizado"
+                )
+            else:
+                message = (
+                    "Vencimiento de la tasa "
+                    "confirmado"
+                )
+
+            set_message(
+                success_alert(
+                    message
+                    + "\nFecha límite: "
+                    + parsed_date.strftime(
+                        "%d/%m/%Y"
+                    )
+                    + " "
+                    + parsed_time.strftime(
+                        "%H:%M"
+                    )
+                )
+            )
+
+            page.update()
+
+        except Exception as exc:
+            show_form_error(
+                str(exc)
+            )
+
+
+    tax_due_date_dialog = form_dialog(
+        "Confirmar vencimiento de la tasa",
+        ft.Column(
+            controls=[
+                ft.Container(
+                    bgcolor="#FFFAEB",
+                    border=ft.border.all(
+                        1,
+                        "#FEDF89",
+                    ),
+                    border_radius=10,
+                    padding=10,
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.WARNING_AMBER_ROUNDED,
+                                color="#B54708",
+                                size=20,
+                            ),
+                            ft.Text(
+                                (
+                                    "Confirma la fecha límite "
+                                    "aplicable. El sistema no "
+                                    "calcula automáticamente "
+                                    "el vencimiento jurídico."
+                                ),
+                                size=11,
+                                color="#7A2E0E",
+                                expand=True,
+                            ),
+                        ],
+                        spacing=9,
+                    ),
+                ),
+                ft.Row(
+                    controls=[
+                        tax_due_date_input,
+                        tax_due_time_input,
+                    ],
+                    spacing=10,
+                    wrap=True,
+                ),
+                ft.Text(
+                    (
+                        "Fecha: DD/MM/AAAA · "
+                        "Hora: HH:MM"
+                    ),
+                    size=10,
+                    color=Q_MUTED,
+                ),
+            ],
+            width=560,
+            spacing=12,
+        ),
+        actions=[
+            secondary_button(
+                "Cancelar",
+                close_tax_due_date_dialog,
+            ),
+            primary_button(
+                "Confirmar",
+                save_tax_due_date,
+            ),
+        ],
+    )
+
+
+    page.overlay.append(
+        tax_due_date_dialog
+    )
 
 
     expedient_note_dialog = form_dialog(

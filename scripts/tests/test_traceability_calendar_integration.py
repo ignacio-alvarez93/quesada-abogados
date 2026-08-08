@@ -920,12 +920,13 @@ class TraceabilityCalendarIntegrationTest(
         E2E real:
 
         ADMISION_TRAMITE_TASA
-            -> NEEDS_DUE_DATE
-            -> confirmación humana
+            -> TASK creada automáticamente
+            -> vencimiento operativo +10 días naturales
             -> TASK PENDIENTE
 
         JUSTIFICANTE_APORTACION_TASA
             -> misma TASK COMPLETADA
+            -> sin necesidad de pasar por EN_CURSO
 
         archivado justificante
             -> obligación reaparece
@@ -997,71 +998,32 @@ class TraceabilityCalendarIntegrationTest(
             admission[
                 "calendar_tasks"
             ]["action"],
-            "NEEDS_DUE_DATE",
+            "CREATED",
         )
 
-        self.assertTrue(
+        self.assertFalse(
             admission[
                 "calendar_tasks"
             ]["requires_due_date"]
+        )
+
+        self.assertEqual(
+            admission[
+                "calendar_tasks"
+            ]["due_date_source"],
+            "OPERATIONAL_DEFAULT",
         )
 
         admission_id = (
             admission["justificante_id"]
         )
 
-        self.assertEqual(
-            len(self._all_tasks()),
-            0,
+        task = (
+            admission[
+                "calendar_tasks"
+            ]["task"]
         )
 
-        # Estado administrativo real.
-        with closing(
-            self._connect()
-        ) as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    a.nombre AS estado_nombre
-                FROM expedientes e
-                LEFT JOIN
-                    config_estados_administrativos a
-                  ON a.id =
-                     e.estado_administrativo_id
-                WHERE e.id = 1000
-                """
-            ).fetchone()
-
-        self.assertEqual(
-            row["estado_nombre"],
-            "ADMITIDO CON TASA",
-        )
-
-        # -------------------------------------------------
-        # 2. FECHA CONFIRMADA
-        #
-        # 2099 se utiliza exclusivamente para el test.
-        # No representa ninguna regla jurídica.
-        # -------------------------------------------------
-
-        confirmed = (
-            calendar_traceability_task_producer_service
-            .sync_tax_obligation(
-                1000,
-                due_at=(
-                    "2099-05-15 12:00:00"
-                ),
-                usuario="TEST",
-                db_path=self.db_path,
-            )
-        )
-
-        self.assertEqual(
-            confirmed["action"],
-            "CREATED",
-        )
-
-        task = confirmed["task"]
         task_id = task["id"]
 
         self.assertEqual(
@@ -1087,9 +1049,12 @@ class TraceabilityCalendarIntegrationTest(
             ),
         )
 
+        # Vencimiento OPERATIVO interno:
+        # 01/05/2026 + 10 días naturales.
+        # No representa el plazo jurídico.
         self.assertEqual(
             task["fecha_vencimiento"],
-            "2099-05-15 12:00:00",
+            "2026-05-11 12:00:00",
         )
 
         tasks = self._all_tasks()
@@ -1102,6 +1067,33 @@ class TraceabilityCalendarIntegrationTest(
         self.assertEqual(
             tasks[0]["id"],
             task_id,
+        )
+
+        self.assertEqual(
+            tasks[0]["estado"],
+            "PENDIENTE",
+        )
+
+        # Estado administrativo real.
+        with closing(
+            self._connect()
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    a.nombre AS estado_nombre
+                FROM expedientes e
+                LEFT JOIN
+                    config_estados_administrativos a
+                  ON a.id =
+                     e.estado_administrativo_id
+                WHERE e.id = 1000
+                """
+            ).fetchone()
+
+        self.assertEqual(
+            row["estado_nombre"],
+            "ADMITIDO CON TASA",
         )
 
         # -------------------------------------------------

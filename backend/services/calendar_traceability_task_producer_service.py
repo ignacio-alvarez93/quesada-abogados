@@ -19,6 +19,7 @@ una TASK con una fecha ficticia.
 import json
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from backend.services import (
@@ -226,6 +227,57 @@ def _find_task(
     return None
 
 
+def _default_tax_due_at(
+    admission,
+):
+    """
+    Vencimiento OPERATIVO interno para la tarea
+    de aportar tasa.
+
+    No representa ni calcula el plazo jurídico.
+    Objetivo del despacho: completar la actuación
+    cuanto antes, con referencia de 10 días naturales.
+    """
+    base_value = (
+        admission.get("fecha_documento")
+        or admission.get("fecha_presentacion")
+        or admission.get("created_at")
+        or ""
+    )
+
+    parsed = None
+
+    if base_value:
+        try:
+            parsed = datetime.fromisoformat(
+                str(base_value).replace(
+                    "T",
+                    " ",
+                )
+            )
+        except ValueError:
+            parsed = None
+
+    if parsed is None:
+        parsed = datetime.now()
+
+    due_at = parsed + timedelta(
+        days=10
+    )
+
+    # Hora operativa estándar.
+    due_at = due_at.replace(
+        hour=12,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+    return due_at.strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+
 def _build_description(
     metadata,
 ):
@@ -318,6 +370,208 @@ def _build_description(
         )
 
     return " ".join(parts)
+
+
+def get_tax_obligation_status(
+    expediente_id,
+    *,
+    db_path=DEFAULT_DB_PATH,
+):
+    """
+    Devuelve una proyección de SOLO LECTURA del estado
+    operativo de la obligación de aportar tasa.
+
+    No crea, actualiza, completa, cancela, reabre ni
+    programa TASKS.
+    """
+    expediente_id = int(
+        expediente_id
+    )
+
+    _load_expedient(
+        expediente_id,
+        db_path=db_path,
+    )
+
+    documents = _load_tax_documents(
+        expediente_id,
+        db_path=db_path,
+    )
+
+    admission = documents["admission"]
+    submission = documents["submission"]
+
+    existing = _find_task(
+        expediente_id,
+        db_path=db_path,
+    )
+
+    if not admission:
+        return {
+            "ok": True,
+            "status": "NO_OBLIGATION",
+            "obligation_exists": False,
+            "satisfied": False,
+            "requires_due_date": False,
+            "task": existing,
+            "metadata": {},
+            "admission": None,
+            "submission": submission,
+        }
+
+    metadata = _parse_metadata(
+        admission
+    )
+
+    tasa_requerida = metadata.get(
+        "tasa_requerida"
+    )
+
+    if tasa_requerida is False:
+        return {
+            "ok": True,
+            "status": "NO_OBLIGATION",
+            "obligation_exists": False,
+            "satisfied": False,
+            "requires_due_date": False,
+            "task": existing,
+            "metadata": metadata,
+            "admission": admission,
+            "submission": submission,
+        }
+
+    if submission:
+        return {
+            "ok": True,
+            "status": "SATISFIED",
+            "obligation_exists": True,
+            "satisfied": True,
+            "requires_due_date": False,
+            "task": existing,
+            "metadata": metadata,
+            "admission": admission,
+            "submission": submission,
+        }
+
+    if not existing:
+        return {
+            "ok": True,
+            "status": "TASK_NOT_CREATED",
+            "obligation_exists": True,
+            "satisfied": False,
+            "requires_due_date": False,
+            "task": None,
+            "metadata": metadata,
+            "admission": admission,
+            "submission": None,
+        }
+
+    state = _upper(
+        existing.get("estado")
+    )
+
+    if state in {
+        "COMPLETADA",
+        "CANCELADA",
+    }:
+        return {
+            "ok": True,
+            "status": "NEEDS_DUE_DATE_FOR_REOPEN",
+            "obligation_exists": True,
+            "satisfied": False,
+            "requires_due_date": True,
+            "task": existing,
+            "metadata": metadata,
+            "admission": admission,
+            "submission": None,
+        }
+
+    return {
+        "ok": True,
+        "status": "TASK_ACTIVE",
+        "obligation_exists": True,
+        "satisfied": False,
+        "requires_due_date": False,
+        "task": existing,
+        "metadata": metadata,
+        "admission": admission,
+        "submission": None,
+    }
+
+
+def confirm_tax_due_date(
+    expediente_id,
+    due_at,
+    *,
+    usuario="ERP",
+    db_path=DEFAULT_DB_PATH,
+):
+    """
+    Confirma expresamente la fecha límite de la obligación
+    de tasa y sincroniza su TASK de Calendar.
+
+    No calcula plazos: due_at debe proceder de una
+    confirmación explícita.
+    """
+    clean_due_at = _text(
+        due_at
+    )
+
+    if not clean_due_at:
+        raise ValueError(
+            "La fecha límite es obligatoria."
+        )
+
+    try:
+        parsed_due_at = datetime.fromisoformat(
+            clean_due_at.replace(
+                "T",
+                " ",
+            )
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "La fecha límite no tiene un formato válido."
+        ) from exc
+
+    normalized_due_at = (
+        parsed_due_at.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    )
+
+    snapshot = (
+        get_tax_obligation_status(
+            expediente_id,
+            db_path=db_path,
+        )
+    )
+
+    if not snapshot[
+        "obligation_exists"
+    ]:
+        raise ValueError(
+            "El expediente no tiene una obligación "
+            "activa de aportar tasa."
+        )
+
+    if snapshot["satisfied"]:
+        raise ValueError(
+            "La obligación de tasa ya está satisfecha."
+        )
+
+    result = sync_tax_obligation(
+        expediente_id,
+        due_at=normalized_due_at,
+        usuario=usuario,
+        db_path=db_path,
+    )
+
+    return {
+        **result,
+        "confirmed_due_at":
+            normalized_due_at,
+    }
 
 
 def sync_tax_obligation(
@@ -511,12 +765,64 @@ def sync_tax_obligation(
                 "metadata": metadata,
             }
 
+        due_at = _default_tax_due_at(
+            admission
+        )
+
+        result = (
+            calendar_task_application_service
+            .create_calendar_task(
+                titulo=TAX_TASK_TITLE,
+                fecha_vencimiento=due_at,
+                descripcion=(
+                    _build_description(
+                        metadata
+                    )
+                ),
+                cliente_id=(
+                    expediente[
+                        "cliente_id"
+                    ]
+                ),
+                expediente_id=(
+                    expediente_id
+                ),
+                tipo=TAX_TASK_TYPE,
+                prioridad="ALTA",
+                responsable=(
+                    expediente.get(
+                        "responsable"
+                    )
+                    or ""
+                ),
+                origen_tipo=ORIGEN_TIPO,
+                origen_id=str(
+                    admission["id"]
+                ),
+                source_key=(
+                    build_tax_source_key(
+                        expediente_id
+                    )
+                ),
+                created_by=usuario,
+                db_path=db_path,
+            )
+        )
+
         return {
             "ok": True,
-            "action": "NEEDS_DUE_DATE",
-            "task": None,
-            "requires_due_date": True,
+            "action": (
+                "CREATED"
+                if result["created"]
+                else "UNCHANGED"
+            ),
+            "task": result["task"],
+            "notifications":
+                result["notifications"],
+            "requires_due_date": False,
             "metadata": metadata,
+            "due_date_source":
+                "OPERATIONAL_DEFAULT",
         }
 
     # -----------------------------------------------------
