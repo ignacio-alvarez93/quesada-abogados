@@ -936,6 +936,7 @@ def schedule_task_notifications(
 def schedule_alert_notification(
     alert,
     *,
+    revision_key=None,
     conn=None,
     db_path=DEFAULT_DB_PATH,
 ):
@@ -962,6 +963,10 @@ def schedule_alert_notification(
             "El aviso no tiene fecha."
         )
 
+    clean_revision_key = _text(
+        revision_key
+    )
+
     return create_notification(
         source_type=SOURCE_ALERT,
         source_id=alert_id,
@@ -973,6 +978,11 @@ def schedule_alert_notification(
             f"ALERT:{alert_id}:"
             "TELEGRAM:"
             "AVISO_CALENDARIO"
+            + (
+                f":{clean_revision_key}"
+                if clean_revision_key
+                else ""
+            )
         ),
         conn=conn,
         db_path=db_path,

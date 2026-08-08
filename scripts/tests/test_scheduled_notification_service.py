@@ -385,6 +385,43 @@ class ScheduledNotificationServiceTestCase(
             second["notification"]["id"],
         )
 
+    def test_alert_revision_key_allows_new_revision(
+        self,
+    ):
+        alert = self._alert()
+
+        first = (
+            scheduled_notification_service
+            .schedule_alert_notification(
+                alert,
+                revision_key="R1",
+                db_path=self.db_path,
+            )
+        )
+
+        second = (
+            scheduled_notification_service
+            .schedule_alert_notification(
+                alert,
+                revision_key="R2",
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertTrue(
+            first["created"]
+        )
+
+        self.assertTrue(
+            second["created"]
+        )
+
+        self.assertNotEqual(
+            first["notification"]["id"],
+            second["notification"]["id"],
+        )
+
+
     def test_alert_uses_warning_start_date(
         self,
     ):
