@@ -59,6 +59,10 @@ from frontend.components.calendar import (
     calendar_summary_panel,
 )
 
+from frontend.components.calendar.calendar_month_grid import (
+    calendar_month_grid,
+)
+
 
 Q_PRIMARY = "#0057B8"
 Q_PRIMARY_DARK = "#003B7A"
@@ -281,8 +285,19 @@ def calendar_view(
     on_open_cliente=None,
 ):
     state = {
+        "view_mode": "WEEK",
         "week_start": _monday(
             datetime.now()
+        ),
+        "month_anchor": (
+            datetime.now()
+            .replace(
+                day=1,
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
         ),
         "items": [],
         "summary": {},
@@ -3090,26 +3105,157 @@ def calendar_view(
         page.snack_bar.open = True
         page.update()
 
-    def previous_week(e=None):
-        state["week_start"] -= (
-            timedelta(days=7)
+    def _shift_month(
+        value,
+        delta,
+    ):
+        month_index = (
+            value.year * 12
+            + value.month
+            - 1
+            + int(delta)
+        )
+
+        year = (
+            month_index // 12
+        )
+
+        month = (
+            month_index % 12
+            + 1
+        )
+
+        return value.replace(
+            year=year,
+            month=month,
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+
+
+    def _show_week(
+        e=None,
+    ):
+        state[
+            "view_mode"
+        ] = "WEEK"
+
+        refresh()
+
+
+    def _show_month(
+        e=None,
+    ):
+        state[
+            "view_mode"
+        ] = "MONTH"
+
+        selected_week = state[
+            "week_start"
+        ]
+
+        state[
+            "month_anchor"
+        ] = selected_week.replace(
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
         )
 
         refresh()
+
+
+    def _open_day_as_week(
+        day,
+    ):
+        state[
+            "view_mode"
+        ] = "WEEK"
+
+        state[
+            "week_start"
+        ] = _monday(
+            day
+        )
+
+        refresh()
+
+
+    def previous_week(e=None):
+        if (
+            state.get(
+                "view_mode"
+            )
+            == "MONTH"
+        ):
+            state[
+                "month_anchor"
+            ] = _shift_month(
+                state[
+                    "month_anchor"
+                ],
+                -1,
+            )
+        else:
+            state["week_start"] -= (
+                timedelta(days=7)
+            )
+
+        refresh()
+
 
     def next_week(e=None):
-        state["week_start"] += (
-            timedelta(days=7)
-        )
+        if (
+            state.get(
+                "view_mode"
+            )
+            == "MONTH"
+        ):
+            state[
+                "month_anchor"
+            ] = _shift_month(
+                state[
+                    "month_anchor"
+                ],
+                1,
+            )
+        else:
+            state["week_start"] += (
+                timedelta(days=7)
+            )
 
         refresh()
 
+
     def current_week(e=None):
-        state["week_start"] = (
-            _monday(
-                datetime.now()
+        now = datetime.now()
+
+        if (
+            state.get(
+                "view_mode"
             )
-        )
+            == "MONTH"
+        ):
+            state[
+                "month_anchor"
+            ] = now.replace(
+                day=1,
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+        else:
+            state[
+                "week_start"
+            ] = _monday(
+                now
+            )
 
         refresh()
 
@@ -4573,16 +4719,33 @@ def calendar_view(
                         "Hoy",
                         current_week,
                     ),
-                    primary_button(
-                        "Semana",
-                        lambda e: None,
+                    (
+                        primary_button(
+                            "Semana",
+                            _show_week,
+                        )
+                        if state.get(
+                            "view_mode"
+                        )
+                        == "WEEK"
+                        else secondary_button(
+                            "Semana",
+                            _show_week,
+                        )
                     ),
-                    secondary_button(
-                        "Mes",
-                        lambda e:
-                            show_placeholder(
-                                "Vista mensual: siguiente iteración visual."
-                            ),
+                    (
+                        primary_button(
+                            "Mes",
+                            _show_month,
+                        )
+                        if state.get(
+                            "view_mode"
+                        )
+                        == "MONTH"
+                        else secondary_button(
+                            "Mes",
+                            _show_month,
+                        )
                     ),
                     search_input,
                     responsible_filter,
@@ -4603,6 +4766,50 @@ def calendar_view(
             ),
         )
 
+        view_mode = (
+            state.get(
+                "view_mode"
+            )
+            or "WEEK"
+        )
+
+        month_anchor = state[
+            "month_anchor"
+        ]
+
+        if view_mode == "MONTH":
+            period_label = (
+                month_anchor.strftime(
+                    "%B %Y"
+                ).capitalize()
+            )
+
+            calendar_body = (
+                calendar_month_grid(
+                    items,
+                    month_anchor,
+                    on_day_click=(
+                        _open_day_as_week
+                    ),
+                )
+            )
+        else:
+            period_label = (
+                f"{week_start.strftime('%d/%m')}"
+                " – "
+                f"{week_end.strftime('%d/%m/%Y')}"
+            )
+
+            calendar_body = (
+                calendar_week_grid(
+                    items,
+                    week_start,
+                    on_item_click=(
+                        select_item
+                    ),
+                )
+            )
+
         calendar_header = ft.Row(
             controls=[
                 secondary_button(
@@ -4614,11 +4821,7 @@ def calendar_view(
                     next_week,
                 ),
                 ft.Text(
-                    (
-                        f"{week_start.strftime('%d/%m')}"
-                        " – "
-                        f"{week_end.strftime('%d/%m/%Y')}"
-                    ),
+                    period_label,
                     size=14,
                     weight=ft.FontWeight.BOLD,
                     color=Q_PRIMARY_DARK,
@@ -4639,13 +4842,7 @@ def calendar_view(
             content=ft.Column(
                 controls=[
                     calendar_header,
-                    calendar_week_grid(
-                        items,
-                        week_start,
-                        on_item_click=(
-                            select_item
-                        ),
-                    ),
+                    calendar_body,
                 ],
                 spacing=10,
             ),
@@ -4718,26 +4915,68 @@ def calendar_view(
             "week_start"
         ]
 
-        week_end = (
-            week_start
-            + timedelta(
-                days=6,
-                hours=23,
-                minutes=59,
-                seconds=59,
+        if (
+            state.get(
+                "view_mode"
             )
-        )
+            == "MONTH"
+        ):
+            month_anchor = state[
+                "month_anchor"
+            ]
+
+            first_day = (
+                month_anchor.replace(
+                    day=1,
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+            )
+
+            range_start = (
+                first_day
+                - timedelta(
+                    days=(
+                        first_day.weekday()
+                    )
+                )
+            )
+
+            range_end = (
+                range_start
+                + timedelta(
+                    days=41,
+                    hours=23,
+                    minutes=59,
+                    seconds=59,
+                )
+            )
+
+        else:
+            range_start = week_start
+
+            range_end = (
+                week_start
+                + timedelta(
+                    days=6,
+                    hours=23,
+                    minutes=59,
+                    seconds=59,
+                )
+            )
 
         state["items"] = (
             calendar_service
             .list_calendar_items(
                 start_at=(
-                    week_start.isoformat(
+                    range_start.isoformat(
                         sep=" "
                     )
                 ),
                 end_at=(
-                    week_end.isoformat(
+                    range_end.isoformat(
                         sep=" "
                     )
                 ),
