@@ -14,6 +14,10 @@ COLORS = {
     },
 }
 
+Q_HIGHLIGHT_TASK = "#0057B8"
+Q_HIGHLIGHT_ALERT = "#F79009"
+
+
 PRIORITY_COLORS = {
     "BAJA": "#16A34A",
     "NORMAL": "#64748B",
@@ -41,6 +45,7 @@ def _time_label(value):
 def calendar_event_card(
     item,
     on_click=None,
+    highlighted=False,
 ):
     item_type = (
         _text(item.get("item_type"))
@@ -66,10 +71,34 @@ def calendar_event_card(
 
     return ft.Container(
         height=24,
-        bgcolor=colors["bg"],
+        bgcolor=(
+            "#DCEEFF"
+            if highlighted
+            and item_type == "TASK"
+            else (
+                "#FFE8C7"
+                if highlighted
+                and item_type == "ALERT"
+                else colors["bg"]
+            )
+        ),
         border=ft.border.all(
-            1,
-            colors["border"],
+            (
+                2
+                if highlighted
+                else 1
+            ),
+            (
+                Q_HIGHLIGHT_TASK
+                if highlighted
+                and item_type == "TASK"
+                else (
+                    Q_HIGHLIGHT_ALERT
+                    if highlighted
+                    and item_type == "ALERT"
+                    else colors["border"]
+                )
+            ),
         ),
         border_radius=7,
         padding=ft.padding.symmetric(

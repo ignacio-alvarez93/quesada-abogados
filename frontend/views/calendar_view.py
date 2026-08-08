@@ -63,6 +63,11 @@ from frontend.components.calendar.calendar_month_grid import (
     calendar_month_grid,
 )
 
+from frontend.components.calendar.calendar_today_view import (
+    calendar_today_primary,
+    calendar_today_summary,
+)
+
 
 Q_PRIMARY = "#0057B8"
 Q_PRIMARY_DARK = "#003B7A"
@@ -285,7 +290,7 @@ def calendar_view(
     on_open_cliente=None,
 ):
     state = {
-        "view_mode": "WEEK",
+        "view_mode": "TODAY",
         "week_start": _monday(
             datetime.now()
         ),
@@ -3136,6 +3141,34 @@ def calendar_view(
         )
 
 
+    def _show_today(
+        e=None,
+    ):
+        state[
+            "view_mode"
+        ] = "TODAY"
+
+        now = datetime.now()
+
+        state[
+            "week_start"
+        ] = _monday(
+            now
+        )
+
+        state[
+            "month_anchor"
+        ] = now.replace(
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+
+        refresh()
+
+
     def _show_week(
         e=None,
     ):
@@ -3291,7 +3324,40 @@ def calendar_view(
                 expedient_id
             )
 
-    def filtered_items():
+    def _calendar_filters_active():
+        search = (
+            search_input.value
+            or ""
+        ).strip()
+
+        return bool(
+            search
+            or (
+                priority_filter.value
+                or "Todos"
+            )
+            != "Todos"
+            or (
+                status_filter.value
+                or "Todos"
+            )
+            != "Todos"
+            or (
+                type_filter.value
+                or "Todos"
+            )
+            != "Todos"
+            or (
+                responsible_filter.value
+                or "Todos"
+            )
+            != "Todos"
+        )
+
+
+    def filtered_items(
+        source_items=None,
+    ):
         search = (
             search_input.value
             or ""
@@ -3319,7 +3385,13 @@ def calendar_view(
 
         result = []
 
-        for item in state["items"]:
+        source = (
+            state["items"]
+            if source_items is None
+            else source_items
+        )
+
+        for item in source:
             if (
                 priority != "Todos"
                 and item.get("priority")
@@ -3491,10 +3563,96 @@ def calendar_view(
             )
 
 
-    def upcoming_table(items):
+    def _period_action_items(
+        items,
+        *,
+        view_mode,
+        week_start,
+        month_anchor,
+    ):
+        result = []
+
+        for item in items or []:
+            raw_date = str(
+                item.get("date")
+                or ""
+            ).strip()
+
+            if not raw_date:
+                continue
+
+            try:
+                item_date = (
+                    datetime.fromisoformat(
+                        raw_date.replace(
+                            "T",
+                            " ",
+                        )
+                    )
+                )
+            except ValueError:
+                continue
+
+            if view_mode == "MONTH":
+                if (
+                    item_date.year
+                    != month_anchor.year
+                    or item_date.month
+                    != month_anchor.month
+                ):
+                    # El grid mensual carga también
+                    # días adyacentes para completar
+                    # las seis semanas visuales.
+                    continue
+
+            elif view_mode == "WEEK":
+                week_end = (
+                    week_start
+                    + timedelta(
+                        days=6,
+                        hours=23,
+                        minutes=59,
+                        seconds=59,
+                    )
+                )
+
+                if not (
+                    week_start
+                    <= item_date
+                    <= week_end
+                ):
+                    continue
+
+            result.append(
+                item
+            )
+
+        result.sort(
+            key=lambda item: str(
+                item.get("date")
+                or ""
+            )
+        )
+
+        return result
+
+
+    def upcoming_table(
+        items,
+        *,
+        limit=8,
+    ):
         rows = []
 
-        for item in items[:8]:
+        visible_items = (
+            list(items or [])
+            if limit is None
+            else list(items or [])[
+                :int(limit)
+            ]
+        )
+
+        for item in visible_items:
             item_type = item.get(
                 "item_type"
             )
@@ -4651,6 +4809,16 @@ def calendar_view(
             ),
         )
 
+    # Contenedores persistentes.
+    #
+    # Igual que Clientes conserva su barra de filtros
+    # y reconstruye únicamente la tabla de resultados,
+    # Calendar mantiene montado el buscador y actualiza
+    # solamente estas dos zonas.
+    calendar_workspace_slot = ft.Container()
+    period_actions_slot = ft.Container()
+
+
     def render():
         week_start = state[
             "week_start"
@@ -4661,7 +4829,34 @@ def calendar_view(
             + timedelta(days=6)
         )
 
-        items = filtered_items()
+        calendar_items = list(
+            state["items"]
+        )
+
+        filtered_period_items = (
+            filtered_items(
+                calendar_items
+            )
+        )
+
+        highlighted_keys = set()
+
+        if _calendar_filters_active():
+            highlighted_keys = {
+                (
+                    str(
+                        item.get(
+                            "item_type"
+                        )
+                        or ""
+                    ).upper(),
+                    item.get(
+                        "source_id"
+                    ),
+                )
+                for item
+                in filtered_period_items
+            }
 
         header = ft.Row(
             controls=[
@@ -4715,9 +4910,19 @@ def calendar_view(
             padding=10,
             content=ft.Row(
                 controls=[
-                    secondary_button(
-                        "Hoy",
-                        current_week,
+                    (
+                        primary_button(
+                            "Hoy",
+                            _show_today,
+                        )
+                        if state.get(
+                            "view_mode"
+                        )
+                        == "TODAY"
+                        else secondary_button(
+                            "Hoy",
+                            _show_today,
+                        )
                     ),
                     (
                         primary_button(
@@ -4777,7 +4982,22 @@ def calendar_view(
             "month_anchor"
         ]
 
-        if view_mode == "MONTH":
+        if view_mode == "TODAY":
+            today = datetime.now()
+
+            period_label = ""
+
+            calendar_body = (
+                calendar_today_primary(
+                    calendar_items,
+                    today,
+                    on_item_click=(
+                        _open_detail_dialog
+                    ),
+                )
+            )
+
+        elif view_mode == "MONTH":
             period_label = (
                 month_anchor.strftime(
                     "%B %Y"
@@ -4786,13 +5006,14 @@ def calendar_view(
 
             calendar_body = (
                 calendar_month_grid(
-                    items,
+                    calendar_items,
                     month_anchor,
                     on_day_click=(
                         _open_day_as_week
                     ),
                 )
             )
+
         else:
             period_label = (
                 f"{week_start.strftime('%d/%m')}"
@@ -4802,10 +5023,13 @@ def calendar_view(
 
             calendar_body = (
                 calendar_week_grid(
-                    items,
+                    calendar_items,
                     week_start,
                     on_item_click=(
                         select_item
+                    ),
+                    highlighted_keys=(
+                        highlighted_keys
                     ),
                 )
             )
@@ -4830,34 +5054,69 @@ def calendar_view(
             spacing=8,
         )
 
-        calendar_workspace = ft.Container(
-            height=460,
-            bgcolor="#FFFFFF",
-            border=ft.border.all(
-                1,
-                Q_BORDER,
-            ),
-            border_radius=14,
-            padding=12,
-            content=ft.Column(
-                controls=[
-                    calendar_header,
-                    calendar_body,
-                ],
-                spacing=10,
-            ),
+        if view_mode == "TODAY":
+            calendar_workspace = (
+                calendar_body
+            )
+        else:
+            calendar_workspace = (
+                ft.Container(
+                    height=460,
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=14,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            calendar_header,
+                            calendar_body,
+                        ],
+                        spacing=10,
+                    ),
+                )
+            )
+
+        period_actions = (
+            _period_action_items(
+                filtered_period_items,
+                view_mode=view_mode,
+                week_start=week_start,
+                month_anchor=month_anchor,
+            )
+        )
+
+        calendar_workspace_slot.content = (
+            calendar_workspace
+        )
+
+        period_actions_slot.content = (
+            calendar_today_summary(
+                calendar_items,
+                datetime.now(),
+                on_item_click=(
+                    _open_detail_dialog
+                ),
+            )
+            if view_mode
+            == "TODAY"
+            else upcoming_table(
+                period_actions,
+                limit=(
+                    None
+                    if view_mode
+                    == "MONTH"
+                    else 20
+                ),
+            )
         )
 
         left = ft.Column(
             controls=[
-                calendar_workspace,
-                upcoming_table(
-                    calendar_service
-                    .get_upcoming_items(
-                        days=7,
-                        limit=20,
-                    )
-                ),
+                calendar_workspace_slot,
+                period_actions_slot,
             ],
             spacing=12,
             expand=True,
@@ -4910,12 +5169,285 @@ def calendar_view(
             ),
         )
 
+    def refresh_filtered_results(
+        e=None,
+    ):
+        """
+        Refresco parcial de filtros.
+
+        No reconstruye:
+        - cabecera;
+        - buscador;
+        - dropdowns;
+        - botones Hoy/Semana/Mes;
+        - panel derecho.
+
+        Solo reconstruye:
+        - calendario para aplicar resaltado;
+        - próximas actuaciones filtradas.
+
+        Es el mismo principio utilizado por
+        Clientes al refrescar únicamente su
+        bloque de resultados.
+        """
+
+        week_start = state[
+            "week_start"
+        ]
+
+        week_end = (
+            week_start
+            + timedelta(
+                days=6
+            )
+        )
+
+        calendar_items = list(
+            state["items"]
+        )
+
+        filtered_period_items = (
+            filtered_items(
+                calendar_items
+            )
+        )
+
+        highlighted_keys = set()
+
+        if _calendar_filters_active():
+            highlighted_keys = {
+                (
+                    str(
+                        item.get(
+                            "item_type"
+                        )
+                        or ""
+                    ).upper(),
+                    item.get(
+                        "source_id"
+                    ),
+                )
+                for item
+                in filtered_period_items
+            }
+
+        view_mode = (
+            state.get(
+                "view_mode"
+            )
+            or "WEEK"
+        )
+
+        month_anchor = state[
+            "month_anchor"
+        ]
+
+        if view_mode == "TODAY":
+            today = datetime.now()
+
+            calendar_body = (
+                calendar_today_primary(
+                    calendar_items,
+                    today,
+                    on_item_click=(
+                        _open_detail_dialog
+                    ),
+                )
+            )
+
+            calendar_workspace = (
+                calendar_body
+            )
+
+        elif view_mode == "MONTH":
+            period_label = (
+                month_anchor.strftime(
+                    "%B %Y"
+                ).capitalize()
+            )
+
+            calendar_body = (
+                calendar_month_grid(
+                    calendar_items,
+                    month_anchor,
+                    on_day_click=(
+                        _open_day_as_week
+                    ),
+                )
+            )
+
+            calendar_header = ft.Row(
+                controls=[
+                    secondary_button(
+                        "‹",
+                        previous_week,
+                    ),
+                    secondary_button(
+                        "›",
+                        next_week,
+                    ),
+                    ft.Text(
+                        period_label,
+                        size=14,
+                        weight=(
+                            ft.FontWeight.BOLD
+                        ),
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=8,
+            )
+
+            calendar_workspace = (
+                ft.Container(
+                    height=460,
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=14,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            calendar_header,
+                            calendar_body,
+                        ],
+                        spacing=10,
+                    ),
+                )
+            )
+
+        else:
+            period_label = (
+                f"{week_start.strftime('%d/%m')}"
+                " – "
+                f"{week_end.strftime('%d/%m/%Y')}"
+            )
+
+            calendar_body = (
+                calendar_week_grid(
+                    calendar_items,
+                    week_start,
+                    on_item_click=(
+                        select_item
+                    ),
+                    highlighted_keys=(
+                        highlighted_keys
+                    ),
+                )
+            )
+
+            calendar_header = ft.Row(
+                controls=[
+                    secondary_button(
+                        "‹",
+                        previous_week,
+                    ),
+                    secondary_button(
+                        "›",
+                        next_week,
+                    ),
+                    ft.Text(
+                        period_label,
+                        size=14,
+                        weight=(
+                            ft.FontWeight.BOLD
+                        ),
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=8,
+            )
+
+            calendar_workspace = (
+                ft.Container(
+                    height=460,
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=14,
+                    padding=12,
+                    content=ft.Column(
+                        controls=[
+                            calendar_header,
+                            calendar_body,
+                        ],
+                        spacing=10,
+                    ),
+                )
+            )
+
+        period_actions = (
+            _period_action_items(
+                filtered_period_items,
+                view_mode=view_mode,
+                week_start=week_start,
+                month_anchor=month_anchor,
+            )
+        )
+
+        calendar_workspace_slot.content = (
+            calendar_workspace
+        )
+
+        period_actions_slot.content = (
+            calendar_today_summary(
+                calendar_items,
+                datetime.now(),
+                on_item_click=(
+                    _open_detail_dialog
+                ),
+            )
+            if view_mode
+            == "TODAY"
+            else upcoming_table(
+                period_actions,
+                limit=(
+                    None
+                    if view_mode
+                    == "MONTH"
+                    else 20
+                ),
+            )
+        )
+
+        # Importante:
+        # NO llamamos render().
+        # Así search_input no pierde foco.
+        safe_update()
+
+
     def refresh(e=None):
         week_start = state[
             "week_start"
         ]
 
         if (
+            state.get(
+                "view_mode"
+            )
+            == "TODAY"
+        ):
+            now = datetime.now()
+
+            range_start = now.replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+
+            range_end = now.replace(
+                hour=23,
+                minute=59,
+                second=59,
+                microsecond=999999,
+            )
+
+        elif (
             state.get(
                 "view_mode"
             )
@@ -5033,8 +5565,12 @@ def calendar_view(
         safe_update()
 
     def filters_changed(e=None):
-        render()
-        safe_update()
+        # Igual que en Clientes:
+        # el control de búsqueda permanece montado
+        # y solo se reconstruyen los resultados.
+        refresh_filtered_results(
+            e
+        )
 
     search_input.on_change = (
         filters_changed

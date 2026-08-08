@@ -121,7 +121,11 @@ def calendar_week_grid(
     items,
     week_start,
     on_item_click=None,
+    highlighted_keys=None,
 ):
+    highlighted_keys = set(
+        highlighted_keys or []
+    )
     days = [
         week_start
         + timedelta(days=index)
@@ -246,6 +250,20 @@ def calendar_week_grid(
                 event_controls.append(
                     calendar_event_card(
                         item,
+                        highlighted=(
+                            (
+                                str(
+                                    item.get(
+                                        "item_type"
+                                    )
+                                    or ""
+                                ).upper(),
+                                item.get(
+                                    "source_id"
+                                ),
+                            )
+                            in highlighted_keys
+                        ),
                         on_click=(
                             None
                             if on_item_click
