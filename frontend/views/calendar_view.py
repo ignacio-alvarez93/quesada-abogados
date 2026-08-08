@@ -4,6 +4,7 @@ import time
 import flet as ft
 
 from backend.services import calendar_service
+from backend.services import calendar_alert_service
 from backend.services import expedient_service
 from backend.services import task_service
 from backend.services import (
@@ -231,6 +232,49 @@ def _task_projection(task):
     }
 
 
+def _alert_projection(
+    alert,
+    *,
+    previous=None,
+):
+    previous = previous or {}
+
+    return {
+        "item_type": "ALERT",
+        "source_id": alert.get("id"),
+        "title": alert.get("titulo") or "",
+        "description":
+            alert.get("descripcion") or "",
+        "date":
+            alert.get("fecha_evento") or "",
+        "warning_date":
+            alert.get("fecha_inicio_aviso") or "",
+        "priority":
+            alert.get("prioridad") or "NORMAL",
+        "status":
+            alert.get("estado") or "ACTIVO",
+        "responsible": "",
+        "cliente_id":
+            alert.get("cliente_id"),
+        "client_name":
+            previous.get("client_name")
+            or "",
+        "expediente_id":
+            alert.get("expediente_id"),
+        "expedient_number":
+            previous.get("expedient_number")
+            or "",
+        "origin_type":
+            alert.get("origen_tipo")
+            or "MANUAL",
+        "origin_id":
+            alert.get("origen_id"),
+        "source_key":
+            alert.get("source_key")
+            or "",
+    }
+
+
 def calendar_view(
     page: ft.Page,
     on_open_expediente=None,
@@ -409,6 +453,7 @@ def calendar_view(
     )
 
     alert_dialog = None
+    editing_alert_id = None
 
     search_input = text_input(
         "Buscar tarea / aviso / expediente / cliente",
@@ -792,6 +837,173 @@ def calendar_view(
     )
 
 
+    def _load_alert_form_for_edit(
+        alert,
+    ):
+        alert_title.value = str(
+            alert.get("titulo")
+            or ""
+        )
+
+        alert_description.value = str(
+            alert.get("descripcion")
+            or ""
+        )
+
+        client_id = alert.get(
+            "cliente_id"
+        )
+
+        client_label = (
+            _client_label_by_id(
+                client_id
+            )
+        )
+
+        alert_client.set_value(
+            client_label,
+            update=False,
+        )
+
+        alert_expedient.set_options(
+            [],
+            clear_value=True,
+        )
+
+        if client_id:
+            expedients = (
+                expedient_service
+                .get_expedientes(
+                    cliente_id=int(
+                        client_id
+                    ),
+                    active_only=False,
+                )
+            )
+
+            labels = [
+                _expedient_label(item)
+                for item in expedients
+            ]
+
+            alert_expedient.set_options(
+                labels,
+                clear_value=False,
+            )
+
+            current_expedient_id = (
+                alert.get(
+                    "expediente_id"
+                )
+            )
+
+            if current_expedient_id:
+                prefix = (
+                    f"{int(current_expedient_id)} - "
+                )
+
+                current_label = next(
+                    (
+                        label
+                        for label in labels
+                        if str(label).startswith(
+                            prefix
+                        )
+                    ),
+                    "",
+                )
+
+                if not current_label:
+                    expedient = (
+                        expedient_service
+                        .get_expediente(
+                            int(
+                                current_expedient_id
+                            )
+                        )
+                    )
+
+                    if expedient:
+                        current_label = (
+                            _expedient_label(
+                                expedient
+                            )
+                        )
+
+                        alert_expedient.set_options(
+                            [
+                                current_label,
+                                *labels,
+                            ],
+                            clear_value=False,
+                        )
+
+                alert_expedient.set_value(
+                    current_label,
+                    update=False,
+                )
+
+        alert_priority.value = (
+            alert.get("prioridad")
+            or "NORMAL"
+        )
+
+        event_raw = str(
+            alert.get("fecha_evento")
+            or ""
+        ).strip()
+
+        if event_raw:
+            event_dt = datetime.fromisoformat(
+                event_raw.replace(
+                    "T",
+                    " ",
+                )
+            )
+
+            alert_event_date.value = (
+                event_dt.strftime(
+                    "%d/%m/%Y"
+                )
+            )
+
+            alert_event_time.value = (
+                event_dt.strftime(
+                    "%H:%M"
+                )
+            )
+
+        warning_raw = str(
+            alert.get(
+                "fecha_inicio_aviso"
+            )
+            or ""
+        ).strip()
+
+        if warning_raw:
+            warning_dt = datetime.fromisoformat(
+                warning_raw.replace(
+                    "T",
+                    " ",
+                )
+            )
+
+            alert_warning_date.value = (
+                warning_dt.strftime(
+                    "%d/%m/%Y"
+                )
+            )
+
+            alert_warning_time.value = (
+                warning_dt.strftime(
+                    "%H:%M"
+                )
+            )
+        else:
+            alert_warning_date.value = ""
+            alert_warning_time.value = ""
+
+
     def _reset_alert_form():
         alert_title.value = ""
         alert_description.value = ""
@@ -898,6 +1110,135 @@ def calendar_view(
         page.update()
 
         alert_dialog = None
+
+
+    def _save_alert_edit(e=None):
+        nonlocal alert_dialog
+        nonlocal editing_alert_id
+
+        if not editing_alert_id:
+            return
+
+        alert_id = int(
+            editing_alert_id
+        )
+
+        try:
+            title = str(
+                alert_title.value
+                or ""
+            ).strip()
+
+            if not title:
+                raise ValueError(
+                    "El título es obligatorio."
+                )
+
+            event_at = _task_form_datetime(
+                alert_event_date.value,
+                alert_event_time.value,
+            )
+
+            warning_at = (
+                _optional_alert_datetime(
+                    alert_warning_date.value,
+                    alert_warning_time.value,
+                )
+            )
+
+            client_id = _option_id(
+                alert_client.input.value
+            )
+
+            expedient_id = _option_id(
+                alert_expedient.input.value
+            )
+
+            if expedient_id:
+                expedient = (
+                    expedient_service
+                    .get_expediente(
+                        expedient_id
+                    )
+                )
+
+                if not expedient:
+                    raise ValueError(
+                        "El expediente seleccionado "
+                        "no existe."
+                    )
+
+                expedient_client_id = (
+                    expedient.get(
+                        "cliente_id"
+                    )
+                )
+
+                if (
+                    client_id
+                    and expedient_client_id
+                    and int(client_id)
+                    != int(
+                        expedient_client_id
+                    )
+                ):
+                    raise ValueError(
+                        "El expediente no pertenece "
+                        "al cliente seleccionado."
+                    )
+
+                if not client_id:
+                    client_id = (
+                        expedient_client_id
+                    )
+
+            (
+                calendar_alert_app
+                .update_calendar_alert(
+                    alert_id,
+                    titulo=title,
+                    descripcion=str(
+                        alert_description.value
+                        or ""
+                    ).strip(),
+                    cliente_id=client_id,
+                    expediente_id=(
+                        expedient_id
+                    ),
+                    prioridad=(
+                        alert_priority.value
+                        or "NORMAL"
+                    ),
+                    fecha_evento=event_at,
+                    fecha_inicio_aviso=(
+                        warning_at
+                    ),
+                )
+            )
+
+            _close_alert_dialog()
+
+            editing_alert_id = None
+
+            refresh()
+
+            _reload_selected_alert(
+                alert_id
+            )
+
+            render()
+            safe_update()
+            _refresh_detail_dialog()
+
+            _show_message(
+                "Aviso actualizado correctamente."
+            )
+
+        except Exception as exc:
+            _show_message(
+                str(exc),
+                error=True,
+            )
 
 
     def _save_alert(e=None):
@@ -1458,9 +1799,159 @@ def calendar_view(
         page.update()
 
 
+    def _open_edit_alert_dialog(e=None):
+        nonlocal alert_dialog
+        nonlocal editing_alert_id
+
+        item = state.get(
+            "selected_item"
+        ) or {}
+
+        if (
+            item.get("item_type")
+            != "ALERT"
+        ):
+            return
+
+        alert_id = int(
+            item.get("source_id")
+            or 0
+        )
+
+        if not alert_id:
+            return
+
+        alert = (
+            calendar_alert_service
+            .get_alert(
+                alert_id
+            )
+        )
+
+        if not alert:
+            _show_message(
+                "No se ha podido cargar el aviso.",
+                error=True,
+            )
+            return
+
+        editing_alert_id = alert_id
+
+        _load_alert_form_for_edit(
+            alert
+        )
+
+        alert_dialog = form_dialog(
+            "Editar aviso",
+            ft.Container(
+                width=760,
+                content=ft.Column(
+                    controls=[
+                        alert_title,
+                        alert_description,
+                        alert_client.control,
+                        alert_expedient.control,
+                        ft.Row(
+                            controls=[
+                                alert_priority,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Text(
+                            "Fecha del evento",
+                            size=11,
+                            weight=(
+                                ft.FontWeight.W_600
+                            ),
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Row(
+                            controls=[
+                                alert_event_date,
+                                alert_event_time,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Text(
+                            "Notificación",
+                            size=11,
+                            weight=(
+                                ft.FontWeight.W_600
+                            ),
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Row(
+                            controls=[
+                                alert_warning_date,
+                                alert_warning_time,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Container(
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            padding=12,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        ft.Icons
+                                        .SYNC_ROUNDED,
+                                        size=18,
+                                        color=Q_PRIMARY,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Si cambias la fecha del "
+                                            "evento o la fecha de aviso, "
+                                            "Telegram cancelará la "
+                                            "planificación anterior y "
+                                            "creará una nueva revisión."
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+            actions=[
+                secondary_button(
+                    "Cancelar",
+                    _close_alert_dialog,
+                ),
+                primary_button(
+                    "Guardar cambios",
+                    _save_alert_edit,
+                ),
+            ],
+        )
+
+        page.show_dialog(
+            alert_dialog
+        )
+
+        page.update()
+
+
     def _open_new_alert_dialog(e=None):
         nonlocal alert_dialog
+        nonlocal editing_alert_id
 
+        editing_alert_id = None
         _reset_alert_form()
 
         alert_dialog = form_dialog(
@@ -1666,6 +2157,80 @@ def calendar_view(
                 "selected_item"
             ] = _task_projection(
                 task
+            )
+
+
+    def _reload_selected_alert(
+        alert_id,
+    ):
+        previous = (
+            state.get(
+                "selected_item"
+            )
+            or {}
+        )
+
+        alert = (
+            calendar_alert_service
+            .get_alert(
+                alert_id
+            )
+        )
+
+        if alert:
+            state[
+                "selected_item"
+            ] = _alert_projection(
+                alert,
+                previous=previous,
+            )
+
+
+    def _run_alert_action(
+        action,
+        success_message,
+    ):
+        item = state.get(
+            "selected_item"
+        ) or {}
+
+        if (
+            item.get("item_type")
+            != "ALERT"
+        ):
+            return
+
+        alert_id = int(
+            item.get("source_id")
+            or 0
+        )
+
+        if not alert_id:
+            return
+
+        try:
+            action(
+                alert_id
+            )
+
+            refresh()
+
+            _reload_selected_alert(
+                alert_id
+            )
+
+            render()
+            safe_update()
+            _refresh_detail_dialog()
+
+            _show_message(
+                success_message
+            )
+
+        except Exception as exc:
+            _show_message(
+                str(exc),
+                error=True,
             )
 
 
@@ -2490,15 +3055,16 @@ def calendar_view(
         )
 
 
-    def _task_notification_section(
-        task_id,
+    def _notification_section(
+        source_type,
+        source_id,
     ):
         try:
             notifications = (
                 scheduled_notification_service
                 .list_for_source(
-                    "TASK",
-                    int(task_id),
+                    str(source_type).upper(),
+                    int(source_id),
                     include_inactive=True,
                 )
             )
@@ -2652,6 +3218,24 @@ def calendar_view(
                 controls=controls,
                 spacing=8,
             ),
+        )
+
+
+    def _task_notification_section(
+        task_id,
+    ):
+        return _notification_section(
+            "TASK",
+            task_id,
+        )
+
+
+    def _alert_notification_section(
+        alert_id,
+    ):
+        return _notification_section(
+            "ALERT",
+            alert_id,
         )
 
 
@@ -2812,6 +3396,101 @@ def calendar_view(
                         color="#334155",
                     ),
                     (
+                        ft.Container(
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            padding=10,
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Aviso",
+                                        size=10,
+                                        weight=(
+                                            ft.FontWeight.W_600
+                                        ),
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Fecha del evento: "
+                                            + _date_display(
+                                                item.get(
+                                                    "date"
+                                                )
+                                            )
+                                        ),
+                                        size=10,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Avisar desde: "
+                                            + (
+                                                _date_display(
+                                                    item.get(
+                                                        "warning_date"
+                                                    )
+                                                )
+                                                if item.get(
+                                                    "warning_date"
+                                                )
+                                                else (
+                                                    "misma fecha "
+                                                    "del evento"
+                                                )
+                                            )
+                                        ),
+                                        size=10,
+                                        color=Q_MUTED,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Origen: "
+                                            + str(
+                                                item.get(
+                                                    "origin_type"
+                                                )
+                                                or "MANUAL"
+                                            ).replace(
+                                                "_",
+                                                " ",
+                                            ).title()
+                                        ),
+                                        size=10,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=4,
+                            ),
+                        )
+                        if item.get(
+                            "item_type"
+                        )
+                        == "ALERT"
+                        else ft.Container()
+                    ),
+                    (
+                        _alert_notification_section(
+                            item.get(
+                                "source_id"
+                            )
+                        )
+                        if (
+                            item.get(
+                                "item_type"
+                            )
+                            == "ALERT"
+                            and item.get(
+                                "source_id"
+                            )
+                        )
+                        else ft.Container()
+                    ),
+                    (
                         _task_notification_section(
                             item.get(
                                 "source_id"
@@ -2935,6 +3614,92 @@ def calendar_view(
                             "item_type"
                         )
                         == "TASK"
+                        else ft.Container()
+                    ),
+                    (
+                        ft.Row(
+                            controls=[
+                                (
+                                    secondary_button(
+                                        "Editar",
+                                        _open_edit_alert_dialog,
+                                    )
+                                    if item.get(
+                                        "status"
+                                    )
+                                    == "ACTIVO"
+                                    else ft.Container()
+                                ),
+                                (
+                                    primary_button(
+                                        "Resolver",
+                                        lambda e:
+                                            _run_alert_action(
+                                                calendar_alert_app
+                                                .resolve_calendar_alert,
+                                                (
+                                                    "Aviso resuelto. "
+                                                    "Telegram pendiente "
+                                                    "cancelado."
+                                                ),
+                                            ),
+                                    )
+                                    if item.get(
+                                        "status"
+                                    )
+                                    == "ACTIVO"
+                                    else ft.Container()
+                                ),
+                                (
+                                    secondary_button(
+                                        "Reabrir",
+                                        lambda e:
+                                            _run_alert_action(
+                                                calendar_alert_app
+                                                .reopen_calendar_alert,
+                                                (
+                                                    "Aviso reabierto y "
+                                                    "Telegram reprogramado."
+                                                ),
+                                            ),
+                                    )
+                                    if item.get(
+                                        "status"
+                                    )
+                                    in {
+                                        "RESUELTO",
+                                        "CANCELADO",
+                                    }
+                                    else ft.Container()
+                                ),
+                                (
+                                    danger_button(
+                                        "Cancelar aviso",
+                                        lambda e:
+                                            _run_alert_action(
+                                                calendar_alert_app
+                                                .cancel_calendar_alert,
+                                                (
+                                                    "Aviso cancelado. "
+                                                    "Telegram pendiente "
+                                                    "cancelado."
+                                                ),
+                                            ),
+                                    )
+                                    if item.get(
+                                        "status"
+                                    )
+                                    == "ACTIVO"
+                                    else ft.Container()
+                                ),
+                            ],
+                            spacing=8,
+                            wrap=True,
+                        )
+                        if item.get(
+                            "item_type"
+                        )
+                        == "ALERT"
                         else ft.Container()
                     ),
                     (
