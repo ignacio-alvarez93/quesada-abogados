@@ -4,6 +4,7 @@ import time
 import flet as ft
 
 from backend.services import calendar_service
+from backend.services import calendar_agenda_summary_service
 from backend.services import calendar_alert_service
 from backend.services import expedient_service
 from backend.services import task_service
@@ -265,14 +266,38 @@ def _alert_projection(
         "responsible": "",
         "cliente_id":
             alert.get("cliente_id"),
-        "client_name":
-            previous.get("client_name")
-            or "",
+        "client_name": (
+            " ".join(
+                value
+                for value in (
+                    alert.get(
+                        "cliente_nombre"
+                    ),
+                    alert.get(
+                        "cliente_primer_apellido"
+                    ),
+                    alert.get(
+                        "cliente_segundo_apellido"
+                    ),
+                )
+                if value
+            )
+            or previous.get(
+                "client_name"
+            )
+            or ""
+        ),
         "expediente_id":
             alert.get("expediente_id"),
-        "expedient_number":
-            previous.get("expedient_number")
-            or "",
+        "expedient_number": (
+            alert.get(
+                "numero_expediente"
+            )
+            or previous.get(
+                "expedient_number"
+            )
+            or ""
+        ),
         "origin_type":
             alert.get("origen_tipo")
             or "MANUAL",
@@ -535,8 +560,8 @@ def calendar_view(
     # ==============================================================
 
     agenda_search = text_input(
-        "Buscar",
-        width=280,
+        "Buscar cliente, expediente o actuación",
+        width=320,
     )
 
     agenda_type_filter = select_input(
@@ -595,6 +620,18 @@ def calendar_view(
     )
 
     agenda_dialog = None
+
+    # Igual que table_container en Clientes:
+    # este contenedor permanece montado mientras
+    # se reconstruye únicamente su contenido.
+    agenda_table_container = ft.Container()
+
+    agenda_count_text = ft.Text(
+        "",
+        size=10,
+        color=Q_MUTED,
+        expand=True,
+    )
 
     def _agenda_parse_date(
         value,
@@ -2434,83 +2471,364 @@ def calendar_view(
             )
 
 
+    def _agenda_status_chip(
+        item,
+    ):
+        status = str(
+            item.get("status")
+            or ""
+        ).upper()
+
+        if status in {
+            "COMPLETADA",
+            "RESUELTO",
+        }:
+            label = (
+                "Completada"
+                if item.get("item_type") == "TASK"
+                else "Resuelto"
+            )
+            bg = "#ECFDF3"
+            fg = "#027A48"
+
+        elif status in {
+            "CANCELADA",
+            "CANCELADO",
+        }:
+            label = "Cancelada"
+            bg = "#F2F4F7"
+            fg = "#475467"
+
+        elif status in {
+            "PENDIENTE",
+            "EN_CURSO",
+        }:
+            label = status.replace(
+                "_",
+                " ",
+            ).title()
+            bg = "#EEF4FF"
+            fg = Q_PRIMARY
+
+        elif status == "ACTIVO":
+            label = "Activo"
+            bg = "#ECFDF3"
+            fg = "#027A48"
+
+        else:
+            label = (
+                status.replace(
+                    "_",
+                    " ",
+                ).title()
+                or "-"
+            )
+            bg = "#F8FAFC"
+            fg = "#475569"
+
+        return ft.Container(
+            bgcolor=bg,
+            border_radius=999,
+            padding=ft.padding.symmetric(
+                horizontal=10,
+                vertical=4,
+            ),
+            content=ft.Text(
+                label,
+                size=10,
+                weight=ft.FontWeight.W_600,
+                color=fg,
+            ),
+        )
+
+
+    def _agenda_type_cell(
+        item,
+    ):
+        is_alert = (
+            item.get("item_type")
+            == "ALERT"
+        )
+
+        return ft.Row(
+            controls=[
+                ft.Icon(
+                    (
+                        ft.Icons.NOTIFICATIONS_OUTLINED
+                        if is_alert
+                        else ft.Icons.CHECKLIST_RTL_OUTLINED
+                    ),
+                    size=15,
+                    color=(
+                        "#F79009"
+                        if is_alert
+                        else Q_PRIMARY
+                    ),
+                ),
+                ft.Text(
+                    (
+                        "Aviso"
+                        if is_alert
+                        else "Tarea"
+                    ),
+                    size=12,
+                    weight=ft.FontWeight.W_600,
+                    color=(
+                        "#B54708"
+                        if is_alert
+                        else Q_PRIMARY
+                    ),
+                ),
+            ],
+            spacing=5,
+        )
+
+
+    def _agenda_responsible_cell(
+        item,
+    ):
+        responsible = str(
+            item.get("responsible")
+            or "Ignacio Alvarez"
+        ).strip()
+
+        if not responsible:
+            responsible = "Ignacio Alvarez"
+
+        words = [
+            word
+            for word in responsible.split()
+            if word
+        ]
+
+        initials = "".join(
+            word[0].upper()
+            for word in words[:2]
+        ) or "IA"
+
+        return ft.Row(
+            controls=[
+                ft.Container(
+                    width=30,
+                    height=30,
+                    border_radius=999,
+                    bgcolor="#EEF4FF",
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Text(
+                        initials,
+                        size=10,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY,
+                    ),
+                ),
+                ft.Text(
+                    responsible,
+                    size=12,
+                    weight=ft.FontWeight.W_600,
+                    color="#344054",
+                    width=115,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+            ],
+            spacing=7,
+            vertical_alignment=(
+                ft.CrossAxisAlignment.CENTER
+            ),
+        )
+
+
+    def _agenda_row_style(
+        item,
+    ):
+        status = str(
+            item.get("status")
+            or ""
+        ).strip().upper()
+
+        styles = {
+            "PENDIENTE": {
+                "bg": "#F5F9FF",
+                "accent": "#1570EF",
+                "border": "#D6E4FF",
+            },
+            "EN_CURSO": {
+                "bg": "#FFFAEB",
+                "accent": "#DC6803",
+                "border": "#FEDF89",
+            },
+            "COMPLETADA": {
+                "bg": "#F6FEF9",
+                "accent": "#039855",
+                "border": "#ABEFC6",
+            },
+            "RESUELTO": {
+                "bg": "#F6FEF9",
+                "accent": "#039855",
+                "border": "#ABEFC6",
+            },
+            "ACTIVO": {
+                "bg": "#FFF8F0",
+                "accent": "#F79009",
+                "border": "#FED7AA",
+            },
+            "CANCELADA": {
+                "bg": "#F8FAFC",
+                "accent": "#667085",
+                "border": "#E2E8F0",
+            },
+            "CANCELADO": {
+                "bg": "#F8FAFC",
+                "accent": "#667085",
+                "border": "#E2E8F0",
+            },
+        }
+
+        return styles.get(
+            status,
+            {
+                "bg": "#FFFFFF",
+                "accent": "#98A2B3",
+                "border": "#E2E8F0",
+            },
+        )
+
+
     def _agenda_table(
         items,
     ):
         header = ft.Container(
             bgcolor="#F8FAFC",
-            border=ft.border.only(
-                bottom=ft.BorderSide(
-                    1,
-                    Q_BORDER,
-                )
+            border=ft.border.all(
+                1,
+                Q_BORDER,
             ),
+            border_radius=10,
             padding=ft.padding.symmetric(
-                horizontal=10,
-                vertical=8,
+                horizontal=14,
+                vertical=11,
             ),
             content=ft.Row(
                 controls=[
                     ft.Text(
-                        "Fecha",
-                        size=10,
-                        weight=ft.FontWeight.W_600,
-                        width=135,
+                        "FECHA",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        width=120,
                         color=Q_PRIMARY_DARK,
                     ),
                     ft.Text(
-                        "Tipo",
-                        size=10,
-                        weight=ft.FontWeight.W_600,
-                        width=70,
+                        "TIPO",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        width=85,
                         color=Q_PRIMARY_DARK,
                     ),
                     ft.Text(
-                        "Título",
-                        size=10,
-                        weight=ft.FontWeight.W_600,
-                        width=260,
+                        "TÍTULO",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        width=180,
                         color=Q_PRIMARY_DARK,
                     ),
                     ft.Text(
-                        "Cliente / expediente",
-                        size=10,
-                        weight=ft.FontWeight.W_600,
-                        width=230,
+                        "CLIENTE / EXPEDIENTE",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        width=255,
+                        color=Q_PRIMARY_DARK,
+                    ),
+
+                    # Separación específica entre
+                    # cliente y prioridad.
+                    ft.Container(
+                        width=24,
+                    ),
+
+                    ft.Text(
+                        "PRIORIDAD",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        width=100,
                         color=Q_PRIMARY_DARK,
                     ),
                     ft.Text(
-                        "Prioridad",
-                        size=10,
-                        weight=ft.FontWeight.W_600,
-                        width=95,
-                        color=Q_PRIMARY_DARK,
-                    ),
-                    ft.Text(
-                        "Estado",
-                        size=10,
-                        weight=ft.FontWeight.W_600,
+                        "ESTADO",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
                         width=110,
                         color=Q_PRIMARY_DARK,
                     ),
+                    ft.Text(
+                        "RESPONSABLE",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        width=175,
+                        color=Q_PRIMARY_DARK,
+                    ),
                 ],
-                spacing=8,
+                spacing=10,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
             ),
         )
 
         rows = []
 
-        for item in items:
-            item_type = item.get(
-                "item_type"
-            )
-
-            relation = (
+        for index, item in enumerate(
+            items
+        ):
+            client_name = str(
                 item.get("client_name")
-                or item.get(
-                    "expedient_number"
+                or ""
+            ).strip()
+
+            expedient_number = str(
+                item.get("expedient_number")
+                or ""
+            ).strip()
+
+            client_controls = [
+                ft.Text(
+                    client_name or "-",
+                    size=12,
+                    weight=(
+                        ft.FontWeight.BOLD
+                        if client_name
+                        else ft.FontWeight.NORMAL
+                    ),
+                    color=(
+                        Q_PRIMARY_DARK
+                        if client_name
+                        else Q_MUTED
+                    ),
+                    width=255,
+                    max_lines=1,
+                    overflow=(
+                        ft.TextOverflow.ELLIPSIS
+                    ),
                 )
-                or "-"
+            ]
+
+            if expedient_number:
+                client_controls.append(
+                    ft.Text(
+                        expedient_number,
+                        size=10,
+                        weight=ft.FontWeight.W_500,
+                        color=Q_MUTED,
+                        width=255,
+                        max_lines=1,
+                        overflow=(
+                            ft.TextOverflow.ELLIPSIS
+                        ),
+                    )
+                )
+
+            row_style = (
+                _agenda_row_style(
+                    item
+                )
             )
 
             row = ft.Container(
@@ -2522,75 +2840,82 @@ def calendar_view(
                             current
                         )
                 ),
-                padding=ft.padding.symmetric(
-                    horizontal=10,
-                    vertical=9,
+                bgcolor=row_style["bg"],
+                border=ft.border.all(
+                    1,
+                    row_style["border"],
                 ),
-                border=ft.border.only(
-                    bottom=ft.BorderSide(
-                        1,
-                        Q_BORDER,
-                    )
+                border_radius=9,
+                margin=ft.margin.only(
+                    top=3,
+                    bottom=3,
+                ),
+                padding=ft.padding.symmetric(
+                    horizontal=14,
+                    vertical=13,
                 ),
                 content=ft.Row(
                     controls=[
+                        ft.Container(
+                            width=4,
+                            height=42,
+                            border_radius=999,
+                            bgcolor=(
+                                row_style[
+                                    "accent"
+                                ]
+                            ),
+                        ),
+
                         ft.Text(
                             _date_display(
                                 item.get(
                                     "date"
                                 )
                             ),
-                            size=10,
-                            width=135,
+                            size=12,
+                            width=120,
                             color="#334155",
+                            weight=ft.FontWeight.W_500,
                         ),
-                        ft.Text(
-                            (
-                                "Aviso"
-                                if item_type
-                                == "ALERT"
-                                else "Tarea"
-                            ),
-                            size=10,
-                            width=70,
-                            color=(
-                                "#B54708"
-                                if item_type
-                                == "ALERT"
-                                else Q_PRIMARY
-                            ),
-                            weight=(
-                                ft.FontWeight.W_600
+
+                        ft.Container(
+                            width=85,
+                            content=_agenda_type_cell(
+                                item
                             ),
                         ),
+
                         ft.Text(
                             item.get(
                                 "title"
                             )
                             or "-",
-                            size=10,
-                            width=260,
-                            color=Q_PRIMARY_DARK,
-                            weight=(
-                                ft.FontWeight.W_600
-                            ),
+                            size=12,
+                            width=180,
+                            color=Q_PRIMARY,
+                            weight=ft.FontWeight.BOLD,
+                            max_lines=2,
                             overflow=(
-                                ft.TextOverflow
-                                .ELLIPSIS
+                                ft.TextOverflow.ELLIPSIS
                             ),
                         ),
-                        ft.Text(
-                            relation,
-                            size=10,
-                            width=230,
-                            color="#475569",
-                            overflow=(
-                                ft.TextOverflow
-                                .ELLIPSIS
-                            ),
-                        ),
+
                         ft.Container(
-                            width=95,
+                            width=255,
+                            content=ft.Column(
+                                controls=client_controls,
+                                spacing=3,
+                            ),
+                        ),
+
+                        # Separación visual explícita.
+                        ft.Container(
+                            width=24,
+                        ),
+
+                        ft.Container(
+                            width=100,
                             content=status_chip(
                                 item.get(
                                     "priority"
@@ -2600,22 +2925,25 @@ def calendar_view(
                                 ),
                             ),
                         ),
-                        ft.Text(
-                            (
-                                item.get(
-                                    "status"
-                                )
-                                or "-"
-                            ).replace(
-                                "_",
-                                " ",
-                            ).title(),
-                            size=10,
+
+                        ft.Container(
                             width=110,
-                            color="#334155",
+                            content=_agenda_status_chip(
+                                item
+                            ),
+                        ),
+
+                        ft.Container(
+                            width=175,
+                            content=_agenda_responsible_cell(
+                                item
+                            ),
                         ),
                     ],
                     spacing=8,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
                 ),
             )
 
@@ -2626,44 +2954,44 @@ def calendar_view(
         if not rows:
             rows = [
                 ft.Container(
-                    padding=20,
-                    alignment=(
-                        ft.alignment.center
-                    ),
-                    content=ft.Text(
-                        (
-                            "No hay elementos que "
-                            "coincidan con los filtros."
+                    padding=32,
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Column(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.EVENT_BUSY_OUTLINED,
+                                size=30,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                (
+                                    "No hay elementos que "
+                                    "coincidan con los filtros."
+                                ),
+                                size=12,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=8,
+                        horizontal_alignment=(
+                            ft.CrossAxisAlignment.CENTER
                         ),
-                        size=11,
-                        color=Q_MUTED,
                     ),
                 )
             ]
 
         return ft.Container(
-            height=430,
-            border=ft.border.all(
-                1,
-                Q_BORDER,
-            ),
-            border_radius=12,
-            clip_behavior=ft.ClipBehavior.HARD_EDGE,
             content=ft.Column(
                 controls=[
                     header,
-                    ft.Container(
-                        expand=True,
-                        content=ft.Column(
-                            controls=rows,
-                            spacing=0,
-                            scroll=(
-                                ft.ScrollMode.AUTO
-                            ),
-                        ),
+                    ft.Column(
+                        controls=rows,
+                        spacing=0,
+                        scroll=ft.ScrollMode.AUTO,
+                        height=285,
                     ),
                 ],
-                spacing=0,
+                spacing=5,
             ),
         )
 
@@ -2901,6 +3229,44 @@ def calendar_view(
         )
 
 
+    def _refresh_agenda_results(
+        e=None,
+    ):
+        """
+        Reconstruye únicamente la tabla de Agenda.
+
+        Replica el patrón de Clients:
+        table_container.content = build_table()
+
+        Los controles de filtros permanecen montados,
+        por lo que el buscador conserva foco y cursor.
+        """
+        if agenda_dialog is None:
+            return
+
+        try:
+            items = _load_agenda_items()
+
+        except Exception as exc:
+            _show_message(
+                str(exc),
+                error=True,
+            )
+            return
+
+        agenda_table_container.content = (
+            _agenda_table(
+                items
+            )
+        )
+
+        agenda_count_text.value = (
+            f"Mostrando {len(items)} elementos"
+        )
+
+        page.update()
+
+
     def _refresh_agenda_dialog(
         e=None,
     ):
@@ -2927,6 +3293,16 @@ def calendar_view(
         page.update()
 
 
+    # El buscador de Agenda es reactivo:
+    # cada cambio reconstruye inmediatamente
+    # la tabla aplicando el texto introducido.
+    # Mismo patrón que Clients:
+    # al escribir solo se reconstruye la tabla.
+    agenda_search.on_change = (
+        _refresh_agenda_results
+    )
+
+
     def _clear_agenda_filters(
         e=None,
     ):
@@ -2946,24 +3322,234 @@ def calendar_view(
             False
         )
 
-        _refresh_agenda_dialog()
+        _refresh_agenda_results()
+
+
+    def _agenda_metric_card(
+        title,
+        value,
+        subtitle,
+        icon,
+        *,
+        accent=Q_PRIMARY,
+        background="#F8FAFC",
+    ):
+        return ft.Container(
+            expand=True,
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=38,
+                        height=38,
+                        border_radius=10,
+                        bgcolor=background,
+                        alignment=(
+                            ft.Alignment.CENTER
+                        ),
+                        content=ft.Icon(
+                            icon,
+                            color=accent,
+                            size=20,
+                        ),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                title,
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                str(value),
+                                size=23,
+                                weight=(
+                                    ft.FontWeight.BOLD
+                                ),
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                subtitle,
+                                size=10,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=1,
+                    ),
+                ],
+                spacing=10,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
+
+    def _agenda_metrics(
+        items,
+    ):
+        now = datetime.now()
+
+        pending = 0
+        today = 0
+        completed = 0
+        cancelled = 0
+
+        for item in items:
+            status = str(
+                item.get("status")
+                or ""
+            ).upper()
+
+            if (
+                item.get("item_type")
+                == "TASK"
+                and status in {
+                    "PENDIENTE",
+                    "EN_CURSO",
+                }
+            ):
+                pending += 1
+
+            if status in {
+                "COMPLETADA",
+                "RESUELTO",
+            }:
+                completed += 1
+
+            if status in {
+                "CANCELADA",
+                "CANCELADO",
+            }:
+                cancelled += 1
+
+            raw_date = str(
+                item.get("date")
+                or ""
+            ).strip()
+
+            if raw_date:
+                try:
+                    parsed = (
+                        datetime.fromisoformat(
+                            raw_date.replace(
+                                "T",
+                                " ",
+                            )
+                        )
+                    )
+
+                    if (
+                        parsed.date()
+                        == now.date()
+                    ):
+                        today += 1
+
+                except ValueError:
+                    pass
+
+        return {
+            "pending": pending,
+            "today": today,
+            "completed": completed,
+            "cancelled": cancelled,
+        }
+
+
+    def _send_agenda_to_telegram(
+        e=None,
+    ):
+        try:
+            result = (
+                calendar_agenda_summary_service
+                .send_agenda_summary()
+            )
+
+        except Exception as exc:
+            _show_message(
+                (
+                    "No se pudo enviar el resumen "
+                    "a Telegram: "
+                    f"{exc}"
+                ),
+                error=True,
+            )
+            return
+
+        snapshot = (
+            result.get("snapshot")
+            or {}
+        )
+
+        counts = (
+            snapshot.get("counts")
+            or {}
+        )
+
+        open_tasks = int(
+            counts.get("open_tasks")
+            or 0
+        )
+
+        message_count = int(
+            result.get("message_count")
+            or 0
+        )
+
+        message_label = (
+            "1 mensaje"
+            if message_count == 1
+            else f"{message_count} mensajes"
+        )
+
+        _show_message(
+            (
+                "Resumen enviado a Telegram. "
+                f"{open_tasks} tareas abiertas · "
+                f"{message_label}."
+            )
+        )
 
 
     def _agenda_dialog_content(
         items,
     ):
+        metrics = _agenda_metrics(
+            items
+        )
+
         return ft.Container(
-            width=980,
-            height=610,
+            width=1260,
+            height=665,
             content=ft.Column(
                 controls=[
                     ft.Row(
                         controls=[
+                            ft.Container(
+                                width=42,
+                                height=42,
+                                bgcolor="#EEF4FF",
+                                border_radius=11,
+                                alignment=(
+                                    ft.Alignment.CENTER
+                                ),
+                                content=ft.Icon(
+                                    ft.Icons.CALENDAR_MONTH_OUTLINED,
+                                    color=Q_PRIMARY,
+                                    size=22,
+                                ),
+                            ),
                             ft.Column(
                                 controls=[
                                     ft.Text(
                                         "Agenda completa",
-                                        size=20,
+                                        size=23,
                                         weight=(
                                             ft.FontWeight.BOLD
                                         ),
@@ -2973,15 +3559,20 @@ def calendar_view(
                                     ),
                                     ft.Text(
                                         (
-                                            "Tareas y avisos "
-                                            "operativos e históricos"
+                                            "Tareas, avisos y "
+                                            "seguimiento operativo "
+                                            "del despacho"
                                         ),
-                                        size=11,
+                                        size=12,
                                         color=Q_MUTED,
                                     ),
                                 ],
                                 spacing=2,
                                 expand=True,
+                            ),
+                            primary_button(
+                                "✈ Enviar resumen a Telegram",
+                                _send_agenda_to_telegram,
                             ),
                             ft.Container(
                                 bgcolor="#EEF4FF",
@@ -2997,7 +3588,7 @@ def calendar_view(
                                         f"{len(items)} "
                                         "elementos"
                                     ),
-                                    size=10,
+                                    size=11,
                                     weight=(
                                         ft.FontWeight.W_600
                                     ),
@@ -3005,7 +3596,55 @@ def calendar_view(
                                 ),
                             ),
                         ],
+                        spacing=10,
                     ),
+
+                    ft.Row(
+                        controls=[
+                            _agenda_metric_card(
+                                "Pendientes",
+                                metrics[
+                                    "pending"
+                                ],
+                                "Tareas por completar",
+                                ft.Icons.PENDING_ACTIONS_OUTLINED,
+                                accent=Q_PRIMARY,
+                                background="#EEF4FF",
+                            ),
+                            _agenda_metric_card(
+                                "Hoy",
+                                metrics[
+                                    "today"
+                                ],
+                                "Tareas y avisos hoy",
+                                ft.Icons.TODAY_OUTLINED,
+                                accent="#027A48",
+                                background="#ECFDF3",
+                            ),
+                            _agenda_metric_card(
+                                "Completadas",
+                                metrics[
+                                    "completed"
+                                ],
+                                "Actuaciones finalizadas",
+                                ft.Icons.CHECK_CIRCLE_OUTLINE,
+                                accent="#7F56D9",
+                                background="#F4F3FF",
+                            ),
+                            _agenda_metric_card(
+                                "Canceladas",
+                                metrics[
+                                    "cancelled"
+                                ],
+                                "Actuaciones canceladas",
+                                ft.Icons.BLOCK_OUTLINED,
+                                accent="#475467",
+                                background="#F2F4F7",
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+
                     ft.Container(
                         bgcolor="#F8FAFC",
                         border=ft.border.all(
@@ -3024,39 +3663,52 @@ def calendar_view(
                                         agenda_priority_filter,
                                     ],
                                     spacing=8,
-                                    wrap=True,
+                                    wrap=False,
                                 ),
                                 ft.Row(
                                     controls=[
                                         agenda_date_from,
                                         agenda_date_to,
                                         agenda_include_archived,
-                                        secondary_button(
-                                            "Aplicar",
-                                            _refresh_agenda_dialog,
+                                        primary_button(
+                                            "Aplicar filtros",
+                                            _refresh_agenda_results,
                                         ),
                                         secondary_button(
-                                            "Limpiar",
+                                            "Limpiar filtros",
                                             _clear_agenda_filters,
                                         ),
                                     ],
                                     spacing=8,
-                                    wrap=True,
+                                    wrap=False,
                                 ),
                             ],
-                            spacing=8,
+                            spacing=6,
                         ),
                     ),
-                    _agenda_table(
-                        items
-                    ),
-                    ft.Text(
-                        (
-                            "Haz clic en una fila para "
-                            "abrir su detalle operativo."
+
+                    agenda_table_container,
+
+                    ft.Row(
+                        controls=[
+                            agenda_count_text,
+                            ft.Text(
+                                (
+                                    "Haz clic en una fila "
+                                    "para abrir su detalle."
+                                ),
+                                size=10,
+                                color=Q_MUTED,
+                            ),
+                            secondary_button(
+                                "Cerrar",
+                                _close_agenda_dialog,
+                            ),
+                        ],
+                        spacing=14,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
                         ),
-                        size=9,
-                        color=Q_MUTED,
                     ),
                 ],
                 spacing=12,
@@ -3078,19 +3730,27 @@ def calendar_view(
             )
             return
 
+        agenda_table_container.content = (
+            _agenda_table(
+                items
+            )
+        )
+
+        agenda_count_text.value = (
+            f"Mostrando {len(items)} elementos"
+        )
+
         agenda_dialog = ft.AlertDialog(
             modal=True,
+            inset_padding=ft.padding.symmetric(
+                horizontal=18,
+                vertical=14,
+            ),
+            content_padding=ft.padding.all(
+                12
+            ),
             content=_agenda_dialog_content(
                 items
-            ),
-            actions=[
-                secondary_button(
-                    "Cerrar",
-                    _close_agenda_dialog,
-                ),
-            ],
-            actions_alignment=(
-                ft.MainAxisAlignment.END
             ),
         )
 
