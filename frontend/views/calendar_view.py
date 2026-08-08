@@ -15,6 +15,12 @@ from backend.services import (
     scheduled_notification_service,
 )
 
+from backend.services import (
+    calendar_alert_application_service
+    as calendar_alert_app,
+)
+
+
 from frontend.components.app_button import (
     primary_button,
     secondary_button,
@@ -326,6 +332,83 @@ def calendar_view(
 
     task_dialog = None
     editing_task_id = None
+
+    # ==============================================================
+    # FORMULARIO NUEVO AVISO
+    # ==============================================================
+
+    alert_title = required_text_input(
+        "Título",
+        width=720,
+    )
+
+    alert_description = multiline_input(
+        "Descripción",
+        width=720,
+        height=100,
+    )
+
+    alert_client = AppAutocomplete(
+        page=page,
+        label="Cliente",
+        options=client_options,
+        width=720,
+        max_results=8,
+        allow_free_text=False,
+        helper_text=(
+            "Opcional. Al seleccionar cliente "
+            "se filtran sus expedientes."
+        ),
+    )
+
+    alert_expedient = AppAutocomplete(
+        page=page,
+        label="Expediente",
+        options=[],
+        width=720,
+        max_results=8,
+        allow_free_text=False,
+        helper_text=(
+            "Opcional. Solo expedientes "
+            "del cliente seleccionado."
+        ),
+    )
+
+    alert_priority = select_input(
+        "Prioridad",
+        [
+            "BAJA",
+            "NORMAL",
+            "ALTA",
+            "URGENTE",
+        ],
+        value="NORMAL",
+        width=220,
+    )
+
+    alert_event_date = required_text_input(
+        "Fecha del evento DD/MM/AAAA",
+        width=300,
+    )
+
+    alert_event_time = required_text_input(
+        "Hora HH:MM",
+        value="09:00",
+        width=180,
+    )
+
+    alert_warning_date = text_input(
+        "Avisarme desde DD/MM/AAAA",
+        width=300,
+    )
+
+    alert_warning_time = text_input(
+        "Hora aviso HH:MM",
+        value="",
+        width=180,
+    )
+
+    alert_dialog = None
 
     search_input = text_input(
         "Buscar tarea / aviso / expediente / cliente",
@@ -660,6 +743,116 @@ def calendar_view(
             task_due_time.value = "09:00"
 
 
+    def _refresh_alert_expedients():
+        client_id = _option_id(
+            alert_client.input.value
+        )
+
+        if not client_id:
+            alert_expedient.set_options(
+                [],
+                clear_value=True,
+            )
+
+            try:
+                alert_expedient.control.update()
+            except Exception:
+                pass
+
+            return
+
+        expedients = (
+            expedient_service
+            .get_expedientes(
+                cliente_id=client_id,
+                active_only=True,
+            )
+        )
+
+        alert_expedient.set_options(
+            [
+                _expedient_label(item)
+                for item in expedients
+            ],
+            clear_value=True,
+        )
+
+        try:
+            alert_expedient.control.update()
+        except Exception:
+            pass
+
+
+    def _on_alert_client_select(*args):
+        _refresh_alert_expedients()
+
+
+    alert_client.on_select = (
+        _on_alert_client_select
+    )
+
+
+    def _reset_alert_form():
+        alert_title.value = ""
+        alert_description.value = ""
+
+        alert_client.set_value(
+            "",
+            update=False,
+        )
+
+        alert_expedient.set_options(
+            [],
+            clear_value=True,
+        )
+
+        alert_priority.value = "NORMAL"
+
+        now = datetime.now()
+
+        alert_event_date.value = (
+            now.strftime(
+                "%d/%m/%Y"
+            )
+        )
+
+        alert_event_time.value = "09:00"
+
+        alert_warning_date.value = ""
+        alert_warning_time.value = ""
+
+
+    def _optional_alert_datetime(
+        date_value,
+        time_value,
+    ):
+        clean_date = str(
+            date_value or ""
+        ).strip()
+
+        clean_time = str(
+            time_value or ""
+        ).strip()
+
+        if not clean_date and not clean_time:
+            return None
+
+        if not clean_date:
+            raise ValueError(
+                "Indica la fecha de aviso."
+            )
+
+        if not clean_time:
+            raise ValueError(
+                "Indica la hora de aviso."
+            )
+
+        return _task_form_datetime(
+            clean_date,
+            clean_time,
+        )
+
+
     def _reset_task_form():
         task_title.value = ""
         task_description.value = ""
@@ -693,6 +886,160 @@ def calendar_view(
         page.update()
 
         task_dialog = None
+
+
+    def _close_alert_dialog(e=None):
+        nonlocal alert_dialog
+
+        if alert_dialog is None:
+            return
+
+        page.pop_dialog()
+        page.update()
+
+        alert_dialog = None
+
+
+    def _save_alert(e=None):
+        nonlocal alert_dialog
+
+        try:
+            title = str(
+                alert_title.value
+                or ""
+            ).strip()
+
+            if not title:
+                raise ValueError(
+                    "El título es obligatorio."
+                )
+
+            event_at = _task_form_datetime(
+                alert_event_date.value,
+                alert_event_time.value,
+            )
+
+            warning_at = (
+                _optional_alert_datetime(
+                    alert_warning_date.value,
+                    alert_warning_time.value,
+                )
+            )
+
+            client_id = _option_id(
+                alert_client.input.value
+            )
+
+            expedient_id = _option_id(
+                alert_expedient.input.value
+            )
+
+            # Misma protección relacional que TASK.
+            if expedient_id:
+                expedient = (
+                    expedient_service
+                    .get_expediente(
+                        expedient_id
+                    )
+                )
+
+                if not expedient:
+                    raise ValueError(
+                        "El expediente seleccionado "
+                        "no existe."
+                    )
+
+                expedient_client_id = (
+                    expedient.get(
+                        "cliente_id"
+                    )
+                )
+
+                if (
+                    client_id
+                    and expedient_client_id
+                    and int(client_id)
+                    != int(
+                        expedient_client_id
+                    )
+                ):
+                    raise ValueError(
+                        "El expediente no pertenece "
+                        "al cliente seleccionado."
+                    )
+
+                if not client_id:
+                    client_id = (
+                        expedient_client_id
+                    )
+
+            result = (
+                calendar_alert_app
+                .create_calendar_alert(
+                    titulo=title,
+                    descripcion=str(
+                        alert_description.value
+                        or ""
+                    ).strip(),
+                    cliente_id=client_id,
+                    expediente_id=(
+                        expedient_id
+                    ),
+                    tipo="GENERAL",
+                    prioridad=(
+                        alert_priority.value
+                        or "NORMAL"
+                    ),
+                    fecha_evento=event_at,
+                    fecha_inicio_aviso=(
+                        warning_at
+                    ),
+                    origen_tipo="MANUAL",
+                    created_by="ERP",
+                )
+            )
+
+            alert = result["alert"]
+
+            # Llevar automáticamente Calendar
+            # a la semana donde ocurre el evento.
+            event_dt = datetime.fromisoformat(
+                str(
+                    alert[
+                        "fecha_evento"
+                    ]
+                ).replace(
+                    "T",
+                    " ",
+                )
+            )
+
+            state["week_start"] = (
+                _monday(
+                    event_dt
+                )
+            )
+
+            _clear_calendar_filters()
+
+            _close_alert_dialog()
+
+            refresh()
+            render()
+            safe_update()
+
+            _show_message(
+                (
+                    "Aviso creado correctamente. "
+                    "Telegram programado."
+                )
+            )
+
+        except Exception as exc:
+            _show_message(
+                str(exc),
+                error=True,
+            )
 
 
     def _clear_calendar_filters(
@@ -1106,6 +1453,118 @@ def calendar_view(
 
         page.show_dialog(
             task_dialog
+        )
+
+        page.update()
+
+
+    def _open_new_alert_dialog(e=None):
+        nonlocal alert_dialog
+
+        _reset_alert_form()
+
+        alert_dialog = form_dialog(
+            "Nuevo aviso",
+            ft.Container(
+                width=760,
+                content=ft.Column(
+                    controls=[
+                        alert_title,
+                        alert_description,
+                        alert_client.control,
+                        alert_expedient.control,
+                        ft.Row(
+                            controls=[
+                                alert_priority,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Text(
+                            "Fecha del evento",
+                            size=11,
+                            weight=(
+                                ft.FontWeight.W_600
+                            ),
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Row(
+                            controls=[
+                                alert_event_date,
+                                alert_event_time,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Text(
+                            "Notificación",
+                            size=11,
+                            weight=(
+                                ft.FontWeight.W_600
+                            ),
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Row(
+                            controls=[
+                                alert_warning_date,
+                                alert_warning_time,
+                            ],
+                            spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Container(
+                            bgcolor="#F8FAFC",
+                            border=ft.border.all(
+                                1,
+                                Q_BORDER,
+                            ),
+                            border_radius=10,
+                            padding=12,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        ft.Icons
+                                        .NOTIFICATIONS_ACTIVE_ROUNDED,
+                                        size=18,
+                                        color=Q_PRIMARY,
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "El aviso aparecerá en "
+                                            "Calendar en la fecha del "
+                                            "evento. Telegram se enviará "
+                                            "en la fecha de aviso. Si "
+                                            "la dejas vacía, se utilizará "
+                                            "la propia fecha del evento."
+                                        ),
+                                        size=11,
+                                        color=Q_MUTED,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+            actions=[
+                secondary_button(
+                    "Cancelar",
+                    _close_alert_dialog,
+                ),
+                primary_button(
+                    "Crear aviso",
+                    _save_alert,
+                ),
+            ],
+        )
+
+        page.show_dialog(
+            alert_dialog
         )
 
         page.update()
@@ -2539,10 +2998,7 @@ def calendar_view(
                 ),
                 secondary_button(
                     "Nuevo aviso",
-                    lambda e:
-                        show_placeholder(
-                            "Formulario de aviso: siguiente fase."
-                        ),
+                    _open_new_alert_dialog,
                 ),
                 primary_button(
                     "Nueva tarea",
