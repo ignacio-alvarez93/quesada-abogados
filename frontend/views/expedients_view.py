@@ -303,13 +303,13 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
     except Exception:
         provincia_options = []
 
-    search_input = text_input("Buscar expediente / cliente / registro", width=360)
+    search_input = text_input("Buscar expediente / cliente / registro", width=420)
     filtro_familia = AppAutocomplete(
         page=page,
         label="Familia",
         options=["Todos"] + familia_options,
         value="",
-        width=240,
+        width=200,
         max_results=10,
         allow_free_text=False,
     )
@@ -318,7 +318,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         label="Tipo",
         options=["Todos"] + tipo_options,
         value="",
-        width=260,
+        width=220,
         max_results=10,
         allow_free_text=False,
     )
@@ -327,7 +327,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         label="Subtipo",
         options=["Todos"] + subtipo_options[1:],
         value="",
-        width=260,
+        width=220,
         max_results=10,
         allow_free_text=False,
     )
@@ -336,7 +336,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         label="Estado admin.",
         options=["Todos"] + estado_admin_options,
         value="",
-        width=260,
+        width=190,
         max_results=10,
         allow_free_text=False,
     )
@@ -345,7 +345,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         label="Prioridad",
         options=["Todos"] + prioridad_options,
         value="",
-        width=220,
+        width=180,
         max_results=10,
         allow_free_text=False,
     )
@@ -26145,8 +26145,6 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
     def build_selected_action_bar():
         selected_count = len(state["selected_ids"])
-        if selected_count == 0:
-            return ft.Container()
 
         return bulk_action_bar(
             title="Acciones masivas de expedientes",
@@ -26180,17 +26178,48 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         controls = [
             ft.Row(
                 controls=[
-                    ft.Column(
+                    ft.Row(
                         controls=[
-                            ft.Text("Expedientes", size=28, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
-                            ft.Text("Control operativo de asuntos jurídicos y administrativos", size=14, color=Q_MUTED),
+                            ft.Container(
+                                width=46,
+                                height=46,
+                                border_radius=13,
+                                bgcolor="#EAF3FF",
+                                alignment=ft.Alignment(0, 0),
+                                content=ft.Icon(
+                                    ft.Icons.FOLDER_OPEN,
+                                    color=Q_PRIMARY,
+                                    size=24,
+                                ),
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        "Expedientes",
+                                        size=28,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=Q_PRIMARY_DARK,
+                                    ),
+                                    ft.Text(
+                                        "Gestión y seguimiento de asuntos jurídicos y administrativos",
+                                        size=13,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
                         ],
-                        spacing=2,
-                        expand=True,
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
-                    primary_button("Nuevo expediente", open_new),
+                    primary_button(
+                        "Nuevo expediente",
+                        open_new,
+                    ),
                 ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                wrap=True,
             ),
         ]
 
@@ -26201,10 +26230,38 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             [
                 ft.Row(
                     controls=[
-                        metric_card("Expedientes activos", m["total"]),
-                        metric_card("Presentados", m["presentados"]),
-                        metric_card("Requeridos", m["requeridos"]),
-                        metric_card("Doc. incompleta", m["incompletos"]),
+                        metric_card(
+                            "Expedientes activos",
+                            m["total"],
+                            icon=ft.Icons.FOLDER_OPEN,
+                            accent_color=Q_PRIMARY,
+                            subtitle="Asuntos abiertos",
+                            width=215,
+                        ),
+                        metric_card(
+                            "Presentados",
+                            m["presentados"],
+                            icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
+                            accent_color="#2563EB",
+                            subtitle="En fase administrativa",
+                            width=215,
+                        ),
+                        metric_card(
+                            "Requeridos",
+                            m["requeridos"],
+                            icon=ft.Icons.ERROR_OUTLINE,
+                            accent_color="#B54708",
+                            subtitle="Requieren seguimiento",
+                            width=215,
+                        ),
+                        metric_card(
+                            "Doc. incompleta",
+                            m["incompletos"],
+                            icon=ft.Icons.DESCRIPTION_OUTLINED,
+                            accent_color="#B42318",
+                            subtitle="Pendientes de completar",
+                            width=215,
+                        ),
                     ],
                     spacing=12,
                     wrap=True,
@@ -26217,7 +26274,10 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         filtro_tipo.control,
                         filtro_subtipo.control,
                         filtro_prioridad.control,
-                        secondary_button("Limpiar", clear_filters),
+                        secondary_button(
+                            "Limpiar",
+                            clear_filters,
+                        ),
                     ],
                 ),
                 table_container,
