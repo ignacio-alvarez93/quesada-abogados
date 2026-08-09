@@ -25750,13 +25750,33 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                 e.get("subtipo_expediente_nombre")
                 or "-"
             )
-            external_number = (
-                e.get("numero_expediente_mercurio")
-                or e.get("numero_registro")
-                or e.get("numero_expediente_externo")
-                or e.get("numero_mercurio")
-                or e.get("expediente_mercurio")
+            familia_codigo = _norm(
+                e.get("familia_expediente_codigo")
+                or familia_label
+            )
+
+            numero_expediente_extranjeria = (
+                e.get("numero_expediente_extranjeria")
                 or ""
+            )
+
+            id_presentacion = (
+                e.get("numero_expediente_mercurio")
+                or e.get("numero_presentacion_registro")
+                or ""
+            )
+
+            external_number = (
+                numero_expediente_extranjeria
+                if familia_codigo == "EXTRANJERIA"
+                else (
+                    e.get("numero_expediente_mercurio")
+                    or e.get("numero_registro")
+                    or e.get("numero_expediente_externo")
+                    or e.get("numero_mercurio")
+                    or e.get("expediente_mercurio")
+                    or ""
+                )
             )
             box_label = _box_path_label(e)
             box_color = _box_path_color(e)
@@ -25823,60 +25843,219 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                         )
                     ],
                     body=[
-                        ft.Row(
-                            controls=[
-                                ft.Text("Familia:", size=11, color=Q_MUTED),
-                                ft.Text(
-                                    familia_label,
-                                    size=12,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=Q_PRIMARY,
-                                ),
-                                ft.Text("Tipo:", size=11, color=Q_MUTED),
-                                ft.Text(
-                                    tipo_label,
-                                    size=12,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=Q_PRIMARY_DARK,
-                                ),
-                                ft.Text("Subtipo:", size=11, color=Q_MUTED),
-                                ft.Text(subtipo_label, size=12, color=Q_PRIMARY_DARK),
-                            ],
-                            spacing=6,
-                            wrap=True,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        ),
-                        ft.Row(
-                            controls=[
-                                ft.Icon(
-                                    ft.Icons.CONFIRMATION_NUMBER_OUTLINED,
-                                    size=16,
-                                    color=Q_PRIMARY if external_number else "#B42318",
-                                ),
-                                ft.Text(
-                                    "Nº expediente:",
-                                    size=12,
-                                    color=Q_MUTED,
-                                ),
-                                ft.Text(
-                                    external_number or "SIN NÚMERO DE EXPEDIENTE",
-                                    size=14,
-                                    color=Q_PRIMARY_DARK if external_number else "#B42318",
-                                    weight=ft.FontWeight.BOLD,
-                                ),
-                            ],
-                            spacing=6,
-                            wrap=True,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        ),
-                        ft.Row(
-                            controls=[
-                                ft.Icon(ft.Icons.FOLDER_OPEN, size=15, color=box_color),
-                                ft.Text(box_label, size=12, color=box_color, weight=ft.FontWeight.W_600),
-                            ],
-                            spacing=6,
-                            wrap=True,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        (
+                            ft.Column(
+                                controls=[
+                                    ft.Row(
+                                        controls=[
+                                            ft.Text(
+                                                "Trámite:",
+                                                size=11,
+                                                color=Q_MUTED,
+                                            ),
+                                            ft.Text(
+                                                tipo_label,
+                                                size=14,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=Q_PRIMARY_DARK,
+                                            ),
+                                            ft.Text(
+                                                "Subtrámite:",
+                                                size=11,
+                                                color=Q_MUTED,
+                                            ),
+                                            ft.Text(
+                                                subtipo_label,
+                                                size=12,
+                                                weight=ft.FontWeight.W_600,
+                                                color="#6D28D9",
+                                            ),
+                                        ],
+                                        spacing=6,
+                                        wrap=True,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                    ft.Row(
+                                        controls=[
+                                            ft.Text(
+                                                "Estado administrativo:",
+                                                size=11,
+                                                color=Q_MUTED,
+                                            ),
+                                            expedient_status_badge(
+                                                e.get("estado_administrativo_nombre"),
+                                                e.get("estado_administrativo_color"),
+                                            ),
+                                        ],
+                                        spacing=6,
+                                        wrap=True,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                    ft.Row(
+                                        controls=[
+                                            ft.Icon(
+                                                ft.Icons.CONFIRMATION_NUMBER_OUTLINED,
+                                                size=15,
+                                                color=(
+                                                    Q_PRIMARY
+                                                    if numero_expediente_extranjeria
+                                                    else "#B42318"
+                                                ),
+                                            ),
+                                            ft.Text(
+                                                "Nº expediente:",
+                                                size=11,
+                                                color=Q_MUTED,
+                                            ),
+                                            ft.Text(
+                                                numero_expediente_extranjeria
+                                                or "SIN NÚMERO",
+                                                size=13,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=(
+                                                    Q_PRIMARY_DARK
+                                                    if numero_expediente_extranjeria
+                                                    else "#B42318"
+                                                ),
+                                                selectable=True,
+                                            ),
+                                            ft.Text(
+                                                "ID presentación:",
+                                                size=11,
+                                                color=Q_MUTED,
+                                            ),
+                                            ft.Text(
+                                                id_presentacion or "SIN ID",
+                                                size=13,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=(
+                                                    Q_PRIMARY_DARK
+                                                    if id_presentacion
+                                                    else "#B42318"
+                                                ),
+                                                selectable=True,
+                                            ),
+                                        ],
+                                        spacing=6,
+                                        wrap=True,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                    ft.Row(
+                                        controls=[
+                                            ft.Text(
+                                                "CRM:",
+                                                size=11,
+                                                color=Q_MUTED,
+                                            ),
+                                            ft.Text(
+                                                e.get("numero_expediente") or "-",
+                                                size=12,
+                                                weight=ft.FontWeight.W_600,
+                                                color=Q_PRIMARY,
+                                                selectable=True,
+                                            ),
+                                            ft.Icon(
+                                                ft.Icons.FOLDER_OPEN,
+                                                size=15,
+                                                color=box_color,
+                                            ),
+                                            ft.Text(
+                                                box_label,
+                                                size=11,
+                                                color=box_color,
+                                                weight=ft.FontWeight.W_600,
+                                            ),
+                                        ],
+                                        spacing=6,
+                                        wrap=True,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                ],
+                                spacing=5,
+                            )
+                            if familia_codigo == "EXTRANJERIA"
+                            else ft.Column(
+                                controls=[
+                                    ft.Row(
+                                        controls=[
+                                            ft.Text("Familia:", size=11, color=Q_MUTED),
+                                            ft.Text(
+                                                familia_label,
+                                                size=12,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=Q_PRIMARY,
+                                            ),
+                                            ft.Text("Tipo:", size=11, color=Q_MUTED),
+                                            ft.Text(
+                                                tipo_label,
+                                                size=12,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=Q_PRIMARY_DARK,
+                                            ),
+                                            ft.Text("Subtipo:", size=11, color=Q_MUTED),
+                                            ft.Text(
+                                                subtipo_label,
+                                                size=12,
+                                                color=Q_PRIMARY_DARK,
+                                            ),
+                                        ],
+                                        spacing=6,
+                                        wrap=True,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                    ft.Row(
+                                        controls=[
+                                            ft.Icon(
+                                                ft.Icons.CONFIRMATION_NUMBER_OUTLINED,
+                                                size=16,
+                                                color=(
+                                                    Q_PRIMARY
+                                                    if external_number
+                                                    else "#B42318"
+                                                ),
+                                            ),
+                                            ft.Text(
+                                                "Nº expediente:",
+                                                size=12,
+                                                color=Q_MUTED,
+                                            ),
+                                            ft.Text(
+                                                external_number
+                                                or "SIN NÚMERO DE EXPEDIENTE",
+                                                size=14,
+                                                color=(
+                                                    Q_PRIMARY_DARK
+                                                    if external_number
+                                                    else "#B42318"
+                                                ),
+                                                weight=ft.FontWeight.BOLD,
+                                            ),
+                                        ],
+                                        spacing=6,
+                                        wrap=True,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                    ft.Row(
+                                        controls=[
+                                            ft.Icon(
+                                                ft.Icons.FOLDER_OPEN,
+                                                size=15,
+                                                color=box_color,
+                                            ),
+                                            ft.Text(
+                                                box_label,
+                                                size=12,
+                                                color=box_color,
+                                                weight=ft.FontWeight.W_600,
+                                            ),
+                                        ],
+                                        spacing=6,
+                                        wrap=True,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                ],
+                                spacing=3,
+                            )
                         ),
                     ],
                     footer=[
