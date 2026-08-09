@@ -415,10 +415,10 @@ def materialize_next_occurrence(
                         ]
                     ),
                     next_occurrence_at=None,
-                    activo=False,
+                    activo=True,
                     estado=(
                         calendar_alert_recurrence_service
-                        .RECURRENCE_FINISHED
+                        .RECURRENCE_ACTIVE
                     ),
                     conn=connection,
                     db_path=db_path,
@@ -526,14 +526,10 @@ def materialize_next_occurrence(
                     if has_following
                     else None
                 ),
-                activo=has_following,
+                activo=True,
                 estado=(
                     calendar_alert_recurrence_service
                     .RECURRENCE_ACTIVE
-                    if has_following
-                    else
-                    calendar_alert_recurrence_service
-                    .RECURRENCE_FINISHED
                 ),
                 conn=connection,
                 db_path=db_path,
@@ -636,3 +632,228 @@ def materialize_until_limit(
         "La recurrencia superó el límite "
         "de seguridad de materialización."
     )
+
+def _recurrence_notification_ids(
+    recurrence_id,
+    *,
+    conn,
+    db_path=DEFAULT_DB_PATH,
+):
+    mappings = (
+        calendar_alert_recurrence_service
+        .list_notification_occurrences(
+            recurrence_id,
+            conn=conn,
+            db_path=db_path,
+        )
+    )
+
+    return [
+        int(
+            item["notification_id"]
+        )
+        for item in mappings
+    ]
+
+
+def pause_recurring_alert(
+    recurrence_id,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    """
+    Pausa una serie sin cancelar el ALERT raíz.
+
+    Las notificaciones pendientes o con error
+    quedan suspendidas y fuera del worker.
+    """
+    with _transaction(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        recurrence = (
+            calendar_alert_recurrence_service
+            .get_recurrence(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        if not recurrence:
+            raise ValueError(
+                "Recurrencia no encontrada."
+            )
+
+        notification_ids = (
+            _recurrence_notification_ids(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        paused_notifications = (
+            scheduled_notification_service
+            .pause_notifications(
+                notification_ids,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        paused = (
+            calendar_alert_recurrence_service
+            .pause_recurrence(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        return {
+            "recurrence": paused,
+            "notifications_paused": (
+                paused_notifications
+            ),
+        }
+
+
+def resume_recurring_alert(
+    recurrence_id,
+    *,
+    now=None,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    """
+    Reanuda una serie pausada.
+
+    Los recordatorios ya vencidos se marcan
+    OMITIDA y no se envían de forma atrasada.
+    """
+    with _transaction(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        recurrence = (
+            calendar_alert_recurrence_service
+            .get_recurrence(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        if not recurrence:
+            raise ValueError(
+                "Recurrencia no encontrada."
+            )
+
+        if (
+            recurrence.get("estado")
+            != calendar_alert_recurrence_service
+            .RECURRENCE_PAUSED
+        ):
+            raise ValueError(
+                "Solo puede reanudarse "
+                "una serie pausada."
+            )
+
+        notification_ids = (
+            _recurrence_notification_ids(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        notification_result = (
+            scheduled_notification_service
+            .resume_notifications(
+                notification_ids,
+                now=now,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        resumed = (
+            calendar_alert_recurrence_service
+            .resume_recurrence(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        return {
+            "recurrence": resumed,
+            **notification_result,
+        }
+
+
+def cancel_recurring_alert(
+    recurrence_id,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    """
+    Cancela definitivamente la recurrencia
+    sin cancelar el calendar_alert raíz.
+    """
+    with _transaction(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        recurrence = (
+            calendar_alert_recurrence_service
+            .get_recurrence(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        if not recurrence:
+            raise ValueError(
+                "Recurrencia no encontrada."
+            )
+
+        notification_ids = (
+            _recurrence_notification_ids(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        cancelled_notifications = (
+            scheduled_notification_service
+            .cancel_notifications(
+                notification_ids,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        cancelled = (
+            calendar_alert_recurrence_service
+            .cancel_recurrence(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        return {
+            "recurrence": cancelled,
+            "notifications_cancelled": (
+                cancelled_notifications
+            ),
+        }

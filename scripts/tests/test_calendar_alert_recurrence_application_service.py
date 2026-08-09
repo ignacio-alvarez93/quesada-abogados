@@ -473,12 +473,12 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
 
         self.assertEqual(
             recurrence["estado"],
-            "FINALIZADA",
+            "ACTIVA",
         )
 
         self.assertEqual(
             recurrence["activo"],
-            0,
+            1,
         )
 
         self.assertIsNone(
@@ -540,12 +540,12 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
 
         self.assertEqual(
             recurrence["estado"],
-            "FINALIZADA",
+            "ACTIVA",
         )
 
         self.assertEqual(
             recurrence["activo"],
-            0,
+            1,
         )
 
     def test_recurrent_notification_source_keys_are_unique(
@@ -674,12 +674,12 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
 
         self.assertEqual(
             recurrence["estado"],
-            "FINALIZADA",
+            "ACTIVA",
         )
 
         self.assertEqual(
             recurrence["activo"],
-            0,
+            1,
         )
 
         self.assertIsNone(
@@ -689,6 +689,564 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
         )
 
 
+
+    def test_pause_recurring_alert_pauses_notifications(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        paused = (
+            recurrence_app
+            .pause_recurring_alert(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            paused["recurrence"]["estado"],
+            "PAUSADA",
+        )
+
+        self.assertEqual(
+            paused["recurrence"]["activo"],
+            0,
+        )
+
+        self.assertEqual(
+            paused["notifications_paused"],
+            7,
+        )
+
+        notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                result["alert"]["id"],
+                include_inactive=True,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            {
+                item["estado"]
+                for item in notifications
+            },
+            {"PAUSADA"},
+        )
+
+        self.assertTrue(
+            all(
+                item["activo"] == 0
+                for item in notifications
+            )
+        )
+
+        alert = (
+            calendar_alert_service
+            .get_alert(
+                result["alert"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            alert["estado"],
+            "ACTIVO",
+        )
+
+        self.assertEqual(
+            alert["activo"],
+            1,
+        )
+
+    def test_resume_recurring_alert_omits_past_notifications(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        (
+            recurrence_app
+            .pause_recurring_alert(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        resumed = (
+            recurrence_app
+            .resume_recurring_alert(
+                result["recurrence"]["id"],
+                now=datetime(
+                    2026,
+                    8,
+                    12,
+                    9,
+                    0,
+                ),
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            resumed["recurrence"]["estado"],
+            "ACTIVA",
+        )
+
+        self.assertEqual(
+            resumed["recurrence"]["activo"],
+            1,
+        )
+
+        self.assertEqual(
+            resumed["omitted"],
+            3,
+        )
+
+        self.assertEqual(
+            resumed["reactivated"],
+            4,
+        )
+
+        notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                result["alert"]["id"],
+                include_inactive=True,
+                db_path=self.db_path,
+            )
+        )
+
+        states = {
+            item["scheduled_at"]:
+                (
+                    item["estado"],
+                    item["activo"],
+                )
+            for item in notifications
+        }
+
+        self.assertEqual(
+            states[
+                "2026-08-09 09:00:00"
+            ],
+            ("OMITIDA", 0),
+        )
+
+        self.assertEqual(
+            states[
+                "2026-08-10 09:00:00"
+            ],
+            ("OMITIDA", 0),
+        )
+
+        self.assertEqual(
+            states[
+                "2026-08-11 09:00:00"
+            ],
+            ("OMITIDA", 0),
+        )
+
+        for scheduled_at in (
+            "2026-08-12 09:00:00",
+            "2026-08-13 09:00:00",
+            "2026-08-14 09:00:00",
+            "2026-08-15 09:00:00",
+        ):
+            self.assertEqual(
+                states[scheduled_at],
+                ("PENDIENTE", 1),
+            )
+
+    def test_cancel_recurring_alert_preserves_root_alert(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        cancelled = (
+            recurrence_app
+            .cancel_recurring_alert(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            cancelled[
+                "recurrence"
+            ]["estado"],
+            "CANCELADA",
+        )
+
+        self.assertEqual(
+            cancelled[
+                "recurrence"
+            ]["activo"],
+            0,
+        )
+
+        self.assertEqual(
+            cancelled[
+                "notifications_cancelled"
+            ],
+            7,
+        )
+
+        notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                result["alert"]["id"],
+                include_inactive=True,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            {
+                item["estado"]
+                for item in notifications
+            },
+            {"CANCELADA"},
+        )
+
+        alert = (
+            calendar_alert_service
+            .get_alert(
+                result["alert"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            alert["estado"],
+            "ACTIVO",
+        )
+
+        self.assertEqual(
+            alert["activo"],
+            1,
+        )
+
+    def test_paused_notifications_are_not_due(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        (
+            recurrence_app
+            .pause_recurring_alert(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        due = (
+            scheduled_notification_service
+            .list_due_notifications(
+                now=datetime(
+                    2026,
+                    8,
+                    20,
+                    9,
+                    0,
+                ),
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            due,
+            [],
+        )
+
+    def test_pause_only_affects_series_notifications(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        extra = (
+            scheduled_notification_service
+            .create_notification(
+                source_type="ALERT",
+                source_id=result["alert"]["id"],
+                scheduled_at=datetime(
+                    2026,
+                    8,
+                    14,
+                    12,
+                    0,
+                ),
+                notification_type=(
+                    "AVISO_CALENDARIO"
+                ),
+                source_key=(
+                    "TEST:UNRELATED:"
+                    f"{result['alert']['id']}"
+                ),
+                db_path=self.db_path,
+            )
+        )
+
+        (
+            recurrence_app
+            .pause_recurring_alert(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                result["alert"]["id"],
+                include_inactive=True,
+                db_path=self.db_path,
+            )
+        )
+
+        by_id = {
+            item["id"]: item
+            for item in notifications
+        }
+
+        unrelated = by_id[
+            extra["notification"]["id"]
+        ]
+
+        self.assertEqual(
+            unrelated["estado"],
+            "PENDIENTE",
+        )
+
+        self.assertEqual(
+            unrelated["activo"],
+            1,
+        )
+
+        mappings = (
+            calendar_alert_recurrence_service
+            .list_notification_occurrences(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        series_ids = {
+            item["notification_id"]
+            for item in mappings
+        }
+
+        self.assertTrue(
+            all(
+                by_id[item_id]["estado"]
+                == "PAUSADA"
+                for item_id in series_ids
+            )
+        )
+
+    def test_resume_restores_error_notification_as_error(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        mappings = (
+            calendar_alert_recurrence_service
+            .list_notification_occurrences(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        notification_id = (
+            mappings[-1]["notification_id"]
+        )
+
+        (
+            scheduled_notification_service
+            .mark_error(
+                notification_id,
+                "Error de prueba",
+                db_path=self.db_path,
+            )
+        )
+
+        (
+            recurrence_app
+            .pause_recurring_alert(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        (
+            recurrence_app
+            .resume_recurring_alert(
+                result["recurrence"]["id"],
+                now=datetime(
+                    2026,
+                    8,
+                    14,
+                    9,
+                    0,
+                ),
+                db_path=self.db_path,
+            )
+        )
+
+        notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                result["alert"]["id"],
+                include_inactive=True,
+                db_path=self.db_path,
+            )
+        )
+
+        restored = next(
+            item
+            for item in notifications
+            if item["id"] == notification_id
+        )
+
+        self.assertEqual(
+            restored["estado"],
+            "ERROR",
+        )
+
+        self.assertEqual(
+            restored["activo"],
+            1,
+        )
+
+        self.assertEqual(
+            restored["last_error"],
+            "Error de prueba",
+        )
+
+    def test_cancel_paused_series_is_definitive(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        (
+            recurrence_app
+            .pause_recurring_alert(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        cancelled = (
+            recurrence_app
+            .cancel_recurring_alert(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            cancelled[
+                "recurrence"
+            ]["estado"],
+            "CANCELADA",
+        )
+
+        self.assertEqual(
+            cancelled[
+                "notifications_cancelled"
+            ],
+            7,
+        )
+
+        notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                result["alert"]["id"],
+                include_inactive=True,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            {
+                item["estado"]
+                for item in notifications
+            },
+            {"CANCELADA"},
+        )
+
+        with self.assertRaises(
+            ValueError
+        ):
+            (
+                recurrence_app
+                .resume_recurring_alert(
+                    result["recurrence"]["id"],
+                    db_path=self.db_path,
+                )
+            )
 
 if __name__ == "__main__":
     unittest.main()

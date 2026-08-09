@@ -49,6 +49,8 @@ ESTADO_PENDIENTE = "PENDIENTE"
 ESTADO_PROCESANDO = "PROCESANDO"
 ESTADO_ENVIADA = "ENVIADA"
 ESTADO_ERROR = "ERROR"
+ESTADO_PAUSADA = "PAUSADA"
+ESTADO_OMITIDA = "OMITIDA"
 ESTADO_CANCELADA = "CANCELADA"
 
 
@@ -735,6 +737,197 @@ def _set_delivery_state(
             connection,
             notification_id,
         )
+
+
+def pause_notifications(
+    notification_ids,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    ids = [
+        int(value)
+        for value in notification_ids
+    ]
+
+    if not ids:
+        return 0
+
+    placeholders = ",".join(
+        "?"
+        for _ in ids
+    )
+
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        cursor = connection.execute(
+            f"""
+            UPDATE scheduled_notifications
+            SET
+                estado = 'PAUSADA',
+                activo = 0,
+                updated_at =
+                    CURRENT_TIMESTAMP
+            WHERE id IN ({placeholders})
+              AND estado IN (
+                    'PENDIENTE',
+                    'ERROR'
+              )
+            """,
+            ids,
+        )
+
+        return cursor.rowcount
+
+
+def resume_notifications(
+    notification_ids,
+    *,
+    now=None,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    ids = [
+        int(value)
+        for value in notification_ids
+    ]
+
+    if not ids:
+        return {
+            "reactivated": 0,
+            "omitted": 0,
+        }
+
+    current = (
+        now or datetime.now()
+    ).replace(
+        microsecond=0
+    ).isoformat(
+        sep=" "
+    )
+
+    placeholders = ",".join(
+        "?"
+        for _ in ids
+    )
+
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        omitted = connection.execute(
+            f"""
+            UPDATE scheduled_notifications
+            SET
+                estado = 'OMITIDA',
+                activo = 0,
+                updated_at =
+                    CURRENT_TIMESTAMP
+            WHERE id IN ({placeholders})
+              AND estado = 'PAUSADA'
+              AND datetime(
+                    scheduled_at
+                  ) < datetime(?)
+            """,
+            [
+                *ids,
+                current,
+            ],
+        ).rowcount
+
+        reactivated = connection.execute(
+            f"""
+            UPDATE scheduled_notifications
+            SET
+                estado = CASE
+                    WHEN last_error IS NULL
+                    THEN 'PENDIENTE'
+                    ELSE 'ERROR'
+                END,
+                activo = 1,
+                updated_at =
+                    CURRENT_TIMESTAMP
+            WHERE id IN ({placeholders})
+              AND estado = 'PAUSADA'
+              AND datetime(
+                    scheduled_at
+                  ) >= datetime(?)
+            """,
+            [
+                *ids,
+                current,
+            ],
+        ).rowcount
+
+        return {
+            "reactivated": reactivated,
+            "omitted": omitted,
+        }
+
+
+def cancel_notifications(
+    notification_ids,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    ids = [
+        int(value)
+        for value in notification_ids
+    ]
+
+    if not ids:
+        return 0
+
+    placeholders = ",".join(
+        "?"
+        for _ in ids
+    )
+
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        cursor = connection.execute(
+            f"""
+            UPDATE scheduled_notifications
+            SET
+                estado = 'CANCELADA',
+                activo = 0,
+                updated_at =
+                    CURRENT_TIMESTAMP
+            WHERE id IN ({placeholders})
+              AND estado IN (
+                    'PENDIENTE',
+                    'ERROR',
+                    'PAUSADA'
+              )
+            """,
+            ids,
+        )
+
+        return cursor.rowcount
+
 
 
 def cancel_pending_for_source(
