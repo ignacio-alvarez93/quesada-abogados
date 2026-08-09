@@ -74,6 +74,10 @@ from backend.services import (
 from backend.services import (
     telegram_service,
 )
+from backend.services import (
+    calendar_alert_recurrence_application_service
+    as calendar_alert_recurrence_app,
+)
 
 
 def process_due_notifications(
@@ -154,12 +158,26 @@ def process_due_notifications(
                 message
             )
 
-            (
-                scheduled_notification_service
-                .mark_sent(
-                    notification_id
+            if (
+                notification.get(
+                    "source_type"
                 )
-            )
+                == "ALERT"
+            ):
+                (
+                    calendar_alert_recurrence_app
+                    .mark_recurring_notification_sent(
+                        notification_id
+                    )
+                )
+
+            else:
+                (
+                    scheduled_notification_service
+                    .mark_sent(
+                        notification_id
+                    )
+                )
 
             summary["sent"] += 1
 

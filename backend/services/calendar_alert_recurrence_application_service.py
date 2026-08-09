@@ -857,3 +857,196 @@ def cancel_recurring_alert(
                 cancelled_notifications
             ),
         }
+
+def _recurrence_for_notification(
+    notification_id,
+    *,
+    conn,
+):
+    row = conn.execute(
+        """
+        SELECT
+            r.*
+        FROM
+            calendar_alert_recurrence_notifications rn
+        JOIN calendar_alert_recurrences r
+          ON r.id = rn.recurrence_id
+        WHERE rn.notification_id = ?
+        LIMIT 1
+        """,
+        (
+            int(notification_id),
+        ),
+    ).fetchone()
+
+    return (
+        dict(row)
+        if row
+        else None
+    )
+
+
+def _recurrence_has_operational_notifications(
+    recurrence_id,
+    *,
+    conn,
+):
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM
+            calendar_alert_recurrence_notifications rn
+        JOIN scheduled_notifications sn
+          ON sn.id = rn.notification_id
+        WHERE
+            rn.recurrence_id = ?
+            AND sn.estado IN (
+                'PENDIENTE',
+                'ERROR',
+                'PROCESANDO',
+                'PAUSADA'
+            )
+        """,
+        (
+            int(recurrence_id),
+        ),
+    ).fetchone()
+
+    return int(
+        row["total"]
+        if row
+        else 0
+    ) > 0
+
+
+def finalize_recurrence_if_complete(
+    recurrence_id,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    """
+    Finaliza una serie únicamente cuando su
+    materialización está cerrada y ya no quedan
+    recordatorios con lifecycle operativo.
+    """
+    with _transaction(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        recurrence = (
+            calendar_alert_recurrence_service
+            .get_recurrence(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        if not recurrence:
+            raise ValueError(
+                "Recurrencia no encontrada."
+            )
+
+        if (
+            recurrence.get("estado")
+            != calendar_alert_recurrence_service
+            .RECURRENCE_ACTIVE
+        ):
+            return {
+                "finalized": False,
+                "recurrence": recurrence,
+            }
+
+        if recurrence.get(
+            "next_occurrence_at"
+        ):
+            return {
+                "finalized": False,
+                "recurrence": recurrence,
+            }
+
+        if _recurrence_has_operational_notifications(
+            recurrence_id,
+            conn=connection,
+        ):
+            return {
+                "finalized": False,
+                "recurrence": recurrence,
+            }
+
+        finished = (
+            calendar_alert_recurrence_service
+            .finish_recurrence(
+                recurrence_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        return {
+            "finalized": True,
+            "recurrence": finished,
+        }
+
+
+def mark_recurring_notification_sent(
+    notification_id,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    """
+    Marca ENVIADA una notificación perteneciente
+    a una serie y finaliza la recurrencia si este
+    era su último recordatorio operativo.
+
+    Si la notificación no pertenece a ninguna
+    recurrencia, realiza únicamente mark_sent.
+    """
+    with _transaction(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        recurrence = (
+            _recurrence_for_notification(
+                notification_id,
+                conn=connection,
+            )
+        )
+
+        notification = (
+            scheduled_notification_service
+            .mark_sent(
+                notification_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        if not recurrence:
+            return {
+                "notification": notification,
+                "recurrence": None,
+                "finalized": False,
+            }
+
+        completion = (
+            finalize_recurrence_if_complete(
+                recurrence["id"],
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        return {
+            "notification": notification,
+            "recurrence": completion[
+                "recurrence"
+            ],
+            "finalized": completion[
+                "finalized"
+            ],
+        }

@@ -1248,5 +1248,193 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
                 )
             )
 
+    def test_intermediate_sent_notification_keeps_recurrence_active(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        mappings = (
+            calendar_alert_recurrence_service
+            .list_notification_occurrences(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        first = mappings[0]
+
+        sent = (
+            recurrence_app
+            .mark_recurring_notification_sent(
+                first["notification_id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertFalse(
+            sent["finalized"]
+        )
+
+        self.assertEqual(
+            sent["recurrence"]["estado"],
+            "ACTIVA",
+        )
+
+        self.assertEqual(
+            sent["recurrence"]["activo"],
+            1,
+        )
+
+    def test_last_sent_notification_finishes_recurrence(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        mappings = (
+            calendar_alert_recurrence_service
+            .list_notification_occurrences(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        last_result = None
+
+        for mapping in mappings:
+            last_result = (
+                recurrence_app
+                .mark_recurring_notification_sent(
+                    mapping[
+                        "notification_id"
+                    ],
+                    db_path=self.db_path,
+                )
+            )
+
+        self.assertIsNotNone(
+            last_result
+        )
+
+        self.assertTrue(
+            last_result["finalized"]
+        )
+
+        self.assertEqual(
+            last_result[
+                "recurrence"
+            ]["estado"],
+            "FINALIZADA",
+        )
+
+        self.assertEqual(
+            last_result[
+                "recurrence"
+            ]["activo"],
+            0,
+        )
+
+        notifications = (
+            calendar_alert_recurrence_service
+            .list_notification_occurrences(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            {
+                item["estado"]
+                for item in notifications
+            },
+            {"ENVIADA"},
+        )
+
+    def test_error_notification_prevents_auto_finish(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        mappings = (
+            calendar_alert_recurrence_service
+            .list_notification_occurrences(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        error_mapping = mappings[-1]
+
+        (
+            scheduled_notification_service
+            .mark_error(
+                error_mapping[
+                    "notification_id"
+                ],
+                "Error pendiente",
+                db_path=self.db_path,
+            )
+        )
+
+        for mapping in mappings[:-1]:
+            (
+                recurrence_app
+                .mark_recurring_notification_sent(
+                    mapping[
+                        "notification_id"
+                    ],
+                    db_path=self.db_path,
+                )
+            )
+
+        completion = (
+            recurrence_app
+            .finalize_recurrence_if_complete(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertFalse(
+            completion["finalized"]
+        )
+
+        self.assertEqual(
+            completion[
+                "recurrence"
+            ]["estado"],
+            "ACTIVA",
+        )
+
+        self.assertEqual(
+            completion[
+                "recurrence"
+            ]["activo"],
+            1,
+        )
+
 if __name__ == "__main__":
     unittest.main()
