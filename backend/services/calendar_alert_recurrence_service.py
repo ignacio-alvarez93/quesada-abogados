@@ -870,3 +870,222 @@ def get_recurrence_for_alert(
             if row
             else None
         )
+
+
+def list_occurrences(
+    recurrence_id,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM calendar_alert_recurrence_occurrences
+            WHERE recurrence_id = ?
+            ORDER BY occurrence_index
+            """,
+            (
+                int(recurrence_id),
+            ),
+        ).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+
+def register_occurrence(
+    recurrence_id,
+    *,
+    alert_id,
+    occurrence_index,
+    occurrence_at,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    clean_at = _normalize_datetime(
+        occurrence_at,
+        required=True,
+    )
+
+    index = int(
+        occurrence_index
+    )
+
+    if index < 1:
+        raise ValueError(
+            "Índice de ocurrencia no válido."
+        )
+
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        connection.execute(
+            """
+            INSERT INTO
+                calendar_alert_recurrence_occurrences (
+                    recurrence_id,
+                    alert_id,
+                    occurrence_index,
+                    occurrence_at
+                )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                int(recurrence_id),
+                int(alert_id),
+                index,
+                clean_at.isoformat(
+                    sep=" "
+                ),
+            ),
+        )
+
+        return connection.execute(
+            """
+            SELECT *
+            FROM calendar_alert_recurrence_occurrences
+            WHERE
+                recurrence_id = ?
+                AND occurrence_index = ?
+            """,
+            (
+                int(recurrence_id),
+                index,
+            ),
+        ).fetchone()
+
+
+def update_progress(
+    recurrence_id,
+    *,
+    occurrences_generated,
+    last_occurrence_at,
+    next_occurrence_at=None,
+    activo=True,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    last_at = _normalize_datetime(
+        last_occurrence_at,
+        required=True,
+    )
+
+    next_at = _normalize_datetime(
+        next_occurrence_at,
+        required=False,
+    )
+
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        connection.execute(
+            """
+            UPDATE calendar_alert_recurrences
+            SET
+                occurrences_generated = ?,
+                last_occurrence_at = ?,
+                next_occurrence_at = ?,
+                activo = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(occurrences_generated),
+                last_at.isoformat(
+                    sep=" "
+                ),
+                (
+                    next_at.isoformat(
+                        sep=" "
+                    )
+                    if next_at
+                    else None
+                ),
+                1 if activo else 0,
+                int(recurrence_id),
+            ),
+        )
+
+        return get_recurrence(
+            recurrence_id,
+            conn=connection,
+            db_path=db_path,
+        )
+
+
+def occurrence_allowed(
+    recurrence,
+    occurrence_index,
+    occurrence_datetime,
+):
+    if not recurrence:
+        return False
+
+    if not int(
+        recurrence.get("activo")
+        or 0
+    ):
+        return False
+
+    index = int(
+        occurrence_index
+    )
+
+    value = _normalize_datetime(
+        occurrence_datetime,
+        required=True,
+    )
+
+    end_type = _upper(
+        recurrence.get("end_type")
+    )
+
+    if end_type == END_COUNT:
+        maximum = int(
+            recurrence.get(
+                "max_occurrences"
+            )
+            or 0
+        )
+
+        return (
+            maximum > 0
+            and index <= maximum
+        )
+
+    if end_type == END_DATE:
+        end_at = _normalize_datetime(
+            recurrence.get("end_date"),
+            required=True,
+        )
+
+        return value <= end_at
+
+    return True
