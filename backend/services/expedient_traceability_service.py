@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from datetime import datetime
 
@@ -100,7 +101,9 @@ def initialize_traceability_schema():
 
 
 def get_expediente_basic(expediente_id):
-    with _connect() as conn:
+    with closing(
+        _connect()
+    ) as conn:
         return _dict(
             conn.execute(
                 """
@@ -1005,7 +1008,9 @@ def recalculate_expedient_admin_state(
     """
     expediente_id = int(expediente_id)
 
-    with _connect() as conn:
+    with closing(
+        _connect()
+    ) as conn:
         expediente = conn.execute(
             """
             SELECT
@@ -1150,7 +1155,9 @@ def archive_admin_document(justificante_id):
     """
     justificante_id = int(justificante_id)
 
-    with _connect() as conn:
+    with closing(
+        _connect()
+    ) as conn:
         justificante = conn.execute(
             """
             SELECT *
@@ -1315,6 +1322,20 @@ def archive_admin_document(justificante_id):
             "error": str(exc),
         }
 
+    calendar_tracking = (
+        _project_tracking_to_calendar(
+            notification_tracking
+        )
+    )
+
+    calendar_tasks = (
+        _project_admin_event_tasks_to_calendar(
+            expediente_id,
+            event_code,
+            document_id=justificante_id,
+        )
+    )
+
     return {
         "ok": True,
         "justificante_id": justificante_id,
@@ -1323,6 +1344,10 @@ def archive_admin_document(justificante_id):
         "state_recalculation": transition,
         "notification_tracking":
             notification_tracking,
+        "calendar_tracking":
+            calendar_tracking,
+        "calendar_tasks":
+            calendar_tasks,
         "estado_anterior":
             transition.get("estado_anterior") or "",
         "estado_nuevo":
@@ -3064,6 +3089,20 @@ def create_admin_document_event(data):
             "error": str(exc),
         }
 
+    calendar_tracking = (
+        _project_tracking_to_calendar(
+            notification_tracking
+        )
+    )
+
+    calendar_tasks = (
+        _project_admin_event_tasks_to_calendar(
+            expediente_id,
+            event_code,
+            document_id=justificante_id,
+        )
+    )
+
     derivation_evaluation = (
         _evaluate_derivations_after_admin_event(
             expediente_id=expediente_id,
@@ -3088,6 +3127,10 @@ def create_admin_document_event(data):
         "queue_completion": queue_completion,
         "notification_tracking":
             notification_tracking,
+        "calendar_tracking":
+            calendar_tracking,
+        "calendar_tasks":
+            calendar_tasks,
         "derivation_evaluation":
             derivation_evaluation,
         "dehu_confirmation":
@@ -3113,6 +3156,127 @@ def create_admin_document_event(data):
         "denial_resolution_extraction":
             denial_resolution_extraction,
     }
+
+
+def _project_tracking_to_calendar(
+    notification_tracking,
+):
+    """
+    Proyecta el resultado canónico de
+    notification_tracking sobre Calendar.
+
+    Calendar es una proyección secundaria:
+    un fallo de Calendar nunca debe impedir
+    registrar o recalcular la trazabilidad
+    administrativa del expediente.
+    """
+
+    if not notification_tracking:
+        return {
+            "ok": True,
+            "action": "NO_TRACKING_RESULT",
+            "alert": None,
+        }
+
+    if not notification_tracking.get("ok"):
+        return {
+            "ok": False,
+            "action": "TRACKING_UNAVAILABLE",
+            "alert": None,
+            "error": (
+                notification_tracking.get("error")
+                or ""
+            ),
+        }
+
+    try:
+        from backend.services import (
+            calendar_tracking_producer_service
+        )
+
+        return (
+            calendar_tracking_producer_service
+            .sync_from_tracking_result(
+                notification_tracking,
+                db_path=DB_PATH,
+            )
+        )
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "action": "CALENDAR_PROJECTION_ERROR",
+            "alert": None,
+            "error": str(exc),
+        }
+
+
+def _project_admin_event_tasks_to_calendar(
+    expediente_id,
+    event_code,
+    *,
+    document_id=None,
+):
+    """
+    Proyecta obligaciones operativas derivadas de
+    documentos administrativos sobre TASK de Calendar.
+
+    Calendar es una proyección secundaria:
+    un fallo nunca invalida la trazabilidad.
+    """
+    normalized_event = _text(
+        event_code
+    )
+
+    supported = {
+        "ADMISION_TRAMITE_TASA",
+        "JUSTIFICANTE_APORTACION_TASA",
+        "REQUERIMIENTO",
+        "JUSTIFICANTE_APORTACION_DOCUMENTACION",
+    }
+
+    if normalized_event not in supported:
+        return {
+            "ok": True,
+            "action": "NO_APLICABLE",
+            "task": None,
+        }
+
+    try:
+        from backend.services import (
+            calendar_traceability_task_producer_service
+        )
+
+        if normalized_event in {
+            "ADMISION_TRAMITE_TASA",
+            "JUSTIFICANTE_APORTACION_TASA",
+        }:
+            return (
+                calendar_traceability_task_producer_service
+                .sync_tax_obligation(
+                    expediente_id,
+                    db_path=DB_PATH,
+                )
+            )
+
+        return (
+            calendar_traceability_task_producer_service
+            .sync_requirement_obligation(
+                expediente_id,
+                event_code=normalized_event,
+                document_id=document_id,
+                db_path=DB_PATH,
+            )
+        )
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "action":
+                "CALENDAR_TASK_PROJECTION_ERROR",
+            "task": None,
+            "error": str(exc),
+        }
 
 
 def _evaluate_derivations_after_admin_event(
@@ -3918,6 +4082,12 @@ def persist_admission_data(
                 "error": str(exc),
             }
 
+        calendar_tracking = (
+            _project_tracking_to_calendar(
+                notification_tracking
+            )
+        )
+
         return {
             "status": status,
             "updates": updates,
@@ -3925,6 +4095,8 @@ def persist_admission_data(
             "extraction": extraction,
             "notification_tracking":
                 notification_tracking,
+            "calendar_tracking":
+                calendar_tracking,
         }
 
     except Exception:
