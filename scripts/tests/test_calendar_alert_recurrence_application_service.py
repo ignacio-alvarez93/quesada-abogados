@@ -1,7 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from backend.services import (
@@ -18,9 +18,7 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
 ):
 
     def setUp(self):
-        self.tmpdir = (
-            tempfile.TemporaryDirectory()
-        )
+        self.tmpdir = tempfile.TemporaryDirectory()
 
         self.db_path = (
             Path(self.tmpdir.name)
@@ -115,65 +113,87 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
     def tearDown(self):
         self.tmpdir.cleanup()
 
-    def _future_anchor(self):
-        return (
-            datetime.now()
-            + timedelta(days=10)
-        ).replace(
-            hour=12,
-            minute=0,
-            second=0,
-            microsecond=0,
+    def _event_at(self):
+        return datetime(
+            2026,
+            8,
+            15,
+            9,
+            0,
+        )
+
+    def _warning_at(self):
+        return datetime(
+            2026,
+            8,
+            9,
+            9,
+            0,
         )
 
     def _create_series(
         self,
         *,
         end_type="NEVER",
+        end_date=None,
         max_occurrences=None,
     ):
-        event_at = self._future_anchor()
-
-        warning_at = (
-            event_at
-            - timedelta(
-                days=2,
-                hours=3,
-            )
-        )
-
         return (
             recurrence_app
             .create_recurring_alert(
-                titulo="Renovar documentación",
-                descripcion="Aviso recurrente",
+                titulo=(
+                    "Renovar documentación"
+                ),
+                descripcion=(
+                    "Aviso recurrente"
+                ),
                 cliente_id=31,
                 expediente_id=43,
                 prioridad="ALTA",
-                fecha_evento=event_at,
-                fecha_inicio_aviso=warning_at,
-                frequency_unit="MONTH",
+                fecha_evento=(
+                    self._event_at()
+                ),
+                fecha_inicio_aviso=(
+                    self._warning_at()
+                ),
+                frequency_unit="DAY",
                 interval_value=1,
                 end_type=end_type,
-                max_occurrences=max_occurrences,
+                end_date=end_date,
+                max_occurrences=(
+                    max_occurrences
+                ),
                 db_path=self.db_path,
             )
         )
 
-    def test_create_series_creates_root_alert_and_rule(
+    def test_create_series_creates_one_alert_and_rule(
         self,
     ):
         result = self._create_series()
 
+        alerts = (
+            calendar_alert_service
+            .list_alerts(
+                include_archived=True,
+                db_path=self.db_path,
+            )
+        )
+
         self.assertEqual(
-            result["alert"]["cliente_id"],
+            len(alerts),
+            1,
+        )
+
+        alert = result["alert"]
+
+        self.assertEqual(
+            alert["cliente_id"],
             31,
         )
 
         self.assertEqual(
-            result["alert"][
-                "numero_expediente"
-            ],
+            alert["numero_expediente"],
             "EXP-2026-0026",
         )
 
@@ -181,17 +201,17 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
             result["recurrence"][
                 "root_alert_id"
             ],
-            result["alert"]["id"],
+            alert["id"],
         )
 
         self.assertEqual(
             result["recurrence"][
-                "occurrences_generated"
+                "anchor_at"
             ],
-            1,
+            "2026-08-09 09:00:00",
         )
 
-    def test_root_alert_schedules_telegram(
+    def test_root_notification_is_first_occurrence(
         self,
     ):
         result = self._create_series()
@@ -205,17 +225,53 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
             )
         )
 
+        mappings = (
+            calendar_alert_recurrence_service
+            .list_notification_occurrences(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
         self.assertEqual(
             len(notifications),
             1,
         )
 
         self.assertEqual(
-            notifications[0]["estado"],
-            "PENDIENTE",
+            notifications[0][
+                "scheduled_at"
+            ],
+            "2026-08-09 09:00:00",
         )
 
-    def test_materialize_next_creates_real_alert(
+        self.assertEqual(
+            len(mappings),
+            1,
+        )
+
+        self.assertEqual(
+            mappings[0][
+                "occurrence_index"
+            ],
+            1,
+        )
+
+        legacy_occurrences = (
+            calendar_alert_recurrence_service
+            .list_occurrences(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            legacy_occurrences,
+            [],
+        )
+
+
+    def test_next_occurrence_reuses_same_alert(
         self,
     ):
         result = self._create_series()
@@ -232,46 +288,39 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
             occurrence
         )
 
-        alert = occurrence[
-            "alert"
-        ]
-
-        self.assertNotEqual(
-            alert["id"],
+        self.assertEqual(
+            occurrence["alert"]["id"],
             result["alert"]["id"],
         )
 
         self.assertEqual(
-            alert["cliente_id"],
-            31,
+            occurrence["scheduled_at"],
+            "2026-08-10 09:00:00",
+        )
+
+        alerts = (
+            calendar_alert_service
+            .list_alerts(
+                include_archived=True,
+                db_path=self.db_path,
+            )
         )
 
         self.assertEqual(
-            alert["numero_expediente"],
-            "EXP-2026-0026",
+            len(alerts),
+            1,
         )
 
-        self.assertEqual(
-            alert["titulo"],
-            "Renovar documentación",
-        )
-
-        self.assertEqual(
-            occurrence[
-                "occurrence_index"
-            ],
-            2,
-        )
-
-    def test_materialized_alert_schedules_telegram(
+    def test_recurrent_notifications_use_root_alert(
         self,
     ):
         result = self._create_series()
 
-        occurrence = (
+        (
             recurrence_app
-            .materialize_next_occurrence(
+            .materialize_occurrences(
                 result["recurrence"]["id"],
+                count=3,
                 db_path=self.db_path,
             )
         )
@@ -280,64 +329,25 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
             scheduled_notification_service
             .list_for_source(
                 "ALERT",
-                occurrence["alert"]["id"],
+                result["alert"]["id"],
                 db_path=self.db_path,
             )
         )
 
         self.assertEqual(
             len(notifications),
-            1,
+            4,
         )
 
-        self.assertEqual(
-            notifications[0]["estado"],
-            "PENDIENTE",
-        )
-
-    def test_warning_offset_is_preserved(
-        self,
-    ):
-        result = self._create_series()
-
-        root = result[
-            "alert"
-        ]
-
-        occurrence = (
-            recurrence_app
-            .materialize_next_occurrence(
-                result["recurrence"]["id"],
-                db_path=self.db_path,
+        self.assertTrue(
+            all(
+                item["source_id"]
+                == result["alert"]["id"]
+                for item in notifications
             )
         )
 
-        child = occurrence[
-            "alert"
-        ]
-
-        root_event = datetime.fromisoformat(
-            root["fecha_evento"]
-        )
-
-        root_warning = datetime.fromisoformat(
-            root["fecha_inicio_aviso"]
-        )
-
-        child_event = datetime.fromisoformat(
-            child["fecha_evento"]
-        )
-
-        child_warning = datetime.fromisoformat(
-            child["fecha_inicio_aviso"]
-        )
-
-        self.assertEqual(
-            root_event - root_warning,
-            child_event - child_warning,
-        )
-
-    def test_materialize_three_occurrences(
+    def test_materialize_three_creates_notifications_not_alerts(
         self,
     ):
         result = self._create_series()
@@ -366,28 +376,115 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
 
         self.assertEqual(
             len(alerts),
-            4,
+            1,
         )
 
-        occurrences = (
+        notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                result["alert"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            [
+                item["scheduled_at"]
+                for item in notifications
+            ],
+            [
+                "2026-08-09 09:00:00",
+                "2026-08-10 09:00:00",
+                "2026-08-11 09:00:00",
+                "2026-08-12 09:00:00",
+            ],
+        )
+
+        mappings = (
             calendar_alert_recurrence_service
-            .list_occurrences(
+            .list_notification_occurrences(
                 result["recurrence"]["id"],
                 db_path=self.db_path,
             )
         )
 
         self.assertEqual(
-            len(occurrences),
-            4,
+            [
+                item["occurrence_index"]
+                for item in mappings
+            ],
+            [1, 2, 3, 4],
+        )
+
+    def test_event_date_is_natural_limit(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_occurrences(
+                result["recurrence"]["id"],
+                count=20,
+                db_path=self.db_path,
+            )
+        )
+
+        notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                result["alert"]["id"],
+                db_path=self.db_path,
+            )
         )
 
         self.assertEqual(
             [
-                item["occurrence_index"]
-                for item in occurrences
+                item["scheduled_at"]
+                for item in notifications
             ],
-            [1, 2, 3, 4],
+            [
+                "2026-08-09 09:00:00",
+                "2026-08-10 09:00:00",
+                "2026-08-11 09:00:00",
+                "2026-08-12 09:00:00",
+                "2026-08-13 09:00:00",
+                "2026-08-14 09:00:00",
+                "2026-08-15 09:00:00",
+            ],
+        )
+
+        recurrence = (
+            calendar_alert_recurrence_service
+            .get_recurrence(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            recurrence[
+                "occurrences_generated"
+            ],
+            7,
+        )
+
+        self.assertEqual(
+            recurrence["estado"],
+            "FINALIZADA",
+        )
+
+        self.assertEqual(
+            recurrence["activo"],
+            0,
+        )
+
+        self.assertIsNone(
+            recurrence[
+                "next_occurrence_at"
+            ]
         )
 
     def test_count_series_stops_exactly(
@@ -402,16 +499,28 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
             recurrence_app
             .materialize_occurrences(
                 result["recurrence"]["id"],
-                count=10,
+                count=20,
                 db_path=self.db_path,
             )
         )
 
-        # El aviso raíz cuenta como ocurrencia 1,
-        # por tanto solamente se crean 2 adicionales.
         self.assertEqual(
             len(created),
             2,
+        )
+
+        notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                result["alert"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            len(notifications),
+            3,
         )
 
         recurrence = (
@@ -430,13 +539,147 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
         )
 
         self.assertEqual(
+            recurrence["estado"],
+            "FINALIZADA",
+        )
+
+        self.assertEqual(
             recurrence["activo"],
             0,
+        )
+
+    def test_recurrent_notification_source_keys_are_unique(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .materialize_occurrences(
+                result["recurrence"]["id"],
+                count=3,
+                db_path=self.db_path,
+            )
+        )
+
+        mappings = (
+            calendar_alert_recurrence_service
+            .list_notification_occurrences(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            len(mappings),
+            4,
+        )
+
+        generated = mappings[1:]
+
+        self.assertEqual(
+            [
+                item["source_key"]
+                for item in generated
+            ],
+            [
+                (
+                    "ALERT_RECURRENCE:"
+                    f"{result['recurrence']['id']}:2"
+                ),
+                (
+                    "ALERT_RECURRENCE:"
+                    f"{result['recurrence']['id']}:3"
+                ),
+                (
+                    "ALERT_RECURRENCE:"
+                    f"{result['recurrence']['id']}:4"
+                ),
+            ],
+        )
+
+
+    def test_materialize_until_event_limit(
+        self,
+    ):
+        result = self._create_series()
+
+        created = (
+            recurrence_app
+            .materialize_until_limit(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        # El 09/08 ya existe como primer aviso.
+        # Se generan 10, 11, 12, 13, 14 y 15.
+        self.assertEqual(
+            len(created),
+            6,
+        )
+
+        alerts = (
+            calendar_alert_service
+            .list_alerts(
+                include_archived=True,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            len(alerts),
+            1,
+        )
+
+        notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                result["alert"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            [
+                item["scheduled_at"]
+                for item in notifications
+            ],
+            [
+                "2026-08-09 09:00:00",
+                "2026-08-10 09:00:00",
+                "2026-08-11 09:00:00",
+                "2026-08-12 09:00:00",
+                "2026-08-13 09:00:00",
+                "2026-08-14 09:00:00",
+                "2026-08-15 09:00:00",
+            ],
+        )
+
+        recurrence = (
+            calendar_alert_recurrence_service
+            .get_recurrence(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            recurrence[
+                "occurrences_generated"
+            ],
+            7,
         )
 
         self.assertEqual(
             recurrence["estado"],
             "FINALIZADA",
+        )
+
+        self.assertEqual(
+            recurrence["activo"],
+            0,
         )
 
         self.assertIsNone(
@@ -445,44 +688,6 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
             ]
         )
 
-    def test_occurrence_source_key_is_idempotent(
-        self,
-    ):
-        result = self._create_series()
-
-        first = (
-            recurrence_app
-            .materialize_next_occurrence(
-                result["recurrence"]["id"],
-                db_path=self.db_path,
-            )
-        )
-
-        self.assertTrue(
-            first["alert"][
-                "source_key"
-            ].startswith(
-                "CALENDAR_RECURRENCE:"
-            )
-        )
-
-        occurrences = (
-            calendar_alert_recurrence_service
-            .list_occurrences(
-                result["recurrence"]["id"],
-                db_path=self.db_path,
-            )
-        )
-
-        keys = {
-            item["occurrence_index"]
-            for item in occurrences
-        }
-
-        self.assertEqual(
-            keys,
-            {1, 2},
-        )
 
 
 if __name__ == "__main__":

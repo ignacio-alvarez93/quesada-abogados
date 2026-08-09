@@ -283,7 +283,7 @@ class CalendarAlertRecurrenceServiceTestCase(
             )
         )
 
-    def test_root_alert_is_registered_as_occurrence(
+    def test_create_recurrence_does_not_write_legacy_occurrence(
         self,
     ):
         alert = self._alert()
@@ -301,33 +301,19 @@ class CalendarAlertRecurrenceServiceTestCase(
             )
         )
 
-        conn = sqlite3.connect(
-            self.db_path
-        )
-
-        row = conn.execute(
-            """
-            SELECT
-                alert_id,
-                occurrence_index
-            FROM
-                calendar_alert_recurrence_occurrences
-            WHERE recurrence_id = ?
-            """,
-            (
+        occurrences = (
+            recurrence_service
+            .list_occurrences(
                 recurrence["id"],
-            ),
-        ).fetchone()
-
-        conn.close()
+                db_path=self.db_path,
+            )
+        )
 
         self.assertEqual(
-            row,
-            (
-                alert["id"],
-                1,
-            ),
+            occurrences,
+            [],
         )
+
 
     def test_recurrence_can_be_found_from_alert(
         self,

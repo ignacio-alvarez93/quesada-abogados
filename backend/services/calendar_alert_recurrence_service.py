@@ -335,6 +335,67 @@ def ensure_schema(
             """
         )
 
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS
+                calendar_alert_recurrence_notifications (
+                    id INTEGER PRIMARY KEY
+                        AUTOINCREMENT,
+
+                    recurrence_id INTEGER
+                        NOT NULL,
+
+                    notification_id INTEGER
+                        NOT NULL,
+
+                    occurrence_index INTEGER
+                        NOT NULL,
+
+                    scheduled_at TEXT
+                        NOT NULL,
+
+                    created_at TEXT
+                        NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+
+                    FOREIGN KEY (
+                        recurrence_id
+                    )
+                    REFERENCES
+                        calendar_alert_recurrences(id),
+
+                    FOREIGN KEY (
+                        notification_id
+                    )
+                    REFERENCES
+                        scheduled_notifications(id)
+                )
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX
+                IF NOT EXISTS
+                ux_calendar_alert_recurrence_notification_index
+            ON calendar_alert_recurrence_notifications(
+                recurrence_id,
+                occurrence_index
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX
+                IF NOT EXISTS
+                ux_calendar_alert_recurrence_notification_id
+            ON calendar_alert_recurrence_notifications(
+                notification_id
+            )
+            """
+        )
+
         columns = {
             row["name"]
             for row in connection.execute(
@@ -818,31 +879,6 @@ def create_recurrence(
             cursor.lastrowid
         )
 
-        connection.execute(
-            """
-            INSERT INTO
-                calendar_alert_recurrence_occurrences (
-                    recurrence_id,
-                    alert_id,
-                    occurrence_index,
-                    occurrence_at
-                )
-            VALUES (
-                ?,
-                ?,
-                1,
-                ?
-            )
-            """,
-            (
-                recurrence_id,
-                int(root_alert_id),
-                anchor.isoformat(
-                    sep=" "
-                ),
-            ),
-        )
-
         return get_recurrence(
             recurrence_id,
             conn=connection,
@@ -1026,6 +1062,127 @@ def register_occurrence(
                 index,
             ),
         ).fetchone()
+
+
+def list_notification_occurrences(
+    recurrence_id,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        rows = connection.execute(
+            """
+            SELECT
+                rn.*,
+                sn.source_type,
+                sn.source_id,
+                sn.canal,
+                sn.notification_type,
+                sn.estado,
+                sn.activo,
+                sn.source_key
+            FROM
+                calendar_alert_recurrence_notifications rn
+            JOIN scheduled_notifications sn
+              ON sn.id = rn.notification_id
+            WHERE rn.recurrence_id = ?
+            ORDER BY rn.occurrence_index
+            """,
+            (
+                int(recurrence_id),
+            ),
+        ).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+
+def register_notification_occurrence(
+    recurrence_id,
+    *,
+    notification_id,
+    occurrence_index,
+    scheduled_at,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    clean_at = _normalize_datetime(
+        scheduled_at,
+        required=True,
+    )
+
+    index = int(
+        occurrence_index
+    )
+
+    if index < 1:
+        raise ValueError(
+            "Índice de aviso recurrente "
+            "no válido."
+        )
+
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        connection.execute(
+            """
+            INSERT INTO
+                calendar_alert_recurrence_notifications (
+                    recurrence_id,
+                    notification_id,
+                    occurrence_index,
+                    scheduled_at
+                )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                int(recurrence_id),
+                int(notification_id),
+                index,
+                clean_at.isoformat(
+                    sep=" "
+                ),
+            ),
+        )
+
+        row = connection.execute(
+            """
+            SELECT *
+            FROM calendar_alert_recurrence_notifications
+            WHERE
+                recurrence_id = ?
+                AND occurrence_index = ?
+            """,
+            (
+                int(recurrence_id),
+                index,
+            ),
+        ).fetchone()
+
+        return (
+            dict(row)
+            if row
+            else None
+        )
 
 
 def update_progress(

@@ -22,6 +22,17 @@ from backend.services import (
     as calendar_alert_app,
 )
 
+from backend.services import (
+    calendar_alert_recurrence_service
+    as calendar_alert_recurrence,
+)
+
+from backend.services import (
+    calendar_alert_recurrence_application_service
+    as calendar_alert_recurrence_app,
+)
+
+
 
 from frontend.components.app_button import (
     primary_button,
@@ -369,7 +380,7 @@ def calendar_view(
         page=page,
         label="Cliente",
         options=client_options,
-        width=720,
+        width=270,
         max_results=8,
         allow_free_text=False,
         helper_text=(
@@ -428,12 +439,12 @@ def calendar_view(
 
     alert_title = required_text_input(
         "Título",
-        width=720,
+        width=550,
     )
 
     alert_description = multiline_input(
         "Descripción",
-        width=720,
+        width=550,
         height=100,
     )
 
@@ -441,7 +452,7 @@ def calendar_view(
         page=page,
         label="Cliente",
         options=client_options,
-        width=720,
+        width=235,
         max_results=8,
         allow_free_text=False,
         helper_text=(
@@ -454,7 +465,7 @@ def calendar_view(
         page=page,
         label="Expediente",
         options=[],
-        width=720,
+        width=235,
         max_results=8,
         allow_free_text=False,
         helper_text=(
@@ -496,6 +507,142 @@ def calendar_view(
         value="",
         width=180,
     )
+
+    # --------------------------------------------------------------
+    # RECURRENCIA DE AVISOS
+    # --------------------------------------------------------------
+
+    alert_recurrence_enabled = ft.Switch(
+        value=True,
+        active_color=Q_PRIMARY,
+    )
+
+    alert_recurrence_interval = required_text_input(
+        "Cada",
+        value="1",
+        width=90,
+    )
+
+    alert_recurrence_frequency = select_input(
+        "Frecuencia",
+        [
+            "Días",
+            "Semanas",
+            "Meses",
+            "Años",
+        ],
+        value="Meses",
+        width=170,
+    )
+
+    alert_recurrence_end_type = ft.RadioGroup(
+        value="NEVER",
+        content=ft.Row(
+            controls=[
+                ft.Radio(
+                    value="NEVER",
+                    label="Nunca",
+                ),
+                ft.Radio(
+                    value="DATE",
+                    label="En una fecha",
+                ),
+                ft.Radio(
+                    value="COUNT",
+                    label="Después de X avisos",
+                ),
+            ],
+            spacing=18,
+            wrap=True,
+        ),
+    )
+
+    alert_recurrence_end_date = text_input(
+        "Fecha final DD/MM/AAAA",
+        width=190,
+    )
+
+    alert_recurrence_count = text_input(
+        "Número total de avisos",
+        value="10",
+        width=190,
+    )
+
+    alert_recurrence_preview_title = ft.Text(
+        "PRÓXIMOS RECORDATORIOS",
+        size=10,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_DARK,
+    )
+
+    alert_recurrence_preview = ft.Column(
+        controls=[],
+        spacing=6,
+        tight=True,
+    )
+
+    alert_recurrence_end_date.visible = False
+    alert_recurrence_count.visible = False
+
+    alert_recurrence_panel = ft.Container(
+        visible=False,
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        alert_recurrence_interval,
+                        alert_recurrence_frequency,
+                    ],
+                    spacing=8,
+                ),
+
+                ft.Text(
+                    "Finalizar",
+                    size=10,
+                    weight=ft.FontWeight.W_600,
+                    color=Q_PRIMARY_DARK,
+                ),
+
+                alert_recurrence_end_type,
+
+                alert_recurrence_end_date,
+                alert_recurrence_count,
+
+                ft.Divider(
+                    height=6,
+                    color=Q_BORDER,
+                ),
+
+                ft.Container(
+                    bgcolor="#EFF6FF",
+                    border_radius=9,
+                    padding=10,
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Icon(
+                                        ft.Icons
+                                        .CALENDAR_MONTH_OUTLINED,
+                                        size=15,
+                                        color=Q_PRIMARY,
+                                    ),
+                                    alert_recurrence_preview_title,
+                                ],
+                                spacing=6,
+                            ),
+                            alert_recurrence_preview,
+                        ],
+                        spacing=5,
+                        tight=True,
+                    ),
+                ),
+            ],
+            spacing=7,
+            tight=True,
+        ),
+    )
+
 
     alert_dialog = None
     editing_alert_id = None
@@ -1210,6 +1357,19 @@ def calendar_view(
         alert_warning_date.value = ""
         alert_warning_time.value = ""
 
+        alert_recurrence_enabled.value = True
+        alert_recurrence_interval.value = "1"
+        alert_recurrence_frequency.value = "Meses"
+        alert_recurrence_end_type.value = "NEVER"
+        alert_recurrence_end_date.value = ""
+        alert_recurrence_count.value = "10"
+
+        alert_recurrence_panel.visible = True
+        alert_recurrence_end_date.visible = False
+        alert_recurrence_count.visible = False
+
+        alert_recurrence_preview.controls = []
+
 
     def _optional_alert_datetime(
         date_value,
@@ -1240,6 +1400,423 @@ def calendar_view(
             clean_date,
             clean_time,
         )
+
+
+    def _alert_recurrence_frequency_code():
+        mapping = {
+            "Días": "DAY",
+            "Semanas": "WEEK",
+            "Meses": "MONTH",
+            "Años": "YEAR",
+        }
+
+        value = str(
+            alert_recurrence_frequency.value
+            or "Meses"
+        ).strip()
+
+        return mapping.get(
+            value,
+            "MONTH",
+        )
+
+
+    def _alert_recurrence_end_datetime(
+        event_at,
+    ):
+        if (
+            alert_recurrence_end_type.value
+            != "DATE"
+        ):
+            return None
+
+        raw = str(
+            alert_recurrence_end_date.value
+            or ""
+        ).strip()
+
+        if not raw:
+            raise ValueError(
+                "Indica la fecha final "
+                "de la recurrencia."
+            )
+
+        # El campo representa solamente una fecha.
+        # Si por cualquier motivo visual contiene también
+        # la hora ("13/08/2026 · 09:00"), conservamos
+        # exclusivamente la parte DD/MM/AAAA.
+        clean_date = (
+            raw.split(
+                "·",
+                1,
+            )[0]
+            .strip()
+        )
+
+        try:
+            end_day = datetime.strptime(
+                clean_date,
+                "%d/%m/%Y",
+            )
+
+        except ValueError as exc:
+            raise ValueError(
+                "Fecha final no válida. "
+                "Usa DD/MM/AAAA."
+            ) from exc
+
+        event_datetime = (
+            event_at
+            if isinstance(
+                event_at,
+                datetime,
+            )
+            else datetime.fromisoformat(
+                str(event_at).replace(
+                    "T",
+                    " ",
+                )
+            )
+        )
+
+        result = end_day.replace(
+            hour=event_datetime.hour,
+            minute=event_datetime.minute,
+            second=event_datetime.second,
+            microsecond=0,
+        )
+
+        # Mantenemos visualmente el campo como fecha,
+        # nunca como fecha + hora.
+        alert_recurrence_end_date.value = (
+            end_day.strftime(
+                "%d/%m/%Y"
+            )
+        )
+
+        return result
+
+
+    def _alert_recurrence_values():
+        try:
+            interval_value = int(
+                str(
+                    alert_recurrence_interval.value
+                    or ""
+                ).strip()
+            )
+
+        except ValueError as exc:
+            raise ValueError(
+                "El intervalo de recurrencia "
+                "debe ser un número entero."
+            ) from exc
+
+        if interval_value < 1:
+            raise ValueError(
+                "El intervalo de recurrencia "
+                "debe ser igual o superior a 1."
+            )
+
+        end_type = str(
+            alert_recurrence_end_type.value
+            or "NEVER"
+        ).upper()
+
+        event_raw = _task_form_datetime(
+            alert_event_date.value,
+            alert_event_time.value,
+        )
+
+        warning_raw = (
+            _optional_alert_datetime(
+                alert_warning_date.value,
+                alert_warning_time.value,
+            )
+        )
+
+        event_at = datetime.fromisoformat(
+            str(event_raw).replace(
+                "T",
+                " ",
+            )
+        )
+
+        warning_at = (
+            datetime.fromisoformat(
+                str(warning_raw).replace(
+                    "T",
+                    " ",
+                )
+            )
+            if warning_raw
+            else None
+        )
+
+        # La periodicidad pertenece a los
+        # recordatorios, no al evento.
+        #
+        # Si no existe fecha específica de aviso,
+        # la propia fecha del evento actúa como
+        # primer y único punto natural de partida.
+        anchor_at = (
+            warning_at
+            or event_at
+        )
+
+        if anchor_at > event_at:
+            raise ValueError(
+                "La fecha de inicio del aviso "
+                "no puede ser posterior a la "
+                "fecha del evento."
+            )
+
+        end_date = (
+            _alert_recurrence_end_datetime(
+                event_at
+            )
+        )
+
+        max_occurrences = None
+
+        if end_type == "COUNT":
+            try:
+                max_occurrences = int(
+                    str(
+                        alert_recurrence_count.value
+                        or ""
+                    ).strip()
+                )
+
+            except ValueError as exc:
+                raise ValueError(
+                    "El número de avisos "
+                    "debe ser un entero."
+                ) from exc
+
+            if max_occurrences < 1:
+                raise ValueError(
+                    "El número de avisos "
+                    "debe ser superior a 0."
+                )
+
+        return {
+            "event_at": event_at,
+            "anchor_at": anchor_at,
+            "frequency_unit": (
+                _alert_recurrence_frequency_code()
+            ),
+            "interval_value": interval_value,
+            "end_type": end_type,
+            "end_date": end_date,
+            "max_occurrences": max_occurrences,
+        }
+
+
+    def _refresh_alert_recurrence_preview(
+        e=None,
+    ):
+        enabled = bool(
+            alert_recurrence_enabled.value
+        )
+
+        alert_recurrence_panel.visible = (
+            enabled
+        )
+
+        end_type = str(
+            alert_recurrence_end_type.value
+            or "NEVER"
+        ).upper()
+
+        alert_recurrence_end_date.visible = (
+            enabled
+            and end_type == "DATE"
+        )
+
+        alert_recurrence_count.visible = (
+            enabled
+            and end_type == "COUNT"
+        )
+
+        alert_recurrence_preview.controls = []
+
+        if not enabled:
+            page.update()
+            return
+
+        try:
+            values = (
+                _alert_recurrence_values()
+            )
+
+            occurrences = (
+                calendar_alert_recurrence
+                .preview_occurrences(
+                    values["anchor_at"],
+                    frequency_unit=(
+                        values[
+                            "frequency_unit"
+                        ]
+                    ),
+                    interval_value=(
+                        values[
+                            "interval_value"
+                        ]
+                    ),
+                    end_type=(
+                        values[
+                            "end_type"
+                        ]
+                    ),
+                    end_date=(
+                        values[
+                            "end_date"
+                        ]
+                    ),
+                    max_occurrences=(
+                        values[
+                            "max_occurrences"
+                        ]
+                    ),
+                    limit=4,
+                )
+            )
+
+            # El preview representa recordatorios,
+            # no nuevas fechas de evento.
+            #
+            # El servicio puede devolver datetime
+            # o texto ISO. Normalizamos antes de
+            # comparar con la fecha real del evento.
+            future_items = []
+
+            for item in occurrences:
+                item_datetime = (
+                    item
+                    if isinstance(
+                        item,
+                        datetime,
+                    )
+                    else datetime.fromisoformat(
+                        str(item).replace(
+                            "T",
+                            " ",
+                        )
+                    )
+                )
+
+                if (
+                    item_datetime
+                    <= values["event_at"]
+                ):
+                    future_items.append(
+                        item_datetime
+                    )
+
+            if not future_items:
+                alert_recurrence_preview.controls = [
+                    ft.Text(
+                        (
+                            "La configuración no genera "
+                            "repeticiones posteriores."
+                        ),
+                        size=11,
+                        color=Q_MUTED,
+                    )
+                ]
+
+            else:
+                preview_rows = []
+
+                for item in future_items:
+                    item_datetime = (
+                        item
+                        if isinstance(
+                            item,
+                            datetime,
+                        )
+                        else datetime.fromisoformat(
+                            str(item).replace(
+                                "T",
+                                " ",
+                            )
+                        )
+                    )
+
+                    preview_rows.append(
+                        ft.Text(
+                            (
+                                "• "
+                                + item_datetime.strftime(
+                                    "%d/%m/%Y %H:%M"
+                                )
+                            ),
+                            size=10,
+                            weight=ft.FontWeight.W_500,
+                            color=Q_PRIMARY_DARK,
+                        )
+                    )
+
+                alert_recurrence_preview.controls = [
+                    ft.Column(
+                        controls=preview_rows,
+                        spacing=4,
+                        tight=True,
+                    )
+                ]
+
+        except Exception as exc:
+            alert_recurrence_preview.controls = [
+                ft.Text(
+                    str(exc),
+                    size=11,
+                    color="#B42318",
+                )
+            ]
+
+        page.update()
+
+
+    alert_recurrence_enabled.on_change = (
+        _refresh_alert_recurrence_preview
+    )
+
+    alert_recurrence_interval.on_change = (
+        _refresh_alert_recurrence_preview
+    )
+
+    alert_recurrence_frequency.on_change = (
+        _refresh_alert_recurrence_preview
+    )
+
+    alert_recurrence_end_type.on_change = (
+        _refresh_alert_recurrence_preview
+    )
+
+    alert_recurrence_end_date.on_change = (
+        _refresh_alert_recurrence_preview
+    )
+
+    alert_recurrence_count.on_change = (
+        _refresh_alert_recurrence_preview
+    )
+
+    alert_event_date.on_change = (
+        _refresh_alert_recurrence_preview
+    )
+
+    alert_event_time.on_change = (
+        _refresh_alert_recurrence_preview
+    )
+
+    alert_warning_date.on_change = (
+        _refresh_alert_recurrence_preview
+    )
+
+    alert_warning_time.on_change = (
+        _refresh_alert_recurrence_preview
+    )
 
 
     def _reset_task_form():
@@ -1491,33 +2068,101 @@ def calendar_view(
                         expedient_client_id
                     )
 
-            result = (
-                calendar_alert_app
-                .create_calendar_alert(
-                    titulo=title,
-                    descripcion=str(
-                        alert_description.value
-                        or ""
-                    ).strip(),
-                    cliente_id=client_id,
-                    expediente_id=(
-                        expedient_id
-                    ),
-                    tipo="GENERAL",
-                    prioridad=(
-                        alert_priority.value
-                        or "NORMAL"
-                    ),
-                    fecha_evento=event_at,
-                    fecha_inicio_aviso=(
-                        warning_at
-                    ),
-                    origen_tipo="MANUAL",
-                    created_by="ERP",
-                )
-            )
+            description = str(
+                alert_description.value
+                or ""
+            ).strip()
 
-            alert = result["alert"]
+            if alert_recurrence_enabled.value:
+                recurrence_values = (
+                    _alert_recurrence_values()
+                )
+
+                result = (
+                    calendar_alert_recurrence_app
+                    .create_recurring_alert(
+                        titulo=title,
+                        descripcion=description,
+                        cliente_id=client_id,
+                        expediente_id=(
+                            expedient_id
+                        ),
+                        tipo="GENERAL",
+                        prioridad=(
+                            alert_priority.value
+                            or "NORMAL"
+                        ),
+                        fecha_evento=event_at,
+                        fecha_inicio_aviso=(
+                            warning_at
+                        ),
+                        frequency_unit=(
+                            recurrence_values[
+                                "frequency_unit"
+                            ]
+                        ),
+                        interval_value=(
+                            recurrence_values[
+                                "interval_value"
+                            ]
+                        ),
+                        end_type=(
+                            recurrence_values[
+                                "end_type"
+                            ]
+                        ),
+                        end_date=(
+                            recurrence_values[
+                                "end_date"
+                            ]
+                        ),
+                        max_occurrences=(
+                            recurrence_values[
+                                "max_occurrences"
+                            ]
+                        ),
+                        origen_tipo="MANUAL",
+                        created_by="ERP",
+                    )
+                )
+
+                alert = result["alert"]
+
+                materialized = (
+                    calendar_alert_recurrence_app
+                    .materialize_until_limit(
+                        result[
+                            "recurrence"
+                        ]["id"],
+                    )
+                )
+
+            else:
+                result = (
+                    calendar_alert_app
+                    .create_calendar_alert(
+                        titulo=title,
+                        descripcion=description,
+                        cliente_id=client_id,
+                        expediente_id=(
+                            expedient_id
+                        ),
+                        tipo="GENERAL",
+                        prioridad=(
+                            alert_priority.value
+                            or "NORMAL"
+                        ),
+                        fecha_evento=event_at,
+                        fecha_inicio_aviso=(
+                            warning_at
+                        ),
+                        origen_tipo="MANUAL",
+                        created_by="ERP",
+                    )
+                )
+
+                alert = result["alert"]
+                materialized = []
 
             # Llevar automáticamente Calendar
             # a la semana donde ocurre el evento.
@@ -1546,12 +2191,21 @@ def calendar_view(
             render()
             safe_update()
 
-            _show_message(
-                (
-                    "Aviso creado correctamente. "
-                    "Telegram programado."
+            if alert_recurrence_enabled.value:
+                _show_message(
+                    (
+                        "Serie de avisos creada correctamente. "
+                        f"{1 + len(materialized)} avisos "
+                        "disponibles y Telegram programado."
+                    )
                 )
-            )
+            else:
+                _show_message(
+                    (
+                        "Aviso creado correctamente. "
+                        "Telegram programado."
+                    )
+                )
 
         except Exception as exc:
             _show_message(
@@ -2131,83 +2785,155 @@ def calendar_view(
         editing_alert_id = None
         _reset_alert_form()
 
-        alert_dialog = form_dialog(
-            "Nuevo aviso",
-            ft.Container(
-                width=760,
-                content=ft.Column(
+        def label(
+            text,
+        ):
+            return ft.Text(
+                text,
+                size=10,
+                weight=ft.FontWeight.W_600,
+                color=Q_PRIMARY_DARK,
+            )
+
+        # ==========================================================
+        # COLUMNA IZQUIERDA
+        # ==========================================================
+
+        def small_label(
+            text,
+        ):
+            return ft.Text(
+                text,
+                size=10,
+                weight=ft.FontWeight.W_600,
+                color=Q_PRIMARY_DARK,
+            )
+
+        main_column = ft.Column(
+            controls=[
+                # --------------------------------------------------
+                # DATOS PRINCIPALES
+                # --------------------------------------------------
+                alert_title,
+
+                alert_description,
+
+                ft.Row(
                     controls=[
-                        alert_title,
-                        alert_description,
-                        alert_client.control,
-                        alert_expedient.control,
-                        ft.Row(
-                            controls=[
-                                alert_priority,
-                            ],
-                            spacing=12,
-                            wrap=True,
-                        ),
-                        ft.Text(
-                            "Fecha del evento",
-                            size=11,
-                            weight=(
-                                ft.FontWeight.W_600
+                        ft.Container(
+                            expand=True,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        width=32,
+                                        height=32,
+                                        border_radius=8,
+                                        bgcolor="#EEF4FF",
+                                        alignment=(
+                                            ft.Alignment.CENTER
+                                        ),
+                                        content=ft.Icon(
+                                            ft.Icons
+                                            .PERSON_OUTLINE_ROUNDED,
+                                            size=16,
+                                            color=Q_PRIMARY,
+                                        ),
+                                    ),
+                                    ft.Container(
+                                        content=(
+                                            alert_client.control
+                                        ),
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=7,
+                                vertical_alignment=(
+                                    ft.CrossAxisAlignment.CENTER
+                                ),
                             ),
-                            color=Q_PRIMARY_DARK,
-                        ),
-                        ft.Row(
-                            controls=[
-                                alert_event_date,
-                                alert_event_time,
-                            ],
-                            spacing=12,
-                            wrap=True,
-                        ),
-                        ft.Text(
-                            "Notificación",
-                            size=11,
-                            weight=(
-                                ft.FontWeight.W_600
-                            ),
-                            color=Q_PRIMARY_DARK,
-                        ),
-                        ft.Row(
-                            controls=[
-                                alert_warning_date,
-                                alert_warning_time,
-                            ],
-                            spacing=12,
-                            wrap=True,
                         ),
                         ft.Container(
-                            bgcolor="#F8FAFC",
+                            expand=True,
+                            content=ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        width=32,
+                                        height=32,
+                                        border_radius=8,
+                                        bgcolor="#EEF4FF",
+                                        alignment=(
+                                            ft.Alignment.CENTER
+                                        ),
+                                        content=ft.Icon(
+                                            ft.Icons
+                                            .FOLDER_OUTLINED,
+                                            size=16,
+                                            color=Q_PRIMARY,
+                                        ),
+                                    ),
+                                    ft.Container(
+                                        content=(
+                                            alert_expedient.control
+                                        ),
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=7,
+                                vertical_alignment=(
+                                    ft.CrossAxisAlignment.CENTER
+                                ),
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                ),
+
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=alert_priority,
+                            expand=True,
+                        ),
+                        ft.Container(
+                            expand=True,
+                            height=48,
                             border=ft.border.all(
                                 1,
                                 Q_BORDER,
                             ),
-                            border_radius=10,
-                            padding=12,
+                            border_radius=8,
+                            padding=ft.padding.symmetric(
+                                horizontal=12,
+                            ),
+                            alignment=(
+                                ft.Alignment.CENTER_LEFT
+                            ),
                             content=ft.Row(
                                 controls=[
                                     ft.Icon(
                                         ft.Icons
-                                        .NOTIFICATIONS_ACTIVE_ROUNDED,
-                                        size=18,
+                                        .EVENT_NOTE_OUTLINED,
+                                        size=16,
                                         color=Q_PRIMARY,
                                     ),
-                                    ft.Text(
-                                        (
-                                            "El aviso aparecerá en "
-                                            "Calendar en la fecha del "
-                                            "evento. Telegram se enviará "
-                                            "en la fecha de aviso. Si "
-                                            "la dejas vacía, se utilizará "
-                                            "la propia fecha del evento."
-                                        ),
-                                        size=11,
-                                        color=Q_MUTED,
-                                        expand=True,
+                                    ft.Column(
+                                        controls=[
+                                            ft.Text(
+                                                "Tipo de aviso",
+                                                size=9,
+                                                color=Q_MUTED,
+                                            ),
+                                            ft.Text(
+                                                "Aviso general",
+                                                size=11,
+                                                weight=(
+                                                    ft.FontWeight.W_500
+                                                ),
+                                                color="#344054",
+                                            ),
+                                        ],
+                                        spacing=0,
+                                        tight=True,
                                     ),
                                 ],
                                 spacing=8,
@@ -2215,20 +2941,392 @@ def calendar_view(
                         ),
                     ],
                     spacing=12,
-                    tight=True,
-                    scroll=ft.ScrollMode.AUTO,
                 ),
-            ),
-            actions=[
-                secondary_button(
-                    "Cancelar",
-                    _close_alert_dialog,
+
+                ft.Divider(
+                    height=16,
+                    color=Q_BORDER,
                 ),
-                primary_button(
-                    "Crear aviso",
-                    _save_alert,
+
+                # --------------------------------------------------
+                # EVENTO
+                # --------------------------------------------------
+                small_label(
+                    "Fecha y hora del evento"
+                ),
+
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=alert_event_date,
+                            expand=True,
+                        ),
+                        ft.Container(
+                            content=alert_event_time,
+                            width=180,
+                        ),
+                    ],
+                    spacing=12,
+                ),
+
+                ft.Divider(
+                    height=12,
+                    color=Q_BORDER,
+                ),
+
+                # --------------------------------------------------
+                # TELEGRAM
+                # --------------------------------------------------
+                small_label(
+                    "Notificación"
+                ),
+
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=alert_warning_date,
+                            expand=True,
+                        ),
+                        ft.Container(
+                            content=alert_warning_time,
+                            width=180,
+                        ),
+                    ],
+                    spacing=12,
+                ),
+
+                ft.Container(
+                    bgcolor="#F8FAFC",
+                    border_radius=8,
+                    padding=ft.padding.symmetric(
+                        horizontal=10,
+                        vertical=8,
+                    ),
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons
+                                .NOTIFICATIONS_ACTIVE_OUTLINED,
+                                size=15,
+                                color=Q_PRIMARY,
+                            ),
+                            ft.Text(
+                                (
+                                    "Si no indicas fecha de aviso, "
+                                    "Telegram utilizará la propia "
+                                    "fecha del evento."
+                                ),
+                                size=9,
+                                color=Q_MUTED,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=7,
+                    ),
                 ),
             ],
+            spacing=10,
+            tight=True,
+        )
+
+        # ==========================================================
+        # COLUMNA DERECHA — RECURRENCIA
+        # ==========================================================
+
+        recurrence_card = ft.Container(
+            bgcolor="#FCFDFF",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=12,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                (
+                                    "Repetición "
+                                    "(aviso recurrente)"
+                                ),
+                                size=11,
+                                weight=(
+                                    ft.FontWeight.BOLD
+                                ),
+                                color=Q_PRIMARY_DARK,
+                                expand=True,
+                            ),
+                            alert_recurrence_enabled,
+                        ],
+                        spacing=6,
+                    ),
+
+                    alert_recurrence_panel,
+                ],
+                spacing=10,
+                tight=True,
+            ),
+        )
+
+        recurrence_info_card = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=12,
+            padding=14,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=30,
+                                height=30,
+                                border_radius=8,
+                                bgcolor="#EEF4FF",
+                                alignment=(
+                                    ft.Alignment.CENTER
+                                ),
+                                content=ft.Icon(
+                                    ft.Icons
+                                    .INFO_OUTLINE_ROUNDED,
+                                    size=16,
+                                    color=Q_PRIMARY,
+                                ),
+                            ),
+                            ft.Text(
+                                "Comportamiento",
+                                size=11,
+                                weight=(
+                                    ft.FontWeight.BOLD
+                                ),
+                                color=Q_PRIMARY_DARK,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+
+                    ft.Text(
+                        (
+                            "Cada repetición se mostrará "
+                            "como un aviso independiente "
+                            "en Calendar y Agenda."
+                        ),
+                        size=10,
+                        color="#475467",
+                        height=32,
+                    ),
+
+                    ft.Divider(
+                        height=4,
+                        color=Q_BORDER,
+                    ),
+
+                    ft.Text(
+                        (
+                            "El recordatorio de Telegram "
+                            "mantendrá la misma antelación "
+                            "respecto de cada fecha."
+                        ),
+                        size=10,
+                        color=Q_MUTED,
+                    ),
+                ],
+                spacing=8,
+                tight=True,
+            ),
+        )
+
+        side_column = ft.Column(
+            controls=[
+                recurrence_card,
+                recurrence_info_card,
+            ],
+            spacing=10,
+            tight=True,
+        )
+
+        # ==========================================================
+        # CABECERA
+        # ==========================================================
+
+        header = ft.Container(
+            padding=ft.padding.only(
+                bottom=4,
+            ),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=44,
+                        height=44,
+                        bgcolor="#EEF4FF",
+                        border_radius=12,
+                        alignment=(
+                            ft.Alignment.CENTER
+                        ),
+                        content=ft.Icon(
+                            ft.Icons
+                            .NOTIFICATIONS_NONE_ROUNDED,
+                            size=23,
+                            color=Q_PRIMARY,
+                        ),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                (
+                                    "Crea un aviso para "
+                                    "no olvidar lo importante"
+                                ),
+                                size=11,
+                                color="#475467",
+                            ),
+                            ft.Text(
+                                (
+                                    "Planifica fecha, recordatorio "
+                                    "y repetición."
+                                ),
+                                size=9,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=1,
+                        tight=True,
+                        expand=True,
+                    ),
+                ],
+                spacing=11,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
+        # ==========================================================
+        # FOOTER INFORMATIVO
+        # ==========================================================
+
+        footer_info = ft.Container(
+            bgcolor="#FFFAEB",
+            border=ft.border.all(
+                1,
+                "#FDE68A",
+            ),
+            border_radius=9,
+            padding=ft.padding.symmetric(
+                horizontal=11,
+                vertical=8,
+            ),
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.LIGHTBULB_OUTLINE,
+                        size=17,
+                        color="#DC6803",
+                    ),
+                    ft.Text(
+                        (
+                            "El aviso se mostrará en Calendar "
+                            "en la fecha del evento. Telegram "
+                            "se enviará en la fecha de aviso."
+                        ),
+                        size=9,
+                        weight=ft.FontWeight.W_500,
+                        color="#7A2E0E",
+                        expand=True,
+                    ),
+                ],
+                spacing=8,
+            ),
+        )
+
+        alert_dialog = form_dialog(
+            "Nuevo aviso",
+            ft.Container(
+                width=950,
+                height=690,
+                content=ft.Column(
+                    controls=[
+                        header,
+
+                        ft.Divider(
+                            height=7,
+                            color=Q_BORDER,
+                        ),
+
+                        ft.Row(
+                            controls=[
+                                ft.Container(
+                                    width=560,
+                                    bgcolor="#FFFFFF",
+                                    border=ft.border.all(
+                                        1,
+                                        "#EAECF0",
+                                    ),
+                                    border_radius=12,
+                                    padding=14,
+                                    shadow=ft.BoxShadow(
+                                        blur_radius=4,
+                                        spread_radius=0,
+                                        color="#12000000",
+                                        offset=ft.Offset(
+                                            0,
+                                            1,
+                                        ),
+                                    ),
+                                    content=main_column,
+                                ),
+
+                                ft.VerticalDivider(
+                                    width=1,
+                                    color=Q_BORDER,
+                                ),
+
+                                ft.Container(
+                                    width=300,
+                                    content=side_column,
+                                ),
+                            ],
+                            spacing=14,
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.START
+                            ),
+                            expand=True,
+                        ),
+
+                        ft.Container(
+                            padding=ft.padding.only(
+                                top=12,
+                            ),
+                            content=ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        content=footer_info,
+                                        expand=True,
+                                    ),
+                                    secondary_button(
+                                        "Cancelar",
+                                        _close_alert_dialog,
+                                    ),
+                                    primary_button(
+                                        "Crear aviso",
+                                        _save_alert,
+                                    ),
+                                ],
+                                spacing=8,
+                                vertical_alignment=(
+                                    ft.CrossAxisAlignment.CENTER
+                                ),
+                            ),
+                        ),
+                    ],
+                    spacing=9,
+                    tight=True,
+                ),
+            ),
+            actions=[],
         )
 
         page.show_dialog(

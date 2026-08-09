@@ -1,15 +1,36 @@
 """
-Orquestación de series recurrentes de avisos.
+Orquestación de recordatorios recurrentes para ALERT.
 
-La recurrencia no crea directamente filas de calendar_alerts.
+Contrato:
 
-Cada ocurrencia se crea mediante
-calendar_alert_application_service para conservar:
+- calendar_alerts representa el evento real;
+- una recurrencia NO crea nuevos calendar_alerts;
+- la recurrencia genera scheduled_notifications;
+- fecha_inicio_aviso es el primer recordatorio;
+- fecha_evento es el límite natural máximo.
 
-- lifecycle del aviso;
-- planificación Telegram;
-- transaccionalidad;
-- comportamiento normal de Calendar.
+Ejemplo:
+
+evento:
+    15/08/2026 09:00
+
+avisar desde:
+    09/08/2026 09:00
+
+cada:
+    1 DAY
+
+Resultado:
+
+    09/08
+    10/08
+    11/08
+    12/08
+    13/08
+    14/08
+    15/08
+
+Existe un único calendar_alert.
 """
 
 import sqlite3
@@ -18,9 +39,10 @@ from datetime import datetime
 from pathlib import Path
 
 from backend.services import (
-    calendar_alert_service,
     calendar_alert_application_service,
     calendar_alert_recurrence_service,
+    calendar_alert_service,
+    scheduled_notification_service,
 )
 
 
@@ -57,9 +79,7 @@ def _transaction(
     conn=None,
     db_path=DEFAULT_DB_PATH,
 ):
-    owns_connection = (
-        conn is None
-    )
+    owns_connection = conn is None
 
     connection = (
         conn
@@ -111,55 +131,48 @@ def _parse_datetime(value):
     )
 
 
-def _warning_offset(
-    alert,
-):
-    event_at = _parse_datetime(
-        alert.get(
-            "fecha_evento"
-        )
-    )
-
-    warning_at = _parse_datetime(
-        alert.get(
-            "fecha_inicio_aviso"
-        )
-    )
-
-    if (
-        event_at is None
-        or warning_at is None
-    ):
-        return None
-
-    return (
-        event_at
-        - warning_at
-    )
-
-
-def _warning_for_occurrence(
-    occurrence_at,
-    offset,
-):
-    if offset is None:
-        return None
-
-    return (
-        occurrence_at
-        - offset
-    )
-
-
-def _generated_source_key(
+def _notification_source_key(
     recurrence_id,
     occurrence_index,
 ):
     return (
-        "CALENDAR_RECURRENCE:"
+        "ALERT_RECURRENCE:"
         f"{int(recurrence_id)}:"
         f"{int(occurrence_index)}"
     )
+
+
+def _unwrap_notification(
+    result,
+):
+    if not result:
+        return None
+
+    if (
+        isinstance(result, dict)
+        and "notification" in result
+    ):
+        return result["notification"]
+
+    return result
+
+
+def _event_limit(root):
+    return _parse_datetime(
+        root.get("fecha_evento")
+    )
+
+
+def _within_event_limit(
+    root,
+    scheduled_at,
+):
+    event_at = _event_limit(root)
+
+    if event_at is None:
+        return True
+
+    return scheduled_at <= event_at
 
 
 def create_recurring_alert(
@@ -185,8 +198,8 @@ def create_recurring_alert(
     db_path=DEFAULT_DB_PATH,
 ):
     """
-    Crea el aviso raíz y su regla
-    dentro de una misma transacción.
+    Crea un único ALERT y una regla recurrente
+    para sus recordatorios.
     """
 
     with _transaction(
@@ -216,17 +229,32 @@ def create_recurring_alert(
             )
         )
 
-        root = root_result[
-            "alert"
-        ]
+        root = root_result["alert"]
+
+        first_notification = (
+            _unwrap_notification(
+                root_result.get(
+                    "notification"
+                )
+            )
+        )
+
+        if not first_notification:
+            raise ValueError(
+                "No se pudo programar "
+                "el primer recordatorio."
+            )
+
+        anchor_at = (
+            root.get("fecha_inicio_aviso")
+            or root.get("fecha_evento")
+        )
 
         recurrence = (
             calendar_alert_recurrence_service
             .create_recurrence(
                 root_alert_id=root["id"],
-                anchor_at=root[
-                    "fecha_evento"
-                ],
+                anchor_at=anchor_at,
                 frequency_unit=(
                     frequency_unit
                 ),
@@ -243,14 +271,28 @@ def create_recurring_alert(
             )
         )
 
+        (
+            calendar_alert_recurrence_service
+            .register_notification_occurrence(
+                recurrence["id"],
+                notification_id=(
+                    first_notification["id"]
+                ),
+                occurrence_index=1,
+                scheduled_at=anchor_at,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
         return {
             "alert": root,
-            "notification":
+            "notification": (
                 root_result.get(
                     "notification"
-                ),
-            "recurrence":
-                recurrence,
+                )
+            ),
+            "recurrence": recurrence,
         }
 
 
@@ -261,9 +303,10 @@ def materialize_next_occurrence(
     db_path=DEFAULT_DB_PATH,
 ):
     """
-    Materializa como máximo una nueva ocurrencia.
+    Programa un nuevo recordatorio para
+    el mismo ALERT.
 
-    Devuelve None cuando la serie ha finalizado.
+    Nunca crea un calendar_alert adicional.
     """
 
     with _transaction(
@@ -284,6 +327,13 @@ def materialize_next_occurrence(
             raise ValueError(
                 "Recurrencia no encontrada."
             )
+
+        if (
+            recurrence.get("estado")
+            != calendar_alert_recurrence_service
+            .RECURRENCE_ACTIVE
+        ):
+            return None
 
         root = (
             calendar_alert_service
@@ -310,7 +360,7 @@ def materialize_next_occurrence(
             + 1
         )
 
-        occurrence_at = (
+        scheduled_at = (
             calendar_alert_recurrence_service
             .occurrence_at(
                 recurrence[
@@ -337,7 +387,15 @@ def materialize_next_occurrence(
             .occurrence_allowed(
                 recurrence,
                 next_index,
-                occurrence_at,
+                scheduled_at,
+            )
+        )
+
+        allowed = (
+            allowed
+            and _within_event_limit(
+                root,
+                scheduled_at,
             )
         )
 
@@ -369,89 +427,41 @@ def materialize_next_occurrence(
 
             return None
 
-        offset = _warning_offset(
-            root
-        )
-
-        warning_at = (
-            _warning_for_occurrence(
-                occurrence_at,
-                offset,
-            )
-        )
-
         created = (
-            calendar_alert_application_service
-            .create_calendar_alert(
-                titulo=root["titulo"],
-                descripcion=(
-                    root.get(
-                        "descripcion"
-                    )
-                    or ""
-                ),
-                cliente_id=(
-                    root.get(
-                        "cliente_id"
-                    )
-                ),
-                expediente_id=(
-                    root.get(
-                        "expediente_id"
-                    )
-                ),
-                documento_id=(
-                    root.get(
-                        "documento_id"
-                    )
-                ),
-                tipo=(
-                    root.get("tipo")
-                    or "GENERAL"
-                ),
-                prioridad=(
-                    root.get(
-                        "prioridad"
-                    )
-                    or "NORMAL"
-                ),
-                fecha_evento=(
-                    occurrence_at
-                ),
-                fecha_inicio_aviso=(
-                    warning_at
-                ),
-                origen_tipo="SISTEMA",
-                origen_id=str(
-                    recurrence_id
+            scheduled_notification_service
+            .create_notification(
+                source_type="ALERT",
+                source_id=root["id"],
+                scheduled_at=scheduled_at,
+                notification_type=(
+                    "AVISO_CALENDARIO"
                 ),
                 source_key=(
-                    _generated_source_key(
+                    _notification_source_key(
                         recurrence_id,
                         next_index,
                     )
                 ),
-                created_by="RECURRENCE",
                 conn=connection,
                 db_path=db_path,
             )
         )
 
-        alert = created[
-            "alert"
-        ]
+        notification = (
+            created["notification"]
+        )
 
         (
             calendar_alert_recurrence_service
-            .register_occurrence(
+            .register_notification_occurrence(
                 recurrence_id,
-                alert_id=alert["id"],
+                notification_id=(
+                    notification["id"]
+                ),
                 occurrence_index=(
                     next_index
                 ),
-                occurrence_at=(
-                    occurrence_at
-                ),
+                scheduled_at=scheduled_at,
                 conn=connection,
                 db_path=db_path,
             )
@@ -493,6 +503,14 @@ def materialize_next_occurrence(
             )
         )
 
+        has_following = (
+            has_following
+            and _within_event_limit(
+                root,
+                following_at,
+            )
+        )
+
         updated = (
             calendar_alert_recurrence_service
             .update_progress(
@@ -501,7 +519,7 @@ def materialize_next_occurrence(
                     next_index
                 ),
                 last_occurrence_at=(
-                    occurrence_at
+                    scheduled_at
                 ),
                 next_occurrence_at=(
                     following_at
@@ -523,15 +541,15 @@ def materialize_next_occurrence(
         )
 
         return {
-            "alert": alert,
-            "notification":
-                created.get(
-                    "notification"
-                ),
-            "recurrence":
-                updated,
-            "occurrence_index":
-                next_index,
+            "alert": root,
+            "notification": created,
+            "recurrence": updated,
+            "occurrence_index": next_index,
+            "scheduled_at": (
+                scheduled_at.isoformat(
+                    sep=" "
+                )
+            ),
         }
 
 
@@ -543,7 +561,7 @@ def materialize_occurrences(
     db_path=DEFAULT_DB_PATH,
 ):
     """
-    Materializa hasta count ocurrencias futuras.
+    Programa hasta count recordatorios futuros.
     """
 
     maximum = max(
@@ -553,9 +571,7 @@ def materialize_occurrences(
 
     results = []
 
-    for _ in range(
-        maximum
-    ):
+    for _ in range(maximum):
         result = (
             materialize_next_occurrence(
                 recurrence_id,
@@ -567,8 +583,56 @@ def materialize_occurrences(
         if result is None:
             break
 
+        results.append(result)
+
+    return results
+
+def materialize_until_limit(
+    recurrence_id,
+    *,
+    safety_limit=10000,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    """
+    Materializa todos los recordatorios pendientes
+    hasta que la propia regla indique que la serie
+    ha terminado.
+
+    El límite de seguridad evita un bucle accidental
+    provocado por una configuración o regresión
+    defectuosa.
+    """
+
+    maximum = int(
+        safety_limit
+    )
+
+    if maximum < 1:
+        raise ValueError(
+            "El límite de seguridad debe "
+            "ser superior a 0."
+        )
+
+    results = []
+
+    for _ in range(maximum):
+        result = (
+            materialize_next_occurrence(
+                recurrence_id,
+                conn=conn,
+                db_path=db_path,
+            )
+        )
+
+        if result is None:
+            return results
+
         results.append(
             result
         )
 
-    return results
+    raise RuntimeError(
+        "La recurrencia superó el límite "
+        "de seguridad de materialización."
+    )
