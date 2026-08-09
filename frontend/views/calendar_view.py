@@ -6088,6 +6088,308 @@ def calendar_view(
         )
 
 
+    def _run_recurrence_action(
+        action,
+        success_message,
+    ):
+        item = state.get(
+            "selected_item"
+        ) or {}
+
+        if (
+            item.get("item_type")
+            != "ALERT"
+        ):
+            return
+
+        alert_id = int(
+            item.get("source_id")
+            or 0
+        )
+
+        if not alert_id:
+            return
+
+        try:
+            recurrence = (
+                calendar_alert_recurrence
+                .get_recurrence_for_alert(
+                    alert_id
+                )
+            )
+
+            if not recurrence:
+                raise ValueError(
+                    "Este aviso no tiene "
+                    "una serie recurrente."
+                )
+
+            action(
+                recurrence["id"]
+            )
+
+            refresh()
+
+            _reload_selected_alert(
+                alert_id
+            )
+
+            render()
+            safe_update()
+            _refresh_detail_dialog()
+
+            _show_message(
+                success_message
+            )
+
+        except Exception as exc:
+            _show_message(
+                str(exc),
+                error=True,
+            )
+
+
+    def _recurrence_frequency_label(
+        recurrence,
+    ):
+        unit = str(
+            recurrence.get(
+                "frequency_unit"
+            )
+            or ""
+        ).upper()
+
+        interval = int(
+            recurrence.get(
+                "interval_value"
+            )
+            or 1
+        )
+
+        labels = {
+            "DAY": (
+                "día"
+                if interval == 1
+                else "días"
+            ),
+            "WEEK": (
+                "semana"
+                if interval == 1
+                else "semanas"
+            ),
+            "MONTH": (
+                "mes"
+                if interval == 1
+                else "meses"
+            ),
+            "YEAR": (
+                "año"
+                if interval == 1
+                else "años"
+            ),
+        }
+
+        label = labels.get(
+            unit,
+            unit.lower() or "-"
+        )
+
+        return (
+            f"Cada {interval} {label}"
+        )
+
+
+    def _alert_recurrence_section(
+        alert_id,
+    ):
+        recurrence = (
+            calendar_alert_recurrence
+            .get_recurrence_for_alert(
+                alert_id
+            )
+        )
+
+        if not recurrence:
+            return ft.Container()
+
+        state_value = str(
+            recurrence.get("estado")
+            or ""
+        ).upper()
+
+        mappings = (
+            calendar_alert_recurrence
+            .list_notification_occurrences(
+                recurrence["id"]
+            )
+        )
+
+        controls = [
+            ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons
+                        .AUTORENEW_ROUNDED,
+                        size=18,
+                        color=Q_PRIMARY,
+                    ),
+                    ft.Text(
+                        "Recordatorios periódicos",
+                        size=11,
+                        weight=(
+                            ft.FontWeight.W_600
+                        ),
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=7,
+            ),
+            ft.Text(
+                (
+                    "Estado: "
+                    + (
+                        state_value.title()
+                        if state_value
+                        else "-"
+                    )
+                ),
+                size=10,
+                color="#334155",
+            ),
+            ft.Text(
+                (
+                    "Frecuencia: "
+                    + _recurrence_frequency_label(
+                        recurrence
+                    )
+                ),
+                size=10,
+                color=Q_MUTED,
+            ),
+            ft.Text(
+                (
+                    "Recordatorios programados: "
+                    + str(
+                        len(mappings)
+                    )
+                ),
+                size=10,
+                color=Q_MUTED,
+            ),
+        ]
+
+        if state_value == "ACTIVA":
+            controls.append(
+                ft.Row(
+                    controls=[
+                        secondary_button(
+                            "Pausar serie",
+                            lambda e:
+                                _run_recurrence_action(
+                                    calendar_alert_recurrence_app
+                                    .pause_recurring_alert,
+                                    (
+                                        "Serie pausada. "
+                                        "Los recordatorios "
+                                        "quedan suspendidos."
+                                    ),
+                                ),
+                        ),
+                        danger_button(
+                            "Cancelar serie",
+                            lambda e:
+                                _run_recurrence_action(
+                                    calendar_alert_recurrence_app
+                                    .cancel_recurring_alert,
+                                    (
+                                        "Serie cancelada. "
+                                        "El aviso principal "
+                                        "permanece activo."
+                                    ),
+                                ),
+                        ),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                )
+            )
+
+        elif state_value == "PAUSADA":
+            controls.append(
+                ft.Row(
+                    controls=[
+                        primary_button(
+                            "Reanudar serie",
+                            lambda e:
+                                _run_recurrence_action(
+                                    calendar_alert_recurrence_app
+                                    .resume_recurring_alert,
+                                    (
+                                        "Serie reanudada. "
+                                        "Los recordatorios "
+                                        "vencidos no se enviarán."
+                                    ),
+                                ),
+                        ),
+                        danger_button(
+                            "Cancelar serie",
+                            lambda e:
+                                _run_recurrence_action(
+                                    calendar_alert_recurrence_app
+                                    .cancel_recurring_alert,
+                                    (
+                                        "Serie cancelada. "
+                                        "El aviso principal "
+                                        "permanece activo."
+                                    ),
+                                ),
+                        ),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                )
+            )
+
+        elif state_value == "CANCELADA":
+            controls.append(
+                ft.Text(
+                    (
+                        "Los recordatorios periódicos "
+                        "de esta serie han sido "
+                        "cancelados."
+                    ),
+                    size=10,
+                    color=Q_MUTED,
+                )
+            )
+
+        elif state_value == "FINALIZADA":
+            controls.append(
+                ft.Text(
+                    (
+                        "La serie de recordatorios "
+                        "ha finalizado."
+                    ),
+                    size=10,
+                    color=Q_MUTED,
+                )
+            )
+
+        return ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=12,
+            padding=12,
+            content=ft.Column(
+                controls=controls,
+                spacing=7,
+            ),
+        )
+
+
     def detail_panel():
         item = state.get(
             "selected_item"
@@ -6320,6 +6622,23 @@ def calendar_view(
                             "item_type"
                         )
                         == "ALERT"
+                        else ft.Container()
+                    ),
+                    (
+                        _alert_recurrence_section(
+                            item.get(
+                                "source_id"
+                            )
+                        )
+                        if (
+                            item.get(
+                                "item_type"
+                            )
+                            == "ALERT"
+                            and item.get(
+                                "source_id"
+                            )
+                        )
                         else ft.Container()
                     ),
                     (
