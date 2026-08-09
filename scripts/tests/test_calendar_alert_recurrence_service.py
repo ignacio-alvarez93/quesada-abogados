@@ -361,5 +361,190 @@ class CalendarAlertRecurrenceServiceTestCase(
         )
 
 
+
+
+class CalendarAlertRecurrenceLifecycleTestCase(
+    unittest.TestCase
+):
+
+    setUp = (
+        CalendarAlertRecurrenceServiceTestCase
+        .setUp
+    )
+
+    tearDown = (
+        CalendarAlertRecurrenceServiceTestCase
+        .tearDown
+    )
+
+    _alert = (
+        CalendarAlertRecurrenceServiceTestCase
+        ._alert
+    )
+
+    def _recurrence(self):
+        alert = self._alert()
+
+        return (
+            recurrence_service
+            .create_recurrence(
+                root_alert_id=alert["id"],
+                anchor_at=(
+                    alert["fecha_evento"]
+                ),
+                frequency_unit="MONTH",
+                interval_value=1,
+                db_path=self.db_path,
+            )
+        )
+
+    def test_pause_recurrence(self):
+        recurrence = self._recurrence()
+
+        paused = (
+            recurrence_service
+            .pause_recurrence(
+                recurrence["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            paused["estado"],
+            "PAUSADA",
+        )
+
+        self.assertEqual(
+            paused["activo"],
+            0,
+        )
+
+        self.assertIsNotNone(
+            paused[
+                "next_occurrence_at"
+            ]
+        )
+
+    def test_resume_recurrence(self):
+        recurrence = self._recurrence()
+
+        (
+            recurrence_service
+            .pause_recurrence(
+                recurrence["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        resumed = (
+            recurrence_service
+            .resume_recurrence(
+                recurrence["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            resumed["estado"],
+            "ACTIVA",
+        )
+
+        self.assertEqual(
+            resumed["activo"],
+            1,
+        )
+
+    def test_cancel_recurrence(self):
+        recurrence = self._recurrence()
+
+        cancelled = (
+            recurrence_service
+            .cancel_recurrence(
+                recurrence["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            cancelled["estado"],
+            "CANCELADA",
+        )
+
+        self.assertEqual(
+            cancelled["activo"],
+            0,
+        )
+
+        self.assertIsNone(
+            cancelled[
+                "next_occurrence_at"
+            ]
+        )
+
+    def test_cancelled_recurrence_cannot_resume(
+        self,
+    ):
+        recurrence = self._recurrence()
+
+        (
+            recurrence_service
+            .cancel_recurrence(
+                recurrence["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        with self.assertRaises(
+            ValueError
+        ):
+            (
+                recurrence_service
+                .resume_recurrence(
+                    recurrence["id"],
+                    db_path=self.db_path,
+                )
+            )
+
+    def test_paused_recurrence_disallows_occurrence(
+        self,
+    ):
+        recurrence = self._recurrence()
+
+        paused = (
+            recurrence_service
+            .pause_recurrence(
+                recurrence["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        next_at = (
+            recurrence_service
+            .occurrence_at(
+                paused["anchor_at"],
+                frequency_unit=(
+                    paused[
+                        "frequency_unit"
+                    ]
+                ),
+                interval_value=(
+                    paused[
+                        "interval_value"
+                    ]
+                ),
+                occurrence_index=2,
+            )
+        )
+
+        self.assertFalse(
+            recurrence_service
+            .occurrence_allowed(
+                paused,
+                2,
+                next_at,
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

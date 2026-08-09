@@ -434,6 +434,11 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
             0,
         )
 
+        self.assertEqual(
+            recurrence["estado"],
+            "FINALIZADA",
+        )
+
         self.assertIsNone(
             recurrence[
                 "next_occurrence_at"

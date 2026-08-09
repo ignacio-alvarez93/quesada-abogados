@@ -358,6 +358,10 @@ def materialize_next_occurrence(
                     ),
                     next_occurrence_at=None,
                     activo=False,
+                    estado=(
+                        calendar_alert_recurrence_service
+                        .RECURRENCE_FINISHED
+                    ),
                     conn=connection,
                     db_path=db_path,
                 )
@@ -505,6 +509,14 @@ def materialize_next_occurrence(
                     else None
                 ),
                 activo=has_following,
+                estado=(
+                    calendar_alert_recurrence_service
+                    .RECURRENCE_ACTIVE
+                    if has_following
+                    else
+                    calendar_alert_recurrence_service
+                    .RECURRENCE_FINISHED
+                ),
                 conn=connection,
                 db_path=db_path,
             )

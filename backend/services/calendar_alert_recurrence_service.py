@@ -224,6 +224,18 @@ def ensure_schema(
                         NOT NULL
                         DEFAULT 1,
 
+                    estado TEXT
+                        NOT NULL
+                        DEFAULT 'ACTIVA'
+                        CHECK (
+                            estado IN (
+                                'ACTIVA',
+                                'PAUSADA',
+                                'CANCELADA',
+                                'FINALIZADA'
+                            )
+                        ),
+
                     created_at TEXT
                         NOT NULL
                         DEFAULT CURRENT_TIMESTAMP,
@@ -319,6 +331,47 @@ def ensure_schema(
                 ux_calendar_alert_recurrence_occurrence_alert
             ON calendar_alert_recurrence_occurrences(
                 alert_id
+            )
+            """
+        )
+
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                """
+                PRAGMA table_info(
+                    calendar_alert_recurrences
+                )
+                """
+            ).fetchall()
+        }
+
+        if "estado" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE
+                    calendar_alert_recurrences
+                ADD COLUMN estado TEXT NOT NULL
+                    DEFAULT 'ACTIVA'
+                    CHECK (
+                        estado IN (
+                            'ACTIVA',
+                            'PAUSADA',
+                            'CANCELADA',
+                            'FINALIZADA'
+                        )
+                    )
+                """
+            )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_calendar_alert_recurrences_estado
+            ON calendar_alert_recurrences(
+                estado,
+                activo,
+                next_occurrence_at
             )
             """
         )
@@ -982,6 +1035,7 @@ def update_progress(
     last_occurrence_at,
     next_occurrence_at=None,
     activo=True,
+    estado=None,
     conn=None,
     db_path=DEFAULT_DB_PATH,
 ):
@@ -1005,33 +1059,81 @@ def update_progress(
             db_path=db_path,
         )
 
-        connection.execute(
-            """
-            UPDATE calendar_alert_recurrences
-            SET
-                occurrences_generated = ?,
-                last_occurrence_at = ?,
-                next_occurrence_at = ?,
-                activo = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (
-                int(occurrences_generated),
-                last_at.isoformat(
-                    sep=" "
-                ),
-                (
-                    next_at.isoformat(
-                        sep=" "
-                    )
-                    if next_at
-                    else None
-                ),
-                1 if activo else 0,
-                int(recurrence_id),
-            ),
+        clean_estado = (
+            _upper(estado)
+            if estado is not None
+            else None
         )
+
+        if clean_estado is None:
+            connection.execute(
+                """
+                UPDATE calendar_alert_recurrences
+                SET
+                    occurrences_generated = ?,
+                    last_occurrence_at = ?,
+                    next_occurrence_at = ?,
+                    activo = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    int(occurrences_generated),
+                    last_at.isoformat(
+                        sep=" "
+                    ),
+                    (
+                        next_at.isoformat(
+                            sep=" "
+                        )
+                        if next_at
+                        else None
+                    ),
+                    1 if activo else 0,
+                    int(recurrence_id),
+                ),
+            )
+        else:
+            if clean_estado not in {
+                RECURRENCE_ACTIVE,
+                RECURRENCE_PAUSED,
+                RECURRENCE_CANCELLED,
+                RECURRENCE_FINISHED,
+            }:
+                raise ValueError(
+                    "Estado de recurrencia "
+                    "no válido."
+                )
+
+            connection.execute(
+                """
+                UPDATE calendar_alert_recurrences
+                SET
+                    occurrences_generated = ?,
+                    last_occurrence_at = ?,
+                    next_occurrence_at = ?,
+                    activo = ?,
+                    estado = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    int(occurrences_generated),
+                    last_at.isoformat(
+                        sep=" "
+                    ),
+                    (
+                        next_at.isoformat(
+                            sep=" "
+                        )
+                        if next_at
+                        else None
+                    ),
+                    1 if activo else 0,
+                    clean_estado,
+                    int(recurrence_id),
+                ),
+            )
 
         return get_recurrence(
             recurrence_id,
@@ -1052,6 +1154,14 @@ def occurrence_allowed(
         recurrence.get("activo")
         or 0
     ):
+        return False
+
+    estado = _upper(
+        recurrence.get("estado")
+        or RECURRENCE_ACTIVE
+    )
+
+    if estado != RECURRENCE_ACTIVE:
         return False
 
     index = int(
@@ -1089,3 +1199,233 @@ def occurrence_allowed(
         return value <= end_at
 
     return True
+
+
+RECURRENCE_ACTIVE = "ACTIVA"
+RECURRENCE_PAUSED = "PAUSADA"
+RECURRENCE_CANCELLED = "CANCELADA"
+RECURRENCE_FINISHED = "FINALIZADA"
+
+
+def pause_recurrence(
+    recurrence_id,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        recurrence = get_recurrence(
+            recurrence_id,
+            conn=connection,
+            db_path=db_path,
+        )
+
+        if not recurrence:
+            raise ValueError(
+                "Recurrencia no encontrada."
+            )
+
+        estado = _upper(
+            recurrence.get("estado")
+            or RECURRENCE_ACTIVE
+        )
+
+        if estado == RECURRENCE_CANCELLED:
+            raise ValueError(
+                "Una serie cancelada "
+                "no puede pausarse."
+            )
+
+        if estado == RECURRENCE_FINISHED:
+            raise ValueError(
+                "Una serie finalizada "
+                "no puede pausarse."
+            )
+
+        connection.execute(
+            """
+            UPDATE calendar_alert_recurrences
+            SET
+                activo = 0,
+                estado = 'PAUSADA',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(recurrence_id),
+            ),
+        )
+
+        return get_recurrence(
+            recurrence_id,
+            conn=connection,
+            db_path=db_path,
+        )
+
+
+def resume_recurrence(
+    recurrence_id,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        recurrence = get_recurrence(
+            recurrence_id,
+            conn=connection,
+            db_path=db_path,
+        )
+
+        if not recurrence:
+            raise ValueError(
+                "Recurrencia no encontrada."
+            )
+
+        estado = _upper(
+            recurrence.get("estado")
+            or RECURRENCE_ACTIVE
+        )
+
+        if estado == RECURRENCE_CANCELLED:
+            raise ValueError(
+                "Una serie cancelada "
+                "no puede reanudarse."
+            )
+
+        if estado == RECURRENCE_FINISHED:
+            raise ValueError(
+                "Una serie finalizada "
+                "no puede reanudarse."
+            )
+
+        connection.execute(
+            """
+            UPDATE calendar_alert_recurrences
+            SET
+                activo = 1,
+                estado = 'ACTIVA',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(recurrence_id),
+            ),
+        )
+
+        return get_recurrence(
+            recurrence_id,
+            conn=connection,
+            db_path=db_path,
+        )
+
+
+def cancel_recurrence(
+    recurrence_id,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    """
+    Cancela únicamente la generación futura.
+
+    Los avisos ya materializados conservan
+    su lifecycle independiente.
+    """
+
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        recurrence = get_recurrence(
+            recurrence_id,
+            conn=connection,
+            db_path=db_path,
+        )
+
+        if not recurrence:
+            raise ValueError(
+                "Recurrencia no encontrada."
+            )
+
+        connection.execute(
+            """
+            UPDATE calendar_alert_recurrences
+            SET
+                activo = 0,
+                estado = 'CANCELADA',
+                next_occurrence_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(recurrence_id),
+            ),
+        )
+
+        return get_recurrence(
+            recurrence_id,
+            conn=connection,
+            db_path=db_path,
+        )
+
+
+def finish_recurrence(
+    recurrence_id,
+    *,
+    conn=None,
+    db_path=DEFAULT_DB_PATH,
+):
+    with _connection(
+        conn=conn,
+        db_path=db_path,
+    ) as connection:
+
+        ensure_schema(
+            conn=connection,
+            db_path=db_path,
+        )
+
+        connection.execute(
+            """
+            UPDATE calendar_alert_recurrences
+            SET
+                activo = 0,
+                estado = 'FINALIZADA',
+                next_occurrence_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                int(recurrence_id),
+            ),
+        )
+
+        return get_recurrence(
+            recurrence_id,
+            conn=connection,
+            db_path=db_path,
+        )
