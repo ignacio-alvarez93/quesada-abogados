@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS
         occurrences_generated INTEGER NOT NULL
             DEFAULT 1,
 
+        estado TEXT NOT NULL
+            DEFAULT 'ACTIVA'
+            CHECK (
+                estado IN (
+                    'ACTIVA',
+                    'PAUSADA',
+                    'CANCELADA',
+                    'FINALIZADA'
+                )
+            ),
+
         activo INTEGER NOT NULL
             DEFAULT 1,
 
@@ -67,6 +78,14 @@ ON calendar_alert_recurrences(
 CREATE INDEX IF NOT EXISTS
     idx_calendar_alert_recurrences_next
 ON calendar_alert_recurrences(
+    activo,
+    next_occurrence_at
+);
+
+CREATE INDEX IF NOT EXISTS
+    idx_calendar_alert_recurrences_estado
+ON calendar_alert_recurrences(
+    estado,
     activo,
     next_occurrence_at
 );

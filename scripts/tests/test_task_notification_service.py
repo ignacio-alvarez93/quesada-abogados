@@ -1,7 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from backend.services import task_service
@@ -301,8 +301,19 @@ class TaskNotificationServiceTestCase(
         )
 
     def test_due_notifications(self):
+        reference_now = datetime.now().replace(
+            microsecond=0
+        )
+
+        due_at = (
+            reference_now
+            + timedelta(minutes=5)
+        )
+
         task = self.create_task(
-            due="2026-08-07 10:00"
+            due=due_at.isoformat(
+                sep=" "
+            )
         )
 
         task_notification_service \
@@ -314,12 +325,9 @@ class TaskNotificationServiceTestCase(
         due = (
             task_notification_service
             .list_due_notifications(
-                now=datetime(
-                    2026,
-                    8,
-                    7,
-                    11,
-                    0,
+                now=(
+                    due_at
+                    + timedelta(hours=1)
                 ),
                 db_path=self.db_path,
             )

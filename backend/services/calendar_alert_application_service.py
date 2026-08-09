@@ -23,10 +23,14 @@ REOPEN
 import sqlite3
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from backend.services import calendar_alert_service
 from backend.services import scheduled_notification_service
+from backend.services import (
+    calendar_alert_recurrence_service
+)
 
 
 DEFAULT_DB_PATH = (
@@ -39,6 +43,73 @@ DEFAULT_DB_PATH = (
 ACTIVE_ALERT_STATES = {
     "ACTIVO",
 }
+
+
+OPERATIONAL_RECURRENCE_STATES = {
+    "ACTIVA",
+    "PAUSADA",
+}
+
+
+def _get_operational_recurrence(
+    alert_id,
+    *,
+    conn,
+    db_path=DEFAULT_DB_PATH,
+):
+    recurrence = (
+        calendar_alert_recurrence_service
+        .get_recurrence_for_alert(
+            alert_id,
+            conn=conn,
+            db_path=db_path,
+        )
+    )
+
+    if not recurrence:
+        return None
+
+    if (
+        recurrence.get("estado")
+        not in OPERATIONAL_RECURRENCE_STATES
+    ):
+        return None
+
+    return recurrence
+
+
+def _normalize_datetime_for_comparison(
+    value,
+):
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return (
+            value
+            .replace(microsecond=0)
+            .isoformat(sep=" ")
+        )
+
+    raw = str(value).strip()
+
+    if not raw:
+        return None
+
+    try:
+        return (
+            datetime
+            .fromisoformat(
+                raw.replace(
+                    "T",
+                    " ",
+                )
+            )
+            .replace(microsecond=0)
+            .isoformat(sep=" ")
+        )
+    except ValueError:
+        return raw
 
 
 def _connect(db_path=DEFAULT_DB_PATH):
@@ -238,6 +309,55 @@ def update_calendar_alert(
                 "Aviso no encontrado."
             )
 
+        recurrence = (
+            _get_operational_recurrence(
+                alert_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        requested_event = (
+            fecha_evento
+            if fecha_evento is not None
+            else before.get("fecha_evento")
+        )
+
+        requested_warning = (
+            fecha_inicio_aviso
+            if fecha_inicio_aviso is not None
+            else before.get("fecha_inicio_aviso")
+        )
+
+        schedule_change_requested = (
+            _normalize_datetime_for_comparison(
+                requested_event
+            )
+            != _normalize_datetime_for_comparison(
+                before.get("fecha_evento")
+            )
+            or
+            _normalize_datetime_for_comparison(
+                requested_warning
+            )
+            != _normalize_datetime_for_comparison(
+                before.get(
+                    "fecha_inicio_aviso"
+                )
+            )
+        )
+
+        if (
+            recurrence
+            and schedule_change_requested
+        ):
+            raise ValueError(
+                "No se pueden modificar las fechas "
+                "de un aviso con una recurrencia "
+                "activa o pausada. Cancela la serie "
+                "y crea una nueva recurrencia."
+            )
+
         alert = (
             calendar_alert_service
             .update_alert(
@@ -315,6 +435,22 @@ def resolve_calendar_alert(
         db_path=db_path,
     ) as connection:
 
+        recurrence = (
+            _get_operational_recurrence(
+                alert_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        if recurrence:
+            raise ValueError(
+                "No se puede resolver el aviso "
+                "mientras tenga una recurrencia "
+                "activa o pausada. Gestiona primero "
+                "la serie recurrente."
+            )
+
         alert = (
             calendar_alert_service
             .resolve_alert(
@@ -348,6 +484,22 @@ def cancel_calendar_alert(
         db_path=db_path,
     ) as connection:
 
+        recurrence = (
+            _get_operational_recurrence(
+                alert_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        if recurrence:
+            raise ValueError(
+                "No se puede cancelar el aviso "
+                "mientras tenga una recurrencia "
+                "activa o pausada. Cancela primero "
+                "la serie recurrente."
+            )
+
         alert = (
             calendar_alert_service
             .cancel_alert(
@@ -380,6 +532,21 @@ def reopen_calendar_alert(
         conn=conn,
         db_path=db_path,
     ) as connection:
+
+        recurrence = (
+            _get_operational_recurrence(
+                alert_id,
+                conn=connection,
+                db_path=db_path,
+            )
+        )
+
+        if recurrence:
+            raise ValueError(
+                "No se puede reabrir el aviso "
+                "mientras tenga una recurrencia "
+                "activa o pausada."
+            )
 
         alert = (
             calendar_alert_service

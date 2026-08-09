@@ -1,9 +1,27 @@
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS task_notifications (
+-- Outbox universal de notificaciones programadas.
+--
+-- No contiene FK polimórfica porque source_id puede apuntar
+-- a distintos dominios. La integridad de origen se valida
+-- desde scheduled_notification_service.
+--
+-- source_type:
+--   TASK
+--   ALERT
+
+CREATE TABLE IF NOT EXISTS scheduled_notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-    task_id INTEGER NOT NULL,
+    source_type TEXT NOT NULL
+        CHECK (
+            source_type IN (
+                'TASK',
+                'ALERT'
+            )
+        ),
+
+    source_id INTEGER NOT NULL,
 
     canal TEXT NOT NULL DEFAULT 'TELEGRAM'
         CHECK (
@@ -23,6 +41,8 @@ CREATE TABLE IF NOT EXISTS task_notifications (
                 'PROCESANDO',
                 'ENVIADA',
                 'ERROR',
+                'PAUSADA',
+                'OMITIDA',
                 'CANCELADA'
             )
         ),
@@ -38,25 +58,24 @@ CREATE TABLE IF NOT EXISTS task_notifications (
     activo INTEGER NOT NULL DEFAULT 1,
 
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (task_id)
-        REFERENCES tasks(id)
-        ON DELETE CASCADE
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS
-    ux_task_notifications_source_key
-ON task_notifications(source_key);
+    ux_scheduled_notifications_source_key
+ON scheduled_notifications(source_key);
 
 CREATE INDEX IF NOT EXISTS
-    idx_task_notifications_due
-ON task_notifications(
+    idx_scheduled_notifications_due
+ON scheduled_notifications(
     activo,
     estado,
     scheduled_at
 );
 
 CREATE INDEX IF NOT EXISTS
-    idx_task_notifications_task
-ON task_notifications(task_id);
+    idx_scheduled_notifications_source
+ON scheduled_notifications(
+    source_type,
+    source_id
+);

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from backend.services import (
     calendar_alert_service,
+    calendar_alert_application_service,
     scheduled_notification_service,
     calendar_alert_recurrence_service,
     calendar_alert_recurrence_application_service
@@ -1435,6 +1436,323 @@ class CalendarAlertRecurrenceApplicationServiceTestCase(
             ]["activo"],
             1,
         )
+
+
+    def test_active_recurrence_allows_non_schedule_edit(
+        self,
+    ):
+        result = self._create_series()
+
+        alert_id = result["alert"]["id"]
+
+        before_notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                alert_id,
+                include_inactive=True,
+                db_path=self.db_path,
+            )
+        )
+
+        updated = (
+            calendar_alert_application_service
+            .update_calendar_alert(
+                alert_id,
+                titulo="Título actualizado",
+                fecha_evento=self._event_at(),
+                fecha_inicio_aviso=self._warning_at(),
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            updated["alert"]["titulo"],
+            "Título actualizado",
+        )
+
+        self.assertFalse(
+            updated["schedule_changed"]
+        )
+
+        after_notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                alert_id,
+                include_inactive=True,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            [
+                item["id"]
+                for item in before_notifications
+            ],
+            [
+                item["id"]
+                for item in after_notifications
+            ],
+        )
+
+    def test_active_recurrence_rejects_schedule_change(
+        self,
+    ):
+        result = self._create_series()
+
+        alert_id = result["alert"]["id"]
+        recurrence_id = result["recurrence"]["id"]
+
+        before_alert = (
+            calendar_alert_service
+            .get_alert(
+                alert_id,
+                db_path=self.db_path,
+            )
+        )
+
+        before_recurrence = (
+            calendar_alert_recurrence_service
+            .get_recurrence(
+                recurrence_id,
+                db_path=self.db_path,
+            )
+        )
+
+        before_notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                alert_id,
+                include_inactive=True,
+                db_path=self.db_path,
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "recurrencia activa o pausada",
+        ):
+            (
+                calendar_alert_application_service
+                .update_calendar_alert(
+                    alert_id,
+                    fecha_evento=datetime(
+                        2026,
+                        8,
+                        16,
+                        9,
+                        0,
+                    ),
+                    db_path=self.db_path,
+                )
+            )
+
+        after_alert = (
+            calendar_alert_service
+            .get_alert(
+                alert_id,
+                db_path=self.db_path,
+            )
+        )
+
+        after_recurrence = (
+            calendar_alert_recurrence_service
+            .get_recurrence(
+                recurrence_id,
+                db_path=self.db_path,
+            )
+        )
+
+        after_notifications = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                alert_id,
+                include_inactive=True,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            before_alert["fecha_evento"],
+            after_alert["fecha_evento"],
+        )
+
+        self.assertEqual(
+            before_recurrence["estado"],
+            after_recurrence["estado"],
+        )
+
+        self.assertEqual(
+            [
+                (
+                    item["id"],
+                    item["estado"],
+                    item["activo"],
+                )
+                for item in before_notifications
+            ],
+            [
+                (
+                    item["id"],
+                    item["estado"],
+                    item["activo"],
+                )
+                for item in after_notifications
+            ],
+        )
+
+    def test_paused_recurrence_rejects_schedule_change(
+        self,
+    ):
+        result = self._create_series()
+
+        (
+            recurrence_app
+            .pause_recurring_alert(
+                result["recurrence"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "recurrencia activa o pausada",
+        ):
+            (
+                calendar_alert_application_service
+                .update_calendar_alert(
+                    result["alert"]["id"],
+                    fecha_evento=datetime(
+                        2026,
+                        8,
+                        16,
+                        9,
+                        0,
+                    ),
+                    db_path=self.db_path,
+                )
+            )
+
+    def test_active_recurrence_rejects_root_resolve(
+        self,
+    ):
+        result = self._create_series()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Gestiona primero la serie recurrente",
+        ):
+            (
+                calendar_alert_application_service
+                .resolve_calendar_alert(
+                    result["alert"]["id"],
+                    db_path=self.db_path,
+                )
+            )
+
+        alert = (
+            calendar_alert_service
+            .get_alert(
+                result["alert"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            alert["estado"],
+            "ACTIVO",
+        )
+
+    def test_active_recurrence_rejects_root_cancel(
+        self,
+    ):
+        result = self._create_series()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Cancela primero la serie recurrente",
+        ):
+            (
+                calendar_alert_application_service
+                .cancel_calendar_alert(
+                    result["alert"]["id"],
+                    db_path=self.db_path,
+                )
+            )
+
+        alert = (
+            calendar_alert_service
+            .get_alert(
+                result["alert"]["id"],
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            alert["estado"],
+            "ACTIVO",
+        )
+
+    def test_cancelled_recurrence_allows_schedule_change(
+        self,
+    ):
+        result = self._create_series()
+
+        recurrence_id = result["recurrence"]["id"]
+        alert_id = result["alert"]["id"]
+
+        (
+            recurrence_app
+            .cancel_recurring_alert(
+                recurrence_id,
+                db_path=self.db_path,
+            )
+        )
+
+        new_event = datetime(
+            2026,
+            8,
+            18,
+            9,
+            0,
+        )
+
+        updated = (
+            calendar_alert_application_service
+            .update_calendar_alert(
+                alert_id,
+                fecha_evento=new_event,
+                fecha_inicio_aviso="",
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertTrue(
+            updated["schedule_changed"]
+        )
+
+        self.assertEqual(
+            updated["alert"]["fecha_evento"],
+            "2026-08-18 09:00:00",
+        )
+
+        recurrence = (
+            calendar_alert_recurrence_service
+            .get_recurrence(
+                recurrence_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            recurrence["estado"],
+            "CANCELADA",
+        )
+
+
 
 if __name__ == "__main__":
     unittest.main()

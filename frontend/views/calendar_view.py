@@ -1332,6 +1332,11 @@ def calendar_view(
         alert_title.value = ""
         alert_description.value = ""
 
+        alert_event_date.disabled = False
+        alert_event_time.disabled = False
+        alert_warning_date.disabled = False
+        alert_warning_time.disabled = False
+
         alert_client.set_value(
             "",
             update=False,
@@ -1900,6 +1905,12 @@ def calendar_view(
                 )
             )
 
+            warning_update = (
+                ""
+                if warning_at is None
+                else warning_at
+            )
+
             client_id = _option_id(
                 alert_client.input.value
             )
@@ -1965,7 +1976,7 @@ def calendar_view(
                     ),
                     fecha_evento=event_at,
                     fecha_inicio_aviso=(
-                        warning_at
+                        warning_update
                     ),
                 )
             )
@@ -2672,6 +2683,35 @@ def calendar_view(
             alert
         )
 
+        recurrence = (
+            calendar_alert_recurrence
+            .get_recurrence_for_alert(
+                alert_id
+            )
+        )
+
+        recurrence_is_operational = (
+            recurrence
+            and recurrence.get("estado")
+            in {
+                "ACTIVA",
+                "PAUSADA",
+            }
+        )
+
+        alert_event_date.disabled = (
+            recurrence_is_operational
+        )
+        alert_event_time.disabled = (
+            recurrence_is_operational
+        )
+        alert_warning_date.disabled = (
+            recurrence_is_operational
+        )
+        alert_warning_time.disabled = (
+            recurrence_is_operational
+        )
+
         alert_dialog = form_dialog(
             "Editar aviso",
             ft.Container(
@@ -2739,11 +2779,28 @@ def calendar_view(
                                     ),
                                     ft.Text(
                                         (
-                                            "Si cambias la fecha del "
-                                            "evento o la fecha de aviso, "
-                                            "Telegram cancelará la "
-                                            "planificación anterior y "
-                                            "creará una nueva revisión."
+                                            (
+                                                "Este aviso pertenece "
+                                                "a una serie recurrente. "
+                                                "Puedes modificar sus "
+                                                "datos generales, pero "
+                                                "no sus fechas mientras "
+                                                "la serie esté activa "
+                                                "o pausada. Para cambiar "
+                                                "la planificación, "
+                                                "cancela la serie y "
+                                                "crea una nueva."
+                                            )
+                                            if recurrence_is_operational
+                                            else (
+                                                "Si cambias la fecha del "
+                                                "evento o la fecha de "
+                                                "aviso, Telegram "
+                                                "cancelará la "
+                                                "planificación anterior "
+                                                "y creará una nueva "
+                                                "revisión."
+                                            )
                                         ),
                                         size=11,
                                         color=Q_MUTED,

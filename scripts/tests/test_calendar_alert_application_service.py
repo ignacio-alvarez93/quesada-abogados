@@ -359,6 +359,65 @@ class CalendarAlertApplicationServiceTestCase(
             active[0]["id"],
         )
 
+    def test_clear_warning_date_replans_to_event_date(
+        self,
+    ):
+        result = self._create()
+
+        alert_id = result["alert"]["id"]
+
+        old_notification = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                alert_id,
+                db_path=self.db_path,
+            )
+        )[0]
+
+        updated = (
+            calendar_alert_application_service
+            .update_calendar_alert(
+                alert_id,
+                fecha_inicio_aviso="",
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertTrue(
+            updated["schedule_changed"]
+        )
+
+        self.assertIsNone(
+            updated["alert"][
+                "fecha_inicio_aviso"
+            ]
+        )
+
+        active = (
+            scheduled_notification_service
+            .list_for_source(
+                "ALERT",
+                alert_id,
+                db_path=self.db_path,
+            )
+        )
+
+        self.assertEqual(
+            len(active),
+            1,
+        )
+
+        self.assertNotEqual(
+            old_notification["id"],
+            active[0]["id"],
+        )
+
+        self.assertEqual(
+            active[0]["scheduled_at"],
+            updated["alert"]["fecha_evento"],
+        )
+
     def test_resolve_cancels_pending_notification(
         self,
     ):
