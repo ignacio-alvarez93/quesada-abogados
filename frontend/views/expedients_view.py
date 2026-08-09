@@ -26082,21 +26082,68 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
         return ft.Column(
             controls=[
-                ft.Row(
-                    controls=[
-                        build_selected_action_bar(),
-                        compact_pagination_bar(
-                            page=state.get("cards_page") or 1,
-                            page_size=state.get("cards_page_size") or 10,
-                            total_items=total_items,
-                            on_page_change=set_cards_page,
-                            label_prefix="Expedientes",
-                        ),
-                    ],
-                    alignment=ft.MainAxisAlignment.END,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    wrap=True,
-                    spacing=8,
+                ft.Container(
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=14,
+                    padding=ft.padding.symmetric(
+                        horizontal=12,
+                        vertical=9,
+                    ),
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Row(
+                                        controls=[
+                                            ft.Icon(
+                                                ft.Icons.FOLDER_OPEN,
+                                                size=17,
+                                                color=Q_PRIMARY,
+                                            ),
+                                            ft.Text(
+                                                "Expedientes",
+                                                size=13,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=Q_PRIMARY_DARK,
+                                            ),
+                                            ft.Container(
+                                                padding=ft.padding.symmetric(
+                                                    horizontal=8,
+                                                    vertical=3,
+                                                ),
+                                                border_radius=20,
+                                                bgcolor="#EAF3FF",
+                                                content=ft.Text(
+                                                    str(total_items),
+                                                    size=11,
+                                                    weight=ft.FontWeight.BOLD,
+                                                    color=Q_PRIMARY,
+                                                ),
+                                            ),
+                                        ],
+                                        spacing=7,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                    build_selected_action_bar(),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                spacing=12,
+                            ),
+                            compact_pagination_bar(
+                                page=state.get("cards_page") or 1,
+                                page_size=state.get("cards_page_size") or 10,
+                                total_items=total_items,
+                                on_page_change=set_cards_page,
+                                label_prefix="Listado",
+                            ),
+                        ],
+                        spacing=7,
+                    ),
                 ),
                 ft.Container(
                     expand=True,
@@ -26108,7 +26155,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
                     ),
                 ),
             ],
-            spacing=10,
+            spacing=9,
             expand=True,
             scroll=ft.ScrollMode.AUTO,
         )
@@ -26178,48 +26225,50 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
         controls = [
             ft.Row(
                 controls=[
-                    ft.Row(
-                        controls=[
-                            ft.Container(
-                                width=46,
-                                height=46,
-                                border_radius=13,
-                                bgcolor="#EAF3FF",
-                                alignment=ft.Alignment(0, 0),
-                                content=ft.Icon(
-                                    ft.Icons.FOLDER_OPEN,
-                                    color=Q_PRIMARY,
-                                    size=24,
+                    ft.Container(
+                        expand=True,
+                        content=ft.Row(
+                            controls=[
+                                ft.Container(
+                                    width=46,
+                                    height=46,
+                                    border_radius=13,
+                                    bgcolor="#EAF3FF",
+                                    alignment=ft.Alignment(0, 0),
+                                    content=ft.Icon(
+                                        ft.Icons.FOLDER_OPEN,
+                                        color=Q_PRIMARY,
+                                        size=24,
+                                    ),
                                 ),
-                            ),
-                            ft.Column(
-                                controls=[
-                                    ft.Text(
-                                        "Expedientes",
-                                        size=28,
-                                        weight=ft.FontWeight.BOLD,
-                                        color=Q_PRIMARY_DARK,
-                                    ),
-                                    ft.Text(
-                                        "Gestión y seguimiento de asuntos jurídicos y administrativos",
-                                        size=13,
-                                        color=Q_MUTED,
-                                    ),
-                                ],
-                                spacing=2,
-                            ),
-                        ],
-                        spacing=12,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Expedientes",
+                                            size=28,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=Q_PRIMARY_DARK,
+                                        ),
+                                        ft.Text(
+                                            "Gestión y seguimiento de asuntos jurídicos y administrativos",
+                                            size=13,
+                                            color=Q_MUTED,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                ),
+                            ],
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
                     ),
                     primary_button(
                         "Nuevo expediente",
                         open_new,
                     ),
                 ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                spacing=16,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                wrap=True,
             ),
         ]
 
