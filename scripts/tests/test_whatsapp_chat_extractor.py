@@ -1,6 +1,9 @@
 import unittest
 
 from backend.automation.connectors.whatsapp_connector import (
+    CHAT_KIND_GROUP,
+    CHAT_KIND_INDIVIDUAL,
+    CHAT_KIND_UNKNOWN,
     WhatsAppChatSnapshot,
     WhatsAppConnector,
     extract_phone_from_profile_text,
@@ -178,6 +181,76 @@ class WhatsAppChatExtractorTest(
             browser
             .element
             .mouse_clicked
+        )
+
+    def test_classify_contact_profile(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            "Info. del contacto\n"
+            "CLIENTE\n"
+            "+34 600 123 456"
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .classify_open_profile()
+        )
+
+        self.assertEqual(
+            result["kind"],
+            CHAT_KIND_INDIVIDUAL,
+        )
+
+    def test_classify_group_profile(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            "Info. del grupo\n"
+            "GRUPO PRUEBA\n"
+            "Grupo · 8 miembros"
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .classify_open_profile()
+        )
+
+        self.assertEqual(
+            result["kind"],
+            CHAT_KIND_GROUP,
+        )
+
+    def test_classify_unknown_profile(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            "Panel desconocido"
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .classify_open_profile()
+        )
+
+        self.assertEqual(
+            result["kind"],
+            CHAT_KIND_UNKNOWN,
         )
 
     def test_close_contact_profile(

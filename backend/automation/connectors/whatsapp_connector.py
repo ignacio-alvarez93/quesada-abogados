@@ -49,6 +49,22 @@ SESSION_STATUS_UNKNOWN = (
     "UNKNOWN"
 )
 
+CHAT_KIND_INDIVIDUAL = (
+    "INDIVIDUAL"
+)
+
+CHAT_KIND_GROUP = (
+    "GROUP"
+)
+
+CHAT_KIND_SELF = (
+    "SELF"
+)
+
+CHAT_KIND_UNKNOWN = (
+    "UNKNOWN"
+)
+
 
 
 @dataclass(frozen=True)
@@ -717,6 +733,75 @@ class WhatsAppConnector:
             time.sleep(0.25)
 
         return False
+
+    def classify_open_profile(
+        self,
+    ):
+        """Clasifica el drawer abierto como contacto, grupo o desconocido."""
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        drawer_text = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const drawer =
+                        document.querySelector(
+                            '[data-testid="drawer-right"]'
+                        );
+
+                    return drawer
+                        ? (
+                            drawer.innerText
+                            || ""
+                        ).trim()
+                        : "";
+                })()
+                """
+            )
+            or ""
+        )
+
+        lowered = (
+            str(drawer_text)
+            .strip()
+            .lower()
+        )
+
+        if not lowered:
+            return {
+                "kind": CHAT_KIND_UNKNOWN,
+                "drawer_text": "",
+            }
+
+        if lowered.startswith(
+            "info. del contacto"
+        ):
+            return {
+                "kind":
+                    CHAT_KIND_INDIVIDUAL,
+                "drawer_text":
+                    str(drawer_text),
+            }
+
+        if lowered.startswith(
+            "info. del grupo"
+        ):
+            return {
+                "kind":
+                    CHAT_KIND_GROUP,
+                "drawer_text":
+                    str(drawer_text),
+            }
+
+        return {
+            "kind":
+                CHAT_KIND_UNKNOWN,
+            "drawer_text":
+                str(drawer_text),
+        }
 
     def close_contact_profile(
         self,
