@@ -1,0 +1,92 @@
+"""
+Modelos de dominio del núcleo de Comunicaciones.
+
+No contienen persistencia.
+No conocen SQLite.
+No conocen Supabase.
+No conocen Flet.
+"""
+
+from dataclasses import dataclass
+from typing import Any
+
+
+CHANNEL_WHATSAPP = "WHATSAPP"
+CHANNEL_EMAIL = "EMAIL"
+CHANNEL_PHONE = "PHONE"
+CHANNEL_SMS = "SMS"
+
+DIRECTION_INBOUND = "INBOUND"
+DIRECTION_OUTBOUND = "OUTBOUND"
+
+MESSAGE_STATUS_DRAFT = "DRAFT"
+MESSAGE_STATUS_PENDING = "PENDING"
+MESSAGE_STATUS_QUEUED = "QUEUED"
+MESSAGE_STATUS_SENDING = "SENDING"
+MESSAGE_STATUS_SENT = "SENT"
+MESSAGE_STATUS_ERROR = "ERROR"
+MESSAGE_STATUS_CANCELLED = "CANCELLED"
+
+THREAD_MATCH_MATCHED = "MATCHED"
+THREAD_MATCH_UNMATCHED = "UNMATCHED"
+
+ATTEMPT_STATUS_STARTED = "STARTED"
+ATTEMPT_STATUS_SENT = "SENT"
+ATTEMPT_STATUS_ERROR = "ERROR"
+
+
+@dataclass(frozen=True)
+class CommunicationAccount:
+    id: int | None
+    code: str
+    channel: str
+    display_name: str
+    transport: str
+    environment: str
+    profile_key: str | None = None
+    is_active: bool = True
+    is_default: bool = False
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CommunicationThread:
+    id: int | None
+    account_id: int
+    client_id: int | None
+    external_thread_key: str
+    external_address: str | None = None
+    external_display_name: str | None = None
+    match_status: str = THREAD_MATCH_UNMATCHED
+    is_archived: bool = False
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CommunicationMessage:
+    id: int | None
+    thread_id: int
+    client_id: int | None
+    expedient_id: int | None
+    direction: str
+    body_text: str
+    status: str = MESSAGE_STATUS_PENDING
+    provider_message_id: str | None = None
+    provider_timestamp: str | None = None
+    created_by: str | None = None
+    sent_by: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CommunicationMessageAttempt:
+    id: int | None
+    message_id: int
+    transport: str
+    attempt_number: int
+    status: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    metadata: dict[str, Any] | None = None
