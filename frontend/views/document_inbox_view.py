@@ -6,6 +6,9 @@ from backend.services import document_inbox_service
 from backend.services.list_expediente_box_directory import list_expediente_box_directory
 from backend.services import document_inbox_watch_service
 from backend.services import document_viewer_service
+from backend.services import (
+    document_classification_catalog_service,
+)
 from backend.services.document_tools import (
     compress_inbox_pdf_smart,
     convert_inbox_image_to_pdf,
@@ -1441,7 +1444,18 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     selected_directory,
                     base_box_folder,
                 )
-                state["copy_to_box_target_filename_override"] = detail_target_filename_field.value or ""
+                nomenclature = state.get(
+                    "detail_selected_document_nomenclature"
+                ) or {}
+
+                state[
+                    "copy_to_box_target_filename_override"
+                ] = str(
+                    nomenclature.get(
+                        "target_filename"
+                    )
+                    or ""
+                ).strip()
 
                 copied = copy_to_box(e, open_expediente_after=False)
                 if not copied:
@@ -1892,8 +1906,34 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             allow_free_text=False,
         )
 
-        detail_target_filename_field = text_input("Nombre archivo destino", width=340)
-        detail_target_filename_field.value = ""
+        detail_nomenclature_label_to_metadata = {}
+
+        def on_detail_nomenclature_selected(value):
+            label = _normalize_autocomplete_value(
+                value
+            )
+
+            metadata = (
+                detail_nomenclature_label_to_metadata
+                .get(label)
+            )
+
+            state[
+                "detail_selected_document_nomenclature"
+            ] = metadata
+
+        detail_nomenclature_autocomplete = (
+            AppAutocomplete(
+                page=page,
+                label="Documento / nomenclatura",
+                options=[],
+                width=340,
+                on_select=(
+                    on_detail_nomenclature_selected
+                ),
+                allow_free_text=False,
+            )
+        )
 
         detail_client_options_raw = document_inbox_service.client_autocomplete_options()
         detail_client_labels = []
@@ -1950,6 +1990,107 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     return None
 
             return None
+
+        def _load_detail_nomenclature_options(
+            expedient_id,
+            *,
+            clear_value=True,
+        ):
+            detail_nomenclature_label_to_metadata.clear()
+
+            if not expedient_id:
+                detail_nomenclature_autocomplete.set_options(
+                    [],
+                    clear_value=True,
+                )
+
+                state[
+                    "detail_selected_document_nomenclature"
+                ] = None
+
+                return
+
+            catalog = (
+                document_classification_catalog_service
+                .list_options_for_expedient(
+                    int(expedient_id)
+                )
+            )
+
+            labels = []
+
+            for option in (
+                catalog.get("options")
+                or []
+            ):
+                label = str(
+                    option.get("label")
+                    or option.get("nombre")
+                    or option.get("codigo")
+                    or ""
+                ).strip()
+
+                if not label:
+                    continue
+
+                metadata = dict(option)
+
+                name = str(
+                    option.get("nombre")
+                    or option.get("codigo")
+                    or ""
+                ).strip()
+
+                role = str(
+                    option.get("rol_documental")
+                    or ""
+                ).strip()
+
+                target_filename = (
+                    f"{name} {role}"
+                    if role
+                    else name
+                ).strip()
+
+                metadata[
+                    "target_filename"
+                ] = target_filename
+
+                visible_label = label
+
+                if (
+                    visible_label
+                    in detail_nomenclature_label_to_metadata
+                ):
+                    code = str(
+                        option.get("codigo")
+                        or ""
+                    ).strip()
+
+                    visible_label = (
+                        f"{label} ({code})"
+                        if code
+                        else label
+                    )
+
+                labels.append(
+                    visible_label
+                )
+
+                detail_nomenclature_label_to_metadata[
+                    visible_label
+                ] = metadata
+
+            detail_nomenclature_autocomplete.set_options(
+                labels,
+                clear_value=clear_value,
+            )
+
+            if clear_value:
+                state[
+                    "detail_selected_document_nomenclature"
+                ] = None
+
 
         def on_detail_client_selected(value):
             try:
@@ -2014,6 +2155,11 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 state["detail_selected_expedient_id"] = None
                 state["selected_expedient_id"] = None
 
+                _load_detail_nomenclature_options(
+                    None,
+                    clear_value=True,
+                )
+
                 try:
                     detail_client_label.update()
                     detail_expedient_label.update()
@@ -2041,10 +2187,26 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 detail_expedient_label.value = f"Expediente seleccionado: {label}"
 
                 try:
-                    directory_labels = build_directory_options_for_expedient(int(expedient_id))
-                    detail_directory_autocomplete.set_options(directory_labels, clear_value=True)
+                    directory_labels = (
+                        build_directory_options_for_expedient(
+                            int(expedient_id)
+                        )
+                    )
+
+                    detail_directory_autocomplete.set_options(
+                        directory_labels,
+                        clear_value=True,
+                    )
                 except Exception:
                     pass
+
+                try:
+                    _load_detail_nomenclature_options(
+                        int(expedient_id),
+                        clear_value=True,
+                    )
+                except Exception as exc:
+                    show_error(exc)
 
                 try:
                     detail_expedient_label.update()
@@ -2134,11 +2296,21 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
             try:
                 detail_directory_autocomplete.set_options(
-                    build_directory_options_for_expedient(int(initial_expedient_id)),
+                    build_directory_options_for_expedient(
+                        int(initial_expedient_id)
+                    ),
                     clear_value=True,
                 )
             except Exception:
                 pass
+
+            try:
+                _load_detail_nomenclature_options(
+                    int(initial_expedient_id),
+                    clear_value=True,
+                )
+            except Exception as exc:
+                show_error(exc)
 
         def detail_save_directory(e=None):
             try:
@@ -2157,7 +2329,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     ft.Text("Vincular documento", size=15, weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
                     detail_relation_text,
                     ft.Text(
-                        "Selecciona cliente, expediente, directorio destino y, si procede, el nombre final del archivo en Box.",
+                        "Selecciona cliente, expediente, directorio y la nomenclatura documental aplicable al expediente.",
                         size=12,
                         color=Q_MUTED,
                     ),
@@ -2186,7 +2358,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     ft.Row(
                         controls=[
                             detail_directory_autocomplete.control,
-                            detail_target_filename_field,
+                            detail_nomenclature_autocomplete.control,
                         ],
                         spacing=10,
                         wrap=True,
