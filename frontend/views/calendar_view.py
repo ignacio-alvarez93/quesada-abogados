@@ -909,9 +909,10 @@ def calendar_view(
         )
 
         if not client_id:
-            task_expedient.options = []
-            task_expedient.input.value = ""
-            task_expedient.selected_option = None
+            task_expedient.set_options(
+                [],
+                clear_value=True,
+            )
 
             try:
                 task_expedient.control.update()
@@ -928,13 +929,13 @@ def calendar_view(
             )
         )
 
-        task_expedient.options = [
-            _expedient_label(item)
-            for item in expedients
-        ]
-
-        task_expedient.input.value = ""
-        task_expedient.selected_option = None
+        task_expedient.set_options(
+            [
+                _expedient_label(item)
+                for item in expedients
+            ],
+            clear_value=True,
+        )
 
         try:
             task_expedient.control.update()
@@ -1060,10 +1061,13 @@ def calendar_view(
                             )
                         )
 
-                        task_expedient.options = [
-                            current_label,
-                            *task_expedient.options,
-                        ]
+                        task_expedient.set_options(
+                            [
+                                current_label,
+                                *task_expedient.options,
+                            ],
+                            clear_value=False,
+                        )
 
                 task_expedient.set_value(
                     current_label,
@@ -1831,9 +1835,10 @@ def calendar_view(
         task_client.input.value = ""
         task_client.selected_option = None
 
-        task_expedient.options = []
-        task_expedient.input.value = ""
-        task_expedient.selected_option = None
+        task_expedient.set_options(
+            [],
+            clear_value=True,
+        )
 
         task_priority.value = "NORMAL"
         task_responsible.value = ""
