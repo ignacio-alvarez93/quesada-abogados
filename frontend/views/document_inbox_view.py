@@ -1889,6 +1889,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             options=[],
             width=520,
             on_select=on_detail_directory_selected,
+            allow_free_text=False,
         )
 
         detail_target_filename_field = text_input("Nombre archivo destino", width=340)

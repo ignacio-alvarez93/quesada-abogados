@@ -2974,7 +2974,7 @@ def client_detail_view(
             width=520,
             max_results=10,
             on_select=fill_from_referenced_client,
-            allow_free_text=True,
+            allow_free_text=False,
         )
 
         def _reference_label_for_id(ref_id):
