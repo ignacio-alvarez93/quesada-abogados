@@ -239,6 +239,122 @@ class AppAutocompleteContractTests(unittest.TestCase):
             ["Juan Pérez"],
         )
 
+    def test_large_dataset_uses_searchbar_engine(self):
+        autocomplete = AppAutocomplete(
+            self.page,
+            "CNO / SEPE",
+            [
+                f"{number:04d} - PROFESIÓN {number}"
+                for number in range(600)
+            ],
+        )
+
+        self.assertTrue(
+            autocomplete.large_dataset_mode
+        )
+
+        self.assertIsInstance(
+            autocomplete.control.content,
+            ft.SearchBar,
+        )
+
+        self.assertEqual(
+            autocomplete.dropdown.options,
+            [],
+        )
+
+    def test_large_dataset_requires_minimum_query(self):
+        autocomplete = AppAutocomplete(
+            self.page,
+            "CNO / SEPE",
+            [
+                f"{number:04d} - PROFESIÓN {number}"
+                for number in range(600)
+            ],
+        )
+
+        self.assertEqual(
+            autocomplete._large_matches("p"),
+            [],
+        )
+
+    def test_large_dataset_caps_visual_results(self):
+        autocomplete = AppAutocomplete(
+            self.page,
+            "CNO / SEPE",
+            [
+                f"{number:04d} - PROFESIÓN TEST {number}"
+                for number in range(1000)
+            ],
+        )
+
+        autocomplete._refresh_large_results(
+            "profesion"
+        )
+
+        self.assertLessEqual(
+            len(autocomplete.search_bar.controls),
+            30,
+        )
+
+        self.assertLessEqual(
+            len(autocomplete._large_visible_options),
+            30,
+        )
+
+    def test_large_dataset_search_is_accent_insensitive(self):
+        options = [
+            "001 - MÉDICOS ESPECIALISTAS",
+            "002 - ARQUITECTOS",
+        ] + [
+            f"{number:04d} - PROFESIÓN {number}"
+            for number in range(600)
+        ]
+
+        autocomplete = AppAutocomplete(
+            self.page,
+            "CNO / SEPE",
+            options,
+        )
+
+        matches = autocomplete._large_matches(
+            "medicos"
+        )
+
+        self.assertIn(
+            "001 - MÉDICOS ESPECIALISTAS",
+            matches,
+        )
+
+    def test_large_dataset_selection_preserves_contract(self):
+        selected = []
+
+        options = [
+            f"{number:04d} - PROFESIÓN {number}"
+            for number in range(600)
+        ]
+
+        autocomplete = AppAutocomplete(
+            self.page,
+            "CNO / SEPE",
+            options,
+            on_select=selected.append,
+        )
+
+        autocomplete.select(
+            options[321]
+        )
+
+        self.assertEqual(
+            autocomplete.get_value(),
+            options[321],
+        )
+
+        self.assertEqual(
+            selected,
+            [options[321]],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
