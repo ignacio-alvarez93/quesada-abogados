@@ -26,18 +26,116 @@ def info_card(title, content):
     )
 
 
-def metric_card(title, value):
+def metric_card(
+    title,
+    value,
+    icon=None,
+    accent_color=None,
+    subtitle=None,
+    width=220,
+):
+    """
+    Card reutilizable de métrica.
+
+    Compatible con el contrato histórico:
+        metric_card(title, value)
+
+    Permite además una presentación enriquecida
+    mediante icono, color de acento y subtítulo.
+    """
+    accent = accent_color or Q_PRIMARY
+
+    if (
+        icon is None
+        and subtitle is None
+        and accent_color is None
+    ):
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        title,
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        str(value),
+                        size=26,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY,
+                    ),
+                ],
+                spacing=4,
+            ),
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=14,
+            padding=18,
+            width=width,
+        )
+
+    header_controls = []
+
+    if icon is not None:
+        header_controls.append(
+            ft.Container(
+                width=36,
+                height=36,
+                alignment=ft.Alignment(0, 0),
+                border_radius=10,
+                bgcolor="#F8FAFC",
+                border=ft.border.all(
+                    1,
+                    Q_BORDER,
+                ),
+                content=ft.Icon(
+                    icon,
+                    size=19,
+                    color=accent,
+                ),
+            )
+        )
+
+    header_controls.append(
+        ft.Text(
+            title,
+            size=12,
+            color=Q_MUTED,
+            weight=ft.FontWeight.W_600,
+        )
+    )
+
+    controls = [
+        ft.Row(
+            controls=header_controls,
+            spacing=9,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        ft.Text(
+            str(value),
+            size=28,
+            weight=ft.FontWeight.BOLD,
+            color=Q_PRIMARY_DARK,
+        ),
+    ]
+
+    if subtitle:
+        controls.append(
+            ft.Text(
+                str(subtitle),
+                size=10,
+                color=Q_MUTED,
+            )
+        )
+
     return ft.Container(
         content=ft.Column(
-            controls=[
-                ft.Text(title, size=12, color=Q_MUTED),
-                ft.Text(str(value), size=26, weight=ft.FontWeight.BOLD, color=Q_PRIMARY),
-            ],
-            spacing=4,
+            controls=controls,
+            spacing=7,
         ),
         bgcolor="#FFFFFF",
         border=ft.border.all(1, Q_BORDER),
         border_radius=14,
-        padding=18,
-        width=220,
+        padding=16,
+        width=width,
     )
