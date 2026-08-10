@@ -3417,77 +3417,232 @@ def calendar_view(
         editing_task_id = None
         _reset_task_form()
 
+        # ==========================================================
+        # COMPOSICIÓN VISUAL · NUEVA TAREA
+        # ==========================================================
+
+        task_header = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                "#EAECF0",
+            ),
+            border_radius=12,
+            padding=ft.Padding.symmetric(
+                horizontal=18,
+                vertical=18,
+            ),
+            shadow=ft.BoxShadow(
+                blur_radius=4,
+                spread_radius=0,
+                color="#12000000",
+                offset=ft.Offset(
+                    0,
+                    1,
+                ),
+            ),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=44,
+                        height=44,
+                        bgcolor="#EEF4FF",
+                        border_radius=12,
+                        alignment=(
+                            ft.Alignment.CENTER
+                        ),
+                        content=ft.Icon(
+                            ft.Icons
+                            .TASK_ALT_ROUNDED,
+                            size=23,
+                            color=Q_PRIMARY,
+                        ),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                (
+                                    "Organiza una nueva "
+                                    "tarea de trabajo"
+                                ),
+                                size=11,
+                                color="#475467",
+                                weight=(
+                                    ft.FontWeight.BOLD
+                                ),
+                            ),
+                            ft.Text(
+                                (
+                                    "Vincula cliente, expediente, "
+                                    "prioridad y vencimiento."
+                                ),
+                                size=9,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=1,
+                        tight=True,
+                        expand=True,
+                    ),
+                ],
+                spacing=11,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
+        task_form_card = ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                "#EAECF0",
+            ),
+            border_radius=12,
+            padding=16,
+            shadow=ft.BoxShadow(
+                blur_radius=4,
+                spread_radius=0,
+                color="#12000000",
+                offset=ft.Offset(
+                    0,
+                    1,
+                ),
+            ),
+            content=ft.Column(
+                controls=[
+                    task_title,
+                    task_description,
+
+                    ft.Divider(
+                        height=6,
+                        color=Q_BORDER,
+                    ),
+
+                    task_client.control,
+                    task_expedient.control,
+
+                    ft.Row(
+                        controls=[
+                            task_priority,
+                            task_responsible,
+                        ],
+                        spacing=12,
+                        wrap=True,
+                    ),
+
+                    ft.Row(
+                        controls=[
+                            task_due_date,
+                            task_due_time,
+                        ],
+                        spacing=12,
+                        wrap=True,
+                    ),
+                ],
+                spacing=12,
+                tight=True,
+            ),
+        )
+
+        task_telegram_info = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            border_radius=10,
+            padding=12,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=32,
+                        height=32,
+                        bgcolor="#EEF4FF",
+                        border_radius=8,
+                        alignment=(
+                            ft.Alignment.CENTER
+                        ),
+                        content=ft.Icon(
+                            ft.Icons
+                            .SEND_ROUNDED,
+                            size=17,
+                            color=Q_PRIMARY,
+                        ),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Recordatorio automático",
+                                size=10,
+                                weight=(
+                                    ft.FontWeight.BOLD
+                                ),
+                                color=Q_PRIMARY_DARK,
+                            ),
+                            ft.Text(
+                                (
+                                    "Al guardar, Telegram "
+                                    "se programa automáticamente "
+                                    "según la prioridad."
+                                ),
+                                size=9,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=1,
+                        tight=True,
+                        expand=True,
+                    ),
+                ],
+                spacing=9,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
+        task_footer = ft.Container(
+            padding=ft.Padding.only(
+                top=8,
+            ),
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        expand=True,
+                    ),
+                    secondary_button(
+                        "Cancelar",
+                        _close_task_dialog,
+                    ),
+                    primary_button(
+                        "Guardar tarea",
+                        _save_task,
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
         task_dialog = form_dialog(
             "Nueva tarea",
             ft.Container(
-                width=760,
+                width=820,
                 content=ft.Column(
                     controls=[
-                        task_title,
-                        task_description,
-                        task_client.control,
-                        task_expedient.control,
-                        ft.Row(
-                            controls=[
-                                task_priority,
-                                task_responsible,
-                            ],
-                            spacing=12,
-                            wrap=True,
-                        ),
-                        ft.Row(
-                            controls=[
-                                task_due_date,
-                                task_due_time,
-                            ],
-                            spacing=12,
-                            wrap=True,
-                        ),
-                        ft.Container(
-                            bgcolor="#F8FAFC",
-                            border=ft.border.all(
-                                1,
-                                Q_BORDER,
-                            ),
-                            border_radius=10,
-                            padding=12,
-                            content=ft.Row(
-                                controls=[
-                                    ft.Icon(
-                                        ft.Icons
-                                        .SEND_ROUNDED,
-                                        size=18,
-                                        color=Q_PRIMARY,
-                                    ),
-                                    ft.Text(
-                                        (
-                                            "Al guardar, Telegram "
-                                            "se programa automáticamente "
-                                            "según la prioridad."
-                                        ),
-                                        size=11,
-                                        color=Q_MUTED,
-                                        expand=True,
-                                    ),
-                                ],
-                                spacing=8,
-                            ),
-                        ),
+                        task_header,
+                        task_form_card,
+                        task_telegram_info,
+                        task_footer,
                     ],
                     spacing=12,
                     tight=True,
                 ),
             ),
-            actions=[
-                secondary_button(
-                    "Cancelar",
-                    _close_task_dialog,
-                ),
-                primary_button(
-                    "Guardar tarea",
-                    _save_task,
-                ),
-            ],
+            actions=[],
         )
 
         page.show_dialog(
