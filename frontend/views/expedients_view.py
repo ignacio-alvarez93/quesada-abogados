@@ -7018,7 +7018,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             value=familiar_value,
             width=620,
             max_results=10,
-            allow_free_text=True,
+            allow_free_text=False,
             on_select=apply_familiar_contact,
         )
         state.setdefault("specific_field_controls", {})["representante_legal"] = familiar_autocomplete
@@ -7044,7 +7044,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             value=solicitante_rep_value,
             width=620,
             max_results=10,
-            allow_free_text=True,
+            allow_free_text=False,
             on_select=apply_solicitante_representante_contact,
         )
         state.setdefault("specific_field_controls", {})["solicitante_representante_legal"] = solicitante_rep_autocomplete
@@ -7439,7 +7439,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             value=solicitante_rep_value,
             width=620,
             max_results=10,
-            allow_free_text=True,
+            allow_free_text=False,
             on_select=apply_solicitante_representante_contact,
         )
         state.setdefault("specific_field_controls", {})["solicitante_representante_legal"] = solicitante_rep_autocomplete
@@ -8532,7 +8532,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             value=_specific_field_value(saved_values, "reagrupante", ""),
             width=620,
             max_results=10,
-            allow_free_text=True,
+            allow_free_text=False,
             on_select=apply_reagrupante,
         )
         state.setdefault("specific_field_controls", {})["reagrupante"] = reagrupante_autocomplete
@@ -8556,7 +8556,7 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
             value=solicitante_rep_value,
             width=620,
             max_results=10,
-            allow_free_text=True,
+            allow_free_text=False,
             on_select=apply_solicitante_representante_contact,
         )
         state.setdefault("specific_field_controls", {})["solicitante_representante_legal"] = solicitante_rep_autocomplete

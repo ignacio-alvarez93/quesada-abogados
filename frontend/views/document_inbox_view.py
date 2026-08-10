@@ -1889,6 +1889,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             options=[],
             width=520,
             on_select=on_detail_directory_selected,
+            allow_free_text=False,
         )
 
         detail_target_filename_field = text_input("Nombre archivo destino", width=340)
@@ -2058,6 +2059,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             label="Cliente",
             options=detail_client_labels,
             on_select=on_detail_client_selected,
+            allow_free_text=False,
         )
 
         detail_expedient_autocomplete = AppAutocomplete(
@@ -2065,6 +2067,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             label="Expediente",
             options=[],
             on_select=on_detail_expedient_selected,
+            allow_free_text=False,
         )
 
         initial_client_id = state.get("detail_selected_client_id") or state.get("selected_client_id") or item.get("client_id")
@@ -6302,4 +6305,3 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             expand=True,
         ),
     )
-
