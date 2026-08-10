@@ -3210,8 +3210,24 @@ def calendar_view(
         # ==========================================================
 
         header = ft.Container(
-            padding=ft.padding.only(
-                bottom=4,
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                "#EAECF0",
+            ),
+            border_radius=12,
+            padding=ft.Padding.symmetric(
+                horizontal=18,
+                vertical=18,
+            ),
+            shadow=ft.BoxShadow(
+                blur_radius=4,
+                spread_radius=0,
+                color="#12000000",
+                offset=ft.Offset(
+                    0,
+                    1,
+                ),
             ),
             content=ft.Row(
                 controls=[
@@ -3239,6 +3255,7 @@ def calendar_view(
                                 ),
                                 size=11,
                                 color="#475467",
+                                weight=ft.FontWeight.BOLD,
                             ),
                             ft.Text(
                                 (
