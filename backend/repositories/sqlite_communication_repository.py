@@ -427,6 +427,95 @@ class SQLiteCommunicationRepository:
 
             return self._thread_from_row(row)
 
+    def update_thread_match(
+        self,
+        thread_id,
+        *,
+        client_id,
+        match_status,
+    ):
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE communication_threads
+                SET
+                    client_id = ?,
+                    match_status = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    (
+                        int(client_id)
+                        if client_id is not None
+                        else None
+                    ),
+                    str(
+                        match_status
+                        or ""
+                    ).strip().upper(),
+                    int(thread_id),
+                ),
+            )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_threads
+                WHERE id = ?
+                """,
+                (int(thread_id),),
+            ).fetchone()
+
+            if not row:
+                raise ValueError(
+                    "Conversación de comunicación "
+                    "no encontrada"
+                )
+
+            return self._thread_from_row(
+                row
+            )
+
+    def list_client_phone_candidates(
+        self,
+        *,
+        limit=5000,
+    ):
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    nombre,
+                    primer_apellido,
+                    segundo_apellido,
+                    telefono
+                FROM clientes
+                WHERE COALESCE(
+                    TRIM(telefono),
+                    ''
+                ) <> ''
+                ORDER BY id
+                LIMIT ?
+                """,
+                (
+                    max(
+                        1,
+                        int(limit),
+                    ),
+                ),
+            ).fetchall()
+
+            return [
+                dict(row)
+                for row in rows
+            ]
+
     def list_threads(
         self,
         *,

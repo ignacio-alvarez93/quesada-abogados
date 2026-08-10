@@ -52,6 +52,22 @@ class CommunicationRepository(Protocol):
     ) -> list[CommunicationThread]:
         ...
 
+    def update_thread_match(
+        self,
+        thread_id: int,
+        *,
+        client_id: int | None,
+        match_status: str,
+    ) -> CommunicationThread:
+        ...
+
+    def list_client_phone_candidates(
+        self,
+        *,
+        limit: int = 5000,
+    ) -> list[dict]:
+        ...
+
     def create_message(
         self,
         message: CommunicationMessage,
