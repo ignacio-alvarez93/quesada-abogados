@@ -18,12 +18,29 @@ def get_session_dir(arg_session_dir=None, expediente_id="sin_id"):
     return session_dir
 
 
-def start_seleniumbase_chrome(headless=False):
+def start_seleniumbase_chrome(
+    headless=False,
+    user_data_dir=None,
+):
     """Crea Chrome SeleniumBase CDP.
 
     Import diferido para que el ERP pueda arrancar aunque SeleniumBase no esté
     instalado en entornos donde no se use automatización.
+
+    ``user_data_dir`` permite reutilizar un perfil persistente cuando una
+    automatización necesita conservar sesión entre ejecuciones, como WhatsApp
+    Web. Las automatizaciones existentes pueden seguir llamando a esta función
+    únicamente con ``headless``.
     """
     from seleniumbase import sb_cdp
 
-    return sb_cdp.Chrome(headless=headless)
+    kwargs = {
+        "headless": bool(headless),
+    }
+
+    if user_data_dir:
+        kwargs["user_data_dir"] = str(
+            Path(user_data_dir).resolve()
+        )
+
+    return sb_cdp.Chrome(**kwargs)
