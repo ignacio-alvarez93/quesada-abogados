@@ -672,13 +672,70 @@ class WhatsAppConnector:
     def open_contact_profile(
         self,
         *,
+        expected_display_name=None,
         timeout=10,
     ):
-        """Abre el panel Info. del contacto del chat actualmente abierto."""
+        """Garantiza que esté abierto el perfil del chat esperado."""
         if not self.browser:
             raise RuntimeError(
                 "WhatsApp Web no está iniciado"
             )
+
+        expected_name = str(
+            expected_display_name
+            or ""
+        ).strip()
+
+        drawer_state = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const drawer =
+                        document.querySelector(
+                            '[data-testid="drawer-right"]'
+                        );
+
+                    if (!drawer) {
+                        return {
+                            found: false,
+                            subject: null
+                        };
+                    }
+
+                    const lines =
+                        String(
+                            drawer.innerText
+                            || ""
+                        )
+                        .split('\\n')
+                        .map(
+                            value => value.trim()
+                        )
+                        .filter(Boolean);
+
+                    return {
+                        found: true,
+                        subject:
+                            lines.length >= 2
+                            ? lines[1]
+                            : null
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        if (
+            drawer_state.get("found")
+            and expected_name
+            and str(
+                drawer_state.get("subject")
+                or ""
+            ).strip()
+            == expected_name
+        ):
+            return True
 
         element = (
             self.browser
@@ -715,19 +772,60 @@ class WhatsAppConnector:
             time.time()
             < deadline
         ):
-            found = (
+            state = (
                 self.browser.evaluate(
                     """
-                    (() => Boolean(
-                        document.querySelector(
-                            '[data-testid="drawer-right"]'
-                        )
-                    ))()
+                    (() => {
+                        const drawer =
+                            document.querySelector(
+                                '[data-testid="drawer-right"]'
+                            );
+
+                        if (!drawer) {
+                            return {
+                                found: false,
+                                subject: null
+                            };
+                        }
+
+                        const lines =
+                            String(
+                                drawer.innerText
+                                || ""
+                            )
+                            .split('\\n')
+                            .map(
+                                value => value.trim()
+                            )
+                            .filter(Boolean);
+
+                        return {
+                            found: true,
+                            subject:
+                                lines.length >= 2
+                                ? lines[1]
+                                : null
+                        };
+                    })()
                     """
                 )
+                or {}
             )
 
-            if found:
+            if not state.get("found"):
+                time.sleep(0.25)
+                continue
+
+            if not expected_name:
+                return True
+
+            if (
+                str(
+                    state.get("subject")
+                    or ""
+                ).strip()
+                == expected_name
+            ):
                 return True
 
             time.sleep(0.25)

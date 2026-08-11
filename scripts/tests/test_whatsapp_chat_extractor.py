@@ -183,6 +183,75 @@ class WhatsAppChatExtractorTest(
             .mouse_clicked
         )
 
+    def test_open_profile_reuses_expected_drawer(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "found": True,
+                "subject": "CLIENTE",
+            },
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .open_contact_profile(
+                expected_display_name=(
+                    "CLIENTE"
+                ),
+            )
+        )
+
+        self.assertTrue(result)
+
+        self.assertFalse(
+            browser
+            .element
+            .mouse_clicked
+        )
+
+    def test_open_profile_refreshes_stale_drawer(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "found": True,
+                "subject": "CHAT ANTERIOR",
+            },
+            {
+                "found": True,
+                "subject": "CLIENTE ACTUAL",
+            },
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .open_contact_profile(
+                expected_display_name=(
+                    "CLIENTE ACTUAL"
+                ),
+                timeout=1,
+            )
+        )
+
+        self.assertTrue(result)
+
+        self.assertTrue(
+            browser
+            .element
+            .mouse_clicked
+        )
+
     def test_classify_contact_profile(
         self,
     ):
