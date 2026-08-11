@@ -131,6 +131,157 @@ class CommunicationService:
             "phone": normalized,
         }
 
+    def list_thread_overviews(
+        self,
+        *,
+        channel=None,
+        client_id=None,
+        linkage="ALL",
+        search="",
+        include_archived=False,
+        limit=5000,
+    ):
+        normalized_channel = (
+            str(
+                channel
+                or ""
+            )
+            .strip()
+            .upper()
+            or None
+        )
+
+        normalized_linkage = (
+            str(
+                linkage
+                or "ALL"
+            )
+            .strip()
+            .upper()
+        )
+
+        normalized_search = (
+            str(
+                search
+                or ""
+            )
+            .strip()
+            .casefold()
+        )
+
+        items = (
+            self.repository
+            .list_thread_overviews(
+                client_id=client_id,
+                channel=(
+                    normalized_channel
+                ),
+                limit=limit,
+            )
+        )
+
+        visible = []
+
+        for item in items:
+            if (
+                not include_archived
+                and item.is_archived
+            ):
+                continue
+
+            if (
+                normalized_linkage
+                == "LINKED"
+                and item.client_id
+                is None
+            ):
+                continue
+
+            if (
+                normalized_linkage
+                == "UNLINKED"
+                and item.client_id
+                is not None
+            ):
+                continue
+
+            if normalized_search:
+                haystack = " ".join(
+                    [
+                        str(
+                            item.client_name
+                            or ""
+                        ),
+                        str(
+                            item.external_display_name
+                            or ""
+                        ),
+                        str(
+                            item.external_address
+                            or ""
+                        ),
+                        str(
+                            item.external_thread_key
+                            or ""
+                        ),
+                    ]
+                ).casefold()
+
+                if (
+                    normalized_search
+                    not in haystack
+                ):
+                    continue
+
+            visible.append(
+                item
+            )
+
+        summary = {
+            "total":
+                len(items),
+            "visible":
+                len(visible),
+            "linked":
+                sum(
+                    1
+                    for item in items
+                    if item.client_id
+                    is not None
+                ),
+            "unlinked":
+                sum(
+                    1
+                    for item in items
+                    if item.client_id
+                    is None
+                ),
+            "matched":
+                sum(
+                    1
+                    for item in items
+                    if item.match_status
+                    == THREAD_MATCH_MATCHED
+                ),
+            "whatsapp":
+                sum(
+                    1
+                    for item in items
+                    if str(
+                        item.channel
+                        or ""
+                    ).upper()
+                    == CHANNEL_WHATSAPP
+                ),
+        }
+
+        return {
+            "summary":
+                summary,
+            "items":
+                visible,
+        }
+
     def backfill_whatsapp_thread_matches(
         self,
         *,

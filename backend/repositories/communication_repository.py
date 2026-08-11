@@ -12,6 +12,7 @@ from backend.communications.models import (
     CommunicationMessage,
     CommunicationMessageAttempt,
     CommunicationThread,
+    CommunicationThreadOverview,
 )
 
 
@@ -59,6 +60,16 @@ class CommunicationRepository(Protocol):
         client_id: int | None = None,
         limit: int = 100,
     ) -> list[CommunicationThread]:
+        ...
+
+    def list_thread_overviews(
+        self,
+        *,
+        account_id: int | None = None,
+        client_id: int | None = None,
+        channel: str | None = None,
+        limit: int = 5000,
+    ) -> list[CommunicationThreadOverview]:
         ...
 
     def update_thread_match(

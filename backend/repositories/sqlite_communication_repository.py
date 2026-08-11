@@ -15,6 +15,7 @@ from backend.communications.models import (
     CommunicationMessage,
     CommunicationMessageAttempt,
     CommunicationThread,
+    CommunicationThreadOverview,
 )
 
 
@@ -147,6 +148,70 @@ class SQLiteCommunicationRepository:
             ),
             metadata=_json_load(
                 row["metadata_json"]
+            ),
+        )
+
+    @staticmethod
+    def _thread_overview_from_row(
+        row,
+    ):
+        if not row:
+            return None
+
+        return CommunicationThreadOverview(
+            thread_id=int(
+                row["thread_id"]
+            ),
+            account_id=int(
+                row["account_id"]
+            ),
+            channel=(
+                row["channel"]
+            ),
+            client_id=(
+                int(
+                    row["client_id"]
+                )
+                if row["client_id"]
+                is not None
+                else None
+            ),
+            client_name=(
+                row["client_name"]
+                or None
+            ),
+            external_thread_key=(
+                row[
+                    "external_thread_key"
+                ]
+            ),
+            external_address=(
+                row[
+                    "external_address"
+                ]
+            ),
+            external_display_name=(
+                row[
+                    "external_display_name"
+                ]
+            ),
+            match_status=(
+                row["match_status"]
+            ),
+            is_archived=bool(
+                row["is_archived"]
+            ),
+            last_message_at=(
+                row["last_message_at"]
+            ),
+            last_message_preview=(
+                row[
+                    "last_message_preview"
+                ]
+            ),
+            message_count=int(
+                row["message_count"]
+                or 0
             ),
         )
 
@@ -445,6 +510,142 @@ class SQLiteCommunicationRepository:
             ).fetchone()
 
             return self._thread_from_row(row)
+
+    def list_thread_overviews(
+        self,
+        *,
+        account_id=None,
+        client_id=None,
+        channel=None,
+        limit=5000,
+    ):
+        self.ensure_schema()
+
+        sql = """
+            SELECT
+                t.id AS thread_id,
+                t.account_id AS account_id,
+                a.channel AS channel,
+                t.client_id AS client_id,
+                TRIM(
+                    COALESCE(
+                        c.nombre,
+                        ''
+                    )
+                    || ' '
+                    || COALESCE(
+                        c.primer_apellido,
+                        ''
+                    )
+                    || ' '
+                    || COALESCE(
+                        c.segundo_apellido,
+                        ''
+                    )
+                ) AS client_name,
+                t.external_thread_key
+                    AS external_thread_key,
+                t.external_address
+                    AS external_address,
+                t.external_display_name
+                    AS external_display_name,
+                t.match_status
+                    AS match_status,
+                t.is_archived
+                    AS is_archived,
+                t.last_message_at
+                    AS last_message_at,
+                (
+                    SELECT
+                        m.body_text
+                    FROM communication_messages m
+                    WHERE
+                        m.thread_id = t.id
+                    ORDER BY
+                        COALESCE(
+                            m.provider_timestamp,
+                            m.created_at
+                        ) DESC,
+                        m.id DESC
+                    LIMIT 1
+                ) AS last_message_preview,
+                (
+                    SELECT
+                        COUNT(*)
+                    FROM communication_messages mc
+                    WHERE
+                        mc.thread_id = t.id
+                ) AS message_count
+            FROM communication_threads t
+            INNER JOIN communication_accounts a
+                ON a.id = t.account_id
+            LEFT JOIN clientes c
+                ON c.id = t.client_id
+            WHERE 1 = 1
+        """
+
+        params = []
+
+        if account_id is not None:
+            sql += """
+                AND t.account_id = ?
+            """
+
+            params.append(
+                int(account_id)
+            )
+
+        if client_id is not None:
+            sql += """
+                AND t.client_id = ?
+            """
+
+            params.append(
+                int(client_id)
+            )
+
+        if channel:
+            sql += """
+                AND UPPER(a.channel) = ?
+            """
+
+            params.append(
+                str(
+                    channel
+                )
+                .strip()
+                .upper()
+            )
+
+        sql += """
+            ORDER BY
+                COALESCE(
+                    t.last_message_at,
+                    t.created_at
+                ) DESC,
+                t.id DESC
+            LIMIT ?
+        """
+
+        params.append(
+            max(
+                1,
+                int(limit),
+            )
+        )
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                sql,
+                params,
+            ).fetchall()
+
+            return [
+                self._thread_overview_from_row(
+                    row
+                )
+                for row in rows
+            ]
 
     def update_thread_match(
         self,

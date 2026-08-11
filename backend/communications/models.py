@@ -63,6 +63,23 @@ class CommunicationThread:
 
 
 @dataclass(frozen=True)
+class CommunicationThreadOverview:
+    thread_id: int
+    account_id: int
+    channel: str
+    client_id: int | None
+    client_name: str | None
+    external_thread_key: str
+    external_address: str | None
+    external_display_name: str | None
+    match_status: str
+    is_archived: bool
+    last_message_at: str | None = None
+    last_message_preview: str | None = None
+    message_count: int = 0
+
+
+@dataclass(frozen=True)
 class CommunicationMessage:
     id: int | None
     thread_id: int

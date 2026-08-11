@@ -617,6 +617,254 @@ class CommunicationServiceTest(
             THREAD_MATCH_UNMATCHED,
         )
 
+    def test_thread_overview_projects_client_and_messages(
+        self,
+    ):
+        result = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600123456"
+                ),
+                phone="+34 600 123 456",
+                display_name=(
+                    "Cliente WhatsApp"
+                ),
+            )
+        )
+
+        thread = result["thread"]
+
+        self.service.register_inbound_message(
+            thread_id=thread.id,
+            body_text="Primer mensaje",
+            provider_message_id=(
+                "overview-in-1"
+            ),
+        )
+
+        self.service.create_outbound_message(
+            thread_id=thread.id,
+            body_text="Último mensaje",
+            expedient_id=20,
+            created_by="TEST",
+        )
+
+        overview = (
+            self.service
+            .list_thread_overviews(
+                channel="WHATSAPP",
+            )
+        )
+
+        summary = overview[
+            "summary"
+        ]
+
+        items = overview[
+            "items"
+        ]
+
+        self.assertEqual(
+            summary["total"],
+            1,
+        )
+
+        self.assertEqual(
+            summary["linked"],
+            1,
+        )
+
+        self.assertEqual(
+            summary["unlinked"],
+            0,
+        )
+
+        self.assertEqual(
+            summary["whatsapp"],
+            1,
+        )
+
+        self.assertEqual(
+            len(items),
+            1,
+        )
+
+        item = items[0]
+
+        self.assertEqual(
+            item.thread_id,
+            thread.id,
+        )
+
+        self.assertEqual(
+            item.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            item.client_name,
+            "CLIENTE PRUEBA",
+        )
+
+        self.assertEqual(
+            item.channel,
+            "WHATSAPP",
+        )
+
+        self.assertEqual(
+            item.external_address,
+            "+34600123456",
+        )
+
+        self.assertEqual(
+            item.message_count,
+            2,
+        )
+
+        self.assertEqual(
+            item.last_message_preview,
+            "Último mensaje",
+        )
+
+    def test_thread_overview_filters_linkage(
+        self,
+    ):
+        self.service.get_or_create_whatsapp_thread(
+            external_thread_key=(
+                "phone:34600123456"
+            ),
+            phone="+34 600 123 456",
+            display_name="Vinculado",
+        )
+
+        self.service.get_or_create_whatsapp_thread(
+            external_thread_key=(
+                "phone:34600999888"
+            ),
+            phone="+34 600 999 888",
+            display_name="Sin vincular",
+        )
+
+        all_result = (
+            self.service
+            .list_thread_overviews(
+                channel="WHATSAPP",
+                linkage="ALL",
+            )
+        )
+
+        linked_result = (
+            self.service
+            .list_thread_overviews(
+                channel="WHATSAPP",
+                linkage="LINKED",
+            )
+        )
+
+        unlinked_result = (
+            self.service
+            .list_thread_overviews(
+                channel="WHATSAPP",
+                linkage="UNLINKED",
+            )
+        )
+
+        self.assertEqual(
+            all_result[
+                "summary"
+            ][
+                "visible"
+            ],
+            2,
+        )
+
+        self.assertEqual(
+            linked_result[
+                "summary"
+            ][
+                "visible"
+            ],
+            1,
+        )
+
+        self.assertEqual(
+            unlinked_result[
+                "summary"
+            ][
+                "visible"
+            ],
+            1,
+        )
+
+        self.assertEqual(
+            linked_result[
+                "items"
+            ][0].client_id,
+            10,
+        )
+
+        self.assertIsNone(
+            unlinked_result[
+                "items"
+            ][0].client_id
+        )
+
+    def test_thread_overview_search_is_format_agnostic(
+        self,
+    ):
+        self.service.get_or_create_whatsapp_thread(
+            external_thread_key=(
+                "phone:34600123456"
+            ),
+            phone="+34 600 123 456",
+            display_name=(
+                "Nombre WhatsApp"
+            ),
+        )
+
+        by_client = (
+            self.service
+            .list_thread_overviews(
+                search="cliente prueba",
+            )
+        )
+
+        by_display = (
+            self.service
+            .list_thread_overviews(
+                search="nombre whatsapp",
+            )
+        )
+
+        by_phone = (
+            self.service
+            .list_thread_overviews(
+                search="+34600123456",
+            )
+        )
+
+        self.assertEqual(
+            len(
+                by_client["items"]
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            len(
+                by_display["items"]
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            len(
+                by_phone["items"]
+            ),
+            1,
+        )
+
     def test_register_inbound_and_outbound(
         self,
     ):
