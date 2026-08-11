@@ -638,6 +638,10 @@ class WhatsAppSyncService:
                             str(exc),
                         "persisted":
                             False,
+                        "created":
+                            False,
+                        "reused":
+                            False,
                     }
 
                 item[
@@ -963,6 +967,10 @@ class WhatsAppSyncService:
                     "error":
                         str(exc),
                     "persisted":
+                        False,
+                    "created":
+                        False,
+                    "reused":
                         False,
                 }
 

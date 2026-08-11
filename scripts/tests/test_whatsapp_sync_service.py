@@ -226,6 +226,65 @@ class FakeCommunicationService:
         }
 
 
+class StatefulFakeCommunicationService(
+    FakeCommunicationService
+):
+    def __init__(self):
+        super().__init__(
+            created=True,
+        )
+
+        self.thread_ids = {}
+        self.next_thread_id = 50
+
+    def get_or_create_whatsapp_thread(
+        self,
+        **kwargs,
+    ):
+        self.persist_calls.append(
+            kwargs
+        )
+
+        external_thread_key = (
+            kwargs[
+                "external_thread_key"
+            ]
+        )
+
+        created = (
+            external_thread_key
+            not in self.thread_ids
+        )
+
+        if created:
+            self.thread_ids[
+                external_thread_key
+            ] = self.next_thread_id
+
+            self.next_thread_id += 1
+
+        thread_id = (
+            self.thread_ids[
+                external_thread_key
+            ]
+        )
+
+        return {
+            "thread":
+                SimpleNamespace(
+                    id=thread_id,
+                ),
+            "match": {
+                "matched": True,
+                "client": {
+                    "id": 10,
+                },
+            },
+            "created":
+                created,
+        }
+
+
 class WhatsAppSyncServiceTest(
     unittest.TestCase
 ):
@@ -743,6 +802,174 @@ class WhatsAppSyncServiceTest(
                 152,
             },
         )
+
+    def test_full_traversal_persistence_is_idempotent(
+        self,
+    ):
+        communication = (
+            StatefulFakeCommunicationService()
+        )
+
+        service = WhatsAppSyncService(
+            connector=FakeConnector(),
+            communication_service=communication,
+        )
+
+        first = (
+            service.inspect_all_chats(
+                persist=True,
+                retries=0,
+                step_ratio=0.5,
+                wait_seconds=0,
+            )
+        )
+
+        first_summary = (
+            first["summary"]
+        )
+
+        self.assertTrue(
+            first_summary[
+                "coverage_complete"
+            ]
+        )
+
+        self.assertEqual(
+            first_summary[
+                "visited_rows"
+            ],
+            3,
+        )
+
+        self.assertEqual(
+            first_summary[
+                "persisted"
+            ],
+            3,
+        )
+
+        self.assertEqual(
+            first_summary[
+                "created"
+            ],
+            1,
+        )
+
+        self.assertEqual(
+            first_summary[
+                "reused"
+            ],
+            2,
+        )
+
+        self.assertEqual(
+            first_summary[
+                "unique_phone_threads"
+            ],
+            1,
+        )
+
+        self.assertEqual(
+            first_summary[
+                "persisted"
+            ],
+            (
+                first_summary[
+                    "created"
+                ]
+                + first_summary[
+                    "reused"
+                ]
+            ),
+        )
+
+        self.assertEqual(
+            len(
+                communication.thread_ids
+            ),
+            1,
+        )
+
+        first_thread_ids = {
+            item[
+                "thread_id"
+            ]
+            for item in first[
+                "items"
+            ]
+            if item.get(
+                "persisted"
+            )
+        }
+
+        self.assertEqual(
+            len(
+                first_thread_ids
+            ),
+            1,
+        )
+
+        second = (
+            service.inspect_all_chats(
+                persist=True,
+                retries=0,
+                step_ratio=0.5,
+                wait_seconds=0,
+            )
+        )
+
+        second_summary = (
+            second["summary"]
+        )
+
+        self.assertTrue(
+            second_summary[
+                "coverage_complete"
+            ]
+        )
+
+        self.assertEqual(
+            second_summary[
+                "persisted"
+            ],
+            3,
+        )
+
+        self.assertEqual(
+            second_summary[
+                "created"
+            ],
+            0,
+        )
+
+        self.assertEqual(
+            second_summary[
+                "reused"
+            ],
+            3,
+        )
+
+        self.assertEqual(
+            second_summary[
+                "persisted"
+            ],
+            (
+                second_summary[
+                    "created"
+                ]
+                + second_summary[
+                    "reused"
+                ]
+            ),
+        )
+
+        self.assertEqual(
+            len(
+                communication.thread_ids
+            ),
+            1,
+        )
+
 
     def test_persist_creates_thread(
         self,
