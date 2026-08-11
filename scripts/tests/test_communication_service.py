@@ -194,6 +194,104 @@ class CommunicationServiceTest(
             THREAD_MATCH_UNMATCHED,
         )
 
+    def test_whatsapp_thread_is_idempotent(
+        self,
+    ):
+        first = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600123456"
+                ),
+                phone="+34 600 123 456",
+                display_name=(
+                    "Cliente prueba"
+                ),
+                metadata={
+                    "source":
+                        "whatsapp_web_sync",
+                },
+            )
+        )
+
+        second = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600123456"
+                ),
+                phone="+34 600 123 456",
+                display_name=(
+                    "Cliente prueba"
+                ),
+                metadata={
+                    "source":
+                        "whatsapp_web_sync",
+                },
+            )
+        )
+
+        first_thread = (
+            first["thread"]
+        )
+
+        second_thread = (
+            second["thread"]
+        )
+
+        self.assertEqual(
+            first_thread.id,
+            second_thread.id,
+        )
+
+        self.assertEqual(
+            first_thread.external_thread_key,
+            "phone:34600123456",
+        )
+
+        self.assertEqual(
+            second_thread.external_thread_key,
+            "phone:34600123456",
+        )
+
+        self.assertEqual(
+            first_thread.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            second_thread.client_id,
+            10,
+        )
+
+        account = (
+            self.service
+            .ensure_whatsapp_dev_account()
+        )
+
+        threads = (
+            self.service
+            .repository
+            .list_threads(
+                account_id=account.id,
+                limit=100,
+            )
+        )
+
+        matching = [
+            thread
+            for thread in threads
+            if (
+                thread.external_thread_key
+                == "phone:34600123456"
+            )
+        ]
+
+        self.assertEqual(
+            len(matching),
+            1,
+        )
+
     def test_register_inbound_and_outbound(
         self,
     ):
