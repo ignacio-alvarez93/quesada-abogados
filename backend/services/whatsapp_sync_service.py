@@ -59,6 +59,26 @@ SYNC_REASON_PROFILE_OPEN_FAILED = (
     "PROFILE_OPEN_FAILED"
 )
 
+SYNC_REASON_ACCOUNT_CHANGED = (
+    "ACCOUNT_CHANGED"
+)
+
+SYNC_REASON_GROUP_LEFT = (
+    "GROUP_LEFT"
+)
+
+SYNC_REASON_GROUP_READ_ONLY = (
+    "GROUP_READ_ONLY"
+)
+
+SYNC_REASON_SYSTEM_CHAT = (
+    "SYSTEM_CHAT"
+)
+
+SYNC_REASON_IDENTITY_UNVERIFIABLE = (
+    "IDENTITY_UNVERIFIABLE"
+)
+
 
 class WhatsAppSyncService:
     def __init__(
@@ -93,6 +113,123 @@ class WhatsAppSyncService:
         return (
             f"phone:{normalized.digits}"
         )
+
+    @staticmethod
+    def classify_non_writable_chat(
+        *,
+        display_name,
+        open_result,
+    ):
+        """Interpreta estados conocidos de chats sin composer."""
+        main_text = str(
+            open_result.get(
+                "main_text"
+            )
+            or ""
+        )
+
+        lowered = (
+            main_text
+            .casefold()
+        )
+
+        name = str(
+            display_name
+            or ""
+        ).strip()
+
+        if (
+            "conectado a una nueva cuenta de whatsapp"
+            in lowered
+            and
+            "ya no está activa"
+            in lowered
+        ):
+            return {
+                "recognized": True,
+                "kind":
+                    CHAT_KIND_INDIVIDUAL,
+                "reason":
+                    SYNC_REASON_ACCOUNT_CHANGED,
+            }
+
+        if (
+            "no puedes enviar mensajes a este grupo"
+            in lowered
+            and
+            "ya no eres miembro"
+            in lowered
+        ):
+            return {
+                "recognized": True,
+                "kind":
+                    CHAT_KIND_GROUP,
+                "reason":
+                    SYNC_REASON_GROUP_LEFT,
+            }
+
+        if (
+            "solo admins. de la comunidad pueden enviar mensajes"
+            in lowered
+            or
+            "solo administradores"
+            in lowered
+            and
+            "pueden enviar mensajes"
+            in lowered
+        ):
+            return {
+                "recognized": True,
+                "kind":
+                    CHAT_KIND_GROUP,
+                "reason":
+                    SYNC_REASON_GROUP_READ_ONLY,
+            }
+
+        if (
+            name.casefold()
+            == "whatsapp"
+            and
+            "cuenta oficial de whatsapp"
+            in lowered
+            and
+            "solo whatsapp puede enviar mensajes"
+            in lowered
+        ):
+            return {
+                "recognized": True,
+                "kind":
+                    CHAT_KIND_UNKNOWN,
+                "reason":
+                    SYNC_REASON_SYSTEM_CHAT,
+            }
+
+        group_markers = (
+            "info. del grupo",
+            " miembro ·",
+            " miembros ·",
+            "creado por ",
+        )
+
+        if any(
+            marker in lowered
+            for marker in group_markers
+        ):
+            return {
+                "recognized": True,
+                "kind":
+                    CHAT_KIND_GROUP,
+                "reason":
+                    SYNC_REASON_GROUP_IDENTITY_PENDING,
+            }
+
+        return {
+            "recognized": False,
+            "kind":
+                CHAT_KIND_UNKNOWN,
+            "reason":
+                SYNC_REASON_OPEN_FAILED,
+        }
 
     def inspect_snapshot(
         self,
@@ -156,9 +293,41 @@ class WhatsAppSyncService:
             )
 
         if not opened.get("opened"):
+            special = (
+                self.classify_non_writable_chat(
+                    display_name=(
+                        snapshot.display_name
+                    ),
+                    open_result=opened,
+                )
+            )
+
+            if special.get(
+                "recognized"
+            ):
+                result["kind"] = (
+                    special.get(
+                        "kind",
+                        CHAT_KIND_UNKNOWN,
+                    )
+                )
+
+                result["status"] = (
+                    SYNC_STATUS_SKIPPED
+                )
+
+                result["reason"] = (
+                    special.get(
+                        "reason"
+                    )
+                )
+
+                return result
+
             result["reason"] = (
                 SYNC_REASON_OPEN_FAILED
             )
+
             return result
 
         profile_open = (

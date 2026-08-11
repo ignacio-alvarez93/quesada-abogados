@@ -1038,23 +1038,43 @@ class WhatsAppConnector:
                             ).trim()
                             : "";
 
+                        const main =
+                            document.querySelector(
+                                '#main'
+                            );
+
+                        const mainText =
+                            main
+                            ? String(
+                                main.innerText
+                                || main.textContent
+                                || ""
+                            ).trim()
+                            : "";
+
                         if (!composer) {
                             return {
                                 opened: false,
+                                composer_found: false,
                                 composer_aria_label: null,
                                 active_display_name:
-                                    activeName
+                                    activeName,
+                                main_text:
+                                    mainText
                             };
                         }
 
                         return {
                             opened: true,
+                            composer_found: true,
                             composer_aria_label:
                                 composer.getAttribute(
                                     'aria-label'
                                 ),
                             active_display_name:
-                                activeName
+                                activeName,
+                            main_text:
+                                mainText
                         };
                     })()
                     """
@@ -1103,12 +1123,45 @@ class WhatsAppConnector:
 
         return {
             "opened": False,
+            "composer_found":
+                (
+                    bool(
+                        result.get(
+                            "composer_found"
+                        )
+                    )
+                    if isinstance(
+                        result,
+                        dict,
+                    )
+                    else False
+                ),
             "composer_aria_label":
-                None,
+                (
+                    result.get(
+                        "composer_aria_label"
+                    )
+                    if isinstance(
+                        result,
+                        dict,
+                    )
+                    else None
+                ),
             "active_display_name":
                 (
                     result.get(
                         "active_display_name"
+                    )
+                    if isinstance(
+                        result,
+                        dict,
+                    )
+                    else None
+                ),
+            "main_text":
+                (
+                    result.get(
+                        "main_text"
                     )
                     if isinstance(
                         result,

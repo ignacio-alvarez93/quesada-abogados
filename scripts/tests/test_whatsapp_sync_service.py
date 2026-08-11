@@ -6,7 +6,11 @@ from backend.automation.connectors.whatsapp_connector import (
     CHAT_KIND_INDIVIDUAL,
 )
 from backend.services.whatsapp_sync_service import (
+    SYNC_REASON_ACCOUNT_CHANGED,
     SYNC_REASON_GROUP_IDENTITY_PENDING,
+    SYNC_REASON_GROUP_LEFT,
+    SYNC_REASON_GROUP_READ_ONLY,
+    SYNC_REASON_SYSTEM_CHAT,
     SYNC_STATUS_READY,
     SYNC_STATUS_SKIPPED,
     WhatsAppSyncService,
@@ -19,9 +23,16 @@ class FakeConnector:
         *,
         kind=CHAT_KIND_INDIVIDUAL,
         phone="+34 600 123 456",
+        open_result=None,
     ):
         self.kind = kind
         self.phone = phone
+        self.open_result = (
+            open_result
+            or {
+                "opened": True,
+            }
+        )
 
         self.snapshots = [
             SimpleNamespace(
@@ -119,13 +130,17 @@ class FakeConnector:
         *,
         expected_display_name=None,
     ):
-        return {
-            "opened": True,
-            "virtual_offset":
-                int(
-                    virtual_offset
-                ),
-        }
+        result = dict(
+            self.open_result
+        )
+
+        result[
+            "virtual_offset"
+        ] = int(
+            virtual_offset
+        )
+
+        return result
 
     def open_chat(
         self,
@@ -133,9 +148,9 @@ class FakeConnector:
         *,
         expected_display_name=None,
     ):
-        return {
-            "opened": True,
-        }
+        return dict(
+            self.open_result
+        )
 
     def open_contact_profile(
         self,
@@ -205,6 +220,204 @@ class FakeCommunicationService:
 class WhatsAppSyncServiceTest(
     unittest.TestCase
 ):
+    def test_classifies_account_changed(
+        self,
+    ):
+        result = (
+            WhatsAppSyncService
+            .classify_non_writable_chat(
+                display_name=(
+                    "Juan Espinosa"
+                ),
+                open_result={
+                    "main_text": (
+                        "Este número de teléfono "
+                        "está conectado a una nueva "
+                        "cuenta de WhatsApp. "
+                        "No puedes enviar mensajes "
+                        "a esta cuenta porque ya "
+                        "no está activa."
+                    ),
+                },
+            )
+        )
+
+        self.assertTrue(
+            result["recognized"]
+        )
+
+        self.assertEqual(
+            result["reason"],
+            SYNC_REASON_ACCOUNT_CHANGED,
+        )
+
+    def test_classifies_group_left(
+        self,
+    ):
+        result = (
+            WhatsAppSyncService
+            .classify_non_writable_chat(
+                display_name=(
+                    "Cumpleaños enrique"
+                ),
+                open_result={
+                    "main_text": (
+                        "No puedes enviar mensajes "
+                        "a este grupo porque ya "
+                        "no eres miembro."
+                    ),
+                },
+            )
+        )
+
+        self.assertTrue(
+            result["recognized"]
+        )
+
+        self.assertEqual(
+            result["kind"],
+            CHAT_KIND_GROUP,
+        )
+
+        self.assertEqual(
+            result["reason"],
+            SYNC_REASON_GROUP_LEFT,
+        )
+
+    def test_classifies_group_read_only(
+        self,
+    ):
+        result = (
+            WhatsAppSyncService
+            .classify_non_writable_chat(
+                display_name=(
+                    "Chats De Viciar"
+                ),
+                open_result={
+                    "main_text": (
+                        "Solo admins. de la comunidad "
+                        "pueden enviar mensajes"
+                    ),
+                },
+            )
+        )
+
+        self.assertTrue(
+            result["recognized"]
+        )
+
+        self.assertEqual(
+            result["kind"],
+            CHAT_KIND_GROUP,
+        )
+
+        self.assertEqual(
+            result["reason"],
+            SYNC_REASON_GROUP_READ_ONLY,
+        )
+
+    def test_classifies_system_chat(
+        self,
+    ):
+        result = (
+            WhatsAppSyncService
+            .classify_non_writable_chat(
+                display_name="WhatsApp",
+                open_result={
+                    "main_text": (
+                        "Cuenta oficial de WhatsApp. "
+                        "Solo WhatsApp puede enviar "
+                        "mensajes."
+                    ),
+                },
+            )
+        )
+
+        self.assertTrue(
+            result["recognized"]
+        )
+
+        self.assertEqual(
+            result["reason"],
+            SYNC_REASON_SYSTEM_CHAT,
+        )
+
+    def test_known_non_writable_chat_is_skipped(
+        self,
+    ):
+        communication = (
+            FakeCommunicationService()
+        )
+
+        connector = FakeConnector(
+            open_result={
+                "opened": False,
+                "composer_found": False,
+                "active_display_name":
+                    "Juan Espinosa",
+                "main_text": (
+                    "Este número de teléfono "
+                    "está conectado a una nueva "
+                    "cuenta de WhatsApp. "
+                    "No puedes enviar mensajes "
+                    "a esta cuenta porque ya "
+                    "no está activa."
+                ),
+            },
+        )
+
+        connector.snapshots = [
+            SimpleNamespace(
+                position=0,
+                display_name=(
+                    "Juan Espinosa"
+                ),
+                virtual_offset=None,
+            ),
+        ]
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=(
+                communication
+            ),
+        )
+
+        result = (
+            service.inspect_visible_chats(
+                limit=1,
+                persist=True,
+            )
+        )
+
+        item = result[
+            "items"
+        ][0]
+
+        self.assertEqual(
+            item["status"],
+            SYNC_STATUS_SKIPPED,
+        )
+
+        self.assertEqual(
+            item["reason"],
+            SYNC_REASON_ACCOUNT_CHANGED,
+        )
+
+        self.assertEqual(
+            item["kind"],
+            CHAT_KIND_INDIVIDUAL,
+        )
+
+        self.assertFalse(
+            item["persisted"]
+        )
+
+        self.assertEqual(
+            communication.persist_calls,
+            [],
+        )
+
     def test_builds_stable_phone_key(
         self,
     ):
