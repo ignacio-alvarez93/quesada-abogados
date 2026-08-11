@@ -33,6 +33,7 @@ from frontend.views.presentation_queue_view import presentation_queue_view
 from frontend.views.notifications_view import notifications_view
 from frontend.views.calendar_view import calendar_view
 from frontend.views.document_inbox_view import document_inbox_view
+from frontend.views.communications_view import communications_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
 
@@ -156,6 +157,16 @@ def main(page: ft.Page):
                 ),
                 open_item_id=kwargs.get("open_item_id"),
                 open_batch_id=kwargs.get("open_batch_id"),
+            )
+        elif view_name == "WhatsApp":
+            content = communications_view(
+                page,
+                on_open_cliente=(
+                    lambda cliente_id:
+                        navigate(
+                            "Clientes",
+                        )
+                ),
             )
         elif view_name == "Reporting":
             content = reporting_view(page)
