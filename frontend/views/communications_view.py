@@ -5,6 +5,9 @@ import flet as ft
 from backend.services.communication_service import (
     CommunicationService,
 )
+from frontend.components.app_autocomplete import (
+    AppAutocomplete,
+)
 from frontend.components.app_button import (
     primary_button,
     secondary_button,
@@ -32,6 +35,17 @@ UNLINKED_BG = "#FFF7E6"
 UNLINKED_FG = "#B54708"
 
 SELECTED_BG = "#EAF3FF"
+
+
+CHANNEL_FILTER_VALUES = {
+    "WhatsApp": "WHATSAPP",
+}
+
+LINKAGE_FILTER_VALUES = {
+    "Todas": "ALL",
+    "Vinculadas": "LINKED",
+    "Sin vincular": "UNLINKED",
+}
 
 
 def communications_view(
@@ -88,41 +102,59 @@ def communications_view(
         expand=True,
     )
 
-    linkage_dropdown = ft.Dropdown(
-        label="Vinculación",
-        value="ALL",
-        width=190,
-        border_color="#CBD5E1",
-        focused_border_color=Q_PRIMARY,
-        options=[
-            ft.dropdown.Option(
-                key="ALL",
-                text="Todas",
-            ),
-            ft.dropdown.Option(
-                key="LINKED",
-                text="Vinculadas",
-            ),
-            ft.dropdown.Option(
-                key="UNLINKED",
-                text="Sin vincular",
-            ),
-        ],
+    channel_filter = AppAutocomplete(
+        page=page,
+        label="Canal",
+        options=list(
+            CHANNEL_FILTER_VALUES.keys()
+        ),
+        value="WhatsApp",
+        width=175,
+        max_results=4,
+        allow_free_text=False,
+        show_empty=False,
+        icon=ft.Icons.CHAT_BUBBLE_OUTLINE,
     )
 
-    channel_dropdown = ft.Dropdown(
-        label="Canal",
-        value="WHATSAPP",
-        width=170,
-        border_color="#CBD5E1",
-        focused_border_color=Q_PRIMARY,
-        options=[
-            ft.dropdown.Option(
-                key="WHATSAPP",
-                text="WhatsApp",
-            ),
-        ],
+    linkage_filter = AppAutocomplete(
+        page=page,
+        label="Vinculación",
+        options=list(
+            LINKAGE_FILTER_VALUES.keys()
+        ),
+        value="Todas",
+        width=205,
+        max_results=4,
+        allow_free_text=False,
+        show_empty=False,
+        icon=ft.Icons.LINK,
     )
+
+    def selected_channel():
+        label = str(
+            channel_filter.input.value
+            or "WhatsApp"
+        ).strip()
+
+        return (
+            CHANNEL_FILTER_VALUES.get(
+                label,
+                "WHATSAPP",
+            )
+        )
+
+    def selected_linkage():
+        label = str(
+            linkage_filter.input.value
+            or "Todas"
+        ).strip()
+
+        return (
+            LINKAGE_FILTER_VALUES.get(
+                label,
+                "ALL",
+            )
+        )
 
     def _show_message(
         message,
@@ -319,12 +351,10 @@ def communications_view(
                 communication_service
                 .list_thread_overviews(
                     channel=(
-                        channel_dropdown.value
-                        or "WHATSAPP"
+                        selected_channel()
                     ),
                     linkage=(
-                        linkage_dropdown.value
-                        or "ALL"
+                        selected_linkage()
                     ),
                     search=(
                         search_input.value
@@ -367,8 +397,7 @@ def communications_view(
             state[
                 "linkage"
             ] = (
-                linkage_dropdown.value
-                or "ALL"
+                selected_linkage()
             )
 
             valid_ids = {
@@ -500,11 +529,12 @@ def communications_view(
         e=None,
     ):
         search_input.value = ""
-        linkage_dropdown.value = (
-            "ALL"
+        linkage_filter.input.value = (
+            "Todas"
         )
-        channel_dropdown.value = (
-            "WHATSAPP"
+
+        channel_filter.input.value = (
+            "WhatsApp"
         )
 
         state["page"] = 1
@@ -1235,12 +1265,14 @@ def communications_view(
             refresh
         )
 
-        linkage_dropdown.on_change = (
-            refresh
+        channel_filter.on_select = (
+            lambda value:
+                refresh()
         )
 
-        channel_dropdown.on_change = (
-            refresh
+        linkage_filter.on_select = (
+            lambda value:
+                refresh()
         )
 
         return ft.Container(
@@ -1254,8 +1286,8 @@ def communications_view(
             content=ft.Row(
                 controls=[
                     search_input,
-                    channel_dropdown,
-                    linkage_dropdown,
+                    channel_filter.control,
+                    linkage_filter.control,
                     secondary_button(
                         "Buscar",
                         refresh,
