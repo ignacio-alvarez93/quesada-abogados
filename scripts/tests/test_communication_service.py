@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from backend.communications.models import (
+    CommunicationThread,
     DIRECTION_INBOUND,
     DIRECTION_OUTBOUND,
     THREAD_MATCH_MATCHED,
@@ -298,6 +299,322 @@ class CommunicationServiceTest(
         self.assertEqual(
             len(matching),
             1,
+        )
+
+    def test_whatsapp_match_backfill_preserves_unmatched(
+        self,
+    ):
+        result = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600123456"
+                ),
+                phone="+34 699 999 999",
+                display_name=(
+                    "Pendiente de match"
+                ),
+            )
+        )
+
+        thread = result[
+            "thread"
+        ]
+
+        self.assertIsNone(
+            thread.client_id
+        )
+
+        conn = sqlite3.connect(
+            str(
+                self.db_path
+            )
+        )
+
+        try:
+            conn.execute(
+                """
+                UPDATE clientes
+                SET telefono = ?
+                WHERE id = ?
+                """,
+                (
+                    "+34 600 123 456",
+                    10,
+                ),
+            )
+
+            conn.commit()
+
+        finally:
+            conn.close()
+
+        stored = (
+            self.service
+            .repository
+            .update_thread_match(
+                thread.id,
+                client_id=None,
+                match_status=(
+                    THREAD_MATCH_UNMATCHED
+                ),
+            )
+        )
+
+        self.assertIsNone(
+            stored.client_id
+        )
+
+        result = (
+            self.service
+            .backfill_whatsapp_thread_matches()
+        )
+
+        summary = result[
+            "summary"
+        ]
+
+        self.assertEqual(
+            summary["scanned"],
+            1,
+        )
+
+        self.assertEqual(
+            summary["updated"],
+            0,
+        )
+
+        # El teléfono del thread sigue siendo
+        # +34699999999, por lo que no debe
+        # enlazarse accidentalmente.
+        self.assertEqual(
+            summary["unmatched"],
+            1,
+        )
+
+    def test_whatsapp_match_backfill_is_idempotent(
+        self,
+    ):
+        account = (
+            self.service
+            .ensure_whatsapp_dev_account()
+        )
+
+        thread = (
+            self.service
+            .repository
+            .get_or_create_thread(
+                CommunicationThread(
+                    id=None,
+                    account_id=account.id,
+                    client_id=None,
+                    external_thread_key=(
+                        "phone:34600123456"
+                    ),
+                    external_address=(
+                        "+34600123456"
+                    ),
+                    external_display_name=(
+                        "Cliente prueba"
+                    ),
+                    match_status=(
+                        THREAD_MATCH_UNMATCHED
+                    ),
+                )
+            )
+        )
+
+        first = (
+            self.service
+            .backfill_whatsapp_thread_matches()
+        )
+
+        first_summary = (
+            first["summary"]
+        )
+
+        self.assertEqual(
+            first_summary["updated"],
+            1,
+        )
+
+        self.assertEqual(
+            first_summary["matched"],
+            1,
+        )
+
+        self.assertEqual(
+            first_summary["scanned"],
+            (
+                first_summary[
+                    "already_linked"
+                ]
+                + first_summary[
+                    "updated"
+                ]
+                + first_summary[
+                    "ambiguous"
+                ]
+                + first_summary[
+                    "unmatched"
+                ]
+            ),
+        )
+
+        self.assertEqual(
+            first_summary["matched"],
+            first_summary["updated"],
+        )
+
+        stored = (
+            self.service
+            .repository
+            .get_thread(
+                thread.id
+            )
+        )
+
+        self.assertEqual(
+            stored.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            stored.match_status,
+            THREAD_MATCH_MATCHED,
+        )
+
+        second = (
+            self.service
+            .backfill_whatsapp_thread_matches()
+        )
+
+        second_summary = (
+            second["summary"]
+        )
+
+        self.assertEqual(
+            second_summary["updated"],
+            0,
+        )
+
+        self.assertEqual(
+            second_summary[
+                "already_linked"
+            ],
+            1,
+        )
+
+        stored_second = (
+            self.service
+            .repository
+            .get_thread(
+                thread.id
+            )
+        )
+
+        self.assertEqual(
+            stored_second.client_id,
+            10,
+        )
+
+    def test_whatsapp_match_backfill_preserves_ambiguity(
+        self,
+    ):
+        conn = sqlite3.connect(
+            str(
+                self.db_path
+            )
+        )
+
+        try:
+            conn.execute(
+                """
+                INSERT INTO clientes (
+                    id,
+                    nombre,
+                    primer_apellido,
+                    segundo_apellido,
+                    telefono
+                )
+                VALUES (
+                    11,
+                    'OTRO',
+                    'CLIENTE',
+                    NULL,
+                    '+34 600 123 456'
+                )
+                """
+            )
+
+            conn.commit()
+
+        finally:
+            conn.close()
+
+        account = (
+            self.service
+            .ensure_whatsapp_dev_account()
+        )
+
+        thread = (
+            self.service
+            .repository
+            .get_or_create_thread(
+                CommunicationThread(
+                    id=None,
+                    account_id=account.id,
+                    client_id=None,
+                    external_thread_key=(
+                        "phone:34600123456"
+                    ),
+                    external_address=(
+                        "+34600123456"
+                    ),
+                    external_display_name=(
+                        "Ambiguo"
+                    ),
+                    match_status=(
+                        THREAD_MATCH_UNMATCHED
+                    ),
+                )
+            )
+        )
+
+        result = (
+            self.service
+            .backfill_whatsapp_thread_matches()
+        )
+
+        summary = result[
+            "summary"
+        ]
+
+        self.assertEqual(
+            summary["updated"],
+            0,
+        )
+
+        self.assertEqual(
+            summary["ambiguous"],
+            1,
+        )
+
+        stored = (
+            self.service
+            .repository
+            .get_thread(
+                thread.id
+            )
+        )
+
+        self.assertIsNone(
+            stored.client_id
+        )
+
+        self.assertEqual(
+            stored.match_status,
+            THREAD_MATCH_UNMATCHED,
         )
 
     def test_register_inbound_and_outbound(

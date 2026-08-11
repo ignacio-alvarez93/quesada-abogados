@@ -131,6 +131,210 @@ class CommunicationService:
             "phone": normalized,
         }
 
+    def backfill_whatsapp_thread_matches(
+        self,
+        *,
+        limit=5000,
+    ):
+        account = (
+            self.ensure_whatsapp_dev_account()
+        )
+
+        threads = (
+            self.repository
+            .list_threads(
+                account_id=account.id,
+                limit=limit,
+            )
+        )
+
+        summary = {
+            "scanned":
+                len(threads),
+            "already_linked":
+                0,
+            "updated":
+                0,
+            "matched":
+                0,
+            "ambiguous":
+                0,
+            "unmatched":
+                0,
+        }
+
+        items = []
+
+        for thread in threads:
+            item = {
+                "thread_id":
+                    thread.id,
+                "external_thread_key":
+                    thread.external_thread_key,
+                "phone":
+                    thread.external_address,
+                "client_id":
+                    thread.client_id,
+                "status":
+                    None,
+            }
+
+            if (
+                thread.client_id
+                is not None
+            ):
+                summary[
+                    "already_linked"
+                ] += 1
+
+                item[
+                    "status"
+                ] = "ALREADY_LINKED"
+
+                items.append(
+                    item
+                )
+
+                continue
+
+            phone = (
+                thread.external_address
+                or ""
+            )
+
+            if not phone:
+                summary[
+                    "unmatched"
+                ] += 1
+
+                item[
+                    "status"
+                ] = "UNMATCHED"
+
+                items.append(
+                    item
+                )
+
+                continue
+
+            match = (
+                self.match_client_by_phone(
+                    phone
+                )
+            )
+
+            if match.get(
+                "ambiguous"
+            ):
+                summary[
+                    "ambiguous"
+                ] += 1
+
+                item[
+                    "status"
+                ] = "AMBIGUOUS"
+
+                item[
+                    "matches"
+                ] = [
+                    candidate.get(
+                        "id"
+                    )
+                    for candidate
+                    in match.get(
+                        "matches",
+                        [],
+                    )
+                ]
+
+                items.append(
+                    item
+                )
+
+                continue
+
+            if not match.get(
+                "matched"
+            ):
+                summary[
+                    "unmatched"
+                ] += 1
+
+                item[
+                    "status"
+                ] = "UNMATCHED"
+
+                items.append(
+                    item
+                )
+
+                continue
+
+            client = (
+                match.get(
+                    "client"
+                )
+            )
+
+            if not client:
+                summary[
+                    "unmatched"
+                ] += 1
+
+                item[
+                    "status"
+                ] = "UNMATCHED"
+
+                items.append(
+                    item
+                )
+
+                continue
+
+            updated = (
+                self.repository
+                .update_thread_match(
+                    thread.id,
+                    client_id=int(
+                        client[
+                            "id"
+                        ]
+                    ),
+                    match_status=(
+                        THREAD_MATCH_MATCHED
+                    ),
+                )
+            )
+
+            summary[
+                "updated"
+            ] += 1
+
+            summary[
+                "matched"
+            ] += 1
+
+            item[
+                "status"
+            ] = "MATCHED"
+
+            item[
+                "client_id"
+            ] = updated.client_id
+
+            items.append(
+                item
+            )
+
+        return {
+            "account":
+                account,
+            "summary":
+                summary,
+            "items":
+                items,
+        }
+
     def get_or_create_whatsapp_thread(
         self,
         *,
