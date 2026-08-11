@@ -37,6 +37,15 @@ class CommunicationRepository(Protocol):
     ) -> CommunicationThread:
         ...
 
+    def get_or_create_thread_with_status(
+        self,
+        thread: CommunicationThread,
+    ) -> tuple[
+        CommunicationThread,
+        bool,
+    ]:
+        ...
+
     def get_thread(
         self,
         thread_id: int,

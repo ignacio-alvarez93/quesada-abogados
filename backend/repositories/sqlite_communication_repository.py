@@ -347,6 +347,19 @@ class SQLiteCommunicationRepository:
         self,
         thread,
     ):
+        stored_thread, _created = (
+            self
+            .get_or_create_thread_with_status(
+                thread
+            )
+        )
+
+        return stored_thread
+
+    def get_or_create_thread_with_status(
+        self,
+        thread,
+    ):
         self.ensure_schema()
 
         with self._connection() as conn:
@@ -364,7 +377,10 @@ class SQLiteCommunicationRepository:
             ).fetchone()
 
             if row:
-                return self._thread_from_row(row)
+                return (
+                    self._thread_from_row(row),
+                    False,
+                )
 
             cursor = conn.execute(
                 """
@@ -407,7 +423,10 @@ class SQLiteCommunicationRepository:
                 (thread_id,),
             ).fetchone()
 
-            return self._thread_from_row(row)
+            return (
+                self._thread_from_row(row),
+                True,
+            )
 
     def get_thread(
         self,

@@ -239,6 +239,14 @@ class CommunicationServiceTest(
             second["thread"]
         )
 
+        self.assertTrue(
+            first["created"]
+        )
+
+        self.assertFalse(
+            second["created"]
+        )
+
         self.assertEqual(
             first_thread.id,
             second_thread.id,

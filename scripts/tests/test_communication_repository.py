@@ -223,6 +223,53 @@ class CommunicationRepositoryTest(
             second.id,
         )
 
+    def test_thread_creation_status_is_exact(
+        self,
+    ):
+        account = self._create_account()
+
+        candidate = CommunicationThread(
+            id=None,
+            account_id=account.id,
+            client_id=10,
+            external_thread_key=(
+                "phone:34600999111"
+            ),
+            external_address=(
+                "+34600999111"
+            ),
+            match_status=(
+                THREAD_MATCH_MATCHED
+            ),
+        )
+
+        first, first_created = (
+            self.repo
+            .get_or_create_thread_with_status(
+                candidate
+            )
+        )
+
+        second, second_created = (
+            self.repo
+            .get_or_create_thread_with_status(
+                candidate
+            )
+        )
+
+        self.assertTrue(
+            first_created
+        )
+
+        self.assertFalse(
+            second_created
+        )
+
+        self.assertEqual(
+            first.id,
+            second.id,
+        )
+
     def test_message_and_attempt_history(self):
         account = self._create_account()
 

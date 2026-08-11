@@ -264,6 +264,10 @@ class WhatsAppSyncService:
                 None,
             "persisted":
                 False,
+            "created":
+                False,
+            "reused":
+                False,
         }
 
         virtual_offset = getattr(
@@ -488,6 +492,16 @@ class WhatsAppSyncService:
         )
 
         result["persisted"] = True
+
+        created = bool(
+            persisted.get(
+                "created",
+                False,
+            )
+        )
+
+        result["created"] = created
+        result["reused"] = not created
 
         result["matched"] = bool(
             final_match.get("matched")
@@ -872,6 +886,18 @@ class WhatsAppSyncService:
                     for item in results
                     if item.get("persisted")
                 ),
+            "created":
+                sum(
+                    1
+                    for item in results
+                    if item.get("created")
+                ),
+            "reused":
+                sum(
+                    1
+                    for item in results
+                    if item.get("reused")
+                ),
             "unique_phone_threads":
                 len(
                     unique_phone_threads
@@ -993,6 +1019,18 @@ class WhatsAppSyncService:
                     1
                     for item in results
                     if item.get("persisted")
+                ),
+            "created":
+                sum(
+                    1
+                    for item in results
+                    if item.get("created")
+                ),
+            "reused":
+                sum(
+                    1
+                    for item in results
+                    if item.get("reused")
                 ),
         }
 

@@ -173,8 +173,15 @@ class FakeConnector:
 
 
 class FakeCommunicationService:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        created=True,
+    ):
         self.persist_calls = []
+        self.created = bool(
+            created
+        )
 
     def match_client_by_phone(
         self,
@@ -214,6 +221,8 @@ class FakeCommunicationService:
                     "id": 10,
                 },
             },
+            "created":
+                self.created,
         }
 
 
@@ -477,6 +486,14 @@ class WhatsAppSyncServiceTest(
 
         self.assertFalse(
             item["persisted"]
+        )
+
+        self.assertFalse(
+            item["created"]
+        )
+
+        self.assertFalse(
+            item["reused"]
         )
 
         self.assertEqual(
@@ -752,6 +769,29 @@ class WhatsAppSyncServiceTest(
             item["persisted"]
         )
 
+        self.assertTrue(
+            item["created"]
+        )
+
+        self.assertFalse(
+            item["reused"]
+        )
+
+        self.assertEqual(
+            result["summary"]["persisted"],
+            1,
+        )
+
+        self.assertEqual(
+            result["summary"]["created"],
+            1,
+        )
+
+        self.assertEqual(
+            result["summary"]["reused"],
+            0,
+        )
+
         self.assertEqual(
             item["thread_id"],
             50,
@@ -774,6 +814,57 @@ class WhatsAppSyncServiceTest(
                 "external_thread_key"
             ],
             "phone:34600123456",
+        )
+
+
+    def test_persist_reuses_existing_thread(
+        self,
+    ):
+        communication = (
+            FakeCommunicationService(
+                created=False,
+            )
+        )
+
+        service = WhatsAppSyncService(
+            connector=FakeConnector(),
+            communication_service=communication,
+        )
+
+        result = (
+            service.inspect_visible_chats(
+                limit=1,
+                persist=True,
+            )
+        )
+
+        item = result["items"][0]
+
+        self.assertTrue(
+            item["persisted"]
+        )
+
+        self.assertFalse(
+            item["created"]
+        )
+
+        self.assertTrue(
+            item["reused"]
+        )
+
+        self.assertEqual(
+            result["summary"]["persisted"],
+            1,
+        )
+
+        self.assertEqual(
+            result["summary"]["created"],
+            0,
+        )
+
+        self.assertEqual(
+            result["summary"]["reused"],
+            1,
         )
 
 

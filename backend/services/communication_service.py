@@ -160,9 +160,9 @@ class CommunicationService:
 
         client = match.get("client")
 
-        thread = (
+        thread, created = (
             self.repository
-            .get_or_create_thread(
+            .get_or_create_thread_with_status(
                 CommunicationThread(
                     id=None,
                     account_id=account.id,
@@ -221,6 +221,9 @@ class CommunicationService:
             "account": account,
             "thread": thread,
             "match": match,
+            "created": bool(
+                created
+            ),
         }
 
     def register_inbound_message(
