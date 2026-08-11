@@ -27,17 +27,111 @@ class FakeConnector:
             SimpleNamespace(
                 position=0,
                 display_name="CLIENTE",
+                virtual_offset=None,
             ),
         ]
 
-    def list_visible_chat_snapshots(
+        self.viewport_snapshots = {
+            0.0: [
+                SimpleNamespace(
+                    position=0,
+                    display_name="CLIENTE A",
+                    virtual_offset=0,
+                ),
+                SimpleNamespace(
+                    position=1,
+                    display_name="CLIENTE B",
+                    virtual_offset=76,
+                ),
+            ],
+            0.5: [
+                SimpleNamespace(
+                    position=0,
+                    display_name="CLIENTE B",
+                    virtual_offset=76,
+                ),
+                SimpleNamespace(
+                    position=1,
+                    display_name="CLIENTE C",
+                    virtual_offset=152,
+                ),
+            ],
+            1.0: [
+                SimpleNamespace(
+                    position=0,
+                    display_name="CLIENTE C",
+                    virtual_offset=152,
+                ),
+            ],
+        }
+
+        self.current_ratio = 0.0
+
+    def prepare_chat_interface(
         self,
     ):
-        return self.snapshots
+        return {
+            "ready": True,
+            "chat_list": {
+                "total_rows": 3,
+            },
+        }
+
+    def scroll_chat_list_to_ratio(
+        self,
+        ratio,
+    ):
+        self.current_ratio = float(
+            ratio
+        )
+
+        return {
+            "moved": True,
+            "ratio":
+                self.current_ratio,
+        }
+
+    def list_visible_chat_snapshots(
+        self,
+        *,
+        viewport_only=False,
+    ):
+        if not viewport_only:
+            return self.snapshots
+
+        key = min(
+            self.viewport_snapshots,
+            key=lambda candidate: abs(
+                candidate
+                - self.current_ratio
+            ),
+        )
+
+        return (
+            self.viewport_snapshots[
+                key
+            ]
+        )
+
+    def open_chat_by_virtual_offset(
+        self,
+        virtual_offset,
+        *,
+        expected_display_name=None,
+    ):
+        return {
+            "opened": True,
+            "virtual_offset":
+                int(
+                    virtual_offset
+                ),
+        }
 
     def open_chat(
         self,
         _position,
+        *,
+        expected_display_name=None,
     ):
         return {
             "opened": True,
@@ -214,6 +308,210 @@ class WhatsAppSyncServiceTest(
         self.assertEqual(
             communication.persist_calls,
             [],
+        )
+
+    def test_full_traversal_deduplicates_virtual_offsets(
+        self,
+    ):
+        service = WhatsAppSyncService(
+            connector=FakeConnector(),
+            communication_service=(
+                FakeCommunicationService()
+            ),
+        )
+
+        result = (
+            service.inspect_all_chats(
+                persist=False,
+                retries=0,
+                step_ratio=0.5,
+                wait_seconds=0,
+            )
+        )
+
+        summary = result[
+            "summary"
+        ]
+
+        self.assertEqual(
+            summary["expected_rows"],
+            3,
+        )
+
+        self.assertEqual(
+            summary["visited_rows"],
+            3,
+        )
+
+        self.assertTrue(
+            summary[
+                "coverage_complete"
+            ]
+        )
+
+        self.assertEqual(
+            summary[
+                "initial_pass_rows"
+            ],
+            3,
+        )
+
+        self.assertFalse(
+            summary[
+                "recovery_pass_used"
+            ]
+        )
+
+        self.assertEqual(
+            summary[
+                "recovery_pass_rows"
+            ],
+            0,
+        )
+
+        offsets = [
+            item[
+                "virtual_offset"
+            ]
+            for item in result[
+                "items"
+            ]
+        ]
+
+        self.assertEqual(
+            offsets,
+            [
+                0,
+                76,
+                152,
+            ],
+        )
+
+    def test_full_traversal_recovers_missing_virtual_offset(
+        self,
+    ):
+        connector = FakeConnector()
+
+        connector.viewport_snapshots = {
+            0.0: [
+                SimpleNamespace(
+                    position=0,
+                    display_name="CLIENTE A",
+                    virtual_offset=0,
+                ),
+            ],
+            0.25: [
+                SimpleNamespace(
+                    position=1,
+                    display_name="CLIENTE RECUPERADO",
+                    virtual_offset=114,
+                ),
+            ],
+            0.5: [
+                SimpleNamespace(
+                    position=2,
+                    display_name="CLIENTE B",
+                    virtual_offset=76,
+                ),
+            ],
+            1.0: [
+                SimpleNamespace(
+                    position=3,
+                    display_name="CLIENTE C",
+                    virtual_offset=152,
+                ),
+            ],
+        }
+
+        def prepare():
+            return {
+                "ready": True,
+                "chat_list": {
+                    "total_rows": 4,
+                },
+            }
+
+        connector.prepare_chat_interface = (
+            prepare
+        )
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=(
+                FakeCommunicationService()
+            ),
+        )
+
+        result = (
+            service.inspect_all_chats(
+                persist=False,
+                retries=0,
+                step_ratio=0.5,
+                wait_seconds=0,
+            )
+        )
+
+        summary = result[
+            "summary"
+        ]
+
+        self.assertEqual(
+            summary[
+                "expected_rows"
+            ],
+            4,
+        )
+
+        self.assertEqual(
+            summary[
+                "initial_pass_rows"
+            ],
+            3,
+        )
+
+        self.assertTrue(
+            summary[
+                "recovery_pass_used"
+            ]
+        )
+
+        self.assertEqual(
+            summary[
+                "recovery_pass_rows"
+            ],
+            1,
+        )
+
+        self.assertEqual(
+            summary[
+                "visited_rows"
+            ],
+            4,
+        )
+
+        self.assertTrue(
+            summary[
+                "coverage_complete"
+            ]
+        )
+
+        offsets = {
+            item[
+                "virtual_offset"
+            ]
+            for item in result[
+                "items"
+            ]
+        }
+
+        self.assertEqual(
+            offsets,
+            {
+                0,
+                76,
+                114,
+                152,
+            },
         )
 
     def test_persist_creates_thread(

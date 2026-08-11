@@ -7,6 +7,7 @@ from backend.automation.connectors.whatsapp_connector import (
     WhatsAppChatSnapshot,
     WhatsAppConnector,
     extract_phone_from_profile_text,
+    normalize_chat_identity,
 )
 
 
@@ -46,6 +47,28 @@ class FakeBrowser:
 class WhatsAppChatExtractorTest(
     unittest.TestCase
 ):
+    def test_normalize_chat_identity_removes_visual_symbols(
+        self,
+    ):
+        self.assertEqual(
+            normalize_chat_identity(
+                "😍Mi Amor❤️♾️"
+            ),
+            "mi amor",
+        )
+
+    def test_normalize_chat_identity_preserves_textual_difference(
+        self,
+    ):
+        self.assertNotEqual(
+            normalize_chat_identity(
+                "Tatiana"
+            ),
+            normalize_chat_identity(
+                "Tatiana Perez"
+            ),
+        )
+
     def test_extract_phone_from_contact_profile(
         self,
     ):
@@ -104,6 +127,8 @@ class WhatsAppChatExtractorTest(
             [
                 {
                     "position": 3,
+                    "virtual_offset":
+                        228,
                     "display_name":
                         "CLIENTE",
                     "primary_detail":
@@ -149,6 +174,137 @@ class WhatsAppChatExtractorTest(
             4,
         )
 
+        self.assertEqual(
+            result[0].virtual_offset,
+            228,
+        )
+
+    def test_list_snapshots_can_filter_viewport(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "position": 0,
+                    "virtual_offset": 0,
+                    "in_viewport": True,
+                    "display_name":
+                        "VISIBLE",
+                    "primary_detail": "",
+                    "preview": "",
+                    "unread_count": 0,
+                },
+                {
+                    "position": 1,
+                    "virtual_offset": 76,
+                    "in_viewport": False,
+                    "display_name":
+                        "BUFFER",
+                    "primary_detail": "",
+                    "preview": "",
+                    "unread_count": 0,
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .list_visible_chat_snapshots(
+                viewport_only=True,
+            )
+        )
+
+        self.assertEqual(
+            len(result),
+            1,
+        )
+
+        self.assertEqual(
+            result[0].display_name,
+            "VISIBLE",
+        )
+
+    def test_scroll_chat_list_to_ratio(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "moved": True,
+                "ratio": 0.5,
+                "scroll_top": 100,
+                "max_scroll": 200,
+            }
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .scroll_chat_list_to_ratio(
+                0.5
+            )
+        )
+
+        self.assertTrue(
+            result["moved"]
+        )
+
+        self.assertEqual(
+            result["ratio"],
+            0.5,
+        )
+
+    def test_open_chat_by_virtual_offset(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            True,
+            4,
+            {
+                "opened": True,
+                "composer_aria_label":
+                    "Escribir un mensaje "
+                    "para CLIENTE",
+                "active_display_name":
+                    "CLIENTE",
+            },
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .open_chat_by_virtual_offset(
+                304,
+                timeout=1,
+            )
+        )
+
+        self.assertTrue(
+            result["opened"]
+        )
+
+        self.assertEqual(
+            result["position"],
+            4,
+        )
+
+        self.assertEqual(
+            result["virtual_offset"],
+            304,
+        )
+
     def test_open_chat_uses_mouse_click(
         self,
     ):
@@ -183,6 +339,161 @@ class WhatsAppChatExtractorTest(
             .mouse_clicked
         )
 
+    def test_open_chat_rejects_empty_normalized_expected_identity(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        wrong_chat_state = {
+            "opened": True,
+            "composer_aria_label":
+                "Escribir un mensaje",
+            "active_display_name":
+                "Tatiana",
+        }
+
+        browser.queue(
+            wrong_chat_state,
+            wrong_chat_state,
+            wrong_chat_state,
+            wrong_chat_state,
+            wrong_chat_state,
+            wrong_chat_state,
+            wrong_chat_state,
+            wrong_chat_state,
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector.open_chat(
+                0,
+                expected_display_name=(
+                    "❤️"
+                ),
+                timeout=1,
+            )
+        )
+
+        self.assertFalse(
+            result["opened"]
+        )
+
+        self.assertEqual(
+            result["reason"],
+            "CHAT_IDENTITY_MISMATCH",
+        )
+
+    def test_open_chat_accepts_normalized_visual_identity(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "opened": True,
+                "composer_aria_label":
+                    "Escribir un mensaje "
+                    "para Mi Amor",
+                "active_display_name":
+                    "Mi Amor",
+            },
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector.open_chat(
+                0,
+                expected_display_name=(
+                    "😍Mi Amor❤️♾️"
+                ),
+                timeout=1,
+            )
+        )
+
+        self.assertTrue(
+            result["opened"]
+        )
+
+        self.assertEqual(
+            result[
+                "active_display_name"
+            ],
+            "Mi Amor",
+        )
+
+    def test_open_chat_rejects_wrong_active_chat(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "opened": True,
+                "composer_aria_label":
+                    "Escribir un mensaje "
+                    "para CHAT ANTERIOR",
+                "active_display_name":
+                    "CHAT ANTERIOR",
+            },
+            {
+                "opened": True,
+                "composer_aria_label":
+                    "Escribir un mensaje "
+                    "para CHAT ANTERIOR",
+                "active_display_name":
+                    "CHAT ANTERIOR",
+            },
+            {
+                "opened": True,
+                "composer_aria_label":
+                    "Escribir un mensaje "
+                    "para CHAT ANTERIOR",
+                "active_display_name":
+                    "CHAT ANTERIOR",
+            },
+            {
+                "opened": True,
+                "composer_aria_label":
+                    "Escribir un mensaje "
+                    "para CHAT ANTERIOR",
+                "active_display_name":
+                    "CHAT ANTERIOR",
+            },
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector.open_chat(
+                7,
+                expected_display_name=(
+                    "CHAT ACTUAL"
+                ),
+                timeout=1,
+            )
+        )
+
+        self.assertFalse(
+            result["opened"]
+        )
+
+        self.assertEqual(
+            result["reason"],
+            "CHAT_IDENTITY_MISMATCH",
+        )
+
+        self.assertEqual(
+            result[
+                "active_display_name"
+            ],
+            "CHAT ANTERIOR",
+        )
+
     def test_open_profile_reuses_expected_drawer(
         self,
     ):
@@ -192,6 +503,10 @@ class WhatsAppChatExtractorTest(
         browser.queue(
             {
                 "found": True,
+                "has_content": True,
+                "recognized": True,
+                "header":
+                    "Info. del contacto",
                 "subject": "CLIENTE",
             },
         )
@@ -215,6 +530,96 @@ class WhatsAppChatExtractorTest(
             .mouse_clicked
         )
 
+    def test_open_profile_does_not_reuse_drawer_for_empty_identity(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "found": True,
+                "has_content": True,
+                "recognized": True,
+                "header":
+                    "Info. del contacto",
+                "subject":
+                    "Tatiana",
+            },
+            True,
+            False,
+            {
+                "found": True,
+                "has_content": True,
+                "recognized": True,
+                "header":
+                    "Info. del contacto",
+                "subject":
+                    "❤️",
+            },
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .open_contact_profile(
+                expected_display_name=(
+                    "❤️"
+                ),
+                timeout=1,
+            )
+        )
+
+        self.assertTrue(
+            result
+        )
+
+        self.assertTrue(
+            browser
+            .element
+            .mouse_clicked
+        )
+
+    def test_open_profile_reuses_normalized_visual_identity(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "found": True,
+                "has_content": True,
+                "recognized": True,
+                "header":
+                    "Info. del contacto",
+                "subject":
+                    "Mi Amor",
+            },
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .open_contact_profile(
+                expected_display_name=(
+                    "😍Mi Amor❤️♾️"
+                ),
+            )
+        )
+
+        self.assertTrue(
+            result
+        )
+
+        self.assertFalse(
+            browser
+            .element
+            .mouse_clicked
+        )
+
     def test_open_profile_refreshes_stale_drawer(
         self,
     ):
@@ -224,11 +629,23 @@ class WhatsAppChatExtractorTest(
         browser.queue(
             {
                 "found": True,
-                "subject": "CHAT ANTERIOR",
+                "has_content": True,
+                "recognized": True,
+                "header":
+                    "Info. del contacto",
+                "subject":
+                    "CHAT ANTERIOR",
             },
+            True,
+            False,
             {
                 "found": True,
-                "subject": "CLIENTE ACTUAL",
+                "has_content": True,
+                "recognized": True,
+                "header":
+                    "Info. del contacto",
+                "subject":
+                    "CLIENTE ACTUAL",
             },
         )
 
@@ -245,6 +662,100 @@ class WhatsAppChatExtractorTest(
         )
 
         self.assertTrue(result)
+
+        self.assertTrue(
+            browser
+            .element
+            .mouse_clicked
+        )
+
+    def test_open_profile_ignores_empty_drawer_container(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "found": True,
+                "has_content": False,
+                "recognized": False,
+                "header": None,
+                "subject": None,
+            },
+            {
+                "found": True,
+                "has_content": True,
+                "recognized": True,
+                "header":
+                    "Info. del contacto",
+                "subject":
+                    "CLIENTE",
+            },
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .open_contact_profile(
+                expected_display_name=(
+                    "CLIENTE"
+                ),
+                timeout=1,
+            )
+        )
+
+        self.assertTrue(
+            result
+        )
+
+        self.assertTrue(
+            browser
+            .element
+            .mouse_clicked
+        )
+
+    def test_open_profile_accepts_recognized_drawer_with_different_subject(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "found": False,
+                "has_content": False,
+                "recognized": False,
+                "header": None,
+                "subject": None,
+            },
+            {
+                "found": True,
+                "has_content": True,
+                "recognized": True,
+                "header":
+                    "Info. del contacto",
+                "subject":
+                    "+34 600 123 456",
+            },
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .open_contact_profile(
+                expected_display_name=(
+                    "CLIENTE GUARDADO"
+                ),
+                timeout=1,
+            )
+        )
+
+        self.assertTrue(
+            result
+        )
 
         self.assertTrue(
             browser

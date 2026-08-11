@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import time
+import unicodedata
 
 from backend.automation.browser_actions import (
     open_url,
@@ -76,11 +77,57 @@ class WhatsAppChatSnapshot:
     primary_detail: str = ""
     preview: str = ""
     unread_count: int = 0
+    virtual_offset: int | None = None
 
 
 _PHONE_PATTERN = re.compile(
     r"\+[0-9][0-9 ()-]{7,}"
 )
+
+
+def normalize_chat_identity(
+    value,
+):
+    """Normaliza un nombre visible para comparar identidad de conversación."""
+    text = unicodedata.normalize(
+        "NFKC",
+        str(value or ""),
+    )
+
+    cleaned = []
+
+    for char in text:
+        category = (
+            unicodedata.category(
+                char
+            )
+        )
+
+        if char in (
+            "\ufe0e",
+            "\ufe0f",
+        ):
+            continue
+
+        if category.startswith(
+            "S"
+        ):
+            continue
+
+        if category.startswith(
+            "C"
+        ):
+            continue
+
+        cleaned.append(
+            char
+        )
+
+    return " ".join(
+        "".join(
+            cleaned
+        ).split()
+    ).casefold()
 
 
 def extract_phone_from_profile_text(
@@ -381,8 +428,12 @@ class WhatsAppConnector:
                 info or {},
         }
 
-    def list_visible_chat_snapshots(self):
-        """Lee las filas de chat materializadas actualmente en el DOM."""
+    def list_visible_chat_snapshots(
+        self,
+        *,
+        viewport_only=False,
+    ):
+        """Lee filas materializadas, opcionalmente solo las presentes en viewport."""
         if not self.browser:
             raise RuntimeError(
                 "WhatsApp Web no está iniciado"
@@ -399,6 +450,25 @@ class WhatsAppConnector:
                 if (!grid) {
                     return [];
                 }
+
+                let scroll = grid;
+
+                while (
+                    scroll
+                    && scroll !== document.body
+                    && !(
+                        scroll.scrollHeight
+                        > scroll.clientHeight
+                    )
+                ) {
+                    scroll =
+                        scroll.parentElement;
+                }
+
+                const scrollRect =
+                    scroll
+                    ? scroll.getBoundingClientRect()
+                    : null;
 
                 return Array.from(
                     grid.querySelectorAll(
@@ -481,11 +551,45 @@ class WhatsAppConnector:
                             : ""
                         );
 
+                    const style =
+                        row.getAttribute(
+                            'style'
+                        ) || "";
+
+                    const transformMatch =
+                        style.match(
+                            /translateY\\(([-0-9.]+)px\\)/
+                        );
+
+                    const rowRect =
+                        row.getBoundingClientRect();
+
+                    const inViewport =
+                        Boolean(
+                            scrollRect
+                            && rowRect.bottom
+                                > scrollRect.top
+                            && rowRect.top
+                                < scrollRect.bottom
+                        );
+
                     return {
                         position:
                             Number(
                                 positionMatch[1]
                             ),
+
+                        in_viewport:
+                            inViewport,
+
+                        virtual_offset:
+                            transformMatch
+                            ? Math.round(
+                                Number(
+                                    transformMatch[1]
+                                )
+                            )
+                            : null,
 
                         display_name:
                             displayName,
@@ -522,6 +626,14 @@ class WhatsAppConnector:
         snapshots = []
 
         for row in rows:
+            if (
+                viewport_only
+                and not row.get(
+                    "in_viewport"
+                )
+            ):
+                continue
+
             display_name = str(
                 row.get(
                     "display_name"
@@ -564,18 +676,285 @@ class WhatsAppConnector:
                             or 0
                         ),
                     ),
+                    virtual_offset=(
+                        int(
+                            row[
+                                "virtual_offset"
+                            ]
+                        )
+                        if row.get(
+                            "virtual_offset"
+                        )
+                        is not None
+                        else None
+                    ),
                 )
             )
 
         return snapshots
 
+    def scroll_chat_list_to_ratio(
+        self,
+        ratio,
+    ):
+        """Desplaza la lista virtual de chats a una proporción 0..1."""
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        ratio = min(
+            1.0,
+            max(
+                0.0,
+                float(ratio),
+            ),
+        )
+
+        return (
+            self.browser.evaluate(
+                f"""
+                (() => {{
+                    const grid =
+                        document.querySelector(
+                            '[aria-label="Lista de chats"]'
+                        );
+
+                    if (!grid) {{
+                        return {{
+                            moved: false,
+                            reason:
+                                'CHAT_LIST_NOT_FOUND'
+                        }};
+                    }}
+
+                    let scroll = grid;
+
+                    while (
+                        scroll
+                        && scroll !== document.body
+                        && !(
+                            scroll.scrollHeight
+                            > scroll.clientHeight
+                        )
+                    ) {{
+                        scroll =
+                            scroll.parentElement;
+                    }}
+
+                    if (!scroll) {{
+                        return {{
+                            moved: false,
+                            reason:
+                                'SCROLL_CONTAINER_NOT_FOUND'
+                        }};
+                    }}
+
+                    const maxScroll =
+                        Math.max(
+                            0,
+                            scroll.scrollHeight
+                            - scroll.clientHeight
+                        );
+
+                    scroll.scrollTop =
+                        maxScroll * {ratio};
+
+                    return {{
+                        moved: true,
+                        ratio:
+                            {ratio},
+                        scroll_top:
+                            scroll.scrollTop,
+                        max_scroll:
+                            maxScroll
+                    }};
+                }})()
+                """
+            )
+            or {}
+        )
+
+    def open_chat_by_virtual_offset(
+        self,
+        virtual_offset,
+        *,
+        expected_display_name=None,
+        timeout=10,
+    ):
+        """Centra y abre una fila virtual identificada por su translateY."""
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        target_offset = int(
+            virtual_offset
+        )
+
+        centered = (
+            self.browser.evaluate(
+                f"""
+                (() => {{
+                    const rows =
+                        Array.from(
+                            document.querySelectorAll(
+                                '[data-testid^="list-item-"]'
+                            )
+                        );
+
+                    for (const row of rows) {{
+                        const style =
+                            row.getAttribute(
+                                'style'
+                            ) || '';
+
+                        const transformMatch =
+                            style.match(
+                                /translateY\\(([-0-9.]+)px\\)/
+                            );
+
+                        if (!transformMatch) {{
+                            continue;
+                        }}
+
+                        const offset =
+                            Math.round(
+                                Number(
+                                    transformMatch[1]
+                                )
+                            );
+
+                        if (
+                            offset !==
+                            {target_offset}
+                        ) {{
+                            continue;
+                        }}
+
+                        row.scrollIntoView({{
+                            block: 'center',
+                            inline: 'nearest'
+                        }});
+
+                        return true;
+                    }}
+
+                    return false;
+                }})()
+                """
+            )
+        )
+
+        if not centered:
+            return {
+                "opened": False,
+                "reason":
+                    "VIRTUAL_ROW_NOT_MATERIALIZED",
+                "virtual_offset":
+                    target_offset,
+            }
+
+        time.sleep(0.35)
+
+        position = (
+            self.browser.evaluate(
+                f"""
+                (() => {{
+                    const rows =
+                        Array.from(
+                            document.querySelectorAll(
+                                '[data-testid^="list-item-"]'
+                            )
+                        );
+
+                    for (const row of rows) {{
+                        const style =
+                            row.getAttribute(
+                                'style'
+                            ) || '';
+
+                        const transformMatch =
+                            style.match(
+                                /translateY\\(([-0-9.]+)px\\)/
+                            );
+
+                        if (!transformMatch) {{
+                            continue;
+                        }}
+
+                        const offset =
+                            Math.round(
+                                Number(
+                                    transformMatch[1]
+                                )
+                            );
+
+                        if (
+                            offset !==
+                            {target_offset}
+                        ) {{
+                            continue;
+                        }}
+
+                        const testid =
+                            row.getAttribute(
+                                'data-testid'
+                            ) || '';
+
+                        const positionMatch =
+                            testid.match(
+                                /^list-item-(\\d+)$/
+                            );
+
+                        return positionMatch
+                            ? Number(
+                                positionMatch[1]
+                            )
+                            : null;
+                    }}
+
+                    return null;
+                }})()
+                """
+            )
+        )
+
+        if position is None:
+            return {
+                "opened": False,
+                "reason":
+                    "VIRTUAL_ROW_NOT_MATERIALIZED",
+                "virtual_offset":
+                    target_offset,
+            }
+
+        result = self.open_chat(
+            int(position),
+            expected_display_name=(
+                expected_display_name
+            ),
+            timeout=timeout,
+        )
+
+        result[
+            "virtual_offset"
+        ] = target_offset
+
+        result[
+            "position"
+        ] = int(position)
+
+        return result
+
     def open_chat(
         self,
         position,
         *,
+        expected_display_name=None,
         timeout=10,
     ):
-        """Abre un chat mediante mouse_click y verifica que aparece el composer."""
+        """Abre un chat y verifica que la conversación esperada quedó activa."""
         if not self.browser:
             raise RuntimeError(
                 "WhatsApp Web no está iniciado"
@@ -583,6 +962,17 @@ class WhatsAppConnector:
 
         position = int(
             position
+        )
+
+        expected_name = str(
+            expected_display_name
+            or ""
+        ).strip()
+
+        expected_identity = (
+            normalize_chat_identity(
+                expected_name
+            )
         )
 
         selector = (
@@ -634,10 +1024,26 @@ class WhatsAppConnector:
                                 '[data-testid="conversation-compose-box-input"]'
                             );
 
+                        const title =
+                            document.querySelector(
+                                '[data-testid="conversation-info-header-chat-title"]'
+                            );
+
+                        const activeName =
+                            title
+                            ? String(
+                                title.innerText
+                                || title.textContent
+                                || ""
+                            ).trim()
+                            : "";
+
                         if (!composer) {
                             return {
                                 opened: false,
-                                composer_aria_label: null
+                                composer_aria_label: null,
+                                active_display_name:
+                                    activeName
                             };
                         }
 
@@ -646,7 +1052,9 @@ class WhatsAppConnector:
                             composer_aria_label:
                                 composer.getAttribute(
                                     'aria-label'
-                                )
+                                ),
+                            active_display_name:
+                                activeName
                         };
                     })()
                     """
@@ -659,7 +1067,37 @@ class WhatsAppConnector:
                     "opened"
                 )
             ):
-                return result
+                active_name = str(
+                    result.get(
+                        "active_display_name"
+                    )
+                    or ""
+                ).strip()
+
+                active_identity = (
+                    normalize_chat_identity(
+                        active_name
+                    )
+                )
+
+                if not expected_name:
+                    return result
+
+                if (
+                    active_name
+                    == expected_name
+                ):
+                    return result
+
+                if (
+                    expected_identity
+                    and active_identity
+                    and (
+                        active_identity
+                        == expected_identity
+                    )
+                ):
+                    return result
 
             time.sleep(0.25)
 
@@ -667,6 +1105,23 @@ class WhatsAppConnector:
             "opened": False,
             "composer_aria_label":
                 None,
+            "active_display_name":
+                (
+                    result.get(
+                        "active_display_name"
+                    )
+                    if isinstance(
+                        result,
+                        dict,
+                    )
+                    else None
+                ),
+            "reason":
+                (
+                    "CHAT_IDENTITY_MISMATCH"
+                    if expected_name
+                    else "OPEN_TIMEOUT"
+                ),
         }
 
     def open_contact_profile(
@@ -675,7 +1130,7 @@ class WhatsAppConnector:
         expected_display_name=None,
         timeout=10,
     ):
-        """Garantiza que esté abierto el perfil del chat esperado."""
+        """Abre de forma fiable el perfil correspondiente al chat activo."""
         if not self.browser:
             raise RuntimeError(
                 "WhatsApp Web no está iniciado"
@@ -686,56 +1141,146 @@ class WhatsAppConnector:
             or ""
         ).strip()
 
-        drawer_state = (
-            self.browser.evaluate(
-                """
-                (() => {
-                    const drawer =
-                        document.querySelector(
-                            '[data-testid="drawer-right"]'
-                        );
+        expected_identity = (
+            normalize_chat_identity(
+                expected_name
+            )
+        )
 
-                    if (!drawer) {
-                        return {
-                            found: false,
-                            subject: null
-                        };
-                    }
+        def read_drawer_state():
+            return (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const drawer =
+                            document.querySelector(
+                                '[data-testid="drawer-right"]'
+                            );
 
-                    const lines =
-                        String(
-                            drawer.innerText
-                            || ""
-                        )
-                        .split('\\n')
-                        .map(
-                            value => value.trim()
-                        )
-                        .filter(Boolean);
+                        if (!drawer) {
+                            return {
+                                found: false,
+                                has_content: false,
+                                recognized: false,
+                                header: null,
+                                subject: null
+                            };
+                        }
 
-                    return {
-                        found: true,
-                        subject:
+                        const lines =
+                            String(
+                                drawer.innerText
+                                || ""
+                            )
+                            .split('\\n')
+                            .map(
+                                value => value.trim()
+                            )
+                            .filter(Boolean);
+
+                        const header =
+                            lines.length >= 1
+                            ? lines[0]
+                            : "";
+
+                        const subject =
                             lines.length >= 2
                             ? lines[1]
-                            : null
-                    };
-                })()
-                """
+                            : "";
+
+                        const lowered =
+                            String(
+                                header
+                                || ""
+                            )
+                            .trim()
+                            .toLowerCase();
+
+                        const recognized =
+                            (
+                                lowered.startsWith(
+                                    'info. del contacto'
+                                )
+                                || lowered.startsWith(
+                                    'info. del grupo'
+                                )
+                            );
+
+                        return {
+                            found: true,
+                            has_content:
+                                lines.length > 0,
+                            recognized:
+                                recognized,
+                            header:
+                                header || null,
+                            subject:
+                                subject || null
+                        };
+                    })()
+                    """
+                )
+                or {}
             )
-            or {}
+
+        drawer_state = (
+            read_drawer_state()
         )
 
         if (
-            drawer_state.get("found")
-            and expected_name
-            and str(
-                drawer_state.get("subject")
+            drawer_state.get(
+                "recognized"
+            )
+        ):
+            drawer_subject = str(
+                drawer_state.get(
+                    "subject"
+                )
                 or ""
             ).strip()
-            == expected_name
+
+            drawer_identity = (
+                normalize_chat_identity(
+                    drawer_subject
+                )
+            )
+
+            if not expected_name:
+                return True
+
+            if (
+                drawer_subject
+                == expected_name
+            ):
+                return True
+
+            if (
+                expected_identity
+                and drawer_identity
+                and (
+                    drawer_identity
+                    == expected_identity
+                )
+            ):
+                return True
+
+        if drawer_state.get(
+            "has_content"
         ):
-            return True
+            closed = (
+                self.close_contact_profile(
+                    timeout=min(
+                        3,
+                        max(
+                            1,
+                            int(timeout),
+                        ),
+                    )
+                )
+            )
+
+            if not closed:
+                return False
 
         element = (
             self.browser
@@ -773,62 +1318,17 @@ class WhatsAppConnector:
             < deadline
         ):
             state = (
-                self.browser.evaluate(
-                    """
-                    (() => {
-                        const drawer =
-                            document.querySelector(
-                                '[data-testid="drawer-right"]'
-                            );
-
-                        if (!drawer) {
-                            return {
-                                found: false,
-                                subject: null
-                            };
-                        }
-
-                        const lines =
-                            String(
-                                drawer.innerText
-                                || ""
-                            )
-                            .split('\\n')
-                            .map(
-                                value => value.trim()
-                            )
-                            .filter(Boolean);
-
-                        return {
-                            found: true,
-                            subject:
-                                lines.length >= 2
-                                ? lines[1]
-                                : null
-                        };
-                    })()
-                    """
-                )
-                or {}
+                read_drawer_state()
             )
 
-            if not state.get("found"):
-                time.sleep(0.25)
-                continue
-
-            if not expected_name:
-                return True
-
-            if (
-                str(
-                    state.get("subject")
-                    or ""
-                ).strip()
-                == expected_name
+            if state.get(
+                "recognized"
             ):
                 return True
 
-            time.sleep(0.25)
+            time.sleep(
+                0.25
+            )
 
         return False
 

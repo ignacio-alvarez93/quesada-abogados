@@ -129,11 +129,31 @@ class WhatsAppSyncService:
                 False,
         }
 
-        opened = (
-            self.connector.open_chat(
-                snapshot.position
-            )
+        virtual_offset = getattr(
+            snapshot,
+            "virtual_offset",
+            None,
         )
+
+        if virtual_offset is not None:
+            opened = (
+                self.connector
+                .open_chat_by_virtual_offset(
+                    virtual_offset,
+                    expected_display_name=(
+                        snapshot.display_name
+                    ),
+                )
+            )
+        else:
+            opened = (
+                self.connector.open_chat(
+                    snapshot.position,
+                    expected_display_name=(
+                        snapshot.display_name
+                    ),
+                )
+            )
 
         if not opened.get("opened"):
             result["reason"] = (
@@ -315,6 +335,386 @@ class WhatsAppSyncService:
         )
 
         return result
+
+    def inspect_all_chats(
+        self,
+        *,
+        persist=False,
+        retries=1,
+        step_ratio=0.02,
+        wait_seconds=0.35,
+    ):
+        """Recorre la lista virtual y recupera huecos de cobertura."""
+        import time
+
+        prepared = (
+            self.connector
+            .prepare_chat_interface()
+        )
+
+        if not prepared.get("ready"):
+            raise RuntimeError(
+                "Interfaz WhatsApp no preparada"
+            )
+
+        expected_rows = int(
+            prepared
+            .get(
+                "chat_list",
+                {},
+            )
+            .get(
+                "total_rows",
+                0,
+            )
+            or 0
+        )
+
+        step = float(
+            step_ratio
+        )
+
+        if (
+            step <= 0
+            or step > 1
+        ):
+            raise ValueError(
+                "step_ratio debe estar entre 0 y 1"
+            )
+
+        max_retries = max(
+            0,
+            int(retries),
+        )
+
+        wait = max(
+            0.0,
+            float(wait_seconds),
+        )
+
+        visited_offsets = set()
+        results = []
+
+        def build_ratios(
+            pass_step,
+        ):
+            ratios = []
+            current = 0.0
+
+            while current < 1.0:
+                ratios.append(
+                    round(
+                        current,
+                        6,
+                    )
+                )
+
+                current += pass_step
+
+            if (
+                not ratios
+                or ratios[-1] != 1.0
+            ):
+                ratios.append(
+                    1.0
+                )
+
+            return ratios
+
+        def process_snapshot(
+            snapshot,
+            virtual_offset,
+        ):
+            item = None
+
+            for attempt in range(
+                max_retries + 1
+            ):
+                try:
+                    item = (
+                        self.inspect_snapshot(
+                            snapshot,
+                            persist=persist,
+                        )
+                    )
+                except Exception as exc:
+                    item = {
+                        "position":
+                            int(
+                                snapshot.position
+                            ),
+                        "display_name":
+                            snapshot.display_name,
+                        "kind":
+                            CHAT_KIND_UNKNOWN,
+                        "status":
+                            SYNC_STATUS_ERROR,
+                        "reason":
+                            type(exc).__name__,
+                        "error":
+                            str(exc),
+                        "persisted":
+                            False,
+                    }
+
+                item[
+                    "virtual_offset"
+                ] = virtual_offset
+
+                item[
+                    "attempts"
+                ] = attempt + 1
+
+                if (
+                    item.get("status")
+                    != SYNC_STATUS_ERROR
+                ):
+                    break
+
+                if (
+                    attempt
+                    < max_retries
+                    and wait
+                ):
+                    time.sleep(
+                        min(
+                            1.0,
+                            max(
+                                0.1,
+                                wait,
+                            ),
+                        )
+                    )
+
+            return item
+
+        def run_pass(
+            pass_step,
+        ):
+            discovered_before = len(
+                visited_offsets
+            )
+
+            for ratio in build_ratios(
+                pass_step
+            ):
+                movement = (
+                    self.connector
+                    .scroll_chat_list_to_ratio(
+                        ratio
+                    )
+                )
+
+                if not movement.get(
+                    "moved"
+                ):
+                    continue
+
+                if wait:
+                    time.sleep(
+                        wait
+                    )
+
+                snapshots = (
+                    self.connector
+                    .list_visible_chat_snapshots(
+                        viewport_only=True,
+                    )
+                )
+
+                snapshots = sorted(
+                    snapshots,
+                    key=lambda item: (
+                        item.virtual_offset
+                        if item.virtual_offset
+                        is not None
+                        else float("inf")
+                    ),
+                )
+
+                for snapshot in snapshots:
+                    virtual_offset = getattr(
+                        snapshot,
+                        "virtual_offset",
+                        None,
+                    )
+
+                    if virtual_offset is None:
+                        continue
+
+                    virtual_offset = int(
+                        virtual_offset
+                    )
+
+                    if (
+                        virtual_offset
+                        in visited_offsets
+                    ):
+                        continue
+
+                    visited_offsets.add(
+                        virtual_offset
+                    )
+
+                    item = (
+                        process_snapshot(
+                            snapshot,
+                            virtual_offset,
+                        )
+                    )
+
+                    results.append(
+                        item
+                    )
+
+            return (
+                len(
+                    visited_offsets
+                )
+                - discovered_before
+            )
+
+        initial_pass_rows = (
+            run_pass(
+                step
+            )
+        )
+
+        recovery_pass_used = (
+            expected_rows > 0
+            and len(
+                visited_offsets
+            )
+            < expected_rows
+        )
+
+        recovery_pass_rows = 0
+
+        if recovery_pass_used:
+            recovery_step = max(
+                0.005,
+                min(
+                    step / 2.0,
+                    0.01,
+                ),
+            )
+
+            recovery_pass_rows = (
+                run_pass(
+                    recovery_step
+                )
+            )
+
+        unique_phone_threads = {
+            item.get(
+                "external_thread_key"
+            )
+            for item in results
+            if item.get(
+                "external_thread_key"
+            )
+        }
+
+        summary = {
+            "expected_rows":
+                expected_rows,
+            "visited_rows":
+                len(
+                    visited_offsets
+                ),
+            "coverage_complete":
+                (
+                    expected_rows > 0
+                    and len(
+                        visited_offsets
+                    )
+                    == expected_rows
+                ),
+            "initial_pass_rows":
+                initial_pass_rows,
+            "recovery_pass_used":
+                recovery_pass_used,
+            "recovery_pass_rows":
+                recovery_pass_rows,
+            "ready":
+                sum(
+                    1
+                    for item in results
+                    if item.get("status")
+                    == SYNC_STATUS_READY
+                ),
+            "skipped":
+                sum(
+                    1
+                    for item in results
+                    if item.get("status")
+                    == SYNC_STATUS_SKIPPED
+                ),
+            "errors":
+                sum(
+                    1
+                    for item in results
+                    if item.get("status")
+                    == SYNC_STATUS_ERROR
+                ),
+            "individual":
+                sum(
+                    1
+                    for item in results
+                    if item.get("kind")
+                    == CHAT_KIND_INDIVIDUAL
+                ),
+            "groups":
+                sum(
+                    1
+                    for item in results
+                    if item.get("kind")
+                    == CHAT_KIND_GROUP
+                ),
+            "self":
+                sum(
+                    1
+                    for item in results
+                    if item.get("kind")
+                    == CHAT_KIND_SELF
+                ),
+            "unknown":
+                sum(
+                    1
+                    for item in results
+                    if item.get("kind")
+                    == CHAT_KIND_UNKNOWN
+                ),
+            "matched":
+                sum(
+                    1
+                    for item in results
+                    if item.get("matched")
+                ),
+            "ambiguous":
+                sum(
+                    1
+                    for item in results
+                    if item.get("ambiguous")
+                ),
+            "persisted":
+                sum(
+                    1
+                    for item in results
+                    if item.get("persisted")
+                ),
+            "unique_phone_threads":
+                len(
+                    unique_phone_threads
+                ),
+        }
+
+        return {
+            "summary":
+                summary,
+            "items":
+                results,
+        }
 
     def inspect_visible_chats(
         self,
