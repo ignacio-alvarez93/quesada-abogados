@@ -53,6 +53,7 @@ def communications_view(
     *,
     service=None,
     whatsapp_runtime=None,
+    current_username=None,
     initial_thread_id=None,
     on_open_cliente=None,
     on_open_expediente=None,
@@ -91,6 +92,8 @@ def communications_view(
         "context_error": None,
         "messages": [],
         "messages_error": None,
+        "sending": False,
+        "send_blocked_thread_ids": set(),
         "search": "",
         "linkage": "ALL",
         "page": 1,
@@ -406,14 +409,36 @@ def communications_view(
     def select_thread(
         thread_id,
     ):
-        state[
-            "selected_thread_id"
-        ] = int(
+        previous_thread_id = (
+            state.get(
+                "selected_thread_id"
+            )
+        )
+
+        new_thread_id = int(
             thread_id
         )
 
+        state[
+            "selected_thread_id"
+        ] = new_thread_id
+
+        if (
+            previous_thread_id
+            != new_thread_id
+        ):
+            try:
+                _clear_composer()
+            except NameError:
+                pass
+
         load_thread_context()
         load_thread_messages()
+
+        try:
+            _refresh_composer_controls()
+        except NameError:
+            pass
 
         _safe_update()
 
@@ -1413,15 +1438,328 @@ def communications_view(
         )
 
 
-    def _disabled_send_button():
-        button = primary_button(
-            "Enviar",
+    composer_input = ft.TextField(
+        hint_text="Escribir mensaje...",
+        border_radius=10,
+        expand=True,
+        multiline=True,
+        min_lines=1,
+        max_lines=4,
+    )
+
+    send_button = primary_button(
+        "Enviar",
+        None,
+    )
+
+    def _selected_thread_send_blocked():
+        thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if thread_id is None:
+            return False
+
+        return (
+            int(thread_id)
+            in state.get(
+                "send_blocked_thread_ids",
+                set(),
+            )
+        )
+
+    def _refresh_composer_controls():
+        has_thread = (
+            state.get(
+                "selected_thread_id"
+            )
+            is not None
+        )
+
+        unavailable = (
+            whatsapp_runtime is None
+        )
+
+        blocked = (
+            _selected_thread_send_blocked()
+        )
+
+        sending = bool(
+            state.get(
+                "sending"
+            )
+        )
+
+        composer_input.disabled = (
+            not has_thread
+            or unavailable
+            or blocked
+            or sending
+        )
+
+        send_button.disabled = (
+            not has_thread
+            or unavailable
+            or blocked
+            or sending
+        )
+
+    def _clear_composer():
+        composer_input.value = ""
+
+    def _run_background(
+        target,
+    ):
+        runner = getattr(
+            page,
+            "run_thread",
             None,
         )
 
-        button.disabled = True
+        if callable(runner):
+            runner(target)
+            return
 
-        return button
+        # No ejecutamos el transporte de WhatsApp
+        # en el hilo UI como fallback silencioso.
+        raise RuntimeError(
+            "Esta versión de Flet no dispone "
+            "de page.run_thread()"
+        )
+
+    def _finish_send_ui(
+        *,
+        thread_id,
+        sent_text,
+        result=None,
+        exception=None,
+    ):
+        uncertain = bool(
+            result
+            and result.get(
+                "uncertain",
+                False,
+            )
+        )
+
+        ok = bool(
+            result
+            and result.get(
+                "ok",
+                False,
+            )
+        )
+
+        if uncertain:
+            state.setdefault(
+                "send_blocked_thread_ids",
+                set(),
+            ).add(
+                int(thread_id)
+            )
+
+        state["sending"] = False
+
+        # Recargar incluso tras un resultado no OK:
+        # el outbound puede haber dejado ERROR/SENDING
+        # persistido y debe verse en el historial.
+        try:
+            load_data(
+                preserve_selection=True,
+            )
+        except Exception:
+            pass
+
+        selected_same_thread = (
+            state.get(
+                "selected_thread_id"
+            )
+            == int(thread_id)
+        )
+
+        if (
+            ok
+            and selected_same_thread
+            and str(
+                composer_input.value
+                or ""
+            )
+            == sent_text
+        ):
+            _clear_composer()
+
+        _refresh_composer_controls()
+        _safe_update()
+
+        if exception is not None:
+            _show_message(
+                (
+                    "No se pudo enviar el mensaje: "
+                    f"{exception}"
+                ),
+                error=True,
+            )
+            return
+
+        if uncertain:
+            _show_message(
+                (
+                    "El estado del envío no pudo "
+                    "confirmarse con seguridad. "
+                    "No reenvíes este mensaje hasta "
+                    "revisar la conversación."
+                ),
+                error=True,
+            )
+            return
+
+        if not ok:
+            error = (
+                result.get(
+                    "error"
+                )
+                if result
+                else None
+            )
+
+            _show_message(
+                (
+                    "No se pudo enviar el mensaje"
+                    + (
+                        f": {error}"
+                        if error
+                        else "."
+                    )
+                ),
+                error=True,
+            )
+            return
+
+        _show_message(
+            "Mensaje enviado correctamente."
+        )
+
+    def send_message(
+        e=None,
+    ):
+        if state.get(
+            "sending"
+        ):
+            return
+
+        thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if thread_id is None:
+            _show_message(
+                "Selecciona una conversación.",
+                error=True,
+            )
+            return
+
+        if _selected_thread_send_blocked():
+            _show_message(
+                (
+                    "Esta conversación tiene un envío "
+                    "con estado incierto. Revísalo antes "
+                    "de volver a enviar."
+                ),
+                error=True,
+            )
+            return
+
+        text_to_send = str(
+            composer_input.value
+            or ""
+        ).strip()
+
+        if not text_to_send:
+            return
+
+        if whatsapp_runtime is None:
+            _show_message(
+                (
+                    "El runtime de WhatsApp "
+                    "no está disponible."
+                ),
+                error=True,
+            )
+            return
+
+        captured_thread_id = int(
+            thread_id
+        )
+
+        state["sending"] = True
+        _refresh_composer_controls()
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        username = str(
+            current_username
+            or "ERP"
+        ).strip() or "ERP"
+
+        def worker():
+            try:
+                result = (
+                    whatsapp_runtime
+                    .send_text_message(
+                        thread_id=(
+                            captured_thread_id
+                        ),
+                        body_text=(
+                            text_to_send
+                        ),
+                        created_by=username,
+                        sent_by=username,
+                    )
+                )
+
+                _finish_send_ui(
+                    thread_id=(
+                        captured_thread_id
+                    ),
+                    sent_text=(
+                        text_to_send
+                    ),
+                    result=result,
+                )
+
+            except Exception as exc:
+                _finish_send_ui(
+                    thread_id=(
+                        captured_thread_id
+                    ),
+                    sent_text=(
+                        text_to_send
+                    ),
+                    exception=exc,
+                )
+
+        try:
+            _run_background(
+                worker
+            )
+
+        except Exception as exc:
+            state["sending"] = False
+            _refresh_composer_controls()
+
+            _show_message(
+                str(exc),
+                error=True,
+            )
+
+    send_button.on_click = (
+        send_message
+    )
+
+    _refresh_composer_controls()
 
 
     def build_chat_panel():
@@ -1535,15 +1873,8 @@ def communications_view(
                         ),
                         content=ft.Row(
                             controls=[
-                                ft.TextField(
-                                    hint_text=(
-                                        "Escribir mensaje..."
-                                    ),
-                                    disabled=True,
-                                    border_radius=10,
-                                    expand=True,
-                                ),
-                                _disabled_send_button(),
+                                composer_input,
+                                send_button,
                             ],
                             spacing=10,
                         ),

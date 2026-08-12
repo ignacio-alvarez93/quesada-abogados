@@ -265,6 +265,17 @@ def main(page: ft.Page):
                 whatsapp_runtime=(
                     whatsapp_runtime
                 ),
+                current_username=(
+                    (
+                        current_user.get(
+                            "value"
+                        )
+                        or {}
+                    ).get(
+                        "username"
+                    )
+                    or "ERP"
+                ),
                 initial_thread_id=kwargs.get(
                     "thread_id"
                 ),
