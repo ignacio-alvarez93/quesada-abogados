@@ -32,6 +32,19 @@ class FakeConnector:
         self.sent = []
         self.sync_snapshots = []
 
+        self.open_phone_calls = []
+        self.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone": (
+                "+34600111222"
+            ),
+            "observed_phone": (
+                "+34600111222"
+            ),
+        }
+
         self.__class__.instances.append(
             self
         )
@@ -65,6 +78,23 @@ class FakeConnector:
         self.browser = None
         return True
 
+    def open_chat_by_phone(
+        self,
+        phone,
+        *,
+        timeout=15,
+    ):
+        self.open_phone_calls.append(
+            (
+                phone,
+                timeout,
+            )
+        )
+
+        return dict(
+            self.routing_result
+        )
+
     def send_text_message(
         self,
         text,
@@ -94,8 +124,39 @@ class FakeConnector:
         )
 
 
+class FakeThread:
+    def __init__(
+        self,
+        *,
+        thread_id=7,
+        external_address=(
+            "+34 600 111 222"
+        ),
+    ):
+        self.id = thread_id
+        self.external_address = (
+            external_address
+        )
+
+
 class FakeCommunicationService:
-    pass
+    def __init__(
+        self,
+    ):
+        self.thread = FakeThread()
+
+    def get_thread(
+        self,
+        thread_id,
+    ):
+        if (
+            self.thread
+            and int(thread_id)
+            == int(self.thread.id)
+        ):
+            return self.thread
+
+        return None
 
 
 class WhatsAppRuntimeServiceTest(
@@ -239,6 +300,105 @@ class WhatsAppRuntimeServiceTest(
                 FakeConnector.instances
             ),
             2,
+        )
+
+
+    def test_verify_and_open_thread_routes_by_persisted_phone(
+        self,
+    ):
+        runtime = self._runtime()
+
+        result = (
+            runtime
+            .verify_and_open_thread(
+                7,
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        connector = runtime.connector
+
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    9,
+                )
+            ],
+        )
+
+        self.assertTrue(
+            result[
+                "routing"
+            ][
+                "verified"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "thread"
+            ].id,
+            7,
+        )
+
+    def test_verify_and_open_thread_rejects_identity_mismatch(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": False,
+            "reason":
+                "PHONE_MISMATCH",
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600999888",
+        }
+
+        with self.assertRaises(
+            RuntimeError
+        ) as raised:
+            runtime.verify_and_open_thread(
+                7,
+                wait_timeout=1,
+            )
+
+        self.assertIn(
+            "PHONE_MISMATCH",
+            str(
+                raised.exception
+            ),
+        )
+
+    def test_verify_and_open_thread_rejects_missing_phone(
+        self,
+    ):
+        runtime = self._runtime()
+
+        runtime.communication_service.thread = (
+            FakeThread(
+                external_address=None,
+            )
+        )
+
+        with self.assertRaises(
+            ValueError
+        ):
+            runtime.verify_and_open_thread(
+                7,
+                wait_timeout=1,
+            )
+
+        self.assertEqual(
+            runtime.connector.open_phone_calls,
+            [],
         )
 
 

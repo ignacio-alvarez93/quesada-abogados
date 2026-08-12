@@ -139,6 +139,23 @@ class CommunicationService:
             "phone": normalized,
         }
 
+    def get_thread(
+        self,
+        thread_id,
+    ):
+        if thread_id in (
+            None,
+            "",
+        ):
+            return None
+
+        return (
+            self.repository
+            .get_thread(
+                int(thread_id)
+            )
+        )
+
     def get_thread_context(
         self,
         thread_id,

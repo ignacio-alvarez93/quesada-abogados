@@ -205,14 +205,95 @@ class WhatsAppRuntimeService:
 
         return self._sync_service
 
+    def verify_and_open_thread(
+        self,
+        thread_id,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+    ):
+        connector = self.ensure_ready(
+            wait_timeout=wait_timeout,
+        )
+
+        thread = (
+            self.communication_service
+            .get_thread(
+                thread_id
+            )
+        )
+
+        if thread is None:
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
+        phone = str(
+            thread.external_address
+            or ""
+        ).strip()
+
+        if not phone:
+            raise ValueError(
+                "La conversación no tiene "
+                "teléfono WhatsApp verificable"
+            )
+
+        routing = (
+            connector
+            .open_chat_by_phone(
+                phone,
+                timeout=routing_timeout,
+            )
+        )
+
+        if not routing.get(
+            "verified"
+        ):
+            reason = (
+                routing.get(
+                    "reason"
+                )
+                or
+                "IDENTITY_UNVERIFIABLE"
+            )
+
+            raise RuntimeError(
+                "No se pudo verificar el "
+                "destinatario WhatsApp "
+                f"({reason})"
+            )
+
+        return {
+            "thread": thread,
+            "routing": routing,
+        }
+
     def send_text_message(
         self,
         *,
         wait_timeout=60,
+        routing_timeout=15,
         **kwargs,
     ):
-        self.ensure_ready(
+        thread_id = kwargs.get(
+            "thread_id"
+        )
+
+        if thread_id in (
+            None,
+            "",
+        ):
+            raise ValueError(
+                "thread_id es obligatorio"
+            )
+
+        self.verify_and_open_thread(
+            thread_id,
             wait_timeout=wait_timeout,
+            routing_timeout=(
+                routing_timeout
+            ),
         )
 
         return (

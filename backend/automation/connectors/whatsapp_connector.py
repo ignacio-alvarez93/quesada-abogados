@@ -31,6 +31,9 @@ from backend.automation.browser_session import (
     get_project_root,
     start_seleniumbase_chrome,
 )
+from backend.communications.phone_normalization import (
+    normalize_phone,
+)
 
 
 WHATSAPP_WEB_URL = (
@@ -934,6 +937,189 @@ class WhatsAppConnector:
             )
             or {}
         )
+
+    def open_chat_by_phone(
+        self,
+        phone,
+        *,
+        timeout=15,
+    ):
+        """Abre y verifica un chat individual por teléfono.
+
+        Un compositor visible no basta para considerar
+        correcta la navegación. La identidad final se
+        verifica leyendo el teléfono observable desde
+        Info. del contacto.
+
+        Si la identidad no puede verificarse, nunca
+        devuelve verified=True.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        expected = normalize_phone(
+            phone
+        )
+
+        if not expected.valid:
+            raise ValueError(
+                "Teléfono WhatsApp no válido"
+            )
+
+        target_url = (
+            "https://web.whatsapp.com/"
+            "send?phone="
+            + expected.digits
+        )
+
+        open_url(
+            self.browser,
+            target_url,
+        )
+
+        deadline = (
+            time.time()
+            + max(
+                1,
+                int(timeout),
+            )
+        )
+
+        composer_found = False
+
+        while time.time() < deadline:
+            composer_found = bool(
+                self.browser.evaluate(
+                    """
+                    (() => Boolean(
+                        document.querySelector(
+                            '[data-testid="conversation-compose-box-input"]'
+                        )
+                    ))()
+                    """
+                )
+            )
+
+            if composer_found:
+                break
+
+            time.sleep(0.25)
+
+        if not composer_found:
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "COMPOSER_NOT_FOUND",
+                "expected_phone":
+                    expected.e164,
+                "observed_phone":
+                    None,
+            }
+
+        profile_open = (
+            self.open_contact_profile(
+                timeout=min(
+                    10,
+                    max(
+                        1,
+                        int(timeout),
+                    ),
+                )
+            )
+        )
+
+        if not profile_open:
+            return {
+                "opened": True,
+                "verified": False,
+                "reason":
+                    "PROFILE_OPEN_FAILED",
+                "expected_phone":
+                    expected.e164,
+                "observed_phone":
+                    None,
+            }
+
+        try:
+            classification = (
+                self.classify_open_profile()
+            )
+
+            kind = classification.get(
+                "kind",
+                CHAT_KIND_UNKNOWN,
+            )
+
+            if (
+                kind
+                != CHAT_KIND_INDIVIDUAL
+            ):
+                return {
+                    "opened": True,
+                    "verified": False,
+                    "reason":
+                        "NOT_INDIVIDUAL_CHAT",
+                    "kind":
+                        kind,
+                    "expected_phone":
+                        expected.e164,
+                    "observed_phone":
+                        None,
+                }
+
+            observed_raw = (
+                self.get_open_contact_phone()
+            )
+
+            observed = normalize_phone(
+                observed_raw
+            )
+
+            if not observed.valid:
+                return {
+                    "opened": True,
+                    "verified": False,
+                    "reason":
+                        "PHONE_UNVERIFIABLE",
+                    "kind":
+                        kind,
+                    "expected_phone":
+                        expected.e164,
+                    "observed_phone":
+                        observed_raw,
+                }
+
+            verified = (
+                observed.digits
+                == expected.digits
+            )
+
+            return {
+                "opened": True,
+                "verified":
+                    verified,
+                "reason":
+                    (
+                        None
+                        if verified
+                        else
+                        "PHONE_MISMATCH"
+                    ),
+                "kind":
+                    kind,
+                "expected_phone":
+                    expected.e164,
+                "observed_phone":
+                    observed.e164,
+            }
+
+        finally:
+            self.close_contact_profile(
+                timeout=5,
+            )
 
     def open_chat_by_virtual_offset(
         self,
