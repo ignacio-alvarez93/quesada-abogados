@@ -1,24 +1,9 @@
 import unittest
-from unittest.mock import patch
+from pathlib import Path
 
 from backend.automation.connectors.whatsapp_connector import (
-    CHAT_KIND_GROUP,
-    CHAT_KIND_INDIVIDUAL,
     WhatsAppConnector,
 )
-
-
-class FakeBrowser:
-    def __init__(
-        self,
-    ):
-        self.composer_found = True
-
-    def evaluate(
-        self,
-        script,
-    ):
-        return self.composer_found
 
 
 class RoutingConnector(
@@ -27,141 +12,214 @@ class RoutingConnector(
     def __init__(
         self,
     ):
-        # Evita crear perfil real para este test.
         self.profile_key = "test"
         self.profile_dir = None
         self.headless = True
-        self.browser = FakeBrowser()
 
-        self.profile_open = True
-        self.kind = (
-            CHAT_KIND_INDIVIDUAL
-        )
-        self.observed_phone = (
-            "+34 600 111 222"
-        )
-        self.close_calls = 0
+        # started=True contract
+        self.browser = object()
 
-    def open_contact_profile(
+        self.current_result = {
+            "opened": True,
+            "verified": False,
+            "reason":
+                "PHONE_MISMATCH",
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600999888",
+        }
+
+        self.search_result = {
+            "opened": True,
+            "reason": None,
+        }
+
+        self.after_search_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        self.verify_calls = []
+        self.search_calls = []
+
+    def _verify_active_chat_phone(
         self,
+        phone,
+        *,
+        timeout=10,
+    ):
+        self.verify_calls.append(
+            (
+                phone,
+                timeout,
+            )
+        )
+
+        if len(
+            self.verify_calls
+        ) == 1:
+            return dict(
+                self.current_result
+            )
+
+        return dict(
+            self.after_search_result
+        )
+
+    def search_and_open_chat_by_phone(
+        self,
+        phone,
         *,
         expected_display_name=None,
         timeout=10,
     ):
-        return self.profile_open
+        self.search_calls.append(
+            (
+                phone,
+                timeout,
+            )
+        )
 
-    def classify_open_profile(
-        self,
-    ):
-        return {
-            "kind": self.kind,
-            "drawer_text": "",
-        }
-
-    def get_open_contact_phone(
-        self,
-    ):
-        return self.observed_phone
-
-    def close_contact_profile(
-        self,
-        *,
-        timeout=5,
-    ):
-        self.close_calls += 1
-        return True
+        return dict(
+            self.search_result
+        )
 
 
 class WhatsAppRecipientRoutingTest(
     unittest.TestCase
 ):
-    @patch(
-        "backend.automation.connectors."
-        "whatsapp_connector.open_url"
-    )
-    def test_matching_phone_is_verified(
+    def test_current_matching_chat_is_reused(
         self,
-        open_url_mock,
     ):
         connector = RoutingConnector()
 
-        result = (
-            connector
-            .open_chat_by_phone(
-                "+34 600 111 222",
-                timeout=1,
-            )
-        )
+        connector.current_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
 
-        self.assertTrue(
-            result["opened"]
+        result = (
+            connector.open_chat_by_phone(
+                "+34 600 111 222",
+                timeout=9,
+            )
         )
 
         self.assertTrue(
             result["verified"]
         )
 
-        self.assertIsNone(
-            result["reason"]
+        self.assertEqual(
+            result["navigation"],
+            "CURRENT_CHAT",
         )
 
         self.assertEqual(
-            result[
-                "expected_phone"
-            ],
-            "+34600111222",
+            connector.search_calls,
+            [],
         )
 
-        self.assertEqual(
-            result[
-                "observed_phone"
-            ],
-            "+34600111222",
-        )
-
-        self.assertEqual(
-            connector.close_calls,
-            1,
-        )
-
-        url = (
-            open_url_mock
-            .call_args
-            .args[1]
-        )
-
-        self.assertEqual(
-            url,
-            (
-                "https://web.whatsapp.com/"
-                "send?phone=34600111222"
-            ),
-        )
-
-    @patch(
-        "backend.automation.connectors."
-        "whatsapp_connector.open_url"
-    )
-    def test_mismatching_phone_is_rejected(
+    def test_mismatch_uses_internal_search_then_verifies(
         self,
-        open_url_mock,
     ):
         connector = RoutingConnector()
 
-        connector.observed_phone = (
-            "+34 600 999 888"
-        )
-
         result = (
-            connector
-            .open_chat_by_phone(
+            connector.open_chat_by_phone(
                 "+34 600 111 222",
-                timeout=1,
+                timeout=9,
             )
         )
 
         self.assertTrue(
-            result["opened"]
+            result["verified"]
+        )
+
+        self.assertEqual(
+            result["navigation"],
+            "CHAT_SEARCH",
+        )
+
+        self.assertEqual(
+            len(
+                connector.search_calls
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            len(
+                connector.verify_calls
+            ),
+            2,
+        )
+
+    def test_search_failure_never_verifies_success(
+        self,
+    ):
+        connector = RoutingConnector()
+
+        connector.search_result = {
+            "opened": False,
+            "reason":
+                "CHAT_SEARCH_NO_RESULT",
+        }
+
+        result = (
+            connector.open_chat_by_phone(
+                "+34 600 111 222",
+                timeout=9,
+            )
+        )
+
+        self.assertFalse(
+            result["verified"]
+        )
+
+        self.assertEqual(
+            result["reason"],
+            "CHAT_SEARCH_NO_RESULT",
+        )
+
+        self.assertEqual(
+            len(
+                connector.verify_calls
+            ),
+            1,
+        )
+
+    def test_post_search_phone_mismatch_is_rejected(
+        self,
+    ):
+        connector = RoutingConnector()
+
+        connector.after_search_result = {
+            "opened": True,
+            "verified": False,
+            "reason":
+                "PHONE_MISMATCH",
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600999888",
+        }
+
+        result = (
+            connector.open_chat_by_phone(
+                "+34 600 111 222",
+                timeout=9,
+            )
         )
 
         self.assertFalse(
@@ -173,83 +231,8 @@ class WhatsAppRecipientRoutingTest(
             "PHONE_MISMATCH",
         )
 
-        self.assertEqual(
-            connector.close_calls,
-            1,
-        )
-
-    @patch(
-        "backend.automation.connectors."
-        "whatsapp_connector.open_url"
-    )
-    def test_group_identity_is_rejected(
+    def test_invalid_phone_never_searches(
         self,
-        open_url_mock,
-    ):
-        connector = RoutingConnector()
-
-        connector.kind = (
-            CHAT_KIND_GROUP
-        )
-
-        result = (
-            connector
-            .open_chat_by_phone(
-                "+34 600 111 222",
-                timeout=1,
-            )
-        )
-
-        self.assertFalse(
-            result["verified"]
-        )
-
-        self.assertEqual(
-            result["reason"],
-            "NOT_INDIVIDUAL_CHAT",
-        )
-
-        self.assertEqual(
-            connector.close_calls,
-            1,
-        )
-
-    @patch(
-        "backend.automation.connectors."
-        "whatsapp_connector.open_url"
-    )
-    def test_unverifiable_phone_is_rejected(
-        self,
-        open_url_mock,
-    ):
-        connector = RoutingConnector()
-
-        connector.observed_phone = None
-
-        result = (
-            connector
-            .open_chat_by_phone(
-                "+34 600 111 222",
-                timeout=1,
-            )
-        )
-
-        self.assertFalse(
-            result["verified"]
-        )
-
-        self.assertEqual(
-            result["reason"],
-            "PHONE_UNVERIFIABLE",
-        )
-
-    @patch(
-        "backend.automation.connectors."
-        "whatsapp_connector.open_url"
-    )
-    def test_invalid_expected_phone_never_navigates(
-        self,
-        open_url_mock,
     ):
         connector = RoutingConnector()
 
@@ -258,10 +241,172 @@ class WhatsAppRecipientRoutingTest(
         ):
             connector.open_chat_by_phone(
                 "abc",
-                timeout=1,
+                timeout=9,
             )
 
-        open_url_mock.assert_not_called()
+        self.assertEqual(
+            connector.search_calls,
+            [],
+        )
+
+
+    def test_connector_contract_allows_verified_self_chat(
+        self,
+    ):
+        from pathlib import Path
+
+        connector_text = Path(
+            "backend/automation/connectors/"
+            "whatsapp_connector.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "CHAT_KIND_INDIVIDUAL,",
+            connector_text,
+        )
+
+        self.assertIn(
+            "CHAT_KIND_SELF,",
+            connector_text,
+        )
+
+        self.assertIn(
+            "observed.digits",
+            connector_text,
+        )
+
+        self.assertIn(
+            "expected.digits",
+            connector_text,
+        )
+
+
+    def test_chat_search_selector_uses_safe_js_serialization(
+        self,
+    ):
+        from pathlib import Path
+
+        connector_text = Path(
+            "backend/automation/connectors/"
+            "whatsapp_connector.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "selector_js = json.dumps(",
+            connector_text,
+        )
+
+        self.assertIn(
+            "{selector_js}",
+            connector_text,
+        )
+
+        # selector!r puede aparecer legítimamente en
+        # trazas de diagnóstico. Lo prohibido es usarlo
+        # directamente como argumento JavaScript.
+        self.assertNotIn(
+            "document.querySelector(\n"
+            "                            {selector!r}",
+            connector_text,
+        )
+
+
+    def test_open_chat_supports_search_result_row_shapes(
+        self,
+    ):
+        from pathlib import Path
+
+        connector_text = Path(
+            "backend/automation/connectors/"
+            "whatsapp_connector.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "candidate_selectors = (",
+            connector_text,
+        )
+
+        self.assertIn(
+            "' [role=\"gridcell\"]'",
+            connector_text,
+        )
+
+        self.assertIn(
+            "row_selector,",
+            connector_text,
+        )
+
+        self.assertIn(
+            '"CHAT_ROW_NOT_FOUND"',
+            connector_text,
+        )
+
+
+    def test_phone_search_always_clears_before_routing(
+        self,
+    ):
+        source = Path(
+            "backend/automation/connectors/"
+            "whatsapp_connector.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        clear_start = source.index(
+            "    def clear_chat_search("
+        )
+
+        clear_end = source.index(
+            "\n    def search_and_open_chat_by_phone(",
+            clear_start,
+        )
+
+        clear_block = source[
+            clear_start:clear_end
+        ]
+
+        self.assertNotIn(
+            'if not state["text"]:\n'
+            "            return True",
+            clear_block,
+        )
+
+        search_start = source.index(
+            "    def search_and_open_chat_by_phone("
+        )
+
+        search_end = source.index(
+            "\n    def _verify_active_chat_phone(",
+            search_start,
+        )
+
+        search_block = source[
+            search_start:search_end
+        ]
+
+        pre_clear_position = search_block.index(
+            "pre_clear = ("
+        )
+
+        prepare_position = search_block.index(
+            "self.prepare_chat_interface()"
+        )
+
+        self.assertLess(
+            pre_clear_position,
+            prepare_position,
+        )
+
+        self.assertIn(
+            "[WA-SEARCH] B9 search cleared",
+            search_block,
+        )
 
 
 if __name__ == "__main__":

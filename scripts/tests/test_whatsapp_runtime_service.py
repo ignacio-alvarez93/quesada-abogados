@@ -1,3 +1,5 @@
+from pathlib import Path
+import threading
 import unittest
 
 from backend.automation.connectors.whatsapp_connector import (
@@ -82,11 +84,15 @@ class FakeConnector:
         self,
         phone,
         *,
+        expected_display_name=None,
+        verify_identity=True,
         timeout=15,
     ):
         self.open_phone_calls.append(
             (
                 phone,
+                expected_display_name,
+                verify_identity,
                 timeout,
             )
         )
@@ -132,10 +138,16 @@ class FakeThread:
         external_address=(
             "+34 600 111 222"
         ),
+        external_display_name=(
+            "Test Contact"
+        ),
     ):
         self.id = thread_id
         self.external_address = (
             external_address
+        )
+        self.external_display_name = (
+            external_display_name
         )
 
 
@@ -324,6 +336,8 @@ class WhatsAppRuntimeServiceTest(
             [
                 (
                     "+34 600 111 222",
+                    "Test Contact",
+                    False,
                     9,
                 )
             ],
@@ -344,7 +358,59 @@ class WhatsAppRuntimeServiceTest(
             7,
         )
 
-    def test_verify_and_open_thread_rejects_identity_mismatch(
+    def test_verify_and_open_thread_uses_lightweight_navigation(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        # La selección ordinaria de una conversación no abre
+        # el perfil ni exige verificación fuerte por teléfono.
+        # Esa verificación se reserva para operaciones sensibles
+        # como el envío.
+        connector.routing_result = {
+            "opened": True,
+            "verified": False,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone": None,
+        }
+
+        result = runtime.verify_and_open_thread(
+            7,
+            wait_timeout=1,
+        )
+
+        self.assertTrue(
+            result[
+                "routing"
+            ][
+                "opened"
+            ]
+        )
+
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    False,
+                    15,
+                )
+            ],
+        )
+
+        self.assertEqual(
+            result[
+                "thread"
+            ].id,
+            7,
+        )
+
+    def test_send_text_message_requires_strong_identity_verification(
         self,
     ):
         runtime = self._runtime()
@@ -365,9 +431,11 @@ class WhatsAppRuntimeServiceTest(
         with self.assertRaises(
             RuntimeError
         ) as raised:
-            runtime.verify_and_open_thread(
-                7,
+            runtime.send_text_message(
+                thread_id=7,
+                text="Mensaje que no debe enviarse",
                 wait_timeout=1,
+                routing_timeout=9,
             )
 
         self.assertIn(
@@ -376,6 +444,33 @@ class WhatsAppRuntimeServiceTest(
                 raised.exception
             ),
         )
+
+        # El envío sensible debe conservar la
+        # verificación fuerte del destinatario.
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    True,
+                    9,
+                )
+            ],
+        )
+
+        # La barrera de identidad debe fallar antes
+        # incluso de construir el servicio outbound.
+        self.assertIsNone(
+            runtime._outbound_service
+        )
+
+        # Tampoco puede haberse alcanzado el transporte.
+        self.assertEqual(
+            connector.sent,
+            [],
+        )
+
 
     def test_verify_and_open_thread_rejects_missing_phone(
         self,
@@ -399,6 +494,109 @@ class WhatsAppRuntimeServiceTest(
         self.assertEqual(
             runtime.connector.open_phone_calls,
             [],
+        )
+
+
+    def test_browser_operations_share_one_runtime_thread(
+        self,
+    ):
+        runtime = self._runtime()
+
+        thread_ids = []
+
+        connector = runtime.start()
+
+        original_status = (
+            connector.detect_session_status
+        )
+
+        def tracked_status():
+            thread_ids.append(
+                threading.get_ident()
+            )
+            return original_status()
+
+        connector.detect_session_status = (
+            tracked_status
+        )
+
+        runtime.get_status()
+        runtime.ensure_ready(
+            wait_timeout=1,
+        )
+
+        self.assertGreaterEqual(
+            len(thread_ids),
+            2,
+        )
+
+        self.assertEqual(
+            len(
+                set(
+                    thread_ids
+                )
+            ),
+            1,
+        )
+
+        runtime.close()
+
+    def test_runtime_worker_differs_from_caller_thread(
+        self,
+    ):
+        runtime = self._runtime()
+
+        caller_thread = (
+            threading.get_ident()
+        )
+
+        runtime.start()
+
+        self.assertIsNotNone(
+            runtime._worker_thread_id
+        )
+
+        self.assertNotEqual(
+            runtime._worker_thread_id,
+            caller_thread,
+        )
+
+        runtime.close()
+
+
+    def test_verify_thread_uses_latest_selection_contract(
+        self,
+    ):
+        source = Path(
+            "backend/services/"
+            "whatsapp_runtime_service.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "self._desired_thread_id",
+            source,
+        )
+
+        self.assertIn(
+            '"STALE_SELECTION"',
+            source,
+        )
+
+        self.assertIn(
+            "def _verify_and_open_latest_thread_impl(",
+            source,
+        )
+
+        self.assertIn(
+            "desired_thread_id",
+            source,
+        )
+
+        self.assertIn(
+            "!= requested_thread_id",
+            source,
         )
 
 

@@ -18,6 +18,7 @@ No contiene persistencia de negocio.
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import json
 import re
 import time
 import unicodedata
@@ -938,27 +939,586 @@ class WhatsAppConnector:
             or {}
         )
 
-    def open_chat_by_phone(
+    def _find_chat_search_selector(
         self,
-        phone,
-        *,
-        timeout=15,
     ):
-        """Abre y verifica un chat individual por teléfono.
-
-        Un compositor visible no basta para considerar
-        correcta la navegación. La identidad final se
-        verifica leyendo el teléfono observable desde
-        Info. del contacto.
-
-        Si la identidad no puede verificarse, nunca
-        devuelve verified=True.
-        """
+        """Localiza el buscador lateral en reposo o búsqueda activa."""
         if not self.browser:
             raise RuntimeError(
                 "WhatsApp Web no está iniciado"
             )
 
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const nodes = Array.from(
+                        document.querySelectorAll(
+                            '[contenteditable="true"], '
+                            + '[role="textbox"], '
+                            + 'input'
+                        )
+                    );
+
+                    for (const node of nodes) {
+                        const label = String(
+                            node.getAttribute(
+                                'aria-label'
+                            )
+                            || ''
+                        )
+                        .trim()
+                        .toLowerCase();
+
+                        const isInitialSearch = (
+                            label.includes(
+                                'buscar un chat'
+                            )
+                            || label.includes(
+                                'search or start new chat'
+                            )
+                        );
+
+                        const isActiveSearch = (
+                            node.tagName === 'INPUT'
+                            && node.getAttribute(
+                                'role'
+                            ) === 'textbox'
+                            && node.getAttribute(
+                                'data-tab'
+                            ) === '3'
+                        );
+
+                        if (
+                            !isInitialSearch
+                            && !isActiveSearch
+                        ) {
+                            continue;
+                        }
+
+                        if (isActiveSearch) {
+                            return (
+                                'input[role="textbox"]'
+                                + '[data-tab="3"]'
+                            );
+                        }
+
+                        const testid = String(
+                            node.getAttribute(
+                                'data-testid'
+                            )
+                            || ''
+                        ).trim();
+
+                        if (testid) {
+                            return (
+                                '[data-testid="'
+                                + testid
+                                + '"]'
+                            );
+                        }
+
+                        const aria = String(
+                            node.getAttribute(
+                                'aria-label'
+                            )
+                            || ''
+                        );
+
+                        if (aria) {
+                            return (
+                                '[aria-label="'
+                                + aria.replace(
+                                    /"/g,
+                                    '\\\"'
+                                )
+                                + '"]'
+                            );
+                        }
+                    }
+
+                    return null;
+                })()
+                """
+            )
+        )
+
+        return (
+            str(result).strip()
+            if result
+            else None
+        )
+
+
+    def get_chat_search_state(
+        self,
+    ):
+        selector = (
+            self._find_chat_search_selector()
+        )
+
+        if not selector:
+            return {
+                "found": False,
+                "selector": None,
+                "text": "",
+            }
+
+        selector_js = json.dumps(
+            selector,
+            ensure_ascii=False,
+        )
+
+        result = (
+            self.browser.evaluate(
+                f"""
+                (() => {{
+                    const node =
+                        document.querySelector(
+                            {selector_js}
+                        );
+
+                    if (!node) {{
+                        return {{
+                            found: false,
+                            text: ''
+                        }};
+                    }}
+
+                    return {{
+                        found: true,
+                        text: String(
+                            node.value
+                            || node.innerText
+                            || node.textContent
+                            || ''
+                        ).trim()
+                    }};
+                }})()
+                """
+            )
+            or {}
+        )
+
+        return {
+            "found": bool(
+                result.get(
+                    "found"
+                )
+            ),
+            "selector": selector,
+            "text": str(
+                result.get(
+                    "text"
+                )
+                or ""
+            ),
+        }
+
+    def clear_chat_search(
+        self,
+        *,
+        timeout=3,
+    ):
+        """Vacía el buscador lateral mediante teclado CDP."""
+        state = (
+            self.get_chat_search_state()
+        )
+
+        if not state["found"]:
+            return False
+
+        # Si WhatsApp está en estado de búsqueda activa,
+        # usamos exclusivamente el botón de cierre asociado
+        # al MISMO contenedor del input de búsqueda.
+        #
+        # No usamos:
+        #   button[aria-label="End icon button"]
+        # de forma global, porque WhatsApp puede renderizar
+        # otros botones equivalentes fuera del buscador.
+        if state["text"]:
+            close_selector = (
+                '[data-qa-whatsapp-search-close="1"]'
+            )
+
+            try:
+                marked = (
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            document
+                                .querySelectorAll(
+                                    '[data-qa-whatsapp-search-close]'
+                                )
+                                .forEach(
+                                    node =>
+                                        node.removeAttribute(
+                                            'data-qa-whatsapp-search-close'
+                                        )
+                                );
+
+                            const input =
+                                document.querySelector(
+                                    'input[role="textbox"]'
+                                    + '[data-tab="3"]'
+                                );
+
+                            if (!input) {
+                                return false;
+                            }
+
+                            let container =
+                                input.parentElement;
+
+                            for (
+                                let depth = 0;
+                                container && depth < 6;
+                                depth += 1
+                            ) {
+                                const buttons =
+                                    Array.from(
+                                        container.querySelectorAll(
+                                            'button'
+                                        )
+                                    );
+
+                                const closeButton =
+                                    buttons.find(
+                                        button => {
+                                            const aria =
+                                                String(
+                                                    button.getAttribute(
+                                                        'aria-label'
+                                                    )
+                                                    || ''
+                                                );
+
+                                            const text =
+                                                String(
+                                                    button.innerText
+                                                    || button.textContent
+                                                    || ''
+                                                );
+
+                                            return (
+                                                aria ===
+                                                    'End icon button'
+                                                && text.includes(
+                                                    'ic-close'
+                                                )
+                                            );
+                                        }
+                                    );
+
+                                if (closeButton) {
+                                    closeButton.setAttribute(
+                                        'data-qa-whatsapp-search-close',
+                                        '1'
+                                    );
+
+                                    return true;
+                                }
+
+                                container =
+                                    container.parentElement;
+                            }
+
+                            return false;
+                        })()
+                        """
+                    )
+                )
+            except Exception:
+                marked = False
+
+            if marked:
+                try:
+                    close_button = (
+                        self.browser.find_element(
+                            close_selector
+                        )
+                    )
+                except Exception:
+                    close_button = None
+
+                mouse_click = (
+                    getattr(
+                        close_button,
+                        "mouse_click",
+                        None,
+                    )
+                    if close_button
+                    else None
+                )
+
+                if callable(
+                    mouse_click
+                ):
+                    print(
+                        "[WA-SEARCH] CLEAR contextual close START",
+                        flush=True,
+                    )
+
+                    mouse_click()
+
+                    deadline = (
+                        time.time()
+                        + max(
+                            0.5,
+                            float(timeout),
+                        )
+                    )
+
+                    while time.time() < deadline:
+                        current = (
+                            self.get_chat_search_state()
+                        )
+
+                        if (
+                            current["found"]
+                            and not current["text"]
+                        ):
+                            print(
+                                "[WA-SEARCH] CLEAR contextual close OK",
+                                flush=True,
+                            )
+
+                            try:
+                                self.browser.evaluate(
+                                    """
+                                    (() => {
+                                        document
+                                            .querySelectorAll(
+                                                '[data-qa-whatsapp-search-close]'
+                                            )
+                                            .forEach(
+                                                node =>
+                                                    node.removeAttribute(
+                                                        'data-qa-whatsapp-search-close'
+                                                    )
+                                            );
+
+                                        return true;
+                                    })()
+                                    """
+                                )
+                            except Exception:
+                                pass
+
+                            return True
+
+                        time.sleep(
+                            0.05
+                        )
+
+        # No confiamos únicamente en state["text"].
+        # WhatsApp puede conservar contenido visible en
+        # el contenteditable aunque su lectura textual
+        # temporal no lo refleje como esperamos.
+        #
+        # Ctrl+A + Backspace también es seguro cuando
+        # el buscador ya está vacío.
+        selector = state["selector"]
+
+        element = (
+            self.browser.find_element(
+                selector
+            )
+        )
+
+        if not element:
+            return False
+
+        self.browser.loop.run_until_complete(
+            element.focus_async()
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "rawKeyDown",
+            modifiers=2,
+            key="Control",
+            code="ControlLeft",
+            windows_virtual_key_code=17,
+            native_virtual_key_code=17,
+            location=1,
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "rawKeyDown",
+            modifiers=2,
+            key="a",
+            code="KeyA",
+            windows_virtual_key_code=65,
+            native_virtual_key_code=65,
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "keyUp",
+            modifiers=2,
+            key="a",
+            code="KeyA",
+            windows_virtual_key_code=65,
+            native_virtual_key_code=65,
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "keyUp",
+            modifiers=0,
+            key="Control",
+            code="ControlLeft",
+            windows_virtual_key_code=17,
+            native_virtual_key_code=17,
+            location=1,
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "rawKeyDown",
+            modifiers=0,
+            key="Backspace",
+            code="Backspace",
+            windows_virtual_key_code=8,
+            native_virtual_key_code=8,
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "keyUp",
+            modifiers=0,
+            key="Backspace",
+            code="Backspace",
+            windows_virtual_key_code=8,
+            native_virtual_key_code=8,
+        )
+
+        deadline = (
+            time.time()
+            + max(
+                0.5,
+                float(timeout),
+            )
+        )
+
+        while time.time() < deadline:
+            current = (
+                self.get_chat_search_state()
+            )
+
+            if (
+                current["found"]
+                and not current["text"]
+            ):
+                return True
+
+            time.sleep(0.05)
+
+        # Fallback para el contenteditable de WhatsApp.
+        # En algunas versiones Ctrl+A + Backspace modifica
+        # la selección pero React conserva el texto visible.
+        try:
+            self.browser.evaluate(
+                """
+                (() => {
+                    const node =
+                        document.querySelector(%s);
+
+                    if (!node) {
+                        return false;
+                    }
+
+                    node.focus();
+
+                    if (
+                        node.isContentEditable
+                        || node.getAttribute(
+                            'contenteditable'
+                        ) === 'true'
+                    ) {
+                        node.replaceChildren();
+
+                        node.dispatchEvent(
+                            new InputEvent(
+                                'input',
+                                {
+                                    bubbles: true,
+                                    inputType:
+                                        'deleteContentBackward',
+                                    data: null
+                                }
+                            )
+                        );
+                    } else {
+                        node.value = '';
+
+                        node.dispatchEvent(
+                            new Event(
+                                'input',
+                                {
+                                    bubbles: true
+                                }
+                            )
+                        );
+                    }
+
+                    node.dispatchEvent(
+                        new Event(
+                            'change',
+                            {
+                                bubbles: true
+                            }
+                        )
+                    );
+
+                    return true;
+                })()
+                """
+                % json.dumps(
+                    selector
+                )
+            )
+        except Exception:
+            return False
+
+        deadline = (
+            time.time()
+            + max(
+                0.5,
+                float(timeout),
+            )
+        )
+
+        while time.time() < deadline:
+            current = (
+                self.get_chat_search_state()
+            )
+
+            if (
+                current["found"]
+                and not current["text"]
+            ):
+                return True
+
+            time.sleep(
+                0.05
+            )
+
+        return False
+
+    def search_and_open_chat_by_phone(
+        self,
+        phone,
+        *,
+        expected_display_name=None,
+        timeout=10,
+    ):
+        """Busca un teléfono dentro del WhatsApp ya abierto.
+
+        No navega ni recarga web.whatsapp.com.
+        """
         expected = normalize_phone(
             phone
         )
@@ -968,17 +1528,138 @@ class WhatsAppConnector:
                 "Teléfono WhatsApp no válido"
             )
 
-        target_url = (
-            "https://web.whatsapp.com/"
-            "send?phone="
-            + expected.digits
+        display_hint = str(
+            expected_display_name
+            or ""
+        ).strip()
+
+        # Toda navegación comienza desde un buscador
+        # limpio. Esto también restaura la lista normal
+        # cuando una búsqueda anterior seguía activa.
+        print(
+            "[WA-SEARCH] B0.1 pre-clear START",
+            flush=True,
         )
 
-        open_url(
-            self.browser,
-            target_url,
+        pre_clear = (
+            self.clear_chat_search()
         )
 
+        print(
+            "[WA-SEARCH] B0.2 pre-clear RESULT "
+            f"{pre_clear}",
+            flush=True,
+        )
+
+        if not pre_clear:
+            return {
+                "opened": False,
+                "reason":
+                    "CHAT_SEARCH_NOT_CLEAR",
+            }
+
+        print(
+            "[WA-SEARCH] B1.1 prepare_chat_interface START",
+            flush=True,
+        )
+
+        prepared = (
+            self.prepare_chat_interface()
+        )
+
+        print(
+            "[WA-SEARCH] B1.2 prepare_chat_interface OK "
+            f"{ascii(prepared)}",
+            flush=True,
+        )
+
+        if not prepared.get(
+            "ready"
+        ):
+            return {
+                "opened": False,
+                "reason":
+                    prepared.get(
+                        "reason"
+                    )
+                    or "CHAT_INTERFACE_NOT_READY",
+            }
+
+        print(
+            "[WA-SEARCH] B2.1 get_chat_search_state START",
+            flush=True,
+        )
+
+        search_state = (
+            self.get_chat_search_state()
+        )
+
+        print(
+            "[WA-SEARCH] B2.2 get_chat_search_state OK "
+            f"{ascii(search_state)}",
+            flush=True,
+        )
+
+        if not search_state[
+            "found"
+        ]:
+            return {
+                "opened": False,
+                "reason":
+                    "CHAT_SEARCH_NOT_FOUND",
+            }
+
+        print(
+            "[WA-SEARCH] B4.1 find selector START",
+            flush=True,
+        )
+
+        selector = (
+            self._find_chat_search_selector()
+        )
+
+        print(
+            "[WA-SEARCH] B4.2 find selector OK "
+            f"{ascii(selector)}",
+            flush=True,
+        )
+
+        if not selector:
+            return {
+                "opened": False,
+                "reason":
+                    "CHAT_SEARCH_NOT_FOUND",
+            }
+
+        # E.164 facilita búsqueda tanto de
+        # contactos guardados como números sin guardar.
+        print(
+            "[WA-SEARCH] B5.1 send_keys START "
+            f"selector={ascii(selector)} "
+            f"value={ascii(expected.e164)}",
+            flush=True,
+        )
+
+        self.browser.send_keys(
+            selector,
+            expected.e164,
+        )
+
+        print(
+            "[WA-SEARCH] B5.2 send_keys OK",
+            flush=True,
+        )
+
+        # WhatsApp virtualiza y reutiliza las filas del
+        # listado lateral. No podemos localizar list-item-N
+        # y volver a buscarlo posteriormente porque el mismo
+        # identificador puede representar otro chat.
+        #
+        # Estrategia:
+        # 1. JavaScript identifica la fila exacta.
+        # 2. Marca temporalmente SU nodo clicable.
+        # 3. SeleniumBase recupera ese mismo nodo marcado.
+        # 4. mouse_click() genera la interacción real CDP.
         deadline = (
             time.time()
             + max(
@@ -987,27 +1668,788 @@ class WhatsAppConnector:
             )
         )
 
-        composer_found = False
+        result_marked = False
+        result_text = ""
+        result_target_kind = ""
+
+        target_selector = (
+            '[data-qa-whatsapp-routing-target="1"]'
+        )
 
         while time.time() < deadline:
-            composer_found = bool(
+            candidate = (
                 self.browser.evaluate(
                     """
-                    (() => Boolean(
-                        document.querySelector(
-                            '[data-testid="conversation-compose-box-input"]'
-                        )
-                    ))()
+                    (() => {
+                        const expectedName = %s;
+                        const expectedPhone = %s;
+
+                        const normalize = value =>
+                            String(value || '')
+                                .replace(/\\s+/g, ' ')
+                                .trim()
+                                .toLocaleLowerCase();
+
+                        const digits = value =>
+                            String(value || '')
+                                .replace(/\\D+/g, '');
+
+                        const normalizedName =
+                            normalize(expectedName);
+
+                        const phoneDigits =
+                            digits(expectedPhone);
+
+                        document
+                            .querySelectorAll(
+                                '[data-qa-whatsapp-routing-target]'
+                            )
+                            .forEach(
+                                node =>
+                                    node.removeAttribute(
+                                        'data-qa-whatsapp-routing-target'
+                                    )
+                            );
+
+                        const rows = Array.from(
+                            document.querySelectorAll(
+                                '[role="row"][data-testid^="list-item-"]'
+                            )
+                        );
+
+                        for (const row of rows) {
+                            const rect =
+                                row.getBoundingClientRect();
+
+                            const style =
+                                window.getComputedStyle(
+                                    row
+                                );
+
+                            if (
+                                rect.width <= 0
+                                || rect.height <= 0
+                                || style.display === 'none'
+                                || style.visibility === 'hidden'
+                            ) {
+                                continue;
+                            }
+
+                            const titleNodes =
+                                Array.from(
+                                    row.querySelectorAll(
+                                        '[title]'
+                                    )
+                                );
+
+                            let matched = null;
+
+                            if (normalizedName) {
+                                matched = titleNodes.find(
+                                    node =>
+                                        normalize(
+                                            node.getAttribute(
+                                                'title'
+                                            )
+                                        )
+                                        === normalizedName
+                                );
+                            }
+
+                            if (
+                                !matched
+                                && phoneDigits
+                            ) {
+                                matched = titleNodes.find(
+                                    node =>
+                                        digits(
+                                            node.getAttribute(
+                                                'title'
+                                            )
+                                        )
+                                        === phoneDigits
+                                );
+                            }
+
+                            if (!matched) {
+                                continue;
+                            }
+
+                            // La estructura visual de las filas
+                            // de WhatsApp no es homogénea.
+                            //
+                            // cell-frame-container puede existir
+                            // pero no ser el verdadero hit-target.
+                            // Priorizamos las mismas superficies
+                            // interactivas que ya utiliza open_chat().
+                            // La fila puede estar materializada en el
+                            // DOM pero fuera del viewport. Esto ocurre
+                            // especialmente con resultados que conservan
+                            // su posición virtual original.
+                            row.scrollIntoView({
+                                block: 'center',
+                                inline: 'nearest'
+                            });
+
+                            // Priorizamos la superficie interactiva
+                            // exterior completa de la fila. El gridcell
+                            // cercano al título suele medir solo ~24 px
+                            // y no es el hit-target más fiable.
+                            const targetCandidates = [
+                                row.querySelector(
+                                    '[role="gridcell"][tabindex="0"]'
+                                ),
+                                row.querySelector(
+                                    '[data-testid="cell-frame-container"]'
+                                ),
+                                row.querySelector(
+                                    '[role="gridcell"]'
+                                ),
+                                row.querySelector(
+                                    '[tabindex="0"]'
+                                ),
+                                (
+                                    matched
+                                    && matched.closest(
+                                        '[role="gridcell"]'
+                                    )
+                                ),
+                                row
+                            ];
+
+                            const target =
+                                targetCandidates.find(
+                                    node => Boolean(node)
+                                );
+
+                            if (!target) {
+                                continue;
+                            }
+
+                            target.setAttribute(
+                                'data-qa-whatsapp-routing-target',
+                                '1'
+                            );
+
+                            const targetKind = (
+                                target.getAttribute(
+                                    'role'
+                                )
+                                || target.getAttribute(
+                                    'data-testid'
+                                )
+                                || target.tagName
+                                || 'UNKNOWN'
+                            );
+
+                            return {
+                                marked: true,
+                                target_kind:
+                                    targetKind,
+                                text: String(
+                                    row.innerText
+                                    || row.textContent
+                                    || ''
+                                ).trim()
+                            };
+                        }
+
+                        return {
+                            marked: false,
+                            text: ''
+                        };
+                    })()
                     """
+                    % (
+                        json.dumps(
+                            display_hint,
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            expected.e164,
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+                or {}
+            )
+
+            if (
+                isinstance(
+                    candidate,
+                    dict,
+                )
+                and candidate.get(
+                    "marked"
+                )
+            ):
+                result_marked = True
+
+                result_text = str(
+                    candidate.get(
+                        "text"
+                    )
+                    or ""
+                ).strip()
+
+                result_target_kind = str(
+                    candidate.get(
+                        "target_kind"
+                    )
+                    or ""
+                ).strip()
+
+                break
+
+            time.sleep(
+                0.1
+            )
+
+        print(
+            "[WA-SEARCH] B6 matched result "
+            f"marked={result_marked} "
+            f"target={ascii(result_target_kind)} "
+            f"text={ascii(result_text)}",
+            flush=True,
+        )
+
+        if not result_marked:
+            try:
+                self.clear_chat_search()
+            except Exception:
+                pass
+
+            return {
+                "opened": False,
+                "reason":
+                    "CHAT_SEARCH_NO_MATCHING_RESULT",
+            }
+
+        # scrollIntoView() puede necesitar un ciclo de layout
+        # antes de que CDP pueda interactuar físicamente con
+        # la superficie recién centrada.
+        time.sleep(
+            0.15
+        )
+
+        try:
+            result_element = (
+                self.browser.find_element(
+                    target_selector
+                )
+            )
+        except Exception:
+            result_element = None
+
+        if not result_element:
+            try:
+                self.clear_chat_search()
+            except Exception:
+                pass
+
+            return {
+                "opened": False,
+                "reason":
+                    "CHAT_SEARCH_MARKED_RESULT_NOT_FOUND",
+            }
+
+        mouse_click = getattr(
+            result_element,
+            "mouse_click",
+            None,
+        )
+
+        if not callable(
+            mouse_click
+        ):
+            try:
+                self.clear_chat_search()
+            except Exception:
+                pass
+
+            return {
+                "opened": False,
+                "reason":
+                    "CHAT_SEARCH_RESULT_NO_MOUSE_CLICK",
+            }
+
+        print(
+            "[WA-SEARCH] B7 SeleniumBase mouse_click START",
+            flush=True,
+        )
+
+        mouse_click()
+
+        print(
+            "[WA-SEARCH] B7 SeleniumBase mouse_click OK",
+            flush=True,
+        )
+
+        # El atributo es únicamente un puente temporal
+        # entre la detección DOM y SeleniumBase.
+        try:
+            self.browser.evaluate(
+                """
+                (() => {
+                    document
+                        .querySelectorAll(
+                            '[data-qa-whatsapp-routing-target]'
+                        )
+                        .forEach(
+                            node =>
+                                node.removeAttribute(
+                                    'data-qa-whatsapp-routing-target'
+                                )
+                        );
+
+                    return true;
+                })()
+                """
+            )
+        except Exception:
+            pass
+
+        # Confirmamos que el chat REALMENTE cambió.
+        #
+        # El compositor no basta como señal porque puede seguir
+        # presente mientras WhatsApp mantiene abierto el chat
+        # anterior. La cabecera debe coincidir con el nombre o
+        # teléfono esperado.
+        expected_identity = (
+            normalize_chat_identity(
+                display_hint
+            )
+            if display_hint
+            else ""
+        )
+
+        expected_phone_digits = (
+            expected.digits
+        )
+
+        def wait_for_expected_chat(
+            wait_seconds,
+        ):
+            deadline = (
+                time.time()
+                + max(
+                    0.2,
+                    float(wait_seconds),
                 )
             )
 
-            if composer_found:
-                break
+            last_active_name = ""
 
-            time.sleep(0.25)
+            while time.time() < deadline:
+                state = (
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const composer =
+                                document.querySelector(
+                                    '[data-testid="conversation-compose-box-input"]'
+                                );
 
-        if not composer_found:
+                            const title =
+                                document.querySelector(
+                                    '[data-testid="conversation-info-header-chat-title"]'
+                                );
+
+                            const activeName =
+                                title
+                                ? String(
+                                    title.innerText
+                                    || title.textContent
+                                    || ''
+                                ).trim()
+                                : '';
+
+                            return {
+                                composer_found:
+                                    Boolean(composer),
+                                active_display_name:
+                                    activeName
+                            };
+                        })()
+                        """
+                    )
+                    or {}
+                )
+
+                composer_found = bool(
+                    state.get(
+                        "composer_found"
+                    )
+                )
+
+                last_active_name = str(
+                    state.get(
+                        "active_display_name"
+                    )
+                    or ""
+                ).strip()
+
+                active_identity = (
+                    normalize_chat_identity(
+                        last_active_name
+                    )
+                )
+
+                active_phone_digits = (
+                    "".join(
+                        char
+                        for char in last_active_name
+                        if char.isdigit()
+                    )
+                )
+
+                name_matches = bool(
+                    expected_identity
+                    and active_identity
+                    and (
+                        active_identity
+                        == expected_identity
+                    )
+                )
+
+                phone_matches = bool(
+                    expected_phone_digits
+                    and active_phone_digits
+                    and (
+                        active_phone_digits
+                        == expected_phone_digits
+                    )
+                )
+
+                if (
+                    composer_found
+                    and (
+                        name_matches
+                        or phone_matches
+                    )
+                ):
+                    return (
+                        True,
+                        last_active_name,
+                    )
+
+                time.sleep(
+                    0.12
+                )
+
+            return (
+                False,
+                last_active_name,
+            )
+
+        # Primer click: normalmente WhatsApp responde casi
+        # inmediatamente. No esperamos todo routing_timeout
+        # antes de decidir si hace falta un retry.
+        opened, active_display_name = (
+            wait_for_expected_chat(
+                min(
+                    1.0,
+                    max(
+                        0.5,
+                        float(timeout),
+                    ),
+                )
+            )
+        )
+
+        retried = False
+
+        if not opened:
+            print(
+                "[WA-SEARCH] B7.3 first click not confirmed "
+                f"active={ascii(active_display_name)}",
+                flush=True,
+            )
+
+            # WhatsApp puede ignorar ocasionalmente un
+            # mouse_click aunque la fila estuviera bien
+            # localizada. No reutilizamos el WebElement:
+            # volvemos a localizar exactamente la misma fila
+            # por nombre/teléfono porque el DOM puede haber
+            # sido re-renderizado.
+            retry_marked = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const expectedName = %s;
+                        const expectedPhone = %s;
+
+                        const normalize = value =>
+                            String(value || '')
+                                .replace(/\\s+/g, ' ')
+                                .trim()
+                                .toLocaleLowerCase();
+
+                        const digits = value =>
+                            String(value || '')
+                                .replace(/\\D+/g, '');
+
+                        const normalizedName =
+                            normalize(expectedName);
+
+                        const phoneDigits =
+                            digits(expectedPhone);
+
+                        document
+                            .querySelectorAll(
+                                '[data-qa-whatsapp-routing-target]'
+                            )
+                            .forEach(
+                                node =>
+                                    node.removeAttribute(
+                                        'data-qa-whatsapp-routing-target'
+                                    )
+                            );
+
+                        const rows = Array.from(
+                            document.querySelectorAll(
+                                '[role="row"][data-testid^="list-item-"]'
+                            )
+                        );
+
+                        for (const row of rows) {
+                            const titleNodes =
+                                Array.from(
+                                    row.querySelectorAll(
+                                        '[title]'
+                                    )
+                                );
+
+                            let matched = null;
+
+                            if (normalizedName) {
+                                matched = titleNodes.find(
+                                    node =>
+                                        normalize(
+                                            node.getAttribute(
+                                                'title'
+                                            )
+                                        )
+                                        === normalizedName
+                                );
+                            }
+
+                            if (
+                                !matched
+                                && phoneDigits
+                            ) {
+                                matched = titleNodes.find(
+                                    node =>
+                                        digits(
+                                            node.getAttribute(
+                                                'title'
+                                            )
+                                        )
+                                        === phoneDigits
+                                );
+                            }
+
+                            if (!matched) {
+                                continue;
+                            }
+
+                            row.scrollIntoView({
+                                block: 'center',
+                                inline: 'nearest'
+                            });
+
+                            const target =
+                                row.querySelector(
+                                    '[role="gridcell"][tabindex="0"]'
+                                )
+                                || row.querySelector(
+                                    '[data-testid="cell-frame-container"]'
+                                )
+                                || row;
+
+                            if (!target) {
+                                continue;
+                            }
+
+                            target.setAttribute(
+                                'data-qa-whatsapp-routing-target',
+                                '1'
+                            );
+
+                            return true;
+                        }
+
+                        return false;
+                    })()
+                    """
+                    % (
+                        json.dumps(
+                            display_hint,
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            expected.e164,
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+            )
+
+            if retry_marked:
+                # Dejamos que scrollIntoView complete el layout
+                # antes de recuperar un WebElement nuevo.
+                time.sleep(
+                    0.15
+                )
+
+                try:
+                    retry_element = (
+                        self.browser.find_element(
+                            target_selector
+                        )
+                    )
+                except Exception:
+                    retry_element = None
+
+                retry_click = (
+                    getattr(
+                        retry_element,
+                        "mouse_click",
+                        None,
+                    )
+                    if retry_element
+                    else None
+                )
+
+                if callable(
+                    retry_click
+                ):
+                    retried = True
+
+                    print(
+                        "[WA-SEARCH] B7.4 retry mouse_click START",
+                        flush=True,
+                    )
+
+                    retry_click()
+
+                    print(
+                        "[WA-SEARCH] B7.5 retry mouse_click OK",
+                        flush=True,
+                    )
+
+                    opened, active_display_name = (
+                        wait_for_expected_chat(
+                            min(
+                                4.0,
+                                max(
+                                    1.5,
+                                    float(timeout),
+                                ),
+                            )
+                        )
+                    )
+
+        # El marcador únicamente sirve como puente temporal
+        # entre JavaScript y SeleniumBase.
+        try:
+            self.browser.evaluate(
+                """
+                (() => {
+                    document
+                        .querySelectorAll(
+                            '[data-qa-whatsapp-routing-target]'
+                        )
+                        .forEach(
+                            node =>
+                                node.removeAttribute(
+                                    'data-qa-whatsapp-routing-target'
+                                )
+                        );
+
+                    return true;
+                })()
+                """
+            )
+        except Exception:
+            pass
+
+        print(
+            "[WA-SEARCH] B8 chat identity "
+            f"opened={opened} "
+            f"retried={retried} "
+            f"active={ascii(active_display_name)} "
+            f"expected_name={ascii(display_hint)} "
+            f"expected_phone={ascii(expected.e164)}",
+            flush=True,
+        )
+
+        # MUY IMPORTANTE:
+        # el siguiente routing debe comenzar siempre con
+        # el buscador vacío. El chat abierto se mantiene.
+        try:
+            cleared = (
+                self.clear_chat_search()
+            )
+
+            print(
+                "[WA-SEARCH] B9 search cleared "
+                f"{cleared}",
+                flush=True,
+            )
+
+        except Exception as exc:
+            print(
+                "[WA-SEARCH] B9 clear skipped "
+                f"{type(exc).__name__}",
+                flush=True,
+            )
+
+        return {
+            "opened": opened,
+            "reason": (
+                None
+                if opened
+                else "CHAT_SEARCH_OPEN_TIMEOUT"
+            ),
+            "display_name":
+                result_text,
+        }
+
+    def _verify_active_chat_phone(
+        self,
+        phone,
+        *,
+        timeout=10,
+    ):
+        """Verifica el teléfono del chat actualmente abierto."""
+        expected = normalize_phone(
+            phone
+        )
+
+        if not expected.valid:
+            raise ValueError(
+                "Teléfono WhatsApp no válido"
+            )
+
+        print(
+            "[WA-ROUTE] A1 get_message_composer_state START",
+            flush=True,
+        )
+
+        composer = (
+            self.get_message_composer_state()
+        )
+
+        print(
+            "[WA-ROUTE] A2 get_message_composer_state OK "
+            f"{ascii(composer)}",
+            flush=True,
+        )
+
+        if not composer[
+            "found"
+        ]:
             return {
                 "opened": False,
                 "verified": False,
@@ -1019,16 +2461,27 @@ class WhatsAppConnector:
                     None,
             }
 
+        print(
+            "[WA-ROUTE] A3 open_contact_profile START",
+            flush=True,
+        )
+
         profile_open = (
             self.open_contact_profile(
                 timeout=min(
-                    10,
+                    8,
                     max(
                         1,
                         int(timeout),
                     ),
                 )
             )
+        )
+
+        print(
+            "[WA-ROUTE] A4 open_contact_profile RESULT "
+            f"{ascii(profile_open)}",
+            flush=True,
         )
 
         if not profile_open:
@@ -1044,8 +2497,19 @@ class WhatsAppConnector:
             }
 
         try:
+            print(
+                "[WA-ROUTE] A5 classify_open_profile START",
+                flush=True,
+            )
+
             classification = (
                 self.classify_open_profile()
+            )
+
+            print(
+                "[WA-ROUTE] A6 classify_open_profile OK "
+                f"{ascii(classification)}",
+                flush=True,
             )
 
             kind = classification.get(
@@ -1053,15 +2517,15 @@ class WhatsAppConnector:
                 CHAT_KIND_UNKNOWN,
             )
 
-            if (
-                kind
-                != CHAT_KIND_INDIVIDUAL
+            if kind not in (
+                CHAT_KIND_INDIVIDUAL,
+                CHAT_KIND_SELF,
             ):
                 return {
                     "opened": True,
                     "verified": False,
                     "reason":
-                        "NOT_INDIVIDUAL_CHAT",
+                        "NOT_SENDABLE_CHAT",
                     "kind":
                         kind,
                     "expected_phone":
@@ -1070,8 +2534,19 @@ class WhatsAppConnector:
                         None,
                 }
 
+            print(
+                "[WA-ROUTE] A7 get_open_contact_phone START",
+                flush=True,
+            )
+
             observed_raw = (
                 self.get_open_contact_phone()
+            )
+
+            print(
+                "[WA-ROUTE] A8 get_open_contact_phone OK "
+                f"{ascii(observed_raw)}",
+                flush=True,
             )
 
             observed = normalize_phone(
@@ -1105,8 +2580,7 @@ class WhatsAppConnector:
                     (
                         None
                         if verified
-                        else
-                        "PHONE_MISMATCH"
+                        else "PHONE_MISMATCH"
                     ),
                 "kind":
                     kind,
@@ -1120,6 +2594,157 @@ class WhatsAppConnector:
             self.close_contact_profile(
                 timeout=5,
             )
+
+    def open_chat_by_phone(
+        self,
+        phone,
+        *,
+        expected_display_name=None,
+        verify_identity=True,
+        timeout=15,
+    ):
+        """Abre un chat por teléfono sin recargar WhatsApp Web.
+
+        Con verify_identity=False realiza navegación ligera
+        mediante búsqueda y validación visual de la cabecera,
+        sin abrir el perfil del contacto.
+
+        Con verify_identity=True exige además verificación
+        telefónica fuerte antes de considerar seguro el
+        destinatario para operaciones sensibles.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        expected = normalize_phone(
+            phone
+        )
+
+        if not expected.valid:
+            raise ValueError(
+                "Teléfono WhatsApp no válido"
+            )
+
+        # En navegación ligera no abrimos el perfil.
+        # La presencia del compositor únicamente permite
+        # reutilizar el chat cuando el llamador no exige
+        # verificación fuerte de identidad.
+        if not verify_identity:
+            composer = (
+                self.get_message_composer_state()
+            )
+
+            if composer.get(
+                "found"
+            ) and expected_display_name:
+                # No asumimos que el chat actual sea el
+                # solicitado: seguimos por búsqueda para
+                # hacer la navegación determinista.
+                pass
+
+        else:
+            # Fast path seguro para operaciones sensibles:
+            # verifica telefónicamente el chat actual.
+            current = (
+                self._verify_active_chat_phone(
+                    expected.e164,
+                    timeout=min(
+                        5,
+                        max(
+                            1,
+                            int(timeout),
+                        ),
+                    ),
+                )
+            )
+
+            if current.get(
+                "verified"
+            ):
+                current[
+                    "navigation"
+                ] = "CURRENT_CHAT"
+
+                return current
+
+        print(
+            "[WA-ROUTE] B1 search_and_open_chat_by_phone START",
+            flush=True,
+        )
+
+        searched = (
+            self.search_and_open_chat_by_phone(
+                expected.e164,
+                expected_display_name=(
+                    expected_display_name
+                ),
+                timeout=timeout,
+            )
+        )
+
+        print(
+            "[WA-ROUTE] B2 search result "
+            f"{ascii(searched)}",
+            flush=True,
+        )
+
+        if not searched.get(
+            "opened"
+        ):
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    searched.get(
+                        "reason"
+                    )
+                    or "CHAT_SEARCH_FAILED",
+                "expected_phone":
+                    expected.e164,
+                "observed_phone":
+                    None,
+                "navigation":
+                    "CHAT_SEARCH",
+            }
+
+        if not verify_identity:
+            return {
+                "opened": True,
+                "verified": False,
+                "verification_skipped": True,
+                "reason": None,
+                "expected_phone":
+                    expected.e164,
+                "observed_phone":
+                    None,
+                "navigation":
+                    "CHAT_SEARCH",
+                "display_name":
+                    searched.get(
+                        "display_name"
+                    ),
+            }
+
+        verified = (
+            self._verify_active_chat_phone(
+                expected.e164,
+                timeout=min(
+                    8,
+                    max(
+                        1,
+                        int(timeout),
+                    ),
+                ),
+            )
+        )
+
+        verified[
+            "navigation"
+        ] = "CHAT_SEARCH"
+
+        return verified
 
     def open_chat_by_virtual_offset(
         self,
@@ -1321,17 +2946,61 @@ class WhatsAppConnector:
             )
         )
 
-        selector = (
-            f'[data-testid="list-item-{position}"] '
-            '[role="gridcell"][tabindex="0"]'
+        row_selector = (
+            f'[data-testid="list-item-{position}"]'
         )
 
-        element = (
-            self.browser
-            .find_element(
-                selector
-            )
+        candidate_selectors = (
+            (
+                row_selector
+                + ' [role="gridcell"][tabindex="0"]'
+            ),
+            (
+                row_selector
+                + ' [role="gridcell"]'
+            ),
+            (
+                row_selector
+                + ' [tabindex="0"]'
+            ),
+            row_selector,
         )
+
+        element = None
+        selected_selector = None
+
+        for selector in candidate_selectors:
+            try:
+                candidate = (
+                    self.browser
+                    .find_element(
+                        selector
+                    )
+                )
+            except Exception:
+                candidate = None
+
+            if candidate:
+                element = candidate
+                selected_selector = selector
+                break
+
+        print(
+            "[WA-OPEN] row locator "
+            f"position={position} "
+            f"selector={ascii(selected_selector)}",
+            flush=True,
+        )
+
+        if element is None:
+            return {
+                "opened": False,
+                "composer_found": False,
+                "composer_aria_label": None,
+                "active_display_name": None,
+                "main_text": None,
+                "reason": "CHAT_ROW_NOT_FOUND",
+            }
 
         mouse_click = getattr(
             element,
@@ -1339,15 +3008,31 @@ class WhatsAppConnector:
             None,
         )
 
-        if not callable(
+        click = getattr(
+            element,
+            "click",
+            None,
+        )
+
+        if callable(
             mouse_click
         ):
-            raise RuntimeError(
-                "El elemento de chat "
-                "no soporta mouse_click()"
-            )
+            mouse_click()
 
-        mouse_click()
+        elif callable(
+            click
+        ):
+            click()
+
+        else:
+            return {
+                "opened": False,
+                "composer_found": False,
+                "composer_aria_label": None,
+                "active_display_name": None,
+                "main_text": None,
+                "reason": "CHAT_ROW_NOT_CLICKABLE",
+            }
 
         deadline = (
             time.time()

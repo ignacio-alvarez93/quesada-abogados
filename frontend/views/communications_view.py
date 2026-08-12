@@ -442,6 +442,19 @@ def communications_view(
 
         _safe_update()
 
+        # Si WhatsApp ya está abierto, mantener ambas
+        # interfaces sincronizadas: seleccionar una
+        # conversación en CRM mueve WhatsApp al mismo chat.
+        try:
+            if whatsapp_runtime is not None:
+                _route_whatsapp_thread(
+                    new_thread_id
+                )
+        except NameError:
+            # El helper se define más abajo durante la
+            # construcción completa de la vista.
+            pass
+
     def load_data(
         *,
         preserve_selection=True,
@@ -570,6 +583,18 @@ def communications_view(
             load_thread_context()
             load_thread_messages()
 
+            # load_data() puede seleccionar automáticamente
+            # una conversación después de que el compositor
+            # se haya creado inicialmente como deshabilitado.
+            # Recalcular aquí garantiza que el estado visual
+            # refleje el thread realmente seleccionado.
+            try:
+                _refresh_composer_controls()
+            except NameError:
+                # Durante construcción temprana de la vista
+                # el helper podría no estar definido todavía.
+                pass
+
             total_pages = max(
                 1,
                 math.ceil(
@@ -655,6 +680,71 @@ def communications_view(
                 ),
                 error=True,
             )
+
+    def open_whatsapp(
+        e=None,
+    ):
+        if whatsapp_runtime is None:
+            _show_message(
+                "El runtime de WhatsApp no está disponible.",
+                error=True,
+            )
+            return
+
+        def worker():
+            try:
+                already_started = bool(
+                    whatsapp_runtime.started
+                )
+
+                whatsapp_runtime.start()
+
+                if already_started:
+                    _show_message(
+                        (
+                            "WhatsApp ya estaba abierto "
+                            "y seguirá reutilizando "
+                            "la misma sesión."
+                        )
+                    )
+
+                else:
+                    _show_message(
+                        (
+                            "WhatsApp Web abierto. "
+                            "Selecciona una conversación "
+                            "del CRM para abrirla."
+                        )
+                    )
+
+            except Exception as exc:
+                _show_message(
+                    (
+                        "No se pudo abrir WhatsApp Web: "
+                        f"{exc}"
+                    ),
+                    error=True,
+                )
+
+        runner = getattr(
+            page,
+            "run_thread",
+            None,
+        )
+
+        if not callable(runner):
+            _show_message(
+                (
+                    "Esta versión de Flet no dispone "
+                    "de page.run_thread()."
+                ),
+                error=True,
+            )
+            return
+
+        runner(
+            worker
+        )
 
     def placeholder_sync(
         e=None,
@@ -1526,6 +1616,69 @@ def communications_view(
             "Esta versión de Flet no dispone "
             "de page.run_thread()"
         )
+
+    def _route_whatsapp_thread(
+        thread_id,
+    ):
+        if whatsapp_runtime is None:
+            return False
+
+        captured_thread_id = int(
+            thread_id
+        )
+
+        def worker():
+            try:
+                if not whatsapp_runtime.started:
+                    whatsapp_runtime.start()
+
+                result = (
+                    whatsapp_runtime
+                    .verify_and_open_thread(
+                        captured_thread_id
+                    )
+                )
+
+                # Una selección obsoleta se descarta
+                # silenciosamente. No es un error para
+                # el usuario: existe otra selección más
+                # reciente esperando ser aplicada.
+                if (
+                    isinstance(
+                        result,
+                        dict,
+                    )
+                    and result.get(
+                        "skipped"
+                    )
+                ):
+                    return
+
+            except Exception as exc:
+                # Una selección anterior puede terminar
+                # mientras el usuario ya ha elegido otra.
+                # Solo mostramos el error si sigue siendo
+                # la conversación actualmente seleccionada.
+                if (
+                    state.get(
+                        "selected_thread_id"
+                    )
+                    == captured_thread_id
+                ):
+                    _show_message(
+                        (
+                            "No se pudo abrir la "
+                            "conversación en WhatsApp: "
+                            f"{exc}"
+                        ),
+                        error=True,
+                    )
+
+        _run_background(
+            worker
+        )
+
+        return True
 
     def _finish_send_ui(
         *,
@@ -2596,6 +2749,10 @@ def communications_view(
                                 expand=True,
                             ),
                             secondary_button(
+                                "Abrir WhatsApp",
+                                open_whatsapp,
+                            ),
+                            secondary_button(
                                 "Sincronizar WhatsApp",
                                 placeholder_sync,
                             ),
@@ -2671,6 +2828,8 @@ def communications_view(
     load_data(
         preserve_selection=True,
     )
+
+    _refresh_composer_controls()
 
     content_area.content = (
         build_content()

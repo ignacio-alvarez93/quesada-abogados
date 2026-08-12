@@ -12,6 +12,8 @@ No contiene SQL.
 No conoce Flet.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import time
 
 from backend.automation.connectors.whatsapp_connector import (
@@ -62,6 +64,81 @@ class WhatsAppRuntimeService:
         self._outbound_service = None
         self._sync_service = None
 
+        # SeleniumBase/CDP debe conservar afinidad
+        # con un único hilo durante toda la vida
+        # de la sesión WhatsApp.
+        self._executor = None
+        self._executor_lock = threading.Lock()
+        self._worker_thread_id = None
+
+        # Última conversación solicitada desde CRM.
+        # Permite descartar navegaciones obsoletas cuando
+        # varias selecciones llegan mientras el worker CDP
+        # está ocupado.
+        self._desired_thread_id = None
+        self._desired_thread_lock = threading.Lock()
+
+    def _get_executor(
+        self,
+    ):
+        with self._executor_lock:
+            if self._executor is None:
+                self._executor = (
+                    ThreadPoolExecutor(
+                        max_workers=1,
+                        thread_name_prefix=(
+                            "whatsapp-runtime"
+                        ),
+                    )
+                )
+
+            return self._executor
+
+    def _execute_on_worker(
+        self,
+        callable_,
+        *args,
+        **kwargs,
+    ):
+        self._worker_thread_id = (
+            threading.get_ident()
+        )
+
+        return callable_(
+            *args,
+            **kwargs,
+        )
+
+    def _run_serialized(
+        self,
+        callable_,
+        *args,
+        **kwargs,
+    ):
+        # Permite llamadas internas reentrantes sin
+        # deadlock cuando ya estamos en el worker.
+        if (
+            self._worker_thread_id
+            == threading.get_ident()
+        ):
+            return callable_(
+                *args,
+                **kwargs,
+            )
+
+        executor = (
+            self._get_executor()
+        )
+
+        future = executor.submit(
+            self._execute_on_worker,
+            callable_,
+            *args,
+            **kwargs,
+        )
+
+        return future.result()
+
     @property
     def connector(self):
         return self._connector
@@ -90,7 +167,7 @@ class WhatsAppRuntimeService:
 
         return self._connector
 
-    def start(
+    def _start_impl(
         self,
     ):
         connector = (
@@ -102,7 +179,14 @@ class WhatsAppRuntimeService:
 
         return connector
 
-    def get_status(
+    def start(
+        self,
+    ):
+        return self._run_serialized(
+            self._start_impl
+        )
+
+    def _get_status_impl(
         self,
     ):
         if not self.started:
@@ -113,13 +197,20 @@ class WhatsAppRuntimeService:
             .detect_session_status()
         )
 
-    def ensure_ready(
+    def get_status(
+        self,
+    ):
+        return self._run_serialized(
+            self._get_status_impl
+        )
+
+    def _ensure_ready_impl(
         self,
         *,
         wait_timeout=60,
         poll_interval=1,
     ):
-        connector = self.start()
+        connector = self._start_impl()
 
         deadline = (
             time.time()
@@ -167,6 +258,18 @@ class WhatsAppRuntimeService:
             f"(último estado: {last_status})"
         )
 
+    def ensure_ready(
+        self,
+        *,
+        wait_timeout=60,
+        poll_interval=1,
+    ):
+        return self._run_serialized(
+            self._ensure_ready_impl,
+            wait_timeout=wait_timeout,
+            poll_interval=poll_interval,
+        )
+
     def _get_outbound_service(
         self,
     ):
@@ -205,14 +308,15 @@ class WhatsAppRuntimeService:
 
         return self._sync_service
 
-    def verify_and_open_thread(
+    def _open_thread_impl(
         self,
         thread_id,
         *,
         wait_timeout=60,
         routing_timeout=15,
     ):
-        connector = self.ensure_ready(
+        """Abre un chat sin inspeccionar el perfil del contacto."""
+        connector = self._ensure_ready_impl(
             wait_timeout=wait_timeout,
         )
 
@@ -243,6 +347,76 @@ class WhatsAppRuntimeService:
             connector
             .open_chat_by_phone(
                 phone,
+                expected_display_name=(
+                    thread.external_display_name
+                ),
+                verify_identity=False,
+                timeout=routing_timeout,
+            )
+        )
+
+        if not routing.get(
+            "opened"
+        ):
+            reason = (
+                routing.get(
+                    "reason"
+                )
+                or "CHAT_OPEN_FAILED"
+            )
+
+            raise RuntimeError(
+                "No se pudo abrir la "
+                "conversación WhatsApp "
+                f"({reason})"
+            )
+
+        return {
+            "thread": thread,
+            "routing": routing,
+        }
+
+    def _verify_and_open_thread_impl(
+        self,
+        thread_id,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+    ):
+        connector = self._ensure_ready_impl(
+            wait_timeout=wait_timeout,
+        )
+
+        thread = (
+            self.communication_service
+            .get_thread(
+                thread_id
+            )
+        )
+
+        if thread is None:
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
+        phone = str(
+            thread.external_address
+            or ""
+        ).strip()
+
+        if not phone:
+            raise ValueError(
+                "La conversación no tiene "
+                "teléfono WhatsApp verificable"
+            )
+
+        routing = (
+            connector
+            .open_chat_by_phone(
+                phone,
+                expected_display_name=(
+                    thread.external_display_name
+                ),
                 timeout=routing_timeout,
             )
         )
@@ -269,7 +443,65 @@ class WhatsAppRuntimeService:
             "routing": routing,
         }
 
-    def send_text_message(
+    def _verify_and_open_latest_thread_impl(
+        self,
+        thread_id,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+    ):
+        requested_thread_id = int(
+            thread_id
+        )
+
+        with self._desired_thread_lock:
+            desired_thread_id = (
+                self._desired_thread_id
+            )
+
+        if (
+            desired_thread_id
+            != requested_thread_id
+        ):
+            return {
+                "skipped": True,
+                "reason": "STALE_SELECTION",
+                "requested_thread_id":
+                    requested_thread_id,
+                "desired_thread_id":
+                    desired_thread_id,
+            }
+
+        return self._open_thread_impl(
+            requested_thread_id,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+        )
+
+    def verify_and_open_thread(
+        self,
+        thread_id,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+    ):
+        requested_thread_id = int(
+            thread_id
+        )
+
+        with self._desired_thread_lock:
+            self._desired_thread_id = (
+                requested_thread_id
+            )
+
+        return self._run_serialized(
+            self._verify_and_open_latest_thread_impl,
+            requested_thread_id,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+        )
+
+    def _send_text_message_impl(
         self,
         *,
         wait_timeout=60,
@@ -288,12 +520,14 @@ class WhatsAppRuntimeService:
                 "thread_id es obligatorio"
             )
 
-        self.verify_and_open_thread(
-            thread_id,
-            wait_timeout=wait_timeout,
-            routing_timeout=(
-                routing_timeout
-            ),
+        routing_result = (
+            self._verify_and_open_thread_impl(
+                thread_id,
+                wait_timeout=wait_timeout,
+                routing_timeout=(
+                    routing_timeout
+                ),
+            )
         )
 
         return (
@@ -303,14 +537,28 @@ class WhatsAppRuntimeService:
             )
         )
 
-    def sync_open_chat_messages(
+    def send_text_message(
+        self,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        **kwargs,
+    ):
+        return self._run_serialized(
+            self._send_text_message_impl,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+            **kwargs,
+        )
+
+    def _sync_open_chat_messages_impl(
         self,
         *,
         thread_id,
         limit=200,
         wait_timeout=60,
     ):
-        self.ensure_ready(
+        self._ensure_ready_impl(
             wait_timeout=wait_timeout,
         )
 
@@ -322,7 +570,21 @@ class WhatsAppRuntimeService:
             )
         )
 
-    def close(
+    def sync_open_chat_messages(
+        self,
+        *,
+        thread_id,
+        limit=200,
+        wait_timeout=60,
+    ):
+        return self._run_serialized(
+            self._sync_open_chat_messages_impl,
+            thread_id=thread_id,
+            limit=limit,
+            wait_timeout=wait_timeout,
+        )
+
+    def _close_impl(
         self,
     ):
         connector = self._connector
@@ -339,3 +601,27 @@ class WhatsAppRuntimeService:
             self._connector = None
             self._outbound_service = None
             self._sync_service = None
+
+    def close(
+        self,
+    ):
+        result = self._run_serialized(
+            self._close_impl
+        )
+
+        with self._executor_lock:
+            executor = self._executor
+            self._executor = None
+
+        if executor is not None:
+            executor.shutdown(
+                wait=True,
+                cancel_futures=False,
+            )
+
+        self._worker_thread_id = None
+
+        with self._desired_thread_lock:
+            self._desired_thread_id = None
+
+        return result

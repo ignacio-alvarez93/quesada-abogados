@@ -136,5 +136,122 @@ class CommunicationsViewOutboundContractTest(
         )
 
 
+    def test_view_can_open_persistent_whatsapp_runtime(
+        self,
+    ):
+        self.assertIn(
+            'def open_whatsapp(',
+            self.view_text,
+        )
+
+        self.assertIn(
+            '"Abrir WhatsApp"',
+            self.view_text,
+        )
+
+        self.assertIn(
+            'whatsapp_runtime.start()',
+            self.view_text,
+        )
+
+        self.assertIn(
+            'whatsapp_runtime.started',
+            self.view_text,
+        )
+
+        self.assertIn(
+            '"run_thread"',
+            self.view_text,
+        )
+
+
+    def test_composer_refreshes_after_initial_thread_load(
+        self,
+    ):
+        self.assertIn(
+            "_refresh_composer_controls()",
+            self.view_text,
+        )
+
+        initial_load_marker = (
+            "load_data(\n"
+            "        preserve_selection=True,\n"
+            "    )\n\n"
+            "    _refresh_composer_controls()"
+        )
+
+        self.assertIn(
+            initial_load_marker,
+            self.view_text,
+        )
+
+
+    def test_selecting_thread_routes_persistent_whatsapp(
+        self,
+    ):
+        self.assertIn(
+            "def _route_whatsapp_thread(",
+            self.view_text,
+        )
+
+        self.assertIn(
+            "verify_and_open_thread(",
+            self.view_text,
+        )
+
+        self.assertIn(
+            "_route_whatsapp_thread(\n"
+            "                    new_thread_id",
+            self.view_text,
+        )
+
+        self.assertNotIn(
+            "and whatsapp_runtime.started",
+            self.view_text,
+        )
+
+        self.assertIn(
+            "if whatsapp_runtime is not None:",
+            self.view_text,
+        )
+
+        self.assertIn(
+            "if not whatsapp_runtime.started:",
+            self.view_text,
+        )
+
+        self.assertIn(
+            "whatsapp_runtime.start()",
+            self.view_text,
+        )
+
+
+    def test_open_whatsapp_does_not_route_implicitly(
+        self,
+    ):
+        start = self.view_text.index(
+            "    def open_whatsapp("
+        )
+
+        end = self.view_text.index(
+            "\n    def ",
+            start + 10,
+        )
+
+        block = self.view_text[
+            start:end
+        ]
+
+        self.assertNotIn(
+            "verify_and_open_thread(",
+            block,
+        )
+
+        self.assertIn(
+            "Selecciona una conversación ",
+            block,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
