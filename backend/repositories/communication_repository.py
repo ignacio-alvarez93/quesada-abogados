@@ -141,9 +141,29 @@ class CommunicationRepository(Protocol):
     ) -> CommunicationMessage:
         ...
 
+    def attach_message_provider_identity(
+        self,
+        message_id: int,
+        *,
+        provider_message_id: str,
+        provider_timestamp: str | None = None,
+    ) -> CommunicationMessage:
+        ...
+
     def create_attempt(
         self,
         attempt: CommunicationMessageAttempt,
+    ) -> CommunicationMessageAttempt:
+        ...
+
+    def finish_attempt(
+        self,
+        attempt_id: int,
+        *,
+        status: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        metadata: dict | None = None,
     ) -> CommunicationMessageAttempt:
         ...
 

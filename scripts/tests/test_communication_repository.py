@@ -772,6 +772,424 @@ class CommunicationRepositoryTest(
             missing
         )
 
+    def test_attach_provider_identity_to_existing_message(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "attach-provider"
+                ),
+                external_address=(
+                    "+34600777777"
+                ),
+            )
+        )
+
+        message = self.repo.create_message(
+            CommunicationMessage(
+                id=None,
+                thread_id=thread.id,
+                client_id=None,
+                expedient_id=None,
+                direction=DIRECTION_OUTBOUND,
+                body_text="Mensaje CRM",
+                status=MESSAGE_STATUS_PENDING,
+            )
+        )
+
+        attached = (
+            self.repo
+            .attach_message_provider_identity(
+                message.id,
+                provider_message_id=(
+                    "wa-outbound-local-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-12T12:17:00"
+                ),
+            )
+        )
+
+        self.assertEqual(
+            attached.id,
+            message.id,
+        )
+
+        self.assertEqual(
+            attached.provider_message_id,
+            "wa-outbound-local-1",
+        )
+
+        self.assertEqual(
+            attached.provider_timestamp,
+            "2026-08-12T12:17:00",
+        )
+
+        messages = self.repo.list_messages(
+            thread.id
+        )
+
+        self.assertEqual(
+            len(messages),
+            1,
+        )
+
+    def test_attach_provider_identity_is_idempotent(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "attach-idempotent"
+                ),
+                external_address=(
+                    "+34600888888"
+                ),
+            )
+        )
+
+        message = self.repo.create_message(
+            CommunicationMessage(
+                id=None,
+                thread_id=thread.id,
+                client_id=None,
+                expedient_id=None,
+                direction=DIRECTION_OUTBOUND,
+                body_text="Idempotente",
+                status=MESSAGE_STATUS_PENDING,
+            )
+        )
+
+        first = (
+            self.repo
+            .attach_message_provider_identity(
+                message.id,
+                provider_message_id=(
+                    "wa-idempotent-local-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-12T12:18:00"
+                ),
+            )
+        )
+
+        second = (
+            self.repo
+            .attach_message_provider_identity(
+                message.id,
+                provider_message_id=(
+                    "wa-idempotent-local-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-12T12:18:00"
+                ),
+            )
+        )
+
+        self.assertEqual(
+            first.id,
+            second.id,
+        )
+
+        self.assertEqual(
+            second.provider_message_id,
+            "wa-idempotent-local-1",
+        )
+
+    def test_attach_provider_identity_refuses_overwrite(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "attach-no-overwrite"
+                ),
+                external_address=(
+                    "+34600999999"
+                ),
+            )
+        )
+
+        message = self.repo.create_message(
+            CommunicationMessage(
+                id=None,
+                thread_id=thread.id,
+                client_id=None,
+                expedient_id=None,
+                direction=DIRECTION_OUTBOUND,
+                body_text="No sobrescribir",
+                status=MESSAGE_STATUS_PENDING,
+                provider_message_id=(
+                    "wa-original"
+                ),
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "otra identidad",
+        ):
+            (
+                self.repo
+                .attach_message_provider_identity(
+                    message.id,
+                    provider_message_id=(
+                        "wa-different"
+                    ),
+                )
+            )
+
+    def test_attach_provider_identity_refuses_thread_conflict(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "attach-conflict"
+                ),
+                external_address=(
+                    "+34600101010"
+                ),
+            )
+        )
+
+        first = self.repo.create_message(
+            CommunicationMessage(
+                id=None,
+                thread_id=thread.id,
+                client_id=None,
+                expedient_id=None,
+                direction=DIRECTION_OUTBOUND,
+                body_text="Primero",
+                status=MESSAGE_STATUS_PENDING,
+                provider_message_id=(
+                    "wa-conflict-1"
+                ),
+            )
+        )
+
+        second = self.repo.create_message(
+            CommunicationMessage(
+                id=None,
+                thread_id=thread.id,
+                client_id=None,
+                expedient_id=None,
+                direction=DIRECTION_OUTBOUND,
+                body_text="Segundo",
+                status=MESSAGE_STATUS_PENDING,
+            )
+        )
+
+        self.assertIsNotNone(
+            first.id
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "otro mensaje",
+        ):
+            (
+                self.repo
+                .attach_message_provider_identity(
+                    second.id,
+                    provider_message_id=(
+                        "wa-conflict-1"
+                    ),
+                )
+            )
+
+    def test_finish_attempt_started_to_sent(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "attempt-sent"
+                ),
+                external_address=(
+                    "+34600111112"
+                ),
+            )
+        )
+
+        message = self.repo.create_message(
+            CommunicationMessage(
+                id=None,
+                thread_id=thread.id,
+                client_id=None,
+                expedient_id=None,
+                direction=DIRECTION_OUTBOUND,
+                body_text="Attempt SENT",
+                status=MESSAGE_STATUS_PENDING,
+            )
+        )
+
+        attempt = self.repo.create_attempt(
+            CommunicationMessageAttempt(
+                id=None,
+                message_id=message.id,
+                transport=(
+                    "SELENIUMBASE_WEB"
+                ),
+                attempt_number=1,
+                status="STARTED",
+            )
+        )
+
+        finished = (
+            self.repo.finish_attempt(
+                attempt.id,
+                status="SENT",
+            )
+        )
+
+        self.assertEqual(
+            finished.id,
+            attempt.id,
+        )
+
+        self.assertEqual(
+            finished.status,
+            "SENT",
+        )
+
+        self.assertIsNotNone(
+            finished.finished_at
+        )
+
+        again = (
+            self.repo.finish_attempt(
+                attempt.id,
+                status="SENT",
+            )
+        )
+
+        self.assertEqual(
+            again.status,
+            "SENT",
+        )
+
+    def test_finish_attempt_started_to_error(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "attempt-error"
+                ),
+                external_address=(
+                    "+34600111113"
+                ),
+            )
+        )
+
+        message = self.repo.create_message(
+            CommunicationMessage(
+                id=None,
+                thread_id=thread.id,
+                client_id=None,
+                expedient_id=None,
+                direction=DIRECTION_OUTBOUND,
+                body_text="Attempt ERROR",
+                status=MESSAGE_STATUS_PENDING,
+            )
+        )
+
+        attempt = self.repo.create_attempt(
+            CommunicationMessageAttempt(
+                id=None,
+                message_id=message.id,
+                transport=(
+                    "SELENIUMBASE_WEB"
+                ),
+                attempt_number=1,
+                status="STARTED",
+            )
+        )
+
+        finished = (
+            self.repo.finish_attempt(
+                attempt.id,
+                status="ERROR",
+                error_code=(
+                    "SEND_STATE_UNCERTAIN"
+                ),
+                error_message=(
+                    "No se pudo confirmar el envío"
+                ),
+                metadata={
+                    "uncertain": True,
+                },
+            )
+        )
+
+        self.assertEqual(
+            finished.status,
+            "ERROR",
+        )
+
+        self.assertEqual(
+            finished.error_code,
+            "SEND_STATE_UNCERTAIN",
+        )
+
+        self.assertEqual(
+            finished.error_message,
+            "No se pudo confirmar el envío",
+        )
+
+        self.assertEqual(
+            finished.metadata,
+            {
+                "uncertain": True,
+            },
+        )
+
+        self.assertIsNotNone(
+            finished.finished_at
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "otro estado",
+        ):
+            self.repo.finish_attempt(
+                attempt.id,
+                status="SENT",
+            )
+
+
 
 if __name__ == "__main__":
     unittest.main()

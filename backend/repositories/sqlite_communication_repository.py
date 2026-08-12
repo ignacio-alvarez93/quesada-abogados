@@ -1554,6 +1554,157 @@ class SQLiteCommunicationRepository:
 
             return self._message_from_row(row)
 
+    def attach_message_provider_identity(
+        self,
+        message_id,
+        *,
+        provider_message_id,
+        provider_timestamp=None,
+    ):
+        """Asocia identidad del proveedor a un mensaje existente.
+
+        La operación es idempotente para la misma identidad y
+        nunca sobrescribe silenciosamente otra identidad.
+        """
+        self.ensure_schema()
+
+        normalized_provider_id = (
+            str(
+                provider_message_id
+                or ""
+            ).strip()
+        )
+
+        if not normalized_provider_id:
+            raise ValueError(
+                "provider_message_id es obligatorio"
+            )
+
+        normalized_timestamp = (
+            str(
+                provider_timestamp
+                or ""
+            ).strip()
+            or None
+        )
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_messages
+                WHERE id = ?
+                """,
+                (
+                    int(message_id),
+                ),
+            ).fetchone()
+
+            if not row:
+                raise ValueError(
+                    "Mensaje de comunicación no encontrado"
+                )
+
+            message = (
+                self._message_from_row(
+                    row
+                )
+            )
+
+            current_provider_id = (
+                str(
+                    message.provider_message_id
+                    or ""
+                ).strip()
+                or None
+            )
+
+            if (
+                current_provider_id
+                and current_provider_id
+                != normalized_provider_id
+            ):
+                raise ValueError(
+                    "El mensaje ya tiene otra identidad "
+                    "de proveedor"
+                )
+
+            conflict = conn.execute(
+                """
+                SELECT id
+                FROM communication_messages
+                WHERE thread_id = ?
+                  AND provider_message_id = ?
+                  AND id <> ?
+                LIMIT 1
+                """,
+                (
+                    int(
+                        message.thread_id
+                    ),
+                    normalized_provider_id,
+                    int(
+                        message.id
+                    ),
+                ),
+            ).fetchone()
+
+            if conflict:
+                raise ValueError(
+                    "La identidad de proveedor ya pertenece "
+                    "a otro mensaje de la conversación"
+                )
+
+            conn.execute(
+                """
+                UPDATE communication_messages
+                SET
+                    provider_message_id = ?,
+                    provider_timestamp = COALESCE(
+                        provider_timestamp,
+                        ?
+                    ),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    normalized_provider_id,
+                    normalized_timestamp,
+                    int(
+                        message.id
+                    ),
+                ),
+            )
+
+            self._update_thread_last_message(
+                conn,
+                thread_id=(
+                    message.thread_id
+                ),
+                provider_timestamp=(
+                    normalized_timestamp
+                ),
+            )
+
+            updated = conn.execute(
+                """
+                SELECT *
+                FROM communication_messages
+                WHERE id = ?
+                """,
+                (
+                    int(
+                        message.id
+                    ),
+                ),
+            ).fetchone()
+
+            return (
+                self._message_from_row(
+                    updated
+                )
+            )
+
     def create_attempt(
         self,
         attempt,
@@ -1605,6 +1756,158 @@ class SQLiteCommunicationRepository:
             ).fetchone()
 
             return self._attempt_from_row(row)
+
+    def finish_attempt(
+        self,
+        attempt_id,
+        *,
+        status,
+        error_code=None,
+        error_message=None,
+        metadata=None,
+    ):
+        """Finaliza un intento STARTED como SENT o ERROR.
+
+        Un intento ya finalizado solo admite repetición
+        idempotente del mismo estado.
+        """
+        self.ensure_schema()
+
+        normalized_status = (
+            str(
+                status
+                or ""
+            )
+            .strip()
+            .upper()
+        )
+
+        if normalized_status not in (
+            "SENT",
+            "ERROR",
+        ):
+            raise ValueError(
+                "Estado final de intento no válido"
+            )
+
+        normalized_error_code = (
+            str(
+                error_code
+                or ""
+            ).strip()
+            or None
+        )
+
+        normalized_error_message = (
+            str(
+                error_message
+                or ""
+            ).strip()
+            or None
+        )
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_message_attempts
+                WHERE id = ?
+                """,
+                (
+                    int(attempt_id),
+                ),
+            ).fetchone()
+
+            if not row:
+                raise ValueError(
+                    "Intento de comunicación no encontrado"
+                )
+
+            attempt = (
+                self._attempt_from_row(
+                    row
+                )
+            )
+
+            current_status = (
+                str(
+                    attempt.status
+                    or ""
+                )
+                .strip()
+                .upper()
+            )
+
+            if current_status == normalized_status:
+                return attempt
+
+            if current_status != "STARTED":
+                raise ValueError(
+                    "El intento ya está finalizado "
+                    "con otro estado"
+                )
+
+            metadata_json = (
+                _json_dump(
+                    metadata
+                )
+                if metadata is not None
+                else None
+            )
+
+            conn.execute(
+                """
+                UPDATE communication_message_attempts
+                SET
+                    status = ?,
+                    finished_at = CURRENT_TIMESTAMP,
+                    error_code = ?,
+                    error_message = ?,
+                    metadata_json = COALESCE(
+                        ?,
+                        metadata_json
+                    )
+                WHERE id = ?
+                """,
+                (
+                    normalized_status,
+                    (
+                        normalized_error_code
+                        if normalized_status
+                        == "ERROR"
+                        else None
+                    ),
+                    (
+                        normalized_error_message
+                        if normalized_status
+                        == "ERROR"
+                        else None
+                    ),
+                    metadata_json,
+                    int(
+                        attempt.id
+                    ),
+                ),
+            )
+
+            updated = conn.execute(
+                """
+                SELECT *
+                FROM communication_message_attempts
+                WHERE id = ?
+                """,
+                (
+                    int(
+                        attempt.id
+                    ),
+                ),
+            ).fetchone()
+
+            return (
+                self._attempt_from_row(
+                    updated
+                )
+            )
 
     def list_attempts(
         self,
