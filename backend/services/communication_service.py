@@ -13,6 +13,8 @@ No conoce Flet.
 No conoce SeleniumBase.
 """
 
+import unicodedata
+
 from backend.communications.models import (
     ATTEMPT_STATUS_ERROR,
     ATTEMPT_STATUS_SENT,
@@ -43,6 +45,54 @@ from backend.repositories.sqlite_communication_repository import (
 WHATSAPP_DEV_ACCOUNT_CODE = (
     "WHATSAPP_DEV"
 )
+
+
+def _normalize_whatsapp_display_identity(
+    value,
+):
+    """Normaliza una identidad visible sin conocer el transporte.
+
+    Se usa únicamente para comparar títulos visibles ya obtenidos
+    frente a los nombres persistidos en Comunicaciones.
+
+    No resuelve por similitud aproximada: la coincidencia final
+    sigue siendo exacta sobre el valor normalizado.
+    """
+    raw = str(
+        value
+        or ""
+    ).strip()
+
+    if not raw:
+        return ""
+
+    decomposed = unicodedata.normalize(
+        "NFKD",
+        raw.casefold(),
+    )
+
+    characters = []
+
+    for char in decomposed:
+        if unicodedata.combining(
+            char
+        ):
+            continue
+
+        if char.isalnum():
+            characters.append(
+                char
+            )
+        else:
+            characters.append(
+                " "
+            )
+
+    return " ".join(
+        "".join(
+            characters
+        ).split()
+    )
 
 
 class CommunicationService:
@@ -358,6 +408,178 @@ class CommunicationService:
             "items":
                 visible,
         }
+
+    def resolve_whatsapp_thread_by_identity(
+        self,
+        identity,
+        *,
+        limit=5000,
+    ):
+        """Resuelve una cabecera WhatsApp contra threads CRM.
+
+        Solo devuelve matched=True cuando existe exactamente una
+        coincidencia inequívoca.
+
+        Prioridad:
+        1. teléfono normalizado;
+        2. nombre visible normalizado.
+
+        Nunca selecciona arbitrariamente entre duplicados.
+        """
+        raw_identity = str(
+            identity
+            or ""
+        ).strip()
+
+        empty_result = {
+            "matched": False,
+            "ambiguous": False,
+            "match_basis": None,
+            "thread": None,
+            "matches": [],
+            "identity": raw_identity,
+        }
+
+        if not raw_identity:
+            return empty_result
+
+        overview = (
+            self.list_thread_overviews(
+                channel=CHANNEL_WHATSAPP,
+                include_archived=False,
+                limit=limit,
+            )
+        )
+
+        threads = list(
+            overview.get(
+                "items",
+                [],
+            )
+        )
+
+        # ----------------------------------------------------
+        # 1. Teléfono: señal más fuerte
+        # ----------------------------------------------------
+
+        observed_phone = normalize_phone(
+            raw_identity
+        )
+
+        if observed_phone.valid:
+            phone_matches = []
+
+            for thread in threads:
+                candidate = normalize_phone(
+                    thread.external_address
+                )
+
+                if (
+                    candidate.valid
+                    and candidate.digits
+                    == observed_phone.digits
+                ):
+                    phone_matches.append(
+                        thread
+                    )
+
+            if phone_matches:
+                return {
+                    "matched":
+                        len(
+                            phone_matches
+                        )
+                        == 1,
+                    "ambiguous":
+                        len(
+                            phone_matches
+                        )
+                        > 1,
+                    "match_basis":
+                        "PHONE",
+                    "thread":
+                        (
+                            phone_matches[0]
+                            if len(
+                                phone_matches
+                            )
+                            == 1
+                            else None
+                        ),
+                    "matches":
+                        phone_matches,
+                    "identity":
+                        raw_identity,
+                }
+
+        # ----------------------------------------------------
+        # 2. Display name: exacto tras normalización
+        # ----------------------------------------------------
+
+        normalized_identity = (
+            _normalize_whatsapp_display_identity(
+                raw_identity
+            )
+        )
+
+        if not normalized_identity:
+            return empty_result
+
+        name_matches = []
+
+        for thread in threads:
+            candidate_identity = (
+                _normalize_whatsapp_display_identity(
+                    thread.external_display_name
+                )
+            )
+
+            if (
+                candidate_identity
+                and candidate_identity
+                == normalized_identity
+            ):
+                name_matches.append(
+                    thread
+                )
+
+        if not name_matches:
+            return {
+                **empty_result,
+                "normalized_identity":
+                    normalized_identity,
+            }
+
+        return {
+            "matched":
+                len(
+                    name_matches
+                )
+                == 1,
+            "ambiguous":
+                len(
+                    name_matches
+                )
+                > 1,
+            "match_basis":
+                "DISPLAY_NAME",
+            "thread":
+                (
+                    name_matches[0]
+                    if len(
+                        name_matches
+                    )
+                    == 1
+                    else None
+                ),
+            "matches":
+                name_matches,
+            "identity":
+                raw_identity,
+            "normalized_identity":
+                normalized_identity,
+        }
+
 
     def backfill_whatsapp_thread_matches(
         self,

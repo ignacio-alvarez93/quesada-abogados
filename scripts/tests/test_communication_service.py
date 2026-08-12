@@ -743,6 +743,177 @@ class CommunicationServiceTest(
             THREAD_MATCH_UNMATCHED,
         )
 
+    def test_resolve_whatsapp_thread_by_unique_display_name(
+        self,
+    ):
+        created = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600111111"
+                ),
+                phone="+34 600 111 111",
+                display_name=(
+                    "Mi Amor ❤️"
+                ),
+            )
+        )
+
+        expected = created[
+            "thread"
+        ]
+
+        result = (
+            self.service
+            .resolve_whatsapp_thread_by_identity(
+                "Mi Amor"
+            )
+        )
+
+        self.assertTrue(
+            result["matched"]
+        )
+
+        self.assertFalse(
+            result["ambiguous"]
+        )
+
+        self.assertEqual(
+            result["match_basis"],
+            "DISPLAY_NAME",
+        )
+
+        self.assertEqual(
+            result["thread"].thread_id,
+            expected.id,
+        )
+
+
+    def test_resolve_whatsapp_thread_prefers_phone_identity(
+        self,
+    ):
+        created = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600111222"
+                ),
+                phone="+34 600 111 222",
+                display_name=(
+                    "Contacto teléfono"
+                ),
+            )
+        )
+
+        expected = created[
+            "thread"
+        ]
+
+        result = (
+            self.service
+            .resolve_whatsapp_thread_by_identity(
+                "+34 600 111 222"
+            )
+        )
+
+        self.assertTrue(
+            result["matched"]
+        )
+
+        self.assertFalse(
+            result["ambiguous"]
+        )
+
+        self.assertEqual(
+            result["match_basis"],
+            "PHONE",
+        )
+
+        self.assertEqual(
+            result["thread"].thread_id,
+            expected.id,
+        )
+
+
+    def test_resolve_whatsapp_thread_rejects_ambiguous_display_name(
+        self,
+    ):
+        self.service.get_or_create_whatsapp_thread(
+            external_thread_key=(
+                "phone:34600111333"
+            ),
+            phone="+34 600 111 333",
+            display_name="Mohamed",
+        )
+
+        self.service.get_or_create_whatsapp_thread(
+            external_thread_key=(
+                "phone:34600111444"
+            ),
+            phone="+34 600 111 444",
+            display_name="MOHAMED ❤️",
+        )
+
+        result = (
+            self.service
+            .resolve_whatsapp_thread_by_identity(
+                "Mohamed"
+            )
+        )
+
+        self.assertFalse(
+            result["matched"]
+        )
+
+        self.assertTrue(
+            result["ambiguous"]
+        )
+
+        self.assertEqual(
+            result["match_basis"],
+            "DISPLAY_NAME",
+        )
+
+        self.assertIsNone(
+            result["thread"]
+        )
+
+        self.assertEqual(
+            len(
+                result["matches"]
+            ),
+            2,
+        )
+
+
+    def test_resolve_whatsapp_thread_preserves_unmatched_identity(
+        self,
+    ):
+        result = (
+            self.service
+            .resolve_whatsapp_thread_by_identity(
+                "Contacto inexistente"
+            )
+        )
+
+        self.assertFalse(
+            result["matched"]
+        )
+
+        self.assertFalse(
+            result["ambiguous"]
+        )
+
+        self.assertIsNone(
+            result["thread"]
+        )
+
+        self.assertEqual(
+            result["matches"],
+            [],
+        )
+
+
     def test_thread_overview_projects_client_and_messages(
         self,
     ):
