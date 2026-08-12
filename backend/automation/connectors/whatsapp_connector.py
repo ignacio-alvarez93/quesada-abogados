@@ -22,6 +22,8 @@ import re
 import time
 import unicodedata
 
+import mycdp.input_ as cdp_input
+
 from backend.automation.browser_actions import (
     open_url,
 )
@@ -109,6 +111,14 @@ MESSAGE_STATUS_READ = (
 
 MESSAGE_STATUS_UNKNOWN = (
     "UNKNOWN"
+)
+
+MESSAGE_COMPOSER_SELECTOR = (
+    '[data-testid="conversation-compose-box-input"]'
+)
+
+MESSAGE_SEND_ARIA_LABEL = (
+    "Enviar"
 )
 
 
@@ -1695,6 +1705,351 @@ class WhatsAppConnector:
             time.sleep(0.25)
 
         return False
+
+    def get_message_composer_state(
+        self,
+    ):
+        """Devuelve el estado observable del compositor activo.
+
+        No escribe ni envía mensajes.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        result = self.browser.evaluate(
+            """
+            (() => {
+                const composer =
+                    document.querySelector(
+                        '[data-testid="conversation-compose-box-input"]'
+                    );
+
+                if (!composer) {
+                    return {
+                        found: false,
+                        text: '',
+                        send_found: false
+                    };
+                }
+
+                const text =
+                    String(
+                        composer.innerText
+                        || composer.textContent
+                        || ''
+                    ).trim();
+
+                const footer =
+                    document.querySelector(
+                        '#main footer'
+                    );
+
+                const sendButton =
+                    footer
+                    ? Array.from(
+                        footer.querySelectorAll(
+                            'button, [role="button"]'
+                        )
+                    ).find(
+                        node =>
+                            node.getClientRects().length
+                            && String(
+                                node.getAttribute(
+                                    'aria-label'
+                                )
+                                || ''
+                            ).trim()
+                            === 'Enviar'
+                    )
+                    : null;
+
+                return {
+                    found: true,
+                    text: text,
+                    send_found:
+                        Boolean(sendButton)
+                };
+            })()
+            """
+        )
+
+        result = (
+            result
+            if isinstance(
+                result,
+                dict,
+            )
+            else {}
+        )
+
+        return {
+            "found": bool(
+                result.get(
+                    "found"
+                )
+            ),
+            "text": str(
+                result.get(
+                    "text"
+                )
+                or ""
+            ),
+            "send_found": bool(
+                result.get(
+                    "send_found"
+                )
+            ),
+        }
+
+    def set_message_composer_text(
+        self,
+        text,
+        *,
+        timeout=3,
+    ):
+        """Escribe texto mediante CDP en el compositor activo.
+
+        No pulsa Enviar.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        value = str(
+            text
+            or ""
+        )
+
+        if not value.strip():
+            raise ValueError(
+                "El texto del mensaje no puede estar vacío"
+            )
+
+        initial = (
+            self.get_message_composer_state()
+        )
+
+        if not initial[
+            "found"
+        ]:
+            raise RuntimeError(
+                "Compositor de WhatsApp no localizado"
+            )
+
+        if initial[
+            "text"
+        ]:
+            raise RuntimeError(
+                "El compositor contiene un borrador previo"
+            )
+
+        self.browser.send_keys(
+            MESSAGE_COMPOSER_SELECTOR,
+            value,
+        )
+
+        deadline = (
+            time.time()
+            + max(
+                0.5,
+                float(timeout),
+            )
+        )
+
+        while (
+            time.time()
+            < deadline
+        ):
+            state = (
+                self.get_message_composer_state()
+            )
+
+            if (
+                state["text"]
+                == value
+                and state[
+                    "send_found"
+                ]
+            ):
+                return state
+
+            time.sleep(
+                0.05
+            )
+
+        raise RuntimeError(
+            "WhatsApp no confirmó el texto "
+            "en el compositor"
+        )
+
+    def _dispatch_composer_key_event(
+        self,
+        element,
+        event_type,
+        **kwargs,
+    ):
+        command = (
+            cdp_input
+            .dispatch_key_event(
+                event_type,
+                **kwargs,
+            )
+        )
+
+        self.browser.loop.run_until_complete(
+            element._tab.send(
+                command
+            )
+        )
+
+    def clear_message_composer(
+        self,
+        *,
+        timeout=3,
+    ):
+        """Vacía de forma segura el contenteditable de WhatsApp.
+
+        Usa eventos reales de teclado CDP:
+        Ctrl+A + Backspace.
+
+        No pulsa Enviar.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        initial = (
+            self.get_message_composer_state()
+        )
+
+        if not initial[
+            "found"
+        ]:
+            raise RuntimeError(
+                "Compositor de WhatsApp no localizado"
+            )
+
+        if not initial[
+            "text"
+        ]:
+            return initial
+
+        element = (
+            self.browser
+            .find_element(
+                MESSAGE_COMPOSER_SELECTOR
+            )
+        )
+
+        if not element:
+            raise RuntimeError(
+                "Elemento del compositor no localizado"
+            )
+
+        self.browser.loop.run_until_complete(
+            element.focus_async()
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "rawKeyDown",
+            modifiers=2,
+            key="Control",
+            code="ControlLeft",
+            windows_virtual_key_code=17,
+            native_virtual_key_code=17,
+            location=1,
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "rawKeyDown",
+            modifiers=2,
+            key="a",
+            code="KeyA",
+            windows_virtual_key_code=65,
+            native_virtual_key_code=65,
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "keyUp",
+            modifiers=2,
+            key="a",
+            code="KeyA",
+            windows_virtual_key_code=65,
+            native_virtual_key_code=65,
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "keyUp",
+            modifiers=0,
+            key="Control",
+            code="ControlLeft",
+            windows_virtual_key_code=17,
+            native_virtual_key_code=17,
+            location=1,
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "rawKeyDown",
+            modifiers=0,
+            key="Backspace",
+            code="Backspace",
+            windows_virtual_key_code=8,
+            native_virtual_key_code=8,
+        )
+
+        self._dispatch_composer_key_event(
+            element,
+            "keyUp",
+            modifiers=0,
+            key="Backspace",
+            code="Backspace",
+            windows_virtual_key_code=8,
+            native_virtual_key_code=8,
+        )
+
+        deadline = (
+            time.time()
+            + max(
+                0.5,
+                float(timeout),
+            )
+        )
+
+        while (
+            time.time()
+            < deadline
+        ):
+            state = (
+                self.get_message_composer_state()
+            )
+
+            if (
+                not state[
+                    "text"
+                ]
+                and not state[
+                    "send_found"
+                ]
+            ):
+                return state
+
+            time.sleep(
+                0.05
+            )
+
+        raise RuntimeError(
+            "WhatsApp no confirmó el vaciado "
+            "del compositor"
+        )
 
     def list_visible_message_snapshots(
         self,
