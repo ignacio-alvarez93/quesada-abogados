@@ -121,6 +121,11 @@ MESSAGE_SEND_ARIA_LABEL = (
     "Enviar"
 )
 
+MESSAGE_SEND_SELECTOR = (
+    '#main footer '
+    'button[aria-label="Enviar"]'
+)
+
 
 @dataclass(frozen=True)
 class WhatsAppMessageSnapshot:
@@ -2049,6 +2054,191 @@ class WhatsAppConnector:
         raise RuntimeError(
             "WhatsApp no confirmó el vaciado "
             "del compositor"
+        )
+
+    def send_text_message(
+        self,
+        text,
+        *,
+        timeout=10,
+    ):
+        """Envía un único mensaje de texto al chat activo.
+
+        El envío se confirma únicamente cuando aparece un
+        nuevo snapshot OUTBOUND con:
+        - provider_message_id nuevo;
+        - cuerpo exactamente igual al solicitado.
+
+        Devuelve el WhatsAppMessageSnapshot confirmado.
+
+        No persiste información de negocio.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        value = str(
+            text
+            or ""
+        )
+
+        if not value.strip():
+            raise ValueError(
+                "El texto del mensaje no puede estar vacío"
+            )
+
+        before = (
+            self.list_visible_message_snapshots(
+                limit=200
+            )
+        )
+
+        before_ids = {
+            item.provider_message_id
+            for item in before
+            if item.provider_message_id
+        }
+
+        self.set_message_composer_text(
+            value
+        )
+
+        try:
+            send_button = (
+                self.browser
+                .find_element(
+                    MESSAGE_SEND_SELECTOR
+                )
+            )
+        except Exception as exc:
+            try:
+                self.clear_message_composer()
+            except Exception:
+                pass
+
+            raise RuntimeError(
+                "Botón Enviar de WhatsApp "
+                "no localizado"
+            ) from exc
+
+        if not send_button:
+            try:
+                self.clear_message_composer()
+            except Exception:
+                pass
+
+            raise RuntimeError(
+                "Botón Enviar de WhatsApp "
+                "no localizado"
+            )
+
+        mouse_click = getattr(
+            send_button,
+            "mouse_click",
+            None,
+        )
+
+        click = getattr(
+            send_button,
+            "click",
+            None,
+        )
+
+        if callable(
+            mouse_click
+        ):
+            click_callable = (
+                mouse_click
+            )
+        elif callable(
+            click
+        ):
+            click_callable = (
+                click
+            )
+        else:
+            try:
+                self.clear_message_composer()
+            except Exception:
+                pass
+
+            raise RuntimeError(
+                "Botón Enviar de WhatsApp "
+                "no soporta click"
+            )
+
+        try:
+            click_callable()
+        except Exception as exc:
+            # Una excepción durante el click es ambigua:
+            # no se reintenta automáticamente porque el
+            # mensaje podría haber sido enviado igualmente.
+            raise RuntimeError(
+                "Estado de envío de WhatsApp incierto: "
+                "falló la operación de click"
+            ) from exc
+
+        deadline = (
+            time.time()
+            + max(
+                1.0,
+                float(timeout),
+            )
+        )
+
+        while (
+            time.time()
+            < deadline
+        ):
+            current = (
+                self.list_visible_message_snapshots(
+                    limit=200
+                )
+            )
+
+            candidates = [
+                item
+                for item in current
+                if (
+                    item.provider_message_id
+                    and item.provider_message_id
+                    not in before_ids
+                    and item.direction
+                    == MESSAGE_DIRECTION_OUTBOUND
+                    and item.body_text
+                    == value
+                )
+            ]
+
+            if len(
+                candidates
+            ) == 1:
+                return candidates[
+                    0
+                ]
+
+            if len(
+                candidates
+            ) > 1:
+                raise RuntimeError(
+                    "Confirmación ambigua de envío: "
+                    "WhatsApp expone varios mensajes "
+                    "OUTBOUND nuevos con el mismo cuerpo"
+                )
+
+            time.sleep(
+                0.1
+            )
+
+        # No reintentamos ni volvemos a pulsar Enviar.
+        # Si el click ocurrió, la ausencia temporal del
+        # snapshot deja un estado incierto que deberá
+        # resolverse mediante sincronización/reconciliación.
+        raise RuntimeError(
+            "Estado de envío de WhatsApp incierto: "
+            "no apareció un nuevo mensaje OUTBOUND "
+            "confirmable dentro del timeout"
         )
 
     def list_visible_message_snapshots(

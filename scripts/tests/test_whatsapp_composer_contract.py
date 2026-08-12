@@ -4,6 +4,13 @@ from unittest.mock import patch
 
 from backend.automation.connectors.whatsapp_connector import (
     MESSAGE_COMPOSER_SELECTOR,
+    MESSAGE_DIRECTION_INBOUND,
+    MESSAGE_DIRECTION_OUTBOUND,
+    MESSAGE_SEND_SELECTOR,
+    MESSAGE_STATUS_RECEIVED,
+    MESSAGE_STATUS_SENT,
+    MESSAGE_TYPE_TEXT,
+    WhatsAppMessageSnapshot,
     WhatsAppConnector,
 )
 
@@ -39,11 +46,17 @@ class FakeElement:
     ):
         self._tab = FakeTab()
         self.focused = False
+        self.mouse_click_count = 0
 
     async def focus_async(
         self,
     ):
         self.focused = True
+
+    def mouse_click(
+        self,
+    ):
+        self.mouse_click_count += 1
 
 
 class FakeBrowser:
@@ -89,9 +102,9 @@ class FakeBrowser:
         self,
         selector,
     ):
-        if (
-            selector
-            != MESSAGE_COMPOSER_SELECTOR
+        if selector not in (
+            MESSAGE_COMPOSER_SELECTOR,
+            MESSAGE_SEND_SELECTOR,
         ):
             raise AssertionError(
                 selector
@@ -339,6 +352,364 @@ class WhatsAppComposerContractTest(
         self.assertFalse(
             result["send_found"]
         )
+
+    @staticmethod
+    def _message(
+        provider_message_id,
+        *,
+        direction,
+        body_text,
+        status=MESSAGE_STATUS_SENT,
+    ):
+        return WhatsAppMessageSnapshot(
+            provider_message_id=(
+                provider_message_id
+            ),
+            direction=direction,
+            body_text=body_text,
+            provider_timestamp=(
+                "2026-08-12T12:12:00"
+            ),
+            message_type=(
+                MESSAGE_TYPE_TEXT
+            ),
+            provider_status=status,
+            sender=None,
+            metadata={},
+        )
+
+    def test_send_text_message_returns_new_outbound_snapshot(
+        self,
+    ):
+        connector = (
+            WhatsAppConnector()
+        )
+
+        browser = FakeBrowser(
+            states=[
+                {
+                    "found": True,
+                    "text": "",
+                    "send_found": False,
+                },
+                {
+                    "found": True,
+                    "text": "Hola",
+                    "send_found": True,
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        old_message = self._message(
+            "OLD-1",
+            direction=(
+                MESSAGE_DIRECTION_INBOUND
+            ),
+            body_text="Anterior",
+            status=(
+                MESSAGE_STATUS_RECEIVED
+            ),
+        )
+
+        sent_message = self._message(
+            "NEW-1",
+            direction=(
+                MESSAGE_DIRECTION_OUTBOUND
+            ),
+            body_text="Hola",
+        )
+
+        snapshot_batches = iter(
+            [
+                [
+                    old_message,
+                ],
+                [
+                    old_message,
+                    sent_message,
+                ],
+            ]
+        )
+
+        connector.list_visible_message_snapshots = (
+            lambda limit=200:
+                next(
+                    snapshot_batches
+                )
+        )
+
+        result = (
+            connector
+            .send_text_message(
+                "Hola"
+            )
+        )
+
+        self.assertEqual(
+            result.provider_message_id,
+            "NEW-1",
+        )
+
+        self.assertEqual(
+            result.direction,
+            MESSAGE_DIRECTION_OUTBOUND,
+        )
+
+        self.assertEqual(
+            result.body_text,
+            "Hola",
+        )
+
+        self.assertEqual(
+            browser.element.mouse_click_count,
+            1,
+        )
+
+        self.assertEqual(
+            browser.send_keys_calls,
+            [
+                (
+                    MESSAGE_COMPOSER_SELECTOR,
+                    "Hola",
+                )
+            ],
+        )
+
+    def test_send_text_message_ignores_concurrent_inbound(
+        self,
+    ):
+        connector = (
+            WhatsAppConnector()
+        )
+
+        browser = FakeBrowser(
+            states=[
+                {
+                    "found": True,
+                    "text": "",
+                    "send_found": False,
+                },
+                {
+                    "found": True,
+                    "text": "Respuesta CRM",
+                    "send_found": True,
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        old_message = self._message(
+            "OLD-1",
+            direction=(
+                MESSAGE_DIRECTION_INBOUND
+            ),
+            body_text="Anterior",
+            status=(
+                MESSAGE_STATUS_RECEIVED
+            ),
+        )
+
+        concurrent_inbound = self._message(
+            "NEW-IN-1",
+            direction=(
+                MESSAGE_DIRECTION_INBOUND
+            ),
+            body_text="Mensaje simultáneo",
+            status=(
+                MESSAGE_STATUS_RECEIVED
+            ),
+        )
+
+        sent_message = self._message(
+            "NEW-OUT-1",
+            direction=(
+                MESSAGE_DIRECTION_OUTBOUND
+            ),
+            body_text="Respuesta CRM",
+        )
+
+        snapshot_batches = iter(
+            [
+                [
+                    old_message,
+                ],
+                [
+                    old_message,
+                    concurrent_inbound,
+                    sent_message,
+                ],
+            ]
+        )
+
+        connector.list_visible_message_snapshots = (
+            lambda limit=200:
+                next(
+                    snapshot_batches
+                )
+        )
+
+        result = (
+            connector
+            .send_text_message(
+                "Respuesta CRM"
+            )
+        )
+
+        self.assertEqual(
+            result.provider_message_id,
+            "NEW-OUT-1",
+        )
+
+    def test_send_text_message_rejects_ambiguous_confirmation(
+        self,
+    ):
+        connector = (
+            WhatsAppConnector()
+        )
+
+        browser = FakeBrowser(
+            states=[
+                {
+                    "found": True,
+                    "text": "",
+                    "send_found": False,
+                },
+                {
+                    "found": True,
+                    "text": "Duplicado",
+                    "send_found": True,
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        first = self._message(
+            "NEW-1",
+            direction=(
+                MESSAGE_DIRECTION_OUTBOUND
+            ),
+            body_text="Duplicado",
+        )
+
+        second = self._message(
+            "NEW-2",
+            direction=(
+                MESSAGE_DIRECTION_OUTBOUND
+            ),
+            body_text="Duplicado",
+        )
+
+        snapshot_batches = iter(
+            [
+                [],
+                [
+                    first,
+                    second,
+                ],
+            ]
+        )
+
+        connector.list_visible_message_snapshots = (
+            lambda limit=200:
+                next(
+                    snapshot_batches
+                )
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Confirmación ambigua",
+        ):
+            connector.send_text_message(
+                "Duplicado"
+            )
+
+        self.assertEqual(
+            browser.element.mouse_click_count,
+            1,
+        )
+
+    def test_send_text_message_uses_send_selector(
+        self,
+    ):
+        class SelectorBrowser(
+            FakeBrowser
+        ):
+            def __init__(
+                self,
+            ):
+                super().__init__(
+                    states=[
+                        {
+                            "found": True,
+                            "text": "",
+                            "send_found": False,
+                        },
+                        {
+                            "found": True,
+                            "text": "Hola",
+                            "send_found": True,
+                        },
+                    ]
+                )
+
+                self.find_selectors = []
+
+            def find_element(
+                self,
+                selector,
+            ):
+                self.find_selectors.append(
+                    selector
+                )
+
+                return self.element
+
+        connector = (
+            WhatsAppConnector()
+        )
+
+        browser = SelectorBrowser()
+
+        connector.browser = browser
+
+        sent_message = self._message(
+            "NEW-1",
+            direction=(
+                MESSAGE_DIRECTION_OUTBOUND
+            ),
+            body_text="Hola",
+        )
+
+        snapshot_batches = iter(
+            [
+                [],
+                [
+                    sent_message,
+                ],
+            ]
+        )
+
+        connector.list_visible_message_snapshots = (
+            lambda limit=200:
+                next(
+                    snapshot_batches
+                )
+        )
+
+        connector.send_text_message(
+            "Hola"
+        )
+
+        self.assertIn(
+            MESSAGE_SEND_SELECTOR,
+            browser.find_selectors,
+        )
+
 
 
 if __name__ == "__main__":
