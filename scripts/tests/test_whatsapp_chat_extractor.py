@@ -11,6 +11,7 @@ from backend.automation.connectors.whatsapp_connector import (
     MESSAGE_STATUS_RECEIVED,
     MESSAGE_TYPE_STICKER,
     MESSAGE_TYPE_TEXT,
+    WhatsAppActiveChatFingerprint,
     WhatsAppChatSnapshot,
     WhatsAppConnector,
     extract_phone_from_profile_text,
@@ -909,6 +910,102 @@ class WhatsAppChatExtractorTest(
         self.assertEqual(
             result["sender"],
             "CLIENTE",
+        )
+
+
+    def test_active_chat_fingerprint_reads_lightweight_state(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "chat_open": True,
+                "active_display_name":
+                    "😍Mi Amor❤️♾️",
+                "visible_message_count":
+                    37,
+                "last_provider_message_id":
+                    "ABC-123",
+            }
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .get_active_chat_fingerprint()
+        )
+
+        self.assertIsInstance(
+            result,
+            WhatsAppActiveChatFingerprint,
+        )
+
+        self.assertTrue(
+            result.chat_open
+        )
+
+        self.assertEqual(
+            result.active_display_name,
+            "😍Mi Amor❤️♾️",
+        )
+
+        self.assertEqual(
+            result.active_identity,
+            "mi amor",
+        )
+
+        self.assertEqual(
+            result.visible_message_count,
+            37,
+        )
+
+        self.assertEqual(
+            result.last_provider_message_id,
+            "ABC-123",
+        )
+
+
+    def test_active_chat_fingerprint_handles_no_open_chat(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            {
+                "chat_open": False,
+                "active_display_name": "",
+                "visible_message_count": 0,
+                "last_provider_message_id": None,
+            }
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .get_active_chat_fingerprint()
+        )
+
+        self.assertFalse(
+            result.chat_open
+        )
+
+        self.assertEqual(
+            result.active_identity,
+            "",
+        )
+
+        self.assertEqual(
+            result.visible_message_count,
+            0,
+        )
+
+        self.assertIsNone(
+            result.last_provider_message_id
         )
 
 

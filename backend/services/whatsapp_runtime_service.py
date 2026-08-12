@@ -78,6 +78,20 @@ class WhatsAppRuntimeService:
         self._desired_thread_id = None
         self._desired_thread_lock = threading.Lock()
 
+        # Última huella observada del chat activo.
+        # Solo se lee/escribe dentro del worker SeleniumBase/CDP.
+        self._active_chat_fingerprint = None
+
+        # Watcher ligero del chat activo.
+        #
+        # Este hilo NO toca SeleniumBase/CDP directamente:
+        # únicamente solicita observe_active_chat(), que
+        # serializa toda operación de navegador en el worker
+        # único del runtime.
+        self._active_chat_watch_thread = None
+        self._active_chat_watch_stop = None
+        self._active_chat_watch_lock = threading.Lock()
+
     def _get_executor(
         self,
     ):
@@ -551,6 +565,260 @@ class WhatsAppRuntimeService:
             **kwargs,
         )
 
+    def _observe_active_chat_impl(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        connector = self._ensure_ready_impl(
+            wait_timeout=wait_timeout,
+        )
+
+        current = (
+            connector
+            .get_active_chat_fingerprint()
+        )
+
+        previous = (
+            self._active_chat_fingerprint
+        )
+
+        if previous is None:
+            change_type = "INITIAL"
+            changed = True
+
+        elif (
+            previous.chat_open
+            != current.chat_open
+        ):
+            change_type = "CHAT_CHANGED"
+            changed = True
+
+        elif not current.chat_open:
+            change_type = "UNCHANGED"
+            changed = False
+
+        elif (
+            previous.active_identity
+            != current.active_identity
+        ):
+            change_type = "CHAT_CHANGED"
+            changed = True
+
+        elif (
+            previous.last_provider_message_id
+            != current.last_provider_message_id
+        ):
+            change_type = "MESSAGE_CHANGED"
+            changed = True
+
+        elif (
+            previous.visible_message_count
+            != current.visible_message_count
+        ):
+            # Señal secundaria. WhatsApp puede virtualizar
+            # mensajes sin cambiar el último provider id.
+            change_type = "MESSAGE_WINDOW_CHANGED"
+            changed = True
+
+        else:
+            change_type = "UNCHANGED"
+            changed = False
+
+        self._active_chat_fingerprint = (
+            current
+        )
+
+        return {
+            "changed": changed,
+            "change_type": change_type,
+            "previous": previous,
+            "current": current,
+        }
+
+    def observe_active_chat(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        return self._run_serialized(
+            self._observe_active_chat_impl,
+            wait_timeout=wait_timeout,
+        )
+
+
+    @property
+    def active_chat_watch_running(
+        self,
+    ):
+        with self._active_chat_watch_lock:
+            thread = (
+                self._active_chat_watch_thread
+            )
+
+            return bool(
+                thread
+                and thread.is_alive()
+            )
+
+    def _active_chat_watch_loop(
+        self,
+        *,
+        stop_event,
+        interval_seconds,
+        wait_timeout,
+        on_change,
+    ):
+        while not stop_event.is_set():
+            try:
+                result = (
+                    self.observe_active_chat(
+                        wait_timeout=wait_timeout,
+                    )
+                )
+
+                if (
+                    result.get(
+                        "changed"
+                    )
+                    and callable(
+                        on_change
+                    )
+                ):
+                    try:
+                        on_change(
+                            result
+                        )
+                    except Exception:
+                        # Un callback consumidor nunca debe
+                        # matar la vigilancia del transporte.
+                        pass
+
+            except Exception:
+                # WhatsApp puede estar temporalmente
+                # indisponible, re-renderizando o iniciando.
+                # Un fallo aislado no mata el watcher.
+                pass
+
+            # Event.wait() permite despertar inmediatamente
+            # al pedir stop, a diferencia de time.sleep().
+            if stop_event.wait(
+                interval_seconds
+            ):
+                break
+
+    def start_active_chat_watch(
+        self,
+        *,
+        interval_seconds=1.0,
+        wait_timeout=5,
+        on_change=None,
+    ):
+        interval = max(
+            0.05,
+            float(
+                interval_seconds
+            ),
+        )
+
+        effective_wait_timeout = max(
+            1,
+            float(
+                wait_timeout
+            ),
+        )
+
+        with self._active_chat_watch_lock:
+            current = (
+                self._active_chat_watch_thread
+            )
+
+            if (
+                current is not None
+                and current.is_alive()
+            ):
+                return current
+
+            stop_event = (
+                threading.Event()
+            )
+
+            thread = threading.Thread(
+                target=(
+                    self._active_chat_watch_loop
+                ),
+                kwargs={
+                    "stop_event":
+                        stop_event,
+                    "interval_seconds":
+                        interval,
+                    "wait_timeout":
+                        effective_wait_timeout,
+                    "on_change":
+                        on_change,
+                },
+                name=(
+                    "whatsapp-active-chat-watch"
+                ),
+                daemon=True,
+            )
+
+            self._active_chat_watch_stop = (
+                stop_event
+            )
+
+            self._active_chat_watch_thread = (
+                thread
+            )
+
+            thread.start()
+
+            return thread
+
+    def stop_active_chat_watch(
+        self,
+        *,
+        join_timeout=5,
+    ):
+        with self._active_chat_watch_lock:
+            thread = (
+                self._active_chat_watch_thread
+            )
+
+            stop_event = (
+                self._active_chat_watch_stop
+            )
+
+        if stop_event is not None:
+            stop_event.set()
+
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(
+                timeout=max(
+                    0,
+                    float(
+                        join_timeout
+                    ),
+                )
+            )
+
+        with self._active_chat_watch_lock:
+            if (
+                self._active_chat_watch_thread
+                is thread
+            ):
+                self._active_chat_watch_thread = None
+                self._active_chat_watch_stop = None
+
+        return bool(
+            thread is not None
+        )
+
+
     def _sync_open_chat_messages_impl(
         self,
         *,
@@ -605,6 +873,12 @@ class WhatsAppRuntimeService:
     def close(
         self,
     ):
+        # Impedimos nuevas observaciones antes de cerrar
+        # connector y executor. Si una observación estaba en
+        # curso, la serialización garantiza que termine antes
+        # de que _close_impl use el mismo worker.
+        self.stop_active_chat_watch()
+
         result = self._run_serialized(
             self._close_impl
         )
@@ -623,5 +897,7 @@ class WhatsAppRuntimeService:
 
         with self._desired_thread_lock:
             self._desired_thread_id = None
+
+        self._active_chat_fingerprint = None
 
         return result

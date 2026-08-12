@@ -153,6 +153,21 @@ class WhatsAppMessageSnapshot:
 
 
 @dataclass(frozen=True)
+class WhatsAppActiveChatFingerprint:
+    """Huella ligera del chat actualmente abierto.
+
+    Sirve para detectar cambios sin extraer ni persistir
+    el historial completo de mensajes.
+    """
+
+    chat_open: bool
+    active_display_name: str
+    active_identity: str
+    visible_message_count: int
+    last_provider_message_id: str | None
+
+
+@dataclass(frozen=True)
 class WhatsAppChatSnapshot:
     """Vista ligera de una conversación presente en la lista de WhatsApp."""
 
@@ -3588,6 +3603,163 @@ class WhatsAppConnector:
             time.sleep(0.25)
 
         return False
+
+    def get_active_chat_fingerprint(
+        self,
+    ):
+        """Obtiene una huella barata del chat activo.
+
+        Realiza una sola lectura DOM.
+
+        No:
+        - navega;
+        - hace click;
+        - abre perfiles;
+        - escribe;
+        - persiste;
+        - extrae el contenido completo de los mensajes.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const main =
+                        document.querySelector(
+                            '#main'
+                        );
+
+                    const composer =
+                        document.querySelector(
+                            '[data-testid="conversation-compose-box-input"]'
+                        );
+
+                    const title =
+                        document.querySelector(
+                            '[data-testid="conversation-info-header-chat-title"]'
+                        );
+
+                    const activeDisplayName =
+                        title
+                        ? String(
+                            title.innerText
+                            || title.textContent
+                            || ''
+                        ).trim()
+                        : '';
+
+                    if (
+                        !main
+                        || !composer
+                        || !title
+                    ) {
+                        return {
+                            chat_open: false,
+                            active_display_name:
+                                activeDisplayName,
+                            visible_message_count: 0,
+                            last_provider_message_id:
+                                null
+                        };
+                    }
+
+                    const messages =
+                        Array.from(
+                            main.querySelectorAll(
+                                '[data-testid^="conv-msg-"]'
+                            )
+                        );
+
+                    const lastMessage =
+                        messages.length
+                        ? messages[
+                            messages.length - 1
+                        ]
+                        : null;
+
+                    const rawLastTestId =
+                        lastMessage
+                        ? String(
+                            lastMessage.getAttribute(
+                                'data-testid'
+                            )
+                            || ''
+                        )
+                        : '';
+
+                    const lastProviderMessageId =
+                        rawLastTestId
+                        ? rawLastTestId.replace(
+                            /^conv-msg-/,
+                            ''
+                        )
+                        : '';
+
+                    return {
+                        chat_open: true,
+                        active_display_name:
+                            activeDisplayName,
+                        visible_message_count:
+                            messages.length,
+                        last_provider_message_id:
+                            lastProviderMessageId
+                            || null
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        chat_open = bool(
+            result.get(
+                "chat_open"
+            )
+        )
+
+        active_display_name = str(
+            result.get(
+                "active_display_name"
+            )
+            or ""
+        ).strip()
+
+        return WhatsAppActiveChatFingerprint(
+            chat_open=chat_open,
+            active_display_name=(
+                active_display_name
+            ),
+            active_identity=(
+                normalize_chat_identity(
+                    active_display_name
+                )
+                if active_display_name
+                else ""
+            ),
+            visible_message_count=max(
+                0,
+                int(
+                    result.get(
+                        "visible_message_count"
+                    )
+                    or 0
+                ),
+            ),
+            last_provider_message_id=(
+                str(
+                    result.get(
+                        "last_provider_message_id"
+                    )
+                    or ""
+                ).strip()
+                or None
+            ),
+        )
+
 
     def get_message_composer_state(
         self,

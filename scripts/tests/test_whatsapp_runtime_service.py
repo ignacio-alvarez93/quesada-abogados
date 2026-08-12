@@ -4,6 +4,7 @@ import unittest
 
 from backend.automation.connectors.whatsapp_connector import (
     SESSION_STATUS_READY,
+    WhatsAppActiveChatFingerprint,
 )
 from backend.services.whatsapp_runtime_service import (
     WhatsAppRuntimeService,
@@ -33,6 +34,8 @@ class FakeConnector:
 
         self.sent = []
         self.sync_snapshots = []
+
+        self.active_chat_fingerprints = []
 
         self.open_phone_calls = []
         self.routing_result = {
@@ -117,6 +120,27 @@ class FakeConnector:
         raise RuntimeError(
             "No debe probarse transporte real aquí"
         )
+
+    def get_active_chat_fingerprint(
+        self,
+    ):
+        if not self.active_chat_fingerprints:
+            raise AssertionError(
+                "No hay fingerprint preparado"
+            )
+
+        value = (
+            self.active_chat_fingerprints
+            .pop(0)
+        )
+
+        if isinstance(
+            value,
+            BaseException,
+        ):
+            raise value
+
+        return value
 
     def list_visible_message_snapshots(
         self,
@@ -409,6 +433,351 @@ class WhatsAppRuntimeServiceTest(
             ].id,
             7,
         )
+
+    def test_observe_active_chat_detects_initial_and_unchanged_state(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        fingerprint = WhatsAppActiveChatFingerprint(
+            chat_open=True,
+            active_display_name="Mama",
+            active_identity="mama",
+            visible_message_count=10,
+            last_provider_message_id="MSG-10",
+        )
+
+        connector.active_chat_fingerprints = [
+            fingerprint,
+            fingerprint,
+        ]
+
+        first = runtime.observe_active_chat(
+            wait_timeout=1,
+        )
+
+        second = runtime.observe_active_chat(
+            wait_timeout=1,
+        )
+
+        self.assertTrue(
+            first["changed"]
+        )
+
+        self.assertEqual(
+            first["change_type"],
+            "INITIAL",
+        )
+
+        self.assertFalse(
+            second["changed"]
+        )
+
+        self.assertEqual(
+            second["change_type"],
+            "UNCHANGED",
+        )
+
+
+    def test_observe_active_chat_detects_new_message(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name="Mama",
+                active_identity="mama",
+                visible_message_count=10,
+                last_provider_message_id="MSG-10",
+            ),
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name="Mama",
+                active_identity="mama",
+                visible_message_count=11,
+                last_provider_message_id="MSG-11",
+            ),
+        ]
+
+        runtime.observe_active_chat(
+            wait_timeout=1,
+        )
+
+        result = runtime.observe_active_chat(
+            wait_timeout=1,
+        )
+
+        self.assertTrue(
+            result["changed"]
+        )
+
+        self.assertEqual(
+            result["change_type"],
+            "MESSAGE_CHANGED",
+        )
+
+        self.assertEqual(
+            result[
+                "current"
+            ].last_provider_message_id,
+            "MSG-11",
+        )
+
+
+    def test_observe_active_chat_detects_manual_chat_change(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name="Mama",
+                active_identity="mama",
+                visible_message_count=10,
+                last_provider_message_id="MAMA-10",
+            ),
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name="Deneb",
+                active_identity="deneb",
+                visible_message_count=22,
+                last_provider_message_id="DENEB-22",
+            ),
+        ]
+
+        runtime.observe_active_chat(
+            wait_timeout=1,
+        )
+
+        result = runtime.observe_active_chat(
+            wait_timeout=1,
+        )
+
+        self.assertTrue(
+            result["changed"]
+        )
+
+        self.assertEqual(
+            result["change_type"],
+            "CHAT_CHANGED",
+        )
+
+        self.assertEqual(
+            result[
+                "current"
+            ].active_identity,
+            "deneb",
+        )
+
+
+    def test_active_chat_watch_reuses_single_thread(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        fingerprint = WhatsAppActiveChatFingerprint(
+            chat_open=True,
+            active_display_name="Mama",
+            active_identity="mama",
+            visible_message_count=10,
+            last_provider_message_id="MSG-10",
+        )
+
+        connector.active_chat_fingerprints = [
+            fingerprint,
+            fingerprint,
+            fingerprint,
+        ]
+
+        first = runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+        )
+
+        second = runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+        )
+
+        self.assertIs(
+            first,
+            second,
+        )
+
+        self.assertTrue(
+            runtime.active_chat_watch_running
+        )
+
+        runtime.stop_active_chat_watch()
+
+        self.assertFalse(
+            runtime.active_chat_watch_running
+        )
+
+
+    def test_active_chat_watch_emits_only_changes(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        initial = WhatsAppActiveChatFingerprint(
+            chat_open=True,
+            active_display_name="Mama",
+            active_identity="mama",
+            visible_message_count=10,
+            last_provider_message_id="MSG-10",
+        )
+
+        changed = WhatsAppActiveChatFingerprint(
+            chat_open=True,
+            active_display_name="Mama",
+            active_identity="mama",
+            visible_message_count=11,
+            last_provider_message_id="MSG-11",
+        )
+
+        connector.active_chat_fingerprints = [
+            initial,
+            initial,
+            changed,
+        ]
+
+        received = []
+        event = threading.Event()
+
+        def on_change(result):
+            received.append(
+                result["change_type"]
+            )
+
+            if (
+                result["change_type"]
+                == "MESSAGE_CHANGED"
+            ):
+                event.set()
+
+        runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+            on_change=on_change,
+        )
+
+        self.assertTrue(
+            event.wait(
+                timeout=1
+            )
+        )
+
+        runtime.stop_active_chat_watch()
+
+        self.assertEqual(
+            received,
+            [
+                "INITIAL",
+                "MESSAGE_CHANGED",
+            ],
+        )
+
+
+    def test_active_chat_watch_survives_temporary_observation_error(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        fingerprint = WhatsAppActiveChatFingerprint(
+            chat_open=True,
+            active_display_name="Deneb",
+            active_identity="deneb",
+            visible_message_count=4,
+            last_provider_message_id="DENEB-4",
+        )
+
+        connector.active_chat_fingerprints = [
+            RuntimeError(
+                "DOM temporalmente no disponible"
+            ),
+            fingerprint,
+        ]
+
+        received = []
+        event = threading.Event()
+
+        def on_change(result):
+            received.append(
+                result["change_type"]
+            )
+            event.set()
+
+        runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+            on_change=on_change,
+        )
+
+        self.assertTrue(
+            event.wait(
+                timeout=1
+            )
+        )
+
+        runtime.stop_active_chat_watch()
+
+        self.assertEqual(
+            received,
+            [
+                "INITIAL",
+            ],
+        )
+
+
+    def test_close_stops_active_chat_watch(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        fingerprint = WhatsAppActiveChatFingerprint(
+            chat_open=True,
+            active_display_name="Mama",
+            active_identity="mama",
+            visible_message_count=1,
+            last_provider_message_id="MSG-1",
+        )
+
+        connector.active_chat_fingerprints = [
+            fingerprint,
+            fingerprint,
+            fingerprint,
+        ]
+
+        runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+        )
+
+        self.assertTrue(
+            runtime.active_chat_watch_running
+        )
+
+        runtime.close()
+
+        self.assertFalse(
+            runtime.active_chat_watch_running
+        )
+
+        self.assertFalse(
+            runtime.started
+        )
+
 
     def test_send_text_message_requires_strong_identity_verification(
         self,
