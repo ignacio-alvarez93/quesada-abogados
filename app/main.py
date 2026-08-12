@@ -14,6 +14,9 @@ load_dotenv(
 import flet as ft
 
 from backend.services.sqlite_runtime_service import configure_sqlite_runtime
+from backend.services.whatsapp_runtime_service import (
+    WhatsAppRuntimeService,
+)
 from database.connection import initialize_database
 from frontend.views.login_view import login_view
 from frontend.views.clients_view import clients_view
@@ -67,6 +70,11 @@ def main(page: ft.Page):
 
     current_user = {"value": None}
     main_container = ft.Container(expand=True)
+
+    # Runtime único durante toda la sesión del ERP.
+    # El navegador se inicia de forma perezosa cuando
+    # una operación WhatsApp realmente lo necesita.
+    whatsapp_runtime = WhatsAppRuntimeService()
 
     def return_to_context(
         context,
@@ -254,6 +262,9 @@ def main(page: ft.Page):
         elif view_name == "WhatsApp":
             content = communications_view(
                 page,
+                whatsapp_runtime=(
+                    whatsapp_runtime
+                ),
                 initial_thread_id=kwargs.get(
                     "thread_id"
                 ),

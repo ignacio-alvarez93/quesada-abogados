@@ -52,6 +52,7 @@ def communications_view(
     page: ft.Page,
     *,
     service=None,
+    whatsapp_runtime=None,
     initial_thread_id=None,
     on_open_cliente=None,
     on_open_expediente=None,
@@ -66,7 +67,8 @@ def communications_view(
     - no contiene SQL;
     - no conoce SQLite;
     - no importa repositories concretos;
-    - consume únicamente CommunicationService.
+    - consume servicios backend inyectables;
+    - no construye ni controla WhatsAppConnector.
 
     `service` es inyectable para mantener la vista
     desacoplada del backend físico y facilitar
