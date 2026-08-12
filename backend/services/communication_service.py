@@ -14,9 +14,13 @@ No conoce SeleniumBase.
 """
 
 from backend.communications.models import (
+    ATTEMPT_STATUS_ERROR,
+    ATTEMPT_STATUS_SENT,
+    ATTEMPT_STATUS_STARTED,
     CHANNEL_WHATSAPP,
     CommunicationAccount,
     CommunicationMessage,
+    CommunicationMessageAttempt,
     CommunicationThread,
     DIRECTION_INBOUND,
     DIRECTION_OUTBOUND,
@@ -890,6 +894,160 @@ class CommunicationService:
                     ),
                     metadata=metadata,
                 )
+            )
+        )
+
+    def get_message(
+        self,
+        message_id,
+    ):
+        return (
+            self.repository
+            .get_message(
+                int(message_id)
+            )
+        )
+
+    def update_message_status(
+        self,
+        message_id,
+        status,
+        *,
+        sent_by=None,
+    ):
+        return (
+            self.repository
+            .update_message_status(
+                int(message_id),
+                status,
+                sent_by=sent_by,
+            )
+        )
+
+    def attach_message_provider_identity(
+        self,
+        message_id,
+        *,
+        provider_message_id,
+        provider_timestamp=None,
+    ):
+        return (
+            self.repository
+            .attach_message_provider_identity(
+                int(message_id),
+                provider_message_id=(
+                    provider_message_id
+                ),
+                provider_timestamp=(
+                    provider_timestamp
+                ),
+            )
+        )
+
+    def start_message_attempt(
+        self,
+        *,
+        message_id,
+        transport,
+        metadata=None,
+    ):
+        message = (
+            self.repository
+            .get_message(
+                int(message_id)
+            )
+        )
+
+        if not message:
+            raise ValueError(
+                "Mensaje de comunicación no encontrado"
+            )
+
+        attempts = (
+            self.repository
+            .list_attempts(
+                message.id
+            )
+        )
+
+        attempt_number = (
+            max(
+                (
+                    int(
+                        attempt.attempt_number
+                    )
+                    for attempt in attempts
+                ),
+                default=0,
+            )
+            + 1
+        )
+
+        return (
+            self.repository
+            .create_attempt(
+                CommunicationMessageAttempt(
+                    id=None,
+                    message_id=(
+                        message.id
+                    ),
+                    transport=(
+                        str(
+                            transport
+                            or ""
+                        ).strip()
+                    ),
+                    attempt_number=(
+                        attempt_number
+                    ),
+                    status=(
+                        ATTEMPT_STATUS_STARTED
+                    ),
+                    metadata=metadata,
+                )
+            )
+        )
+
+    def finish_message_attempt(
+        self,
+        attempt_id,
+        *,
+        status,
+        error_code=None,
+        error_message=None,
+        metadata=None,
+    ):
+        normalized_status = (
+            str(
+                status
+                or ""
+            )
+            .strip()
+            .upper()
+        )
+
+        if normalized_status not in (
+            ATTEMPT_STATUS_SENT,
+            ATTEMPT_STATUS_ERROR,
+        ):
+            raise ValueError(
+                "Estado final de intento no válido"
+            )
+
+        return (
+            self.repository
+            .finish_attempt(
+                int(attempt_id),
+                status=(
+                    normalized_status
+                ),
+                error_code=(
+                    error_code
+                ),
+                error_message=(
+                    error_message
+                ),
+                metadata=metadata,
             )
         )
 

@@ -113,6 +113,13 @@ MESSAGE_STATUS_UNKNOWN = (
     "UNKNOWN"
 )
 
+
+class WhatsAppSendStateUncertainError(
+    RuntimeError
+):
+    """El envío pudo ejecutarse pero no pudo confirmarse."""
+
+
 MESSAGE_COMPOSER_SELECTOR = (
     '[data-testid="conversation-compose-box-input"]'
 )
@@ -2174,7 +2181,7 @@ class WhatsAppConnector:
             # Una excepción durante el click es ambigua:
             # no se reintenta automáticamente porque el
             # mensaje podría haber sido enviado igualmente.
-            raise RuntimeError(
+            raise WhatsAppSendStateUncertainError(
                 "Estado de envío de WhatsApp incierto: "
                 "falló la operación de click"
             ) from exc
@@ -2221,7 +2228,7 @@ class WhatsAppConnector:
             if len(
                 candidates
             ) > 1:
-                raise RuntimeError(
+                raise WhatsAppSendStateUncertainError(
                     "Confirmación ambigua de envío: "
                     "WhatsApp expone varios mensajes "
                     "OUTBOUND nuevos con el mismo cuerpo"
@@ -2235,7 +2242,7 @@ class WhatsAppConnector:
         # Si el click ocurrió, la ausencia temporal del
         # snapshot deja un estado incierto que deberá
         # resolverse mediante sincronización/reconciliación.
-        raise RuntimeError(
+        raise WhatsAppSendStateUncertainError(
             "Estado de envío de WhatsApp incierto: "
             "no apareció un nuevo mensaje OUTBOUND "
             "confirmable dentro del timeout"
