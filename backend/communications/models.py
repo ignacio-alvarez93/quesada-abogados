@@ -63,6 +63,35 @@ class CommunicationThread:
 
 
 @dataclass(frozen=True)
+class CommunicationClientContext:
+    client_id: int
+    full_name: str
+    document: str | None
+    phone: str | None
+    email: str | None
+    nationality: str | None
+    status: str | None
+
+
+@dataclass(frozen=True)
+class CommunicationExpedientContext:
+    expedient_id: int
+    number: str | None
+    family_name: str | None
+    type_name: str | None
+    subtype_name: str | None
+    documentary_status: str | None
+    administrative_status: str | None
+
+
+@dataclass(frozen=True)
+class CommunicationThreadContext:
+    thread_id: int
+    client: CommunicationClientContext | None
+    expedients: tuple[CommunicationExpedientContext, ...]
+
+
+@dataclass(frozen=True)
 class CommunicationThreadOverview:
     thread_id: int
     account_id: int

@@ -12,6 +12,7 @@ from backend.communications.models import (
     CommunicationMessage,
     CommunicationMessageAttempt,
     CommunicationThread,
+    CommunicationThreadContext,
     CommunicationThreadOverview,
 )
 
@@ -60,6 +61,12 @@ class CommunicationRepository(Protocol):
         client_id: int | None = None,
         limit: int = 100,
     ) -> list[CommunicationThread]:
+        ...
+
+    def get_thread_context(
+        self,
+        thread_id: int,
+    ) -> CommunicationThreadContext | None:
         ...
 
     def list_thread_overviews(

@@ -48,12 +48,56 @@ class CommunicationServiceTest(
                     nombre TEXT NOT NULL,
                     primer_apellido TEXT,
                     segundo_apellido TEXT,
-                    telefono TEXT
+                    nie TEXT,
+                    pasaporte TEXT,
+                    dni TEXT,
+                    telefono TEXT,
+                    email TEXT,
+                    nacionalidad TEXT,
+                    estado_cliente TEXT
+                );
+
+                CREATE TABLE config_familias_expediente (
+                    id INTEGER PRIMARY KEY,
+                    codigo TEXT,
+                    nombre TEXT
+                );
+
+                CREATE TABLE config_tipos_expediente (
+                    id INTEGER PRIMARY KEY,
+                    familia_id INTEGER,
+                    codigo TEXT,
+                    nombre TEXT
+                );
+
+                CREATE TABLE config_subtipos_expediente (
+                    id INTEGER PRIMARY KEY,
+                    tipo_expediente_id INTEGER,
+                    codigo TEXT,
+                    nombre TEXT
+                );
+
+                CREATE TABLE config_estados_documentales (
+                    id INTEGER PRIMARY KEY,
+                    nombre TEXT
+                );
+
+                CREATE TABLE config_estados_administrativos (
+                    id INTEGER PRIMARY KEY,
+                    nombre TEXT
                 );
 
                 CREATE TABLE expedientes (
                     id INTEGER PRIMARY KEY,
-                    cliente_id INTEGER
+                    cliente_id INTEGER,
+                    numero_expediente TEXT,
+                    tipo_expediente_id INTEGER,
+                    subtipo_expediente_id INTEGER,
+                    estado_documental_id INTEGER,
+                    estado_administrativo_id INTEGER,
+                    activo INTEGER DEFAULT 1,
+                    created_at TEXT
+                        DEFAULT CURRENT_TIMESTAMP
                 );
 
                 INSERT INTO clientes (
@@ -61,23 +105,102 @@ class CommunicationServiceTest(
                     nombre,
                     primer_apellido,
                     segundo_apellido,
-                    telefono
+                    nie,
+                    pasaporte,
+                    dni,
+                    telefono,
+                    email,
+                    nacionalidad,
+                    estado_cliente
                 )
                 VALUES (
                     10,
                     'CLIENTE',
                     'PRUEBA',
                     NULL,
-                    '600 123 456'
+                    'X1234567A',
+                    NULL,
+                    NULL,
+                    '600 123 456',
+                    'cliente@example.com',
+                    'ESPAÑA',
+                    'ASESORAMIENTO INICIAL'
+                );
+
+                INSERT INTO config_familias_expediente (
+                    id,
+                    codigo,
+                    nombre
+                )
+                VALUES (
+                    1,
+                    'EXTRANJERIA',
+                    'EXTRANJERÍA'
+                );
+
+                INSERT INTO config_tipos_expediente (
+                    id,
+                    familia_id,
+                    codigo,
+                    nombre
+                )
+                VALUES (
+                    2,
+                    1,
+                    'REAGRUPACION_FAMILIAR',
+                    'REAGRUPACIÓN FAMILIAR'
+                );
+
+                INSERT INTO config_subtipos_expediente (
+                    id,
+                    tipo_expediente_id,
+                    codigo,
+                    nombre
+                )
+                VALUES (
+                    3,
+                    2,
+                    'INICIAL',
+                    'INICIAL'
+                );
+
+                INSERT INTO config_estados_documentales (
+                    id,
+                    nombre
+                )
+                VALUES (
+                    4,
+                    'DOCUMENTACIÓN COMPLETA'
+                );
+
+                INSERT INTO config_estados_administrativos (
+                    id,
+                    nombre
+                )
+                VALUES (
+                    5,
+                    'PRESENTADO'
                 );
 
                 INSERT INTO expedientes (
                     id,
-                    cliente_id
+                    cliente_id,
+                    numero_expediente,
+                    tipo_expediente_id,
+                    subtipo_expediente_id,
+                    estado_documental_id,
+                    estado_administrativo_id,
+                    activo
                 )
                 VALUES (
                     20,
-                    10
+                    10,
+                    'EXP-TEST-0020',
+                    2,
+                    3,
+                    4,
+                    5,
+                    1
                 );
                 """
             )
@@ -863,6 +986,157 @@ class CommunicationServiceTest(
                 by_phone["items"]
             ),
             1,
+        )
+
+    def test_thread_context_returns_linked_client(
+        self,
+    ):
+        result = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600123456"
+                ),
+                phone="+34 600 123 456",
+                display_name=(
+                    "Cliente contexto"
+                ),
+            )
+        )
+
+        thread = result[
+            "thread"
+        ]
+
+        context = (
+            self.service
+            .get_thread_context(
+                thread.id
+            )
+        )
+
+        self.assertIsNotNone(
+            context
+        )
+
+        self.assertEqual(
+            context.thread_id,
+            thread.id,
+        )
+
+        self.assertIsNotNone(
+            context.client
+        )
+
+        self.assertEqual(
+            context.client.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            context.client.full_name,
+            "CLIENTE PRUEBA",
+        )
+
+        self.assertEqual(
+            context.client.phone,
+            "600 123 456",
+        )
+
+    def test_thread_context_preserves_unlinked_thread(
+        self,
+    ):
+        result = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600999888"
+                ),
+                phone="+34 600 999 888",
+                display_name=(
+                    "Sin cliente"
+                ),
+            )
+        )
+
+        thread = result[
+            "thread"
+        ]
+
+        self.assertIsNone(
+            thread.client_id
+        )
+
+        context = (
+            self.service
+            .get_thread_context(
+                thread.id
+            )
+        )
+
+        self.assertIsNotNone(
+            context
+        )
+
+        self.assertIsNone(
+            context.client
+        )
+
+        self.assertEqual(
+            context.expedients,
+            (),
+        )
+
+    def test_thread_context_returns_client_expedients(
+        self,
+    ):
+        result = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600123456"
+                ),
+                phone="+34 600 123 456",
+                display_name=(
+                    "Cliente con expediente"
+                ),
+            )
+        )
+
+        thread = result[
+            "thread"
+        ]
+
+        context = (
+            self.service
+            .get_thread_context(
+                thread.id
+            )
+        )
+
+        self.assertIsNotNone(
+            context.client
+        )
+
+        self.assertEqual(
+            context.client.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            len(
+                context.expedients
+            ),
+            1,
+        )
+
+        expedient = (
+            context.expedients[0]
+        )
+
+        self.assertEqual(
+            expedient.expedient_id,
+            20,
         )
 
     def test_register_inbound_and_outbound(

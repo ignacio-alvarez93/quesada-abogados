@@ -12,9 +12,12 @@ from pathlib import Path
 
 from backend.communications.models import (
     CommunicationAccount,
+    CommunicationClientContext,
+    CommunicationExpedientContext,
     CommunicationMessage,
     CommunicationMessageAttempt,
     CommunicationThread,
+    CommunicationThreadContext,
     CommunicationThreadOverview,
 )
 
@@ -510,6 +513,221 @@ class SQLiteCommunicationRepository:
             ).fetchone()
 
             return self._thread_from_row(row)
+
+    def get_thread_context(
+        self,
+        thread_id,
+    ):
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    t.id AS thread_id,
+                    t.client_id AS client_id,
+                    c.nombre AS nombre,
+                    c.primer_apellido
+                        AS primer_apellido,
+                    c.segundo_apellido
+                        AS segundo_apellido,
+                    c.nie AS nie,
+                    c.pasaporte AS pasaporte,
+                    c.dni AS dni,
+                    c.telefono AS telefono,
+                    c.email AS email,
+                    c.nacionalidad
+                        AS nacionalidad,
+                    c.estado_cliente
+                        AS estado_cliente
+                FROM communication_threads t
+                LEFT JOIN clientes c
+                    ON c.id = t.client_id
+                WHERE t.id = ?
+                """,
+                (
+                    int(thread_id),
+                ),
+            ).fetchone()
+
+            if not row:
+                return None
+
+            client = None
+            expedients = []
+
+            if (
+                row["client_id"]
+                is not None
+            ):
+                full_name = " ".join(
+                    part
+                    for part in (
+                        row["nombre"],
+                        row[
+                            "primer_apellido"
+                        ],
+                        row[
+                            "segundo_apellido"
+                        ],
+                    )
+                    if str(
+                        part
+                        or ""
+                    ).strip()
+                ).strip()
+
+                document = (
+                    row["nie"]
+                    or row["pasaporte"]
+                    or row["dni"]
+                    or None
+                )
+
+                client = (
+                    CommunicationClientContext(
+                        client_id=int(
+                            row["client_id"]
+                        ),
+                        full_name=(
+                            full_name
+                            or "Cliente sin nombre"
+                        ),
+                        document=document,
+                        phone=(
+                            row["telefono"]
+                            or None
+                        ),
+                        email=(
+                            row["email"]
+                            or None
+                        ),
+                        nationality=(
+                            row["nacionalidad"]
+                            or None
+                        ),
+                        status=(
+                            row["estado_cliente"]
+                            or None
+                        ),
+                    )
+                )
+
+                expedient_rows = (
+                    conn.execute(
+                        """
+                        SELECT
+                            e.id
+                                AS expedient_id,
+                            e.numero_expediente
+                                AS number,
+                            f.nombre
+                                AS family_name,
+                            te.nombre
+                                AS type_name,
+                            st.nombre
+                                AS subtype_name,
+                            ed.nombre
+                                AS documentary_status,
+                            ea.nombre
+                                AS administrative_status
+                        FROM expedientes e
+                        LEFT JOIN
+                            config_tipos_expediente te
+                            ON te.id =
+                                e.tipo_expediente_id
+                        LEFT JOIN
+                            config_familias_expediente f
+                            ON f.id =
+                                te.familia_id
+                        LEFT JOIN
+                            config_subtipos_expediente st
+                            ON st.id =
+                                e.subtipo_expediente_id
+                        LEFT JOIN
+                            config_estados_documentales ed
+                            ON ed.id =
+                                e.estado_documental_id
+                        LEFT JOIN
+                            config_estados_administrativos ea
+                            ON ea.id =
+                                e.estado_administrativo_id
+                        WHERE
+                            e.cliente_id = ?
+                            AND COALESCE(
+                                e.activo,
+                                1
+                            ) = 1
+                        ORDER BY
+                            e.created_at DESC,
+                            e.id DESC
+                        """,
+                        (
+                            int(
+                                row["client_id"]
+                            ),
+                        ),
+                    )
+                    .fetchall()
+                )
+
+                expedients = [
+                    CommunicationExpedientContext(
+                        expedient_id=int(
+                            expedient_row[
+                                "expedient_id"
+                            ]
+                        ),
+                        number=(
+                            expedient_row[
+                                "number"
+                            ]
+                            or None
+                        ),
+                        family_name=(
+                            expedient_row[
+                                "family_name"
+                            ]
+                            or None
+                        ),
+                        type_name=(
+                            expedient_row[
+                                "type_name"
+                            ]
+                            or None
+                        ),
+                        subtype_name=(
+                            expedient_row[
+                                "subtype_name"
+                            ]
+                            or None
+                        ),
+                        documentary_status=(
+                            expedient_row[
+                                "documentary_status"
+                            ]
+                            or None
+                        ),
+                        administrative_status=(
+                            expedient_row[
+                                "administrative_status"
+                            ]
+                            or None
+                        ),
+                    )
+                    for expedient_row
+                    in expedient_rows
+                ]
+
+            return CommunicationThreadContext(
+                thread_id=int(
+                    row["thread_id"]
+                ),
+                client=client,
+                expedients=tuple(
+                    expedients
+                ),
+            )
 
     def list_thread_overviews(
         self,
