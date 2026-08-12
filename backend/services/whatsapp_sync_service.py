@@ -18,6 +18,8 @@ from backend.automation.connectors.whatsapp_connector import (
     CHAT_KIND_INDIVIDUAL,
     CHAT_KIND_SELF,
     CHAT_KIND_UNKNOWN,
+    MESSAGE_DIRECTION_INBOUND,
+    MESSAGE_DIRECTION_OUTBOUND,
 )
 from backend.communications.phone_normalization import (
     normalize_phone,
@@ -79,6 +81,18 @@ SYNC_REASON_IDENTITY_UNVERIFIABLE = (
     "IDENTITY_UNVERIFIABLE"
 )
 
+SYNC_REASON_MESSAGE_ID_MISSING = (
+    "MESSAGE_ID_MISSING"
+)
+
+SYNC_REASON_MESSAGE_DIRECTION_UNKNOWN = (
+    "MESSAGE_DIRECTION_UNKNOWN"
+)
+
+SYNC_REASON_MESSAGE_IMPORT_ERROR = (
+    "MESSAGE_IMPORT_ERROR"
+)
+
 
 class WhatsAppSyncService:
     def __init__(
@@ -98,6 +112,250 @@ class WhatsAppSyncService:
             communication_service
             or CommunicationService()
         )
+
+    def sync_open_chat_messages(
+        self,
+        *,
+        thread_id,
+        limit=200,
+    ):
+        """Sincroniza los mensajes ya cargados del chat abierto.
+
+        No navega a otra conversación.
+        No descubre identidad.
+        No conoce SQLite.
+        """
+        normalized_thread_id = int(
+            thread_id
+        )
+
+        snapshots = (
+            self.connector
+            .list_visible_message_snapshots(
+                limit=max(
+                    1,
+                    int(limit),
+                )
+            )
+        )
+
+        items = []
+
+        summary = {
+            "thread_id":
+                normalized_thread_id,
+            "scanned":
+                len(snapshots),
+            "created":
+                0,
+            "reused":
+                0,
+            "status_advanced":
+                0,
+            "skipped":
+                0,
+            "errors":
+                0,
+        }
+
+        for snapshot in snapshots:
+            provider_id = str(
+                getattr(
+                    snapshot,
+                    "provider_message_id",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            direction = str(
+                getattr(
+                    snapshot,
+                    "direction",
+                    "",
+                )
+                or ""
+            ).strip().upper()
+
+            item = {
+                "provider_message_id":
+                    provider_id
+                    or None,
+                "direction":
+                    direction
+                    or None,
+                "created":
+                    False,
+                "reused":
+                    False,
+                "status_advanced":
+                    False,
+                "skipped":
+                    False,
+                "error":
+                    False,
+                "reason":
+                    None,
+                "message_id":
+                    None,
+            }
+
+            if not provider_id:
+                item["skipped"] = True
+                item["reason"] = (
+                    SYNC_REASON_MESSAGE_ID_MISSING
+                )
+                summary["skipped"] += 1
+                items.append(item)
+                continue
+
+            if direction not in (
+                MESSAGE_DIRECTION_INBOUND,
+                MESSAGE_DIRECTION_OUTBOUND,
+            ):
+                item["skipped"] = True
+                item["reason"] = (
+                    SYNC_REASON_MESSAGE_DIRECTION_UNKNOWN
+                )
+                summary["skipped"] += 1
+                items.append(item)
+                continue
+
+            metadata = dict(
+                getattr(
+                    snapshot,
+                    "metadata",
+                    None,
+                )
+                or {}
+            )
+
+            metadata.setdefault(
+                "source",
+                "whatsapp_web_message_sync",
+            )
+
+            metadata[
+                "message_type"
+            ] = getattr(
+                snapshot,
+                "message_type",
+                None,
+            )
+
+            sender = getattr(
+                snapshot,
+                "sender",
+                None,
+            )
+
+            if sender:
+                metadata["sender"] = sender
+
+            try:
+                imported = (
+                    self.communication_service
+                    .import_provider_message(
+                        thread_id=(
+                            normalized_thread_id
+                        ),
+                        direction=direction,
+                        body_text=(
+                            getattr(
+                                snapshot,
+                                "body_text",
+                                "",
+                            )
+                            or ""
+                        ),
+                        provider_message_id=(
+                            provider_id
+                        ),
+                        provider_timestamp=(
+                            getattr(
+                                snapshot,
+                                "provider_timestamp",
+                                None,
+                            )
+                        ),
+                        status=(
+                            getattr(
+                                snapshot,
+                                "provider_status",
+                                None,
+                            )
+                        ),
+                        metadata=metadata,
+                    )
+                )
+
+                message = imported[
+                    "message"
+                ]
+
+                created = bool(
+                    imported.get(
+                        "created",
+                        False,
+                    )
+                )
+
+                reused = bool(
+                    imported.get(
+                        "reused",
+                        not created,
+                    )
+                )
+
+                status_advanced = bool(
+                    imported.get(
+                        "status_advanced",
+                        False,
+                    )
+                )
+
+                item["message_id"] = (
+                    message.id
+                )
+
+                item["created"] = created
+                item["reused"] = reused
+
+                item[
+                    "status_advanced"
+                ] = status_advanced
+
+                if created:
+                    summary["created"] += 1
+
+                if reused:
+                    summary["reused"] += 1
+
+                if status_advanced:
+                    summary[
+                        "status_advanced"
+                    ] += 1
+
+            except Exception as exc:
+                item["error"] = True
+                item["reason"] = (
+                    SYNC_REASON_MESSAGE_IMPORT_ERROR
+                )
+
+                item["error_type"] = (
+                    type(exc).__name__
+                )
+
+                summary["errors"] += 1
+
+            items.append(item)
+
+        return {
+            "summary":
+                summary,
+            "items":
+                items,
+        }
 
     @staticmethod
     def build_phone_thread_key(

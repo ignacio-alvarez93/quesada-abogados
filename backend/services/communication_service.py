@@ -688,6 +688,16 @@ class CommunicationService:
                     MESSAGE_STATUS_SENT
                 )
 
+        previous = (
+            self.repository
+            .get_message_by_provider_identity(
+                thread_id=thread.id,
+                provider_message_id=(
+                    normalized_provider_id
+                ),
+            )
+        )
+
         message, created = (
             self.repository
             .get_or_create_message_with_status(
@@ -721,11 +731,29 @@ class CommunicationService:
             )
         )
 
+        status_advanced = bool(
+            not created
+            and previous is not None
+            and str(
+                previous.status
+                or ""
+            ).strip().upper()
+            != str(
+                message.status
+                or ""
+            ).strip().upper()
+        )
+
         return {
             "message": message,
             "created": bool(
                 created
             ),
+            "reused": not bool(
+                created
+            ),
+            "status_advanced":
+                status_advanced,
         }
 
     def register_inbound_message(

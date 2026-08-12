@@ -705,6 +705,73 @@ class CommunicationRepositoryTest(
             1,
         )
 
+    def test_get_message_by_provider_identity(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "provider-lookup"
+                ),
+                external_address=(
+                    "+34600666666"
+                ),
+            )
+        )
+
+        created = self.repo.create_message(
+            CommunicationMessage(
+                id=None,
+                thread_id=thread.id,
+                client_id=None,
+                expedient_id=None,
+                direction=DIRECTION_INBOUND,
+                body_text="Lookup",
+                status=MESSAGE_STATUS_PENDING,
+                provider_message_id=(
+                    "wa-provider-lookup-1"
+                ),
+            )
+        )
+
+        found = (
+            self.repo
+            .get_message_by_provider_identity(
+                thread_id=thread.id,
+                provider_message_id=(
+                    "wa-provider-lookup-1"
+                ),
+            )
+        )
+
+        missing = (
+            self.repo
+            .get_message_by_provider_identity(
+                thread_id=thread.id,
+                provider_message_id=(
+                    "wa-provider-missing"
+                ),
+            )
+        )
+
+        self.assertIsNotNone(
+            found
+        )
+
+        self.assertEqual(
+            found.id,
+            created.id,
+        )
+
+        self.assertIsNone(
+            missing
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

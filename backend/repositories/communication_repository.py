@@ -110,6 +110,14 @@ class CommunicationRepository(Protocol):
     ]:
         ...
 
+    def get_message_by_provider_identity(
+        self,
+        *,
+        thread_id: int,
+        provider_message_id: str,
+    ) -> CommunicationMessage | None:
+        ...
+
     def get_message(
         self,
         message_id: int,

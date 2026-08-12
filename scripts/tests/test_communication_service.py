@@ -1404,6 +1404,18 @@ class CommunicationServiceTest(
             MESSAGE_STATUS_READ,
         )
 
+        self.assertFalse(
+            second["created"]
+        )
+
+        self.assertTrue(
+            second["reused"]
+        )
+
+        self.assertTrue(
+            second["status_advanced"]
+        )
+
         messages = (
             self.service.repository
             .list_messages(

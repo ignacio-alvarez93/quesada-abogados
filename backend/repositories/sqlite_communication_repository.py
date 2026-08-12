@@ -1410,6 +1410,43 @@ class SQLiteCommunicationRepository:
                 True,
             )
 
+    def get_message_by_provider_identity(
+        self,
+        *,
+        thread_id,
+        provider_message_id,
+    ):
+        self.ensure_schema()
+
+        normalized_provider_id = (
+            str(
+                provider_message_id
+                or ""
+            ).strip()
+        )
+
+        if not normalized_provider_id:
+            return None
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_messages
+                WHERE thread_id = ?
+                  AND provider_message_id = ?
+                LIMIT 1
+                """,
+                (
+                    int(thread_id),
+                    normalized_provider_id,
+                ),
+            ).fetchone()
+
+            return self._message_from_row(
+                row
+            )
+
     def get_message(
         self,
         message_id,
