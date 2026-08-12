@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
+from backend.automation.connectors.whatsapp_connector import WhatsAppActiveChatFingerprint
 from backend.automation.connectors.whatsapp_connector import (
     CHAT_KIND_GROUP,
     CHAT_KIND_INDIVIDUAL,
@@ -297,12 +298,38 @@ class FakeMessageConnector:
     def __init__(
         self,
         snapshots,
+        fingerprints=None,
     ):
         self.snapshots = list(
             snapshots
         )
 
         self.limits = []
+
+        self.fingerprints = list(
+            fingerprints
+            or []
+        )
+
+    def get_active_chat_fingerprint(
+        self,
+    ):
+        if not self.fingerprints:
+            raise AssertionError(
+                "No hay fingerprint preparado"
+            )
+
+        value = self.fingerprints.pop(
+            0
+        )
+
+        if isinstance(
+            value,
+            BaseException,
+        ):
+            raise value
+
+        return value
 
     def list_visible_message_snapshots(
         self,
@@ -1554,6 +1581,257 @@ class WhatsAppSyncServiceTest(
             communication.calls,
             [],
         )
+
+
+    def test_sync_open_chat_messages_guard_allows_stable_chat(
+        self,
+    ):
+        snapshot = WhatsAppMessageSnapshot(
+            provider_message_id="MSG-11",
+            direction=MESSAGE_DIRECTION_INBOUND,
+            body_text="Mensaje nuevo",
+            provider_timestamp=None,
+            message_type=MESSAGE_TYPE_TEXT,
+            provider_status=MESSAGE_STATUS_RECEIVED,
+        )
+
+        connector = FakeMessageConnector(
+            [snapshot],
+            fingerprints=[
+                WhatsAppActiveChatFingerprint(
+                    chat_open=True,
+                    active_display_name="Mama",
+                    active_identity="mama",
+                    visible_message_count=11,
+                    last_provider_message_id="MSG-11",
+                ),
+            ],
+        )
+
+        communication = (
+            FakeMessageCommunicationService()
+        )
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=communication,
+        )
+
+        result = (
+            service.sync_open_chat_messages(
+                thread_id=50,
+                expected_active_identity="mama",
+                expected_last_provider_message_id="MSG-11",
+            )
+        )
+
+        self.assertFalse(
+            result["aborted"]
+        )
+
+        self.assertIsNone(
+            result["abort_reason"]
+        )
+
+        self.assertTrue(
+            result["guard"]["passed"]
+        )
+
+        self.assertEqual(
+            result["summary"]["created"],
+            1,
+        )
+
+        self.assertEqual(
+            len(
+                communication.calls
+            ),
+            1,
+        )
+
+
+    def test_sync_open_chat_messages_guard_aborts_if_identity_changes(
+        self,
+    ):
+        snapshot = WhatsAppMessageSnapshot(
+            provider_message_id="MSG-11",
+            direction=MESSAGE_DIRECTION_INBOUND,
+            body_text="Mensaje",
+            provider_timestamp=None,
+            message_type=MESSAGE_TYPE_TEXT,
+            provider_status=MESSAGE_STATUS_RECEIVED,
+        )
+
+        connector = FakeMessageConnector(
+            [snapshot],
+            fingerprints=[
+                WhatsAppActiveChatFingerprint(
+                    chat_open=True,
+                    active_display_name="Deneb",
+                    active_identity="deneb",
+                    visible_message_count=20,
+                    last_provider_message_id="DENEB-20",
+                ),
+            ],
+        )
+
+        communication = (
+            FakeMessageCommunicationService()
+        )
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=communication,
+        )
+
+        result = (
+            service.sync_open_chat_messages(
+                thread_id=50,
+                expected_active_identity="mama",
+                expected_last_provider_message_id="MSG-11",
+            )
+        )
+
+        self.assertTrue(
+            result["aborted"]
+        )
+
+        self.assertEqual(
+            result["abort_reason"],
+            "ACTIVE_CHAT_CHANGED",
+        )
+
+        self.assertFalse(
+            result["guard"]["passed"]
+        )
+
+        self.assertEqual(
+            result["summary"]["created"],
+            0,
+        )
+
+        self.assertEqual(
+            communication.calls,
+            [],
+        )
+
+
+    def test_sync_open_chat_messages_guard_aborts_if_last_message_changes(
+        self,
+    ):
+        snapshot = WhatsAppMessageSnapshot(
+            provider_message_id="MSG-11",
+            direction=MESSAGE_DIRECTION_INBOUND,
+            body_text="Mensaje",
+            provider_timestamp=None,
+            message_type=MESSAGE_TYPE_TEXT,
+            provider_status=MESSAGE_STATUS_RECEIVED,
+        )
+
+        connector = FakeMessageConnector(
+            [snapshot],
+            fingerprints=[
+                WhatsAppActiveChatFingerprint(
+                    chat_open=True,
+                    active_display_name="Mama",
+                    active_identity="mama",
+                    visible_message_count=12,
+                    last_provider_message_id="MSG-12",
+                ),
+            ],
+        )
+
+        communication = (
+            FakeMessageCommunicationService()
+        )
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=communication,
+        )
+
+        result = (
+            service.sync_open_chat_messages(
+                thread_id=50,
+                expected_active_identity="mama",
+                expected_last_provider_message_id="MSG-11",
+            )
+        )
+
+        self.assertTrue(
+            result["aborted"]
+        )
+
+        self.assertEqual(
+            result["abort_reason"],
+            "ACTIVE_CHAT_CHANGED",
+        )
+
+        self.assertEqual(
+            communication.calls,
+            [],
+        )
+
+
+    def test_sync_open_chat_messages_guard_requires_expected_message_in_snapshots(
+        self,
+    ):
+        snapshot = WhatsAppMessageSnapshot(
+            provider_message_id="OTHER-1",
+            direction=MESSAGE_DIRECTION_INBOUND,
+            body_text="Otro mensaje",
+            provider_timestamp=None,
+            message_type=MESSAGE_TYPE_TEXT,
+            provider_status=MESSAGE_STATUS_RECEIVED,
+        )
+
+        connector = FakeMessageConnector(
+            [snapshot],
+            fingerprints=[
+                WhatsAppActiveChatFingerprint(
+                    chat_open=True,
+                    active_display_name="Mama",
+                    active_identity="mama",
+                    visible_message_count=11,
+                    last_provider_message_id="MSG-11",
+                ),
+            ],
+        )
+
+        communication = (
+            FakeMessageCommunicationService()
+        )
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=communication,
+        )
+
+        result = (
+            service.sync_open_chat_messages(
+                thread_id=50,
+                expected_active_identity="mama",
+                expected_last_provider_message_id="MSG-11",
+            )
+        )
+
+        self.assertTrue(
+            result["aborted"]
+        )
+
+        self.assertFalse(
+            result[
+                "guard"
+            ][
+                "expected_message_present"
+            ]
+        )
+
+        self.assertEqual(
+            communication.calls,
+            [],
+        )
+
 
 
 if __name__ == "__main__":

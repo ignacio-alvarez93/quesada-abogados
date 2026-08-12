@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 import threading
 import unittest
 
@@ -967,6 +968,1173 @@ class WhatsAppRuntimeServiceTest(
             "!= requested_thread_id",
             source,
         )
+
+
+    def test_observe_and_sync_initial_does_not_resolve_or_sync(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name="Mama",
+                active_identity="mama",
+                visible_message_count=10,
+                last_provider_message_id="MSG-10",
+            ),
+        ]
+
+        def forbidden_resolve(
+            identity,
+        ):
+            raise AssertionError(
+                "INITIAL no debe resolver"
+            )
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            forbidden_resolve
+        )
+
+        result = (
+            runtime.observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            result["change_type"],
+            "INITIAL",
+        )
+
+        self.assertIsNone(
+            result["resolution"]
+        )
+
+        self.assertIsNone(
+            result["sync"]
+        )
+
+
+    def test_observe_and_sync_unchanged_does_not_sync(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        fingerprint = WhatsAppActiveChatFingerprint(
+            chat_open=True,
+            active_display_name="Mama",
+            active_identity="mama",
+            visible_message_count=10,
+            last_provider_message_id="MSG-10",
+        )
+
+        connector.active_chat_fingerprints = [
+            fingerprint,
+            fingerprint,
+        ]
+
+        runtime.observe_and_sync_active_chat(
+            wait_timeout=1,
+        )
+
+        def forbidden_resolve(
+            identity,
+        ):
+            raise AssertionError(
+                "UNCHANGED no debe resolver"
+            )
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            forbidden_resolve
+        )
+
+        result = (
+            runtime.observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            result["change_type"],
+            "UNCHANGED",
+        )
+
+        self.assertIsNone(
+            result["sync"]
+        )
+
+
+    def test_observe_and_sync_message_changed_syncs_unique_match_once(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name="Mama",
+                active_identity="mama",
+                visible_message_count=10,
+                last_provider_message_id="MSG-10",
+            ),
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name="Mama",
+                active_identity="mama",
+                visible_message_count=11,
+                last_provider_message_id="MSG-11",
+            ),
+        ]
+
+        runtime.observe_and_sync_active_chat(
+            wait_timeout=1,
+        )
+
+        resolve_calls = []
+
+        def resolve(
+            identity,
+        ):
+            resolve_calls.append(
+                identity
+            )
+
+            return {
+                "matched": True,
+                "ambiguous": False,
+                "match_basis":
+                    "DISPLAY_NAME",
+                "thread":
+                    SimpleNamespace(
+                        thread_id=77
+                    ),
+                "matches": [],
+                "identity":
+                    identity,
+            }
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            resolve
+        )
+
+        sync_calls = []
+
+        def sync(
+            **kwargs,
+        ):
+            sync_calls.append(
+                dict(
+                    kwargs
+                )
+            )
+
+            return {
+                "summary": {
+                    "thread_id": 77,
+                    "created": 1,
+                },
+                "items": [],
+                "aborted": False,
+                "abort_reason": None,
+                "guard": {
+                    "passed": True,
+                },
+            }
+
+        runtime._sync_service = (
+            SimpleNamespace(
+                sync_open_chat_messages=sync
+            )
+        )
+
+        result = (
+            runtime.observe_and_sync_active_chat(
+                wait_timeout=1,
+                sync_limit=125,
+            )
+        )
+
+        self.assertEqual(
+            resolve_calls,
+            [
+                "mama",
+            ],
+        )
+
+        self.assertEqual(
+            len(
+                sync_calls
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            sync_calls[
+                0
+            ][
+                "thread_id"
+            ],
+            77,
+        )
+
+        self.assertEqual(
+            sync_calls[
+                0
+            ][
+                "limit"
+            ],
+            125,
+        )
+
+        self.assertEqual(
+            sync_calls[
+                0
+            ][
+                "expected_active_identity"
+            ],
+            "mama",
+        )
+
+        self.assertEqual(
+            sync_calls[
+                0
+            ][
+                "expected_last_provider_message_id"
+            ],
+            "MSG-11",
+        )
+
+        self.assertFalse(
+            result[
+                "sync"
+            ][
+                "aborted"
+            ]
+        )
+
+
+    def test_observe_and_sync_ambiguous_match_does_not_sync(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MSG-10",
+            ),
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                11,
+                "MSG-11",
+            ),
+        ]
+
+        runtime.observe_and_sync_active_chat(
+            wait_timeout=1,
+        )
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": False,
+                "ambiguous": True,
+                "match_basis":
+                    "DISPLAY_NAME",
+                "thread": None,
+                "matches": [
+                    object(),
+                    object(),
+                ],
+                "identity":
+                    identity,
+            }
+        )
+
+        runtime._sync_service = (
+            SimpleNamespace(
+                sync_open_chat_messages=(
+                    lambda **kwargs:
+                        (_ for _ in ())
+                        .throw(
+                            AssertionError(
+                                "AMBIGUOUS no debe sincronizar"
+                            )
+                        )
+                )
+            )
+        )
+
+        result = (
+            runtime.observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "resolution"
+            ][
+                "ambiguous"
+            ]
+        )
+
+        self.assertIsNone(
+            result["sync"]
+        )
+
+
+    def test_observe_and_sync_unmatched_does_not_sync(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Desconocido",
+                "desconocido",
+                4,
+                "MSG-4",
+            ),
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Desconocido",
+                "desconocido",
+                5,
+                "MSG-5",
+            ),
+        ]
+
+        runtime.observe_and_sync_active_chat(
+            wait_timeout=1,
+        )
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": False,
+                "ambiguous": False,
+                "match_basis": None,
+                "thread": None,
+                "matches": [],
+                "identity":
+                    identity,
+            }
+        )
+
+        result = (
+            runtime.observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertFalse(
+            result[
+                "resolution"
+            ][
+                "matched"
+            ]
+        )
+
+        self.assertIsNone(
+            result["sync"]
+        )
+
+
+    def test_observe_and_sync_chat_changed_does_not_resolve(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MAMA-10",
+            ),
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Deneb",
+                "deneb",
+                20,
+                "DENEB-20",
+            ),
+        ]
+
+        runtime.observe_and_sync_active_chat(
+            wait_timeout=1,
+        )
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity:
+                (_ for _ in ())
+                .throw(
+                    AssertionError(
+                        "CHAT_CHANGED no debe resolver"
+                    )
+                )
+        )
+
+        result = (
+            runtime.observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            result["change_type"],
+            "CHAT_CHANGED",
+        )
+
+        self.assertIsNone(
+            result["sync"]
+        )
+
+
+    def test_observe_and_sync_window_changed_does_not_resolve(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MSG-10",
+            ),
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                15,
+                "MSG-10",
+            ),
+        ]
+
+        runtime.observe_and_sync_active_chat(
+            wait_timeout=1,
+        )
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity:
+                (_ for _ in ())
+                .throw(
+                    AssertionError(
+                        "MESSAGE_WINDOW_CHANGED no debe resolver"
+                    )
+                )
+        )
+
+        result = (
+            runtime.observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            result["change_type"],
+            "MESSAGE_WINDOW_CHANGED",
+        )
+
+        self.assertIsNone(
+            result["sync"]
+        )
+
+
+    def test_observe_and_sync_resolution_error_is_diagnostic(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MSG-10",
+            ),
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                11,
+                "MSG-11",
+            ),
+        ]
+
+        runtime.observe_and_sync_active_chat(
+            wait_timeout=1,
+        )
+
+        def failing_resolve(
+            identity,
+        ):
+            raise RuntimeError(
+                "resolver temporalmente caído"
+            )
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            failing_resolve
+        )
+
+        result = (
+            runtime.observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            result[
+                "resolution"
+            ][
+                "reason"
+            ],
+            "RESOLUTION_ERROR",
+        )
+
+        self.assertEqual(
+            result[
+                "resolution"
+            ][
+                "error_type"
+            ],
+            "RuntimeError",
+        )
+
+        self.assertIsNone(
+            result["sync"]
+        )
+
+
+    def test_observe_and_sync_sync_error_is_diagnostic_and_next_message_retries(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MSG-10",
+            ),
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                11,
+                "MSG-11",
+            ),
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                12,
+                "MSG-12",
+            ),
+        ]
+
+        runtime.observe_and_sync_active_chat(
+            wait_timeout=1,
+        )
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": True,
+                "ambiguous": False,
+                "match_basis":
+                    "DISPLAY_NAME",
+                "thread":
+                    SimpleNamespace(
+                        thread_id=77
+                    ),
+                "matches": [],
+                "identity":
+                    identity,
+            }
+        )
+
+        calls = []
+
+        def sync(
+            **kwargs,
+        ):
+            calls.append(
+                dict(
+                    kwargs
+                )
+            )
+
+            if len(
+                calls
+            ) == 1:
+                raise RuntimeError(
+                    "sync temporalmente caído"
+                )
+
+            return {
+                "summary": {
+                    "thread_id": 77,
+                    "created": 1,
+                },
+                "items": [],
+                "aborted": False,
+                "abort_reason": None,
+                "guard": {
+                    "passed": True,
+                },
+            }
+
+        runtime._sync_service = (
+            SimpleNamespace(
+                sync_open_chat_messages=sync
+            )
+        )
+
+        first = (
+            runtime.observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            first[
+                "sync"
+            ][
+                "reason"
+            ],
+            "SYNC_ERROR",
+        )
+
+        second = (
+            runtime.observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            len(
+                calls
+            ),
+            2,
+        )
+
+        self.assertFalse(
+            second[
+                "sync"
+            ][
+                "aborted"
+            ]
+        )
+
+        self.assertEqual(
+            calls[
+                1
+            ][
+                "expected_last_provider_message_id"
+            ],
+            "MSG-12",
+        )
+
+
+
+    def test_active_chat_watch_records_watch_error_and_recovers(
+        self,
+    ):
+        runtime = self._runtime()
+
+        calls = []
+        recovered = threading.Event()
+
+        def observe_and_sync_active_chat(
+            *,
+            wait_timeout=60,
+            sync_limit=200,
+        ):
+            calls.append(
+                len(calls) + 1
+            )
+
+            if len(calls) == 1:
+                raise RuntimeError(
+                    "DOM temporalmente caído"
+                )
+
+            return {
+                "changed": True,
+                "change_type": "INITIAL",
+                "previous": None,
+                "current": None,
+                "resolution": None,
+                "sync": None,
+            }
+
+        runtime.observe_and_sync_active_chat = (
+            observe_and_sync_active_chat
+        )
+
+        def on_change(
+            result,
+        ):
+            recovered.set()
+
+        runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+            on_change=on_change,
+        )
+
+        self.assertTrue(
+            recovered.wait(
+                timeout=1
+            )
+        )
+
+        runtime.stop_active_chat_watch()
+
+        diagnostic = (
+            runtime.active_chat_watch_last_error
+        )
+
+        self.assertIsNotNone(
+            diagnostic
+        )
+
+        self.assertEqual(
+            diagnostic["stage"],
+            "WATCH",
+        )
+
+        self.assertEqual(
+            diagnostic["reason"],
+            "WATCH_ERROR",
+        )
+
+        self.assertEqual(
+            diagnostic["error_type"],
+            "RuntimeError",
+        )
+
+        self.assertGreaterEqual(
+            len(calls),
+            2,
+        )
+
+
+    def test_active_chat_watch_records_resolution_error(
+        self,
+    ):
+        runtime = self._runtime()
+
+        observed = threading.Event()
+
+        def observe_and_sync_active_chat(
+            *,
+            wait_timeout=60,
+            sync_limit=200,
+        ):
+            return {
+                "changed": True,
+                "change_type":
+                    "MESSAGE_CHANGED",
+                "previous": None,
+                "current": None,
+                "resolution": {
+                    "matched": False,
+                    "ambiguous": False,
+                    "thread": None,
+                    "error": True,
+                    "reason":
+                        "RESOLUTION_ERROR",
+                    "error_type":
+                        "RuntimeError",
+                },
+                "sync": None,
+            }
+
+        runtime.observe_and_sync_active_chat = (
+            observe_and_sync_active_chat
+        )
+
+        def on_change(
+            result,
+        ):
+            observed.set()
+
+        runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+            on_change=on_change,
+        )
+
+        self.assertTrue(
+            observed.wait(
+                timeout=1
+            )
+        )
+
+        runtime.stop_active_chat_watch()
+
+        diagnostic = (
+            runtime.active_chat_watch_last_error
+        )
+
+        self.assertEqual(
+            diagnostic["stage"],
+            "RESOLUTION",
+        )
+
+        self.assertEqual(
+            diagnostic["reason"],
+            "RESOLUTION_ERROR",
+        )
+
+        self.assertEqual(
+            diagnostic["change_type"],
+            "MESSAGE_CHANGED",
+        )
+
+
+    def test_active_chat_watch_records_sync_error_and_later_success(
+        self,
+    ):
+        runtime = self._runtime()
+
+        calls = []
+        recovered = threading.Event()
+
+        def observe_and_sync_active_chat(
+            *,
+            wait_timeout=60,
+            sync_limit=200,
+        ):
+            calls.append(
+                len(calls) + 1
+            )
+
+            if len(calls) == 1:
+                return {
+                    "changed": True,
+                    "change_type":
+                        "MESSAGE_CHANGED",
+                    "previous": None,
+                    "current": None,
+                    "resolution": {
+                        "matched": True,
+                        "ambiguous": False,
+                    },
+                    "sync": {
+                        "error": True,
+                        "reason":
+                            "SYNC_ERROR",
+                        "error_type":
+                            "RuntimeError",
+                    },
+                }
+
+            return {
+                "changed": True,
+                "change_type":
+                    "MESSAGE_CHANGED",
+                "previous": None,
+                "current": None,
+                "resolution": {
+                    "matched": True,
+                    "ambiguous": False,
+                },
+                "sync": {
+                    "summary": {
+                        "thread_id": 77,
+                        "created": 1,
+                    },
+                    "items": [],
+                    "error": False,
+                    "aborted": False,
+                    "abort_reason": None,
+                },
+            }
+
+        runtime.observe_and_sync_active_chat = (
+            observe_and_sync_active_chat
+        )
+
+        def on_change(
+            result,
+        ):
+            sync_result = result.get(
+                "sync"
+            )
+
+            if (
+                isinstance(
+                    sync_result,
+                    dict,
+                )
+                and not sync_result.get(
+                    "error"
+                )
+                and not sync_result.get(
+                    "aborted"
+                )
+            ):
+                recovered.set()
+
+        runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+            on_change=on_change,
+        )
+
+        self.assertTrue(
+            recovered.wait(
+                timeout=1
+            )
+        )
+
+        runtime.stop_active_chat_watch()
+
+        diagnostic = (
+            runtime.active_chat_watch_last_error
+        )
+
+        last_sync = (
+            runtime.active_chat_watch_last_sync
+        )
+
+        # El error histórico debe conservarse.
+        self.assertIsNotNone(
+            diagnostic
+        )
+
+        self.assertEqual(
+            diagnostic["stage"],
+            "SYNC",
+        )
+
+        self.assertEqual(
+            diagnostic["reason"],
+            "SYNC_ERROR",
+        )
+
+        # Y simultáneamente debe constar
+        # que hubo recuperación posterior.
+        self.assertIsNotNone(
+            last_sync
+        )
+
+        self.assertEqual(
+            last_sync["change_type"],
+            "MESSAGE_CHANGED",
+        )
+
+        self.assertEqual(
+            last_sync[
+                "sync"
+            ][
+                "summary"
+            ][
+                "thread_id"
+            ],
+            77,
+        )
+
+        self.assertGreaterEqual(
+            len(calls),
+            2,
+        )
+
+
+    def test_active_chat_watch_records_callback_error_and_survives(
+        self,
+    ):
+        runtime = self._runtime()
+
+        calls = []
+        diagnostic_seen = threading.Event()
+
+        def observe_and_sync_active_chat(
+            *,
+            wait_timeout=60,
+            sync_limit=200,
+        ):
+            calls.append(
+                len(calls) + 1
+            )
+
+            if len(calls) > 1:
+                diagnostic = (
+                    runtime.active_chat_watch_last_error
+                )
+
+                if (
+                    isinstance(
+                        diagnostic,
+                        dict,
+                    )
+                    and diagnostic.get(
+                        "stage"
+                    )
+                    == "CALLBACK"
+                ):
+                    diagnostic_seen.set()
+
+                return {
+                    "changed": False,
+                    "change_type":
+                        "UNCHANGED",
+                    "previous": None,
+                    "current": None,
+                    "resolution": None,
+                    "sync": None,
+                }
+
+            return {
+                "changed": True,
+                "change_type": "INITIAL",
+                "previous": None,
+                "current": None,
+                "resolution": None,
+                "sync": None,
+            }
+
+        runtime.observe_and_sync_active_chat = (
+            observe_and_sync_active_chat
+        )
+
+        def failing_callback(
+            result,
+        ):
+            raise ValueError(
+                "callback consumidor roto"
+            )
+
+        runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+            on_change=failing_callback,
+        )
+
+        self.assertTrue(
+            diagnostic_seen.wait(
+                timeout=1
+            )
+        )
+
+        runtime.stop_active_chat_watch()
+
+        diagnostic = (
+            runtime.active_chat_watch_last_error
+        )
+
+        self.assertEqual(
+            diagnostic["stage"],
+            "CALLBACK",
+        )
+
+        self.assertEqual(
+            diagnostic["reason"],
+            "CALLBACK_ERROR",
+        )
+
+        self.assertEqual(
+            diagnostic["error_type"],
+            "ValueError",
+        )
+
+        self.assertGreaterEqual(
+            len(calls),
+            2,
+        )
+
+
+    def test_active_chat_watch_does_not_record_aborted_guard_as_success(
+        self,
+    ):
+        runtime = self._runtime()
+
+        observed = threading.Event()
+
+        def observe_and_sync_active_chat(
+            *,
+            wait_timeout=60,
+            sync_limit=200,
+        ):
+            return {
+                "changed": True,
+                "change_type":
+                    "MESSAGE_CHANGED",
+                "previous": None,
+                "current": None,
+                "resolution": {
+                    "matched": True,
+                    "ambiguous": False,
+                },
+                "sync": {
+                    "summary": {
+                        "thread_id": 77,
+                        "created": 0,
+                    },
+                    "items": [],
+                    "error": False,
+                    "aborted": True,
+                    "abort_reason":
+                        "ACTIVE_CHAT_CHANGED",
+                },
+            }
+
+        runtime.observe_and_sync_active_chat = (
+            observe_and_sync_active_chat
+        )
+
+        def on_change(
+            result,
+        ):
+            observed.set()
+
+        runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+            on_change=on_change,
+        )
+
+        self.assertTrue(
+            observed.wait(
+                timeout=1
+            )
+        )
+
+        runtime.stop_active_chat_watch()
+
+        self.assertIsNone(
+            runtime.active_chat_watch_last_sync
+        )
+
+        # ACTIVE_CHAT_CHANGED es una barrera
+        # de seguridad, no un error operativo.
+        self.assertIsNone(
+            runtime.active_chat_watch_last_error
+        )
+
 
 
 if __name__ == "__main__":

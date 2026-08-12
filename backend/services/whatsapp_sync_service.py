@@ -118,6 +118,8 @@ class WhatsAppSyncService:
         *,
         thread_id,
         limit=200,
+        expected_active_identity=None,
+        expected_last_provider_message_id=None,
     ):
         """Sincroniza los mensajes ya cargados del chat abierto.
 
@@ -138,6 +140,135 @@ class WhatsAppSyncService:
                 )
             )
         )
+
+        expected_identity = str(
+            expected_active_identity
+            or ""
+        ).strip()
+
+        expected_last_id = str(
+            expected_last_provider_message_id
+            or ""
+        ).strip()
+
+        guard = None
+
+        if expected_identity:
+            post_extract_fingerprint = (
+                self.connector
+                .get_active_chat_fingerprint()
+            )
+
+            observed_identity = str(
+                getattr(
+                    post_extract_fingerprint,
+                    "active_identity",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            observed_last_id = str(
+                getattr(
+                    post_extract_fingerprint,
+                    "last_provider_message_id",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            snapshot_provider_ids = {
+                str(
+                    getattr(
+                        snapshot,
+                        "provider_message_id",
+                        "",
+                    )
+                    or ""
+                ).strip()
+                for snapshot in snapshots
+                if str(
+                    getattr(
+                        snapshot,
+                        "provider_message_id",
+                        "",
+                    )
+                    or ""
+                ).strip()
+            }
+
+            guard = {
+                "expected_active_identity":
+                    expected_identity,
+                "observed_active_identity":
+                    observed_identity
+                    or None,
+                "expected_last_provider_message_id":
+                    expected_last_id
+                    or None,
+                "observed_last_provider_message_id":
+                    observed_last_id
+                    or None,
+                "chat_open":
+                    bool(
+                        getattr(
+                            post_extract_fingerprint,
+                            "chat_open",
+                            False,
+                        )
+                    ),
+                "expected_message_present":
+                    (
+                        not expected_last_id
+                        or expected_last_id
+                        in snapshot_provider_ids
+                    ),
+            }
+
+            guard_ok = (
+                guard["chat_open"]
+                and observed_identity
+                == expected_identity
+                and (
+                    not expected_last_id
+                    or observed_last_id
+                    == expected_last_id
+                )
+                and guard[
+                    "expected_message_present"
+                ]
+            )
+
+            guard["passed"] = (
+                guard_ok
+            )
+
+            if not guard_ok:
+                return {
+                    "summary": {
+                        "thread_id":
+                            normalized_thread_id,
+                        "scanned":
+                            len(
+                                snapshots
+                            ),
+                        "created":
+                            0,
+                        "reused":
+                            0,
+                        "status_advanced":
+                            0,
+                        "skipped":
+                            0,
+                        "errors":
+                            0,
+                    },
+                    "items": [],
+                    "aborted": True,
+                    "abort_reason":
+                        "ACTIVE_CHAT_CHANGED",
+                    "guard": guard,
+                }
 
         items = []
 
@@ -355,6 +486,12 @@ class WhatsAppSyncService:
                 summary,
             "items":
                 items,
+            "aborted":
+                False,
+            "abort_reason":
+                None,
+            "guard":
+                guard,
         }
 
     @staticmethod

@@ -92,6 +92,16 @@ class WhatsAppRuntimeService:
         self._active_chat_watch_stop = None
         self._active_chat_watch_lock = threading.Lock()
 
+        # Diagnóstico ligero del watcher.
+        #
+        # last_error conserva el último fallo observado
+        # aunque una iteración posterior se recupere.
+        #
+        # last_sync conserva la última sincronización
+        # automática completada correctamente.
+        self._active_chat_watch_last_error = None
+        self._active_chat_watch_last_sync = None
+
     def _get_executor(
         self,
     ):
@@ -647,6 +657,174 @@ class WhatsAppRuntimeService:
         )
 
 
+    def _observe_and_sync_active_chat_impl(
+        self,
+        *,
+        wait_timeout=60,
+        sync_limit=200,
+    ):
+        result = (
+            self._observe_active_chat_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        result["resolution"] = None
+        result["sync"] = None
+
+        if (
+            result.get(
+                "change_type"
+            )
+            != "MESSAGE_CHANGED"
+        ):
+            return result
+
+        current = result.get(
+            "current"
+        )
+
+        if (
+            current is None
+            or not current.chat_open
+            or not str(
+                current.active_identity
+                or ""
+            ).strip()
+        ):
+            return result
+
+        try:
+            resolution = (
+                self.communication_service
+                .resolve_whatsapp_thread_by_identity(
+                    current.active_identity
+                )
+            )
+
+        except Exception as exc:
+            result["resolution"] = {
+                "matched": False,
+                "ambiguous": False,
+                "match_basis": None,
+                "thread": None,
+                "matches": [],
+                "identity":
+                    current.active_identity,
+                "error": True,
+                "error_type":
+                    type(
+                        exc
+                    ).__name__,
+                "reason":
+                    "RESOLUTION_ERROR",
+            }
+
+            return result
+
+        result["resolution"] = (
+            resolution
+        )
+
+        if not resolution.get(
+            "matched"
+        ):
+            return result
+
+        if resolution.get(
+            "ambiguous"
+        ):
+            return result
+
+        thread = resolution.get(
+            "thread"
+        )
+
+        if thread is None:
+            return result
+
+        thread_id = getattr(
+            thread,
+            "thread_id",
+            None,
+        )
+
+        if thread_id in (
+            None,
+            "",
+        ):
+            result["sync"] = {
+                "error": True,
+                "error_type":
+                    "ValueError",
+                "reason":
+                    "RESOLVED_THREAD_ID_MISSING",
+            }
+
+            return result
+
+        try:
+            result["sync"] = (
+                self._get_sync_service()
+                .sync_open_chat_messages(
+                    thread_id=thread_id,
+                    limit=sync_limit,
+                    expected_active_identity=(
+                        current.active_identity
+                    ),
+                    expected_last_provider_message_id=(
+                        current.last_provider_message_id
+                    ),
+                )
+            )
+
+        except Exception as exc:
+            result["sync"] = {
+                "error": True,
+                "error_type":
+                    type(
+                        exc
+                    ).__name__,
+                "reason":
+                    "SYNC_ERROR",
+            }
+
+        return result
+
+
+    def observe_and_sync_active_chat(
+        self,
+        *,
+        wait_timeout=60,
+        sync_limit=200,
+    ):
+        return self._run_serialized(
+            self._observe_and_sync_active_chat_impl,
+            wait_timeout=wait_timeout,
+            sync_limit=sync_limit,
+        )
+
+
+    @property
+    def active_chat_watch_last_error(
+        self,
+    ):
+        with self._active_chat_watch_lock:
+            return (
+                self._active_chat_watch_last_error
+            )
+
+
+    @property
+    def active_chat_watch_last_sync(
+        self,
+    ):
+        with self._active_chat_watch_lock:
+            return (
+                self._active_chat_watch_last_sync
+            )
+
+
     @property
     def active_chat_watch_running(
         self,
@@ -672,10 +850,105 @@ class WhatsAppRuntimeService:
         while not stop_event.is_set():
             try:
                 result = (
-                    self.observe_active_chat(
+                    self.observe_and_sync_active_chat(
                         wait_timeout=wait_timeout,
                     )
                 )
+
+                resolution = result.get(
+                    "resolution"
+                )
+
+                sync_result = result.get(
+                    "sync"
+                )
+
+                diagnostic_error = None
+
+                if (
+                    isinstance(
+                        resolution,
+                        dict,
+                    )
+                    and resolution.get(
+                        "error"
+                    )
+                ):
+                    diagnostic_error = {
+                        "timestamp":
+                            time.time(),
+                        "stage":
+                            "RESOLUTION",
+                        "reason":
+                            resolution.get(
+                                "reason"
+                            ),
+                        "error_type":
+                            resolution.get(
+                                "error_type"
+                            ),
+                        "change_type":
+                            result.get(
+                                "change_type"
+                            ),
+                    }
+
+                elif (
+                    isinstance(
+                        sync_result,
+                        dict,
+                    )
+                    and sync_result.get(
+                        "error"
+                    )
+                ):
+                    diagnostic_error = {
+                        "timestamp":
+                            time.time(),
+                        "stage":
+                            "SYNC",
+                        "reason":
+                            sync_result.get(
+                                "reason"
+                            ),
+                        "error_type":
+                            sync_result.get(
+                                "error_type"
+                            ),
+                        "change_type":
+                            result.get(
+                                "change_type"
+                            ),
+                    }
+
+                with self._active_chat_watch_lock:
+                    if diagnostic_error is not None:
+                        self._active_chat_watch_last_error = (
+                            diagnostic_error
+                        )
+
+                    if (
+                        isinstance(
+                            sync_result,
+                            dict,
+                        )
+                        and not sync_result.get(
+                            "error"
+                        )
+                        and not sync_result.get(
+                            "aborted"
+                        )
+                    ):
+                        self._active_chat_watch_last_sync = {
+                            "timestamp":
+                                time.time(),
+                            "change_type":
+                                result.get(
+                                    "change_type"
+                                ),
+                            "sync":
+                                sync_result,
+                        }
 
                 if (
                     result.get(
@@ -689,16 +962,53 @@ class WhatsAppRuntimeService:
                         on_change(
                             result
                         )
-                    except Exception:
+                    except Exception as exc:
                         # Un callback consumidor nunca debe
                         # matar la vigilancia del transporte.
-                        pass
+                        with self._active_chat_watch_lock:
+                            self._active_chat_watch_last_error = {
+                                "timestamp":
+                                    time.time(),
+                                "stage":
+                                    "CALLBACK",
+                                "reason":
+                                    "CALLBACK_ERROR",
+                                "error_type":
+                                    type(
+                                        exc
+                                    ).__name__,
+                                "message":
+                                    str(
+                                        exc
+                                    ),
+                                "change_type":
+                                    result.get(
+                                        "change_type"
+                                    ),
+                            }
 
-            except Exception:
+            except Exception as exc:
                 # WhatsApp puede estar temporalmente
                 # indisponible, re-renderizando o iniciando.
-                # Un fallo aislado no mata el watcher.
-                pass
+                # Un fallo aislado no mata el watcher,
+                # pero queda diagnosticable.
+                with self._active_chat_watch_lock:
+                    self._active_chat_watch_last_error = {
+                        "timestamp":
+                            time.time(),
+                        "stage":
+                            "WATCH",
+                        "reason":
+                            "WATCH_ERROR",
+                        "error_type":
+                            type(
+                                exc
+                            ).__name__,
+                        "message":
+                            str(
+                                exc
+                            ),
+                    }
 
             # Event.wait() permite despertar inmediatamente
             # al pedir stop, a diferencia de time.sleep().
@@ -742,6 +1052,9 @@ class WhatsAppRuntimeService:
             stop_event = (
                 threading.Event()
             )
+
+            self._active_chat_watch_last_error = None
+            self._active_chat_watch_last_sync = None
 
             thread = threading.Thread(
                 target=(
