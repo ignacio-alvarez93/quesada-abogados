@@ -324,6 +324,10 @@ def calendar_view(
     page: ft.Page,
     on_open_expediente=None,
     on_open_cliente=None,
+    initial_action=None,
+    initial_client_id=None,
+    initial_expedient_id=None,
+    on_context_back=None,
 ):
     state = {
         "view_mode": "TODAY",
@@ -1828,6 +1832,101 @@ def calendar_view(
     )
 
 
+    def _set_contextual_client_and_expedient(
+        *,
+        client_id=None,
+        expedient_id=None,
+        target="TASK",
+    ):
+        if not client_id:
+            return
+
+        try:
+            client_id = int(client_id)
+        except (TypeError, ValueError):
+            return
+
+        client_label = _client_label_by_id(
+            client_id
+        )
+
+        if not client_label:
+            return
+
+        if target == "ALERT":
+            client_control = alert_client
+            expedient_control = alert_expedient
+            refresh_expedients = (
+                _refresh_alert_expedients
+            )
+        else:
+            client_control = task_client
+            expedient_control = task_expedient
+            refresh_expedients = (
+                _refresh_task_expedients
+            )
+
+        client_control.set_value(
+            client_label,
+            update=False,
+        )
+
+        refresh_expedients()
+
+        if not expedient_id:
+            return
+
+        try:
+            expedient_id = int(
+                expedient_id
+            )
+        except (TypeError, ValueError):
+            return
+
+        prefix = f"{expedient_id} - "
+
+        selected_label = next(
+            (
+                option
+                for option
+                in expedient_control.options
+                if str(option).startswith(
+                    prefix
+                )
+            ),
+            "",
+        )
+
+        if not selected_label:
+            expedient = (
+                expedient_service
+                .get_expediente(
+                    expedient_id
+                )
+            )
+
+            if expedient:
+                selected_label = (
+                    _expedient_label(
+                        expedient
+                    )
+                )
+
+                expedient_control.set_options(
+                    [
+                        selected_label,
+                        *expedient_control.options,
+                    ],
+                    clear_value=False,
+                )
+
+        if selected_label:
+            expedient_control.set_value(
+                selected_label,
+                update=False,
+            )
+
+
     def _reset_task_form():
         task_title.value = ""
         task_description.value = ""
@@ -1852,7 +1951,11 @@ def calendar_view(
         task_due_time.value = "09:00"
 
 
-    def _close_task_dialog(e=None):
+    def _close_task_dialog(
+        e=None,
+        *,
+        return_to_context=True,
+    ):
         nonlocal task_dialog
 
         if task_dialog is None:
@@ -1863,8 +1966,23 @@ def calendar_view(
 
         task_dialog = None
 
+        if (
+            return_to_context
+            and on_context_back
+            and str(
+                initial_action
+                or ""
+            ).upper()
+            == "TASK"
+        ):
+            on_context_back()
 
-    def _close_alert_dialog(e=None):
+
+    def _close_alert_dialog(
+        e=None,
+        *,
+        return_to_context=True,
+    ):
         nonlocal alert_dialog
 
         if alert_dialog is None:
@@ -1874,6 +1992,17 @@ def calendar_view(
         page.update()
 
         alert_dialog = None
+
+        if (
+            return_to_context
+            and on_context_back
+            and str(
+                initial_action
+                or ""
+            ).upper()
+            == "ALERT"
+        ):
+            on_context_back()
 
 
     def _save_alert_edit(e=None):
@@ -2201,7 +2330,9 @@ def calendar_view(
 
             _clear_calendar_filters()
 
-            _close_alert_dialog()
+            _close_alert_dialog(
+                return_to_context=False,
+            )
 
             refresh()
             render()
@@ -2222,6 +2353,16 @@ def calendar_view(
                         "Telegram programado."
                     )
                 )
+
+            if (
+                on_context_back
+                and str(
+                    initial_action
+                    or ""
+                ).upper()
+                == "ALERT"
+            ):
+                on_context_back()
 
         except Exception as exc:
             _show_message(
@@ -2463,7 +2604,9 @@ def calendar_view(
 
             created_task = result["task"]
 
-            _close_task_dialog()
+            _close_task_dialog(
+                return_to_context=False,
+            )
 
             # Si la fecha cae fuera de la semana visible,
             # saltamos automáticamente a su semana.
@@ -2517,6 +2660,16 @@ def calendar_view(
                 "Tarea creada y "
                 "notificaciones Telegram programadas."
             )
+
+            if (
+                on_context_back
+                and str(
+                    initial_action
+                    or ""
+                ).upper()
+                == "TASK"
+            ):
+                on_context_back()
 
         except Exception as exc:
             _show_message(
@@ -2846,6 +2999,19 @@ def calendar_view(
 
         editing_alert_id = None
         _reset_alert_form()
+
+        if (
+            str(
+                initial_action
+                or ""
+            ).upper()
+            == "ALERT"
+        ):
+            _set_contextual_client_and_expedient(
+                client_id=initial_client_id,
+                expedient_id=initial_expedient_id,
+                target="ALERT",
+            )
 
         def label(
             text,
@@ -3421,6 +3587,19 @@ def calendar_view(
 
         editing_task_id = None
         _reset_task_form()
+
+        if (
+            str(
+                initial_action
+                or ""
+            ).upper()
+            == "TASK"
+        ):
+            _set_contextual_client_and_expedient(
+                client_id=initial_client_id,
+                expedient_id=initial_expedient_id,
+                target="TASK",
+            )
 
         # ==========================================================
         # COMPOSICIÓN VISUAL · NUEVA TAREA
@@ -7904,5 +8083,16 @@ def calendar_view(
     )
 
     refresh()
+
+    initial_action_normalized = str(
+        initial_action
+        or ""
+    ).strip().upper()
+
+    if initial_action_normalized == "TASK":
+        _open_new_task_dialog()
+
+    elif initial_action_normalized == "ALERT":
+        _open_new_alert_dialog()
 
     return content

@@ -68,17 +68,57 @@ def main(page: ft.Page):
     current_user = {"value": None}
     main_container = ft.Container(expand=True)
 
+    def return_to_context(
+        context,
+    ):
+        context = dict(
+            context
+            or {}
+        )
+
+        target = context.pop(
+            "view",
+            None,
+        )
+
+        if not target:
+            return
+
+        navigate(
+            target,
+            **context,
+        )
+
     def navigate(view_name, **kwargs):
         if view_name == "Clientes":
+            return_context = kwargs.get(
+                "return_context"
+            )
+
             content = clients_view(
                 page,
                 on_create_expediente=lambda cliente_id: navigate(
                     "Expedientes",
                     new_for_client_id=cliente_id,
+                    return_context=return_context,
                 ),
                 on_open_expediente=lambda expediente_id: navigate(
                     "Expedientes",
                     open_expediente_id=expediente_id,
+                    return_context=return_context,
+                ),
+                open_client_id=kwargs.get(
+                    "open_client_id"
+                ),
+                on_context_back=(
+                    (
+                        lambda:
+                            return_to_context(
+                                return_context
+                            )
+                    )
+                    if return_context
+                    else None
                 ),
             )
         elif view_name == "Empresas":
@@ -88,27 +128,60 @@ def main(page: ft.Page):
         elif view_name == "Trabajadores":
             content = workers_view(page)
         elif view_name == "Expedientes":
-            open_expediente_id = kwargs.get("open_expediente_id")
-            new_for_client_id = kwargs.get("new_for_client_id")
-            return_to_queue = bool(kwargs.get("return_to_queue"))
+            open_expediente_id = kwargs.get(
+                "open_expediente_id"
+            )
+            new_for_client_id = kwargs.get(
+                "new_for_client_id"
+            )
+            return_to_queue = bool(
+                kwargs.get(
+                    "return_to_queue"
+                )
+            )
+            return_context = kwargs.get(
+                "return_context"
+            )
 
             if open_expediente_id:
-                page.open_expediente_id = int(open_expediente_id)
-                page.return_to_queue_after_expediente = return_to_queue
+                page.open_expediente_id = int(
+                    open_expediente_id
+                )
+                page.return_to_queue_after_expediente = (
+                    return_to_queue
+                )
 
             if new_for_client_id:
-                page.new_expediente_client_id = int(new_for_client_id)
+                page.new_expediente_client_id = int(
+                    new_for_client_id
+                )
 
             content = expedients_view(
                 page,
-                on_return_to_queue=lambda: navigate("Colas de presentación"),
+                on_return_to_queue=lambda: navigate(
+                    "Colas de presentación"
+                ),
                 on_open_document_inbox=lambda item_id=None, batch_id=None: navigate(
                     "Bandeja documental",
                     open_item_id=item_id,
                     open_batch_id=batch_id,
                 ),
+                on_context_back=(
+                    (
+                        lambda:
+                            return_to_context(
+                                return_context
+                            )
+                    )
+                    if return_context
+                    else None
+                ),
             )
         elif view_name == "Calendario":
+            return_context = kwargs.get(
+                "return_context"
+            )
+
             content = calendar_view(
                 page,
                 on_open_expediente=lambda expediente_id: navigate(
@@ -117,6 +190,26 @@ def main(page: ft.Page):
                 ),
                 on_open_cliente=lambda cliente_id: navigate(
                     "Clientes",
+                    open_client_id=cliente_id,
+                ),
+                initial_action=kwargs.get(
+                    "initial_action"
+                ),
+                initial_client_id=kwargs.get(
+                    "initial_client_id"
+                ),
+                initial_expedient_id=kwargs.get(
+                    "initial_expedient_id"
+                ),
+                on_context_back=(
+                    (
+                        lambda:
+                            return_to_context(
+                                return_context
+                            )
+                    )
+                    if return_context
+                    else None
                 ),
             )
         elif view_name == "Colas de presentación":
@@ -161,10 +254,80 @@ def main(page: ft.Page):
         elif view_name == "WhatsApp":
             content = communications_view(
                 page,
+                initial_thread_id=kwargs.get(
+                    "thread_id"
+                ),
                 on_open_cliente=(
-                    lambda cliente_id:
+                    lambda cliente_id,
+                    return_context:
                         navigate(
                             "Clientes",
+                            open_client_id=cliente_id,
+                            return_context=(
+                                return_context
+                            ),
+                        )
+                ),
+                on_open_expediente=(
+                    lambda expediente_id,
+                    return_context:
+                        navigate(
+                            "Expedientes",
+                            open_expediente_id=(
+                                expediente_id
+                            ),
+                            return_context=(
+                                return_context
+                            ),
+                        )
+                ),
+                on_create_expediente=(
+                    lambda cliente_id,
+                    return_context:
+                        navigate(
+                            "Expedientes",
+                            new_for_client_id=(
+                                cliente_id
+                            ),
+                            return_context=(
+                                return_context
+                            ),
+                        )
+                ),
+                on_create_task=(
+                    lambda cliente_id,
+                    expediente_id,
+                    return_context:
+                        navigate(
+                            "Calendario",
+                            initial_action="TASK",
+                            initial_client_id=(
+                                cliente_id
+                            ),
+                            initial_expedient_id=(
+                                expediente_id
+                            ),
+                            return_context=(
+                                return_context
+                            ),
+                        )
+                ),
+                on_create_alert=(
+                    lambda cliente_id,
+                    expediente_id,
+                    return_context:
+                        navigate(
+                            "Calendario",
+                            initial_action="ALERT",
+                            initial_client_id=(
+                                cliente_id
+                            ),
+                            initial_expedient_id=(
+                                expediente_id
+                            ),
+                            return_context=(
+                                return_context
+                            ),
                         )
                 ),
             )

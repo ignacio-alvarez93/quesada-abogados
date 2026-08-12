@@ -892,6 +892,8 @@ def clients_view(
     page: ft.Page,
     on_create_expediente=None,
     on_open_expediente=None,
+    open_client_id=None,
+    on_context_back=None,
 ):
     state = {
         "editing_id": None,
@@ -3167,12 +3169,22 @@ def clients_view(
         cargar_clientes()
         refresh_table()
 
-    def ver_ficha(cliente):
+    def ver_ficha(
+        cliente,
+        *,
+        on_back_override=None,
+    ):
         content_area.content = client_detail_view(
             page,
             cliente,
-            on_back=show_client_list,
-            on_edit=lambda e, c=cliente: abrir_editar_cliente(c),
+            on_back=(
+                on_back_override
+                or show_client_list
+            ),
+            on_edit=(
+                lambda e, c=cliente:
+                    abrir_editar_cliente(c)
+            ),
             on_open_expediente=on_open_expediente,
         )
         page.update()
@@ -3578,5 +3590,50 @@ def clients_view(
         page.update()
 
     cargar_clientes()
-    show_client_list()
+
+    pending_open_client_id = (
+        open_client_id
+    )
+
+    if pending_open_client_id:
+        try:
+            pending_open_client_id = int(
+                pending_open_client_id
+            )
+        except (TypeError, ValueError):
+            pending_open_client_id = None
+
+    pending_client = (
+        next(
+            (
+                client
+                for client
+                in state["clients"]
+                if int(
+                    client.get("id")
+                    or 0
+                )
+                == pending_open_client_id
+            ),
+            None,
+        )
+        if pending_open_client_id
+        else None
+    )
+
+    if pending_client:
+        ver_ficha(
+            pending_client,
+            on_back_override=(
+                (
+                    lambda e=None:
+                        on_context_back()
+                )
+                if on_context_back
+                else None
+            ),
+        )
+    else:
+        show_client_list()
+
     return content_area

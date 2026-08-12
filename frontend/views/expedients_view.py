@@ -234,7 +234,12 @@ def _mercurio_file_order_label(item):
     return "-"
 
 
-def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inbox=None):
+def expedients_view(
+    page: ft.Page,
+    on_return_to_queue=None,
+    on_open_document_inbox=None,
+    on_context_back=None,
+):
     expedient_service.initialize_expedients_schema()
     trace_service.initialize_traceability_schema()
     dynamic_form_service.initialize_dynamic_forms_schema()
@@ -2746,14 +2751,40 @@ def expedients_view(page: ft.Page, on_return_to_queue=None, on_open_document_inb
 
         expediente_dialog.open = False
 
-        should_return_to_queue = bool(getattr(page, "return_to_queue_after_expediente", False))
-        if should_return_to_queue and state.get("dialog_expediente_id"):
+        should_return_to_queue = bool(
+            getattr(
+                page,
+                "return_to_queue_after_expediente",
+                False,
+            )
+        )
+
+        if (
+            should_return_to_queue
+            and state.get(
+                "dialog_expediente_id"
+            )
+        ):
             page.return_to_queue_after_expediente = False
             page.open_expediente_id = None
             page.update()
+
             if on_return_to_queue:
                 on_return_to_queue()
+
             return
+
+        if (
+            on_context_back
+            and state.get(
+                "dialog_expediente_id"
+            )
+        ):
+            page.open_expediente_id = None
+            page.update()
+            on_context_back()
+            return
+
         page.update()
 
     def _is_initial_family_reunification(

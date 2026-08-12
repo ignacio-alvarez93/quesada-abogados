@@ -52,7 +52,12 @@ def communications_view(
     page: ft.Page,
     *,
     service=None,
+    initial_thread_id=None,
     on_open_cliente=None,
+    on_open_expediente=None,
+    on_create_expediente=None,
+    on_create_task=None,
+    on_create_alert=None,
 ):
     """
     Vista principal de Comunicaciones.
@@ -75,7 +80,13 @@ def communications_view(
     state = {
         "summary": {},
         "items": [],
-        "selected_thread_id": None,
+        "selected_thread_id": (
+            int(initial_thread_id)
+            if initial_thread_id
+            else None
+        ),
+        "context": None,
+        "context_error": None,
         "search": "",
         "linkage": "ALL",
         "page": 1,
@@ -334,6 +345,32 @@ def communications_view(
             else None
         )
 
+    def load_thread_context():
+        thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if thread_id is None:
+            state["context"] = None
+            state["context_error"] = None
+            return
+
+        try:
+            state["context"] = (
+                communication_service
+                .get_thread_context(
+                    int(thread_id)
+                )
+            )
+
+            state["context_error"] = None
+
+        except Exception as exc:
+            state["context"] = None
+            state["context_error"] = str(
+                exc
+            )
+
     def select_thread(
         thread_id,
     ):
@@ -342,6 +379,8 @@ def communications_view(
         ] = int(
             thread_id
         )
+
+        load_thread_context()
 
         _safe_update()
 
@@ -442,6 +481,36 @@ def communications_view(
                     "selected_thread_id"
                 ] = None
 
+            selected_id = state.get(
+                "selected_thread_id"
+            )
+
+            if selected_id is not None:
+                selected_index = next(
+                    (
+                        index
+                        for index, item
+                        in enumerate(
+                            state["items"]
+                        )
+                        if item.thread_id
+                        == selected_id
+                    ),
+                    None,
+                )
+
+                if selected_index is not None:
+                    state["page"] = (
+                        selected_index
+                        // int(
+                            state[
+                                "page_size"
+                            ]
+                        )
+                    ) + 1
+
+            load_thread_context()
+
             total_pages = max(
                 1,
                 math.ceil(
@@ -470,6 +539,8 @@ def communications_view(
         except Exception as exc:
             state["summary"] = {}
             state["items"] = []
+            state["context"] = None
+            state["context_error"] = None
             state["error"] = str(
                 exc
             )
@@ -1213,13 +1284,29 @@ def communications_view(
             ),
         )
 
+    def current_return_context():
+        return {
+            "view": "WhatsApp",
+            "thread_id": state.get(
+                "selected_thread_id"
+            ),
+        }
+
     def build_context_panel():
         item = selected_item()
 
         if not item:
             return ft.Container(
-                width=290,
+                width=310,
             )
+
+        context = state.get(
+            "context"
+        )
+
+        context_error = state.get(
+            "context_error"
+        )
 
         linked = _is_linked(
             item
@@ -1235,7 +1322,7 @@ def communications_view(
                         label,
                         size=10,
                         color=Q_MUTED,
-                        expand=True,
+                        width=78,
                     ),
                     ft.Text(
                         str(
@@ -1244,13 +1331,271 @@ def communications_view(
                         ),
                         size=10,
                         color=Q_TEXT,
-                        text_align=(
-                            ft.TextAlign.RIGHT
+                        weight=ft.FontWeight.W_600,
+                        expand=True,
+                        overflow=(
+                            ft.TextOverflow.ELLIPSIS
                         ),
                     ),
                 ],
                 spacing=8,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.START
+                ),
             )
+
+        if context_error:
+            contact_content = [
+                ft.Text(
+                    "Resumen contacto",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Container(
+                    padding=10,
+                    border_radius=10,
+                    bgcolor="#FEF3F2",
+                    content=ft.Text(
+                        (
+                            "No se pudo cargar el "
+                            "contexto del cliente."
+                        ),
+                        size=10,
+                        color="#B42318",
+                    ),
+                ),
+            ]
+
+        elif (
+            context
+            and context.client
+        ):
+            client = context.client
+
+            contact_content = [
+                ft.Row(
+                    controls=[
+                        ft.Text(
+                            "Resumen contacto",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                            expand=True,
+                        ),
+                        *(
+                            [
+                                ft.IconButton(
+                                    icon=ft.Icons.OPEN_IN_NEW,
+                                    tooltip=(
+                                        "Abrir ficha del cliente"
+                                    ),
+                                    icon_size=18,
+                                    icon_color=Q_PRIMARY,
+                                    on_click=(
+                                        lambda e,
+                                        client_id=client.client_id:
+                                            on_open_cliente(
+                                                client_id,
+                                                current_return_context(),
+                                            )
+                                    ),
+                                )
+                            ]
+                            if on_open_cliente
+                            else []
+                        ),
+                        *(
+                            [
+                                ft.IconButton(
+                                    icon=(
+                                        ft.Icons
+                                        .CREATE_NEW_FOLDER_OUTLINED
+                                    ),
+                                    tooltip="Crear expediente",
+                                    icon_size=18,
+                                    icon_color=Q_PRIMARY,
+                                    on_click=(
+                                        lambda e,
+                                        client_id=client.client_id:
+                                            on_create_expediente(
+                                                client_id,
+                                                current_return_context(),
+                                            )
+                                    ),
+                                )
+                            ]
+                            if on_create_expediente
+                            else []
+                        ),
+                        *(
+                            [
+                                ft.IconButton(
+                                    icon=ft.Icons.TASK_ALT,
+                                    tooltip="Crear tarea",
+                                    icon_size=18,
+                                    icon_color=Q_PRIMARY,
+                                    on_click=(
+                                        lambda e,
+                                        client_id=client.client_id:
+                                            on_create_task(
+                                                client_id,
+                                                None,
+                                                current_return_context(),
+                                            )
+                                    ),
+                                )
+                            ]
+                            if on_create_task
+                            else []
+                        ),
+                        *(
+                            [
+                                ft.IconButton(
+                                    icon=(
+                                        ft.Icons
+                                        .NOTIFICATIONS_NONE
+                                    ),
+                                    tooltip="Crear aviso",
+                                    icon_size=18,
+                                    icon_color=Q_PRIMARY,
+                                    on_click=(
+                                        lambda e,
+                                        client_id=client.client_id:
+                                            on_create_alert(
+                                                client_id,
+                                                None,
+                                                current_return_context(),
+                                            )
+                                    ),
+                                )
+                            ]
+                            if on_create_alert
+                            else []
+                        ),
+                    ],
+                    spacing=4,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                ),
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            width=38,
+                            height=38,
+                            border_radius=19,
+                            bgcolor="#EAF3FF",
+                            alignment=ft.Alignment(
+                                0,
+                                0,
+                            ),
+                            content=ft.Text(
+                                "".join(
+                                    part[0]
+                                    for part
+                                    in (
+                                        client.full_name
+                                        or "CL"
+                                    ).split()[:2]
+                                    if part
+                                ).upper()
+                                or "CL",
+                                size=12,
+                                weight=(
+                                    ft.FontWeight.BOLD
+                                ),
+                                color=Q_PRIMARY_DARK,
+                            ),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Text(
+                                    client.full_name,
+                                    size=12,
+                                    weight=(
+                                        ft.FontWeight.BOLD
+                                    ),
+                                    color=Q_PRIMARY_DARK,
+                                    overflow=(
+                                        ft.TextOverflow.ELLIPSIS
+                                    ),
+                                ),
+                                ft.Text(
+                                    (
+                                        client.nationality
+                                        or "Nacionalidad -"
+                                    ),
+                                    size=10,
+                                    color=Q_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=9,
+                ),
+                ft.Divider(
+                    height=1,
+                    color="#E4E7EC",
+                ),
+                context_row(
+                    "Documento",
+                    client.document,
+                ),
+                context_row(
+                    "Teléfono",
+                    client.phone,
+                ),
+                context_row(
+                    "Email",
+                    client.email,
+                ),
+                context_row(
+                    "Estado",
+                    client.status,
+                ),
+            ]
+
+        else:
+            contact_content = [
+                ft.Text(
+                    "Resumen contacto",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY_DARK,
+                ),
+                ft.Row(
+                    controls=[
+                        _status_badge(
+                            item
+                        ),
+                    ],
+                ),
+                ft.Text(
+                    (
+                        "No existe ningún cliente CRM "
+                        "asociado a esta conversación."
+                    ),
+                    size=10,
+                    color=Q_MUTED,
+                ),
+                context_row(
+                    "WhatsApp",
+                    (
+                        item.external_address
+                        or "-"
+                    ),
+                ),
+                context_row(
+                    "Nombre",
+                    (
+                        item.external_display_name
+                        or "-"
+                    ),
+                ),
+            ]
 
         contact_card = ft.Container(
             bgcolor=Q_WHITE,
@@ -1261,47 +1606,247 @@ def communications_view(
             border_radius=14,
             padding=14,
             content=ft.Column(
-                controls=[
-                    ft.Text(
-                        "Resumen contacto",
-                        size=13,
-                        weight=ft.FontWeight.BOLD,
-                        color=Q_PRIMARY_DARK,
-                    ),
-                    context_row(
-                        "Nombre",
-                        _display_name(
-                            item
-                        ),
-                    ),
-                    context_row(
-                        "Teléfono",
-                        item.external_address,
-                    ),
-                    context_row(
-                        "Canal",
-                        item.channel,
-                    ),
-                    context_row(
-                        "Cliente ID",
-                        (
-                            item.client_id
-                            if linked
-                            else "-"
-                        ),
-                    ),
-                    context_row(
-                        "Estado",
-                        (
-                            "Vinculado"
-                            if linked
-                            else "Sin vincular"
-                        ),
-                    ),
-                ],
+                controls=contact_content,
                 spacing=8,
             ),
         )
+
+        expedients = (
+            list(
+                context.expedients
+            )
+            if (
+                context
+                and context.client
+            )
+            else []
+        )
+
+        expedient_controls = []
+
+        for expedient in expedients:
+            title = (
+                expedient.number
+                or (
+                    f"Expediente "
+                    f"{expedient.expedient_id}"
+                )
+            )
+
+            type_text = " · ".join(
+                value
+                for value in (
+                    expedient.type_name,
+                    expedient.subtype_name,
+                )
+                if value
+            )
+
+            status_controls = []
+
+            if (
+                expedient.documentary_status
+            ):
+                status_controls.append(
+                    ft.Text(
+                        expedient.documentary_status,
+                        size=9,
+                        color="#175CD3",
+                        weight=ft.FontWeight.W_600,
+                    )
+                )
+
+            if (
+                expedient.administrative_status
+            ):
+                status_controls.append(
+                    ft.Text(
+                        expedient.administrative_status,
+                        size=9,
+                        color="#475467",
+                        weight=ft.FontWeight.W_600,
+                    )
+                )
+
+            expedient_controls.append(
+                ft.Container(
+                    padding=10,
+                    border_radius=10,
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(
+                        1,
+                        "#E4E7EC",
+                    ),
+                    content=ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        title,
+                                        size=11,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color=Q_PRIMARY_DARK,
+                                        expand=True,
+                                    ),
+                                    *(
+                                        [
+                                            ft.IconButton(
+                                                icon=(
+                                                    ft.Icons
+                                                    .OPEN_IN_NEW
+                                                ),
+                                                tooltip=(
+                                                    "Abrir ficha "
+                                                    "del expediente"
+                                                ),
+                                                icon_size=17,
+                                                icon_color=(
+                                                    Q_PRIMARY
+                                                ),
+                                                on_click=(
+                                                    lambda e,
+                                                    expedient_id=(
+                                                        expedient
+                                                        .expedient_id
+                                                    ):
+                                                        on_open_expediente(
+                                                            expedient_id,
+                                                            current_return_context(),
+                                                        )
+                                                ),
+                                            )
+                                        ]
+                                        if on_open_expediente
+                                        else []
+                                    ),
+                                    *(
+                                        [
+                                            ft.IconButton(
+                                                icon=(
+                                                    ft.Icons
+                                                    .TASK_ALT
+                                                ),
+                                                tooltip=(
+                                                    "Crear tarea "
+                                                    "para este expediente"
+                                                ),
+                                                icon_size=17,
+                                                icon_color=(
+                                                    Q_PRIMARY
+                                                ),
+                                                on_click=(
+                                                    lambda e,
+                                                    client_id=(
+                                                        context
+                                                        .client
+                                                        .client_id
+                                                    ),
+                                                    expedient_id=(
+                                                        expedient
+                                                        .expedient_id
+                                                    ):
+                                                        on_create_task(
+                                                            client_id,
+                                                            expedient_id,
+                                                            current_return_context(),
+                                                        )
+                                                ),
+                                            )
+                                        ]
+                                        if on_create_task
+                                        else []
+                                    ),
+                                    *(
+                                        [
+                                            ft.IconButton(
+                                                icon=(
+                                                    ft.Icons
+                                                    .NOTIFICATIONS_NONE
+                                                ),
+                                                tooltip=(
+                                                    "Crear aviso "
+                                                    "para este expediente"
+                                                ),
+                                                icon_size=17,
+                                                icon_color=(
+                                                    Q_PRIMARY
+                                                ),
+                                                on_click=(
+                                                    lambda e,
+                                                    client_id=(
+                                                        context
+                                                        .client
+                                                        .client_id
+                                                    ),
+                                                    expedient_id=(
+                                                        expedient
+                                                        .expedient_id
+                                                    ):
+                                                        on_create_alert(
+                                                            client_id,
+                                                            expedient_id,
+                                                            current_return_context(),
+                                                        )
+                                                ),
+                                            )
+                                        ]
+                                        if on_create_alert
+                                        else []
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                            (
+                                ft.Text(
+                                    expedient.family_name,
+                                    size=9,
+                                    color=Q_MUTED,
+                                )
+                                if expedient.family_name
+                                else ft.Container(
+                                    height=0,
+                                )
+                            ),
+                            (
+                                ft.Text(
+                                    type_text,
+                                    size=10,
+                                    color=Q_TEXT,
+                                    max_lines=2,
+                                    overflow=(
+                                        ft.TextOverflow.ELLIPSIS
+                                    ),
+                                )
+                                if type_text
+                                else ft.Container(
+                                    height=0,
+                                )
+                            ),
+                            *status_controls,
+                        ],
+                        spacing=3,
+                    ),
+                )
+            )
+
+        if not expedient_controls:
+            expedient_controls.append(
+                ft.Text(
+                    (
+                        "No hay expedientes activos "
+                        "para este cliente."
+                        if linked
+                        else (
+                            "Vincula primero la conversación "
+                            "con un cliente."
+                        )
+                    ),
+                    size=10,
+                    color=Q_MUTED,
+                )
+            )
 
         expedients_card = ft.Container(
             bgcolor=Q_WHITE,
@@ -1313,88 +1858,43 @@ def communications_view(
             padding=14,
             content=ft.Column(
                 controls=[
-                    ft.Text(
-                        "Expedientes vinculados",
-                        size=13,
-                        weight=ft.FontWeight.BOLD,
-                        color=Q_PRIMARY_DARK,
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                "Expedientes activos",
+                                size=13,
+                                weight=(
+                                    ft.FontWeight.BOLD
+                                ),
+                                color=Q_PRIMARY_DARK,
+                                expand=True,
+                            ),
+                            ft.Text(
+                                str(
+                                    len(
+                                        expedients
+                                    )
+                                ),
+                                size=10,
+                                color=Q_MUTED,
+                            ),
+                        ],
                     ),
-                    ft.Text(
-                        (
-                            "La integración de expedientes "
-                            "se añadirá en la siguiente "
-                            "iteración de la vista."
-                        ),
-                        size=10,
-                        color=Q_MUTED,
-                    ),
-                ],
-                spacing=8,
-            ),
-        )
-
-        actions = []
-
-        if (
-            linked
-            and on_open_cliente
-        ):
-            actions.append(
-                secondary_button(
-                    "Ver ficha del cliente",
-                    (
-                        lambda e,
-                        client_id=item.client_id:
-                            on_open_cliente(
-                                client_id
-                            )
-                    ),
-                )
-            )
-
-        if not actions:
-            actions.append(
-                ft.Text(
-                    (
-                        "No hay acciones contextuales "
-                        "disponibles todavía."
-                    ),
-                    size=10,
-                    color=Q_MUTED,
-                )
-            )
-
-        actions_card = ft.Container(
-            bgcolor=Q_WHITE,
-            border=ft.border.all(
-                1,
-                Q_BORDER,
-            ),
-            border_radius=14,
-            padding=14,
-            content=ft.Column(
-                controls=[
-                    ft.Text(
-                        "Acciones",
-                        size=13,
-                        weight=ft.FontWeight.BOLD,
-                        color=Q_PRIMARY_DARK,
-                    ),
-                    *actions,
+                    *expedient_controls,
                 ],
                 spacing=8,
             ),
         )
 
         return ft.Container(
-            width=290,
+            width=310,
             content=ft.Column(
                 controls=[
                     contact_card,
                     expedients_card,
-                    actions_card,
                 ],
                 spacing=10,
+                scroll=ft.ScrollMode.AUTO,
             ),
         )
 
@@ -1568,7 +2068,7 @@ def communications_view(
         )
 
     load_data(
-        preserve_selection=False,
+        preserve_selection=True,
     )
 
     content_area.content = (
