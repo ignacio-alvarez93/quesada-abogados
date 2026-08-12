@@ -13,6 +13,8 @@ from backend.communications.models import (
     CommunicationThread,
     DIRECTION_INBOUND,
     DIRECTION_OUTBOUND,
+    MESSAGE_STATUS_DELIVERED,
+    MESSAGE_STATUS_READ,
     MESSAGE_STATUS_PENDING,
     MESSAGE_STATUS_SENT,
     THREAD_MATCH_MATCHED,
@@ -566,6 +568,141 @@ class CommunicationRepositoryTest(
         self.assertEqual(
             row["last_message_at"],
             "2026-08-10T10:00:00",
+        )
+
+    def test_provider_status_advances_without_duplicate(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "provider-status-progress"
+                ),
+                external_address=(
+                    "+34600333333"
+                ),
+            )
+        )
+
+        delivered = CommunicationMessage(
+            id=None,
+            thread_id=thread.id,
+            client_id=None,
+            expedient_id=None,
+            direction=DIRECTION_OUTBOUND,
+            body_text="Estado proveedor",
+            status=MESSAGE_STATUS_DELIVERED,
+            provider_message_id=(
+                "wa-status-progress-1"
+            ),
+            provider_timestamp=(
+                "2026-08-12T09:59:00"
+            ),
+        )
+
+        first, first_created = (
+            self.repo
+            .get_or_create_message_with_status(
+                delivered
+            )
+        )
+
+        read_candidate = CommunicationMessage(
+            id=None,
+            thread_id=thread.id,
+            client_id=None,
+            expedient_id=None,
+            direction=DIRECTION_OUTBOUND,
+            body_text="Estado proveedor",
+            status=MESSAGE_STATUS_READ,
+            provider_message_id=(
+                "wa-status-progress-1"
+            ),
+            provider_timestamp=(
+                "2026-08-12T09:59:00"
+            ),
+        )
+
+        second, second_created = (
+            self.repo
+            .get_or_create_message_with_status(
+                read_candidate
+            )
+        )
+
+        self.assertTrue(
+            first_created
+        )
+
+        self.assertFalse(
+            second_created
+        )
+
+        self.assertEqual(
+            first.id,
+            second.id,
+        )
+
+        self.assertEqual(
+            second.status,
+            MESSAGE_STATUS_READ,
+        )
+
+        downgrade_candidate = (
+            CommunicationMessage(
+                id=None,
+                thread_id=thread.id,
+                client_id=None,
+                expedient_id=None,
+                direction=DIRECTION_OUTBOUND,
+                body_text="Estado proveedor",
+                status=(
+                    MESSAGE_STATUS_DELIVERED
+                ),
+                provider_message_id=(
+                    "wa-status-progress-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-12T09:59:00"
+                ),
+            )
+        )
+
+        third, third_created = (
+            self.repo
+            .get_or_create_message_with_status(
+                downgrade_candidate
+            )
+        )
+
+        self.assertFalse(
+            third_created
+        )
+
+        self.assertEqual(
+            third.id,
+            first.id,
+        )
+
+        self.assertEqual(
+            third.status,
+            MESSAGE_STATUS_READ,
+        )
+
+        messages = (
+            self.repo.list_messages(
+                thread.id
+            )
+        )
+
+        self.assertEqual(
+            len(messages),
+            1,
         )
 
 

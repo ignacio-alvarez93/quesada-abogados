@@ -7,6 +7,9 @@ from backend.communications.models import (
     CommunicationThread,
     DIRECTION_INBOUND,
     DIRECTION_OUTBOUND,
+    MESSAGE_STATUS_DELIVERED,
+    MESSAGE_STATUS_READ,
+    MESSAGE_STATUS_RECEIVED,
     THREAD_MATCH_MATCHED,
     THREAD_MATCH_UNMATCHED,
 )
@@ -1238,6 +1241,167 @@ class CommunicationServiceTest(
         self.assertEqual(
             first.id,
             second.id,
+        )
+
+        messages = (
+            self.service.repository
+            .list_messages(
+                thread.id
+            )
+        )
+
+        self.assertEqual(
+            len(messages),
+            1,
+        )
+
+    def test_import_provider_messages_supports_both_directions(
+        self,
+    ):
+        result = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600444444"
+                ),
+                phone=(
+                    "+34 600 444 444"
+                ),
+            )
+        )
+
+        thread = result["thread"]
+
+        inbound = (
+            self.service
+            .import_provider_message(
+                thread_id=thread.id,
+                direction=DIRECTION_INBOUND,
+                body_text="Entrada",
+                provider_message_id=(
+                    "wa-import-in-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-12T10:00:00"
+                ),
+                status=(
+                    MESSAGE_STATUS_RECEIVED
+                ),
+                metadata={
+                    "message_type": "TEXT",
+                },
+            )
+        )
+
+        outbound = (
+            self.service
+            .import_provider_message(
+                thread_id=thread.id,
+                direction=DIRECTION_OUTBOUND,
+                body_text="Salida",
+                provider_message_id=(
+                    "wa-import-out-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-12T10:01:00"
+                ),
+                status=(
+                    MESSAGE_STATUS_DELIVERED
+                ),
+                metadata={
+                    "message_type": "TEXT",
+                },
+            )
+        )
+
+        self.assertTrue(
+            inbound["created"]
+        )
+
+        self.assertTrue(
+            outbound["created"]
+        )
+
+        self.assertEqual(
+            inbound["message"].status,
+            MESSAGE_STATUS_RECEIVED,
+        )
+
+        self.assertEqual(
+            outbound["message"].status,
+            MESSAGE_STATUS_DELIVERED,
+        )
+
+
+    def test_import_provider_message_advances_status_idempotently(
+        self,
+    ):
+        result = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600555555"
+                ),
+                phone=(
+                    "+34 600 555 555"
+                ),
+            )
+        )
+
+        thread = result["thread"]
+
+        first = (
+            self.service
+            .import_provider_message(
+                thread_id=thread.id,
+                direction=DIRECTION_OUTBOUND,
+                body_text="Mensaje",
+                provider_message_id=(
+                    "wa-progress-service-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-12T10:05:00"
+                ),
+                status=(
+                    MESSAGE_STATUS_DELIVERED
+                ),
+            )
+        )
+
+        second = (
+            self.service
+            .import_provider_message(
+                thread_id=thread.id,
+                direction=DIRECTION_OUTBOUND,
+                body_text="Mensaje",
+                provider_message_id=(
+                    "wa-progress-service-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-12T10:05:00"
+                ),
+                status=(
+                    MESSAGE_STATUS_READ
+                ),
+            )
+        )
+
+        self.assertTrue(
+            first["created"]
+        )
+
+        self.assertFalse(
+            second["created"]
+        )
+
+        self.assertEqual(
+            first["message"].id,
+            second["message"].id,
+        )
+
+        self.assertEqual(
+            second["message"].status,
+            MESSAGE_STATUS_READ,
         )
 
         messages = (

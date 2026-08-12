@@ -1022,6 +1022,53 @@ class SQLiteCommunicationRepository:
             ]
 
     @staticmethod
+    def _should_advance_provider_status(
+        current_status,
+        candidate_status,
+    ):
+        current = str(
+            current_status
+            or ""
+        ).strip().upper()
+
+        candidate = str(
+            candidate_status
+            or ""
+        ).strip().upper()
+
+        if not candidate:
+            return False
+
+        if current == candidate:
+            return False
+
+        outbound_rank = {
+            "PENDING": 0,
+            "QUEUED": 1,
+            "SENDING": 2,
+            "SENT": 3,
+            "DELIVERED": 4,
+            "READ": 5,
+        }
+
+        if (
+            current in outbound_rank
+            and candidate in outbound_rank
+        ):
+            return (
+                outbound_rank[candidate]
+                > outbound_rank[current]
+            )
+
+        if (
+            current == "RECEIVED"
+            and candidate == "RECEIVED"
+        ):
+            return False
+
+        return False
+
+    @staticmethod
     def _update_thread_last_message(
         conn,
         *,
@@ -1173,6 +1220,54 @@ class SQLiteCommunicationRepository:
             ).fetchone()
 
             if existing:
+                existing_message = (
+                    self._message_from_row(
+                        existing
+                    )
+                )
+
+                if (
+                    self
+                    ._should_advance_provider_status(
+                        existing_message.status,
+                        message.status,
+                    )
+                ):
+                    conn.execute(
+                        """
+                        UPDATE communication_messages
+                        SET
+                            status = ?,
+                            updated_at =
+                                CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (
+                            str(
+                                message.status
+                                or ""
+                            )
+                            .strip()
+                            .upper(),
+                            int(
+                                existing_message.id
+                            ),
+                        ),
+                    )
+
+                    existing = conn.execute(
+                        """
+                        SELECT *
+                        FROM communication_messages
+                        WHERE id = ?
+                        """,
+                        (
+                            int(
+                                existing_message.id
+                            ),
+                        ),
+                    ).fetchone()
+
                 return (
                     self._message_from_row(
                         existing
@@ -1234,6 +1329,54 @@ class SQLiteCommunicationRepository:
                 ).fetchone()
 
                 if existing:
+                    existing_message = (
+                        self._message_from_row(
+                            existing
+                        )
+                    )
+
+                    if (
+                        self
+                        ._should_advance_provider_status(
+                            existing_message.status,
+                            message.status,
+                        )
+                    ):
+                        conn.execute(
+                            """
+                            UPDATE communication_messages
+                            SET
+                                status = ?,
+                                updated_at =
+                                    CURRENT_TIMESTAMP
+                            WHERE id = ?
+                            """,
+                            (
+                                str(
+                                    message.status
+                                    or ""
+                                )
+                                .strip()
+                                .upper(),
+                                int(
+                                    existing_message.id
+                                ),
+                            ),
+                        )
+
+                        existing = conn.execute(
+                            """
+                            SELECT *
+                            FROM communication_messages
+                            WHERE id = ?
+                            """,
+                            (
+                                int(
+                                    existing_message.id
+                                ),
+                            ),
+                        ).fetchone()
+
                     return (
                         self._message_from_row(
                             existing

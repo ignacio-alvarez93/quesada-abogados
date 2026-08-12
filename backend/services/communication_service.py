@@ -20,7 +20,11 @@ from backend.communications.models import (
     CommunicationThread,
     DIRECTION_INBOUND,
     DIRECTION_OUTBOUND,
+    MESSAGE_STATUS_DELIVERED,
     MESSAGE_STATUS_PENDING,
+    MESSAGE_STATUS_READ,
+    MESSAGE_STATUS_RECEIVED,
+    MESSAGE_STATUS_SENT,
     THREAD_MATCH_MATCHED,
     THREAD_MATCH_UNMATCHED,
 )
@@ -593,6 +597,132 @@ class CommunicationService:
             "account": account,
             "thread": thread,
             "match": match,
+            "created": bool(
+                created
+            ),
+        }
+
+    def import_provider_message(
+        self,
+        *,
+        thread_id,
+        direction,
+        body_text,
+        provider_message_id,
+        provider_timestamp=None,
+        status=None,
+        metadata=None,
+    ):
+        thread = (
+            self.repository
+            .get_thread(
+                thread_id
+            )
+        )
+
+        if not thread:
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
+        normalized_direction = (
+            str(
+                direction
+                or ""
+            )
+            .strip()
+            .upper()
+        )
+
+        if normalized_direction not in (
+            DIRECTION_INBOUND,
+            DIRECTION_OUTBOUND,
+        ):
+            raise ValueError(
+                "Dirección de mensaje no válida"
+            )
+
+        normalized_provider_id = (
+            str(
+                provider_message_id
+                or ""
+            )
+            .strip()
+        )
+
+        if not normalized_provider_id:
+            raise ValueError(
+                "provider_message_id es obligatorio"
+            )
+
+        normalized_status = (
+            str(
+                status
+                or ""
+            )
+            .strip()
+            .upper()
+        )
+
+        if normalized_direction == DIRECTION_INBOUND:
+            if (
+                normalized_status
+                != MESSAGE_STATUS_RECEIVED
+            ):
+                normalized_status = (
+                    MESSAGE_STATUS_RECEIVED
+                )
+
+        else:
+            allowed_outbound_statuses = {
+                MESSAGE_STATUS_SENT,
+                MESSAGE_STATUS_DELIVERED,
+                MESSAGE_STATUS_READ,
+            }
+
+            if (
+                normalized_status
+                not in allowed_outbound_statuses
+            ):
+                normalized_status = (
+                    MESSAGE_STATUS_SENT
+                )
+
+        message, created = (
+            self.repository
+            .get_or_create_message_with_status(
+                CommunicationMessage(
+                    id=None,
+                    thread_id=thread.id,
+                    client_id=thread.client_id,
+                    expedient_id=None,
+                    direction=(
+                        normalized_direction
+                    ),
+                    body_text=str(
+                        body_text
+                        or ""
+                    ),
+                    status=(
+                        normalized_status
+                    ),
+                    provider_message_id=(
+                        normalized_provider_id
+                    ),
+                    provider_timestamp=(
+                        str(
+                            provider_timestamp
+                            or ""
+                        ).strip()
+                        or None
+                    ),
+                    metadata=metadata,
+                )
+            )
+        )
+
+        return {
+            "message": message,
             "created": bool(
                 created
             ),
