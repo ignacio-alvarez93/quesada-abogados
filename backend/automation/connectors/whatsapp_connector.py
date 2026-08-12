@@ -1791,6 +1791,9 @@ class WhatsAppConnector:
                         return result.trim();
                     }
 
+                    const mainRect =
+                        main.getBoundingClientRect();
+
                     const roots =
                         Array.from(
                             main.querySelectorAll(
@@ -1913,6 +1916,34 @@ class WhatsAppConnector:
                                     )
                                 );
 
+                            const messageContainer =
+                                root.querySelector(
+                                    '[data-testid="msg-container"]'
+                                )
+                                || root;
+
+                            const messageRect =
+                                messageContainer
+                                .getBoundingClientRect();
+
+                            const messageCenter =
+                                messageRect.left
+                                + (
+                                    messageRect.width
+                                    / 2
+                                );
+
+                            const centerRatio =
+                                mainRect.width
+                                ? (
+                                    (
+                                        messageCenter
+                                        - mainRect.left
+                                    )
+                                    / mainRect.width
+                                )
+                                : null;
+
                             const imageInfo =
                                 Array.from(
                                     root.querySelectorAll(
@@ -1983,6 +2014,9 @@ class WhatsAppConnector:
 
                                 has_tail_out:
                                     hasTailOut,
+
+                                center_ratio:
+                                    centerRatio,
 
                                 has_sticker:
                                     sticker,
@@ -2224,35 +2258,110 @@ class WhatsAppConnector:
                 for value in normalized_arias
             )
 
-            if (
-                own_marker
-                or read_marker
+            direction_source = None
+
+            if own_marker:
+                direction = (
+                    MESSAGE_DIRECTION_OUTBOUND
+                )
+
+                direction_source = (
+                    "OWN_MARKER"
+                )
+
+            elif (
+                read_marker
                 or delivered_marker
                 or sent_marker
-                or raw.get(
-                    "has_tail_out"
-                )
             ):
                 direction = (
                     MESSAGE_DIRECTION_OUTBOUND
                 )
 
-            elif (
-                item.get(
-                    "sender"
+                direction_source = (
+                    "DELIVERY_STATUS"
                 )
-                or raw.get(
-                    "has_tail_in"
+
+            elif raw.get(
+                "has_tail_out"
+            ):
+                direction = (
+                    MESSAGE_DIRECTION_OUTBOUND
                 )
+
+                direction_source = (
+                    "TAIL"
+                )
+
+            elif item.get(
+                "sender"
             ):
                 direction = (
                     MESSAGE_DIRECTION_INBOUND
                 )
 
-            else:
-                direction = (
-                    MESSAGE_DIRECTION_UNKNOWN
+                direction_source = (
+                    "SENDER"
                 )
+
+            elif raw.get(
+                "has_tail_in"
+            ):
+                direction = (
+                    MESSAGE_DIRECTION_INBOUND
+                )
+
+                direction_source = (
+                    "TAIL"
+                )
+
+            else:
+                center_ratio = raw.get(
+                    "center_ratio"
+                )
+
+                try:
+                    center_ratio = float(
+                        center_ratio
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    center_ratio = None
+
+                if (
+                    center_ratio is not None
+                    and center_ratio <= 0.40
+                ):
+                    direction = (
+                        MESSAGE_DIRECTION_INBOUND
+                    )
+
+                    direction_source = (
+                        "GEOMETRY"
+                    )
+
+                elif (
+                    center_ratio is not None
+                    and center_ratio >= 0.60
+                ):
+                    direction = (
+                        MESSAGE_DIRECTION_OUTBOUND
+                    )
+
+                    direction_source = (
+                        "GEOMETRY"
+                    )
+
+                else:
+                    direction = (
+                        MESSAGE_DIRECTION_UNKNOWN
+                    )
+
+                    direction_source = (
+                        "UNKNOWN"
+                    )
 
             if (
                 direction
@@ -2304,6 +2413,8 @@ class WhatsAppConnector:
             metadata = {
                 "transport":
                     "WHATSAPP_WEB",
+                "direction_source":
+                    direction_source,
                 "meta_text":
                     raw.get(
                         "meta_text"

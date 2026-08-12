@@ -1147,6 +1147,193 @@ class WhatsAppChatExtractorTest(
             ]
         )
 
+    def test_sticker_direction_falls_back_to_geometry(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "provider_message_id":
+                        "AC-TEXT-GEO-1",
+                    "pre_plain_text":
+                        "[9:24, 12/8/2026] CLIENTE:",
+                    "body_text":
+                        "Texto",
+                    "meta_text":
+                        "9:24",
+                    "arias":
+                        ["CLIENTE:"],
+                    "testids":
+                        [],
+                    "has_tail_in":
+                        True,
+                    "has_tail_out":
+                        False,
+                    "center_ratio":
+                        0.22,
+                    "has_sticker":
+                        False,
+                    "image_info":
+                        [],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+                {
+                    "provider_message_id":
+                        "AC-STICKER-GEO-1",
+                    "pre_plain_text":
+                        None,
+                    "body_text":
+                        "",
+                    "meta_text":
+                        "9:25",
+                    "arias":
+                        ["Sticker sin etiquetas"],
+                    "testids":
+                        [
+                            "sticker-container",
+                        ],
+                    "has_tail_in":
+                        False,
+                    "has_tail_out":
+                        False,
+                    "center_ratio":
+                        0.2355,
+                    "has_sticker":
+                        True,
+                    "image_info":
+                        [
+                            {
+                                "alt":
+                                    "Sticker sin etiquetas",
+                                "src":
+                                    "blob:test",
+                            }
+                        ],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        messages = (
+            connector
+            .list_visible_message_snapshots()
+        )
+
+        sticker = messages[1]
+
+        self.assertEqual(
+            sticker.direction,
+            MESSAGE_DIRECTION_INBOUND,
+        )
+
+        self.assertEqual(
+            sticker.provider_status,
+            MESSAGE_STATUS_RECEIVED,
+        )
+
+        self.assertEqual(
+            sticker.message_type,
+            MESSAGE_TYPE_STICKER,
+        )
+
+        self.assertEqual(
+            sticker.metadata[
+                "direction_source"
+            ],
+            "GEOMETRY",
+        )
+
+        self.assertEqual(
+            sticker.provider_timestamp,
+            "2026-08-12T09:25:00",
+        )
+
+
+    def test_geometry_neutral_zone_remains_unknown(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "provider_message_id":
+                        "AC-GEO-NEUTRAL-1",
+                    "pre_plain_text":
+                        None,
+                    "body_text":
+                        "",
+                    "meta_text":
+                        "",
+                    "arias":
+                        [],
+                    "testids":
+                        [],
+                    "has_tail_in":
+                        False,
+                    "has_tail_out":
+                        False,
+                    "center_ratio":
+                        0.50,
+                    "has_sticker":
+                        True,
+                    "image_info":
+                        [],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        messages = (
+            connector
+            .list_visible_message_snapshots()
+        )
+
+        self.assertEqual(
+            len(messages),
+            1,
+        )
+
+        self.assertEqual(
+            messages[0].direction,
+            "UNKNOWN",
+        )
+
+        self.assertEqual(
+            messages[0].provider_status,
+            "UNKNOWN",
+        )
+
+        self.assertEqual(
+            messages[0].metadata[
+                "direction_source"
+            ],
+            "UNKNOWN",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
