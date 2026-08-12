@@ -16,6 +16,7 @@ No contiene persistencia de negocio.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 import re
 import time
@@ -66,6 +67,63 @@ CHAT_KIND_UNKNOWN = (
     "UNKNOWN"
 )
 
+MESSAGE_DIRECTION_INBOUND = (
+    "INBOUND"
+)
+
+MESSAGE_DIRECTION_OUTBOUND = (
+    "OUTBOUND"
+)
+
+MESSAGE_DIRECTION_UNKNOWN = (
+    "UNKNOWN"
+)
+
+MESSAGE_TYPE_TEXT = (
+    "TEXT"
+)
+
+MESSAGE_TYPE_STICKER = (
+    "STICKER"
+)
+
+MESSAGE_TYPE_UNKNOWN_MEDIA = (
+    "UNKNOWN_MEDIA"
+)
+
+MESSAGE_STATUS_RECEIVED = (
+    "RECEIVED"
+)
+
+MESSAGE_STATUS_SENT = (
+    "SENT"
+)
+
+MESSAGE_STATUS_DELIVERED = (
+    "DELIVERED"
+)
+
+MESSAGE_STATUS_READ = (
+    "READ"
+)
+
+MESSAGE_STATUS_UNKNOWN = (
+    "UNKNOWN"
+)
+
+
+@dataclass(frozen=True)
+class WhatsAppMessageSnapshot:
+    """Mensaje visible normalizado desde WhatsApp Web."""
+
+    provider_message_id: str
+    direction: str
+    body_text: str
+    provider_timestamp: str | None
+    message_type: str
+    provider_status: str
+    sender: str | None = None
+    metadata: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +141,86 @@ class WhatsAppChatSnapshot:
 _PHONE_PATTERN = re.compile(
     r"\+[0-9][0-9 ()-]{7,}"
 )
+
+_PRE_PLAIN_PATTERN = re.compile(
+    r"^\["
+    r"(?P<time>\d{1,2}:\d{2})"
+    r",\s*"
+    r"(?P<date>\d{1,2}/\d{1,2}/\d{4})"
+    r"\]\s*"
+    r"(?P<sender>.*?)"
+    r":\s*$"
+)
+
+
+def parse_whatsapp_pre_plain_text(
+    value,
+):
+    """Normaliza fecha/hora y remitente de data-pre-plain-text."""
+    raw = str(
+        value
+        or ""
+    ).strip()
+
+    if not raw:
+        return {
+            "provider_timestamp": None,
+            "sender": None,
+            "date": None,
+            "time": None,
+        }
+
+    match = _PRE_PLAIN_PATTERN.match(
+        raw
+    )
+
+    if not match:
+        return {
+            "provider_timestamp": None,
+            "sender": None,
+            "date": None,
+            "time": None,
+        }
+
+    raw_time = match.group(
+        "time"
+    )
+
+    raw_date = match.group(
+        "date"
+    )
+
+    sender = (
+        match.group(
+            "sender"
+        ).strip()
+        or None
+    )
+
+    try:
+        parsed = datetime.strptime(
+            f"{raw_date} {raw_time}",
+            "%d/%m/%Y %H:%M",
+        )
+
+        provider_timestamp = (
+            parsed.isoformat(
+                timespec="seconds"
+            )
+        )
+    except ValueError:
+        provider_timestamp = None
+
+    return {
+        "provider_timestamp":
+            provider_timestamp,
+        "sender":
+            sender,
+        "date":
+            raw_date,
+        "time":
+            raw_time,
+    }
 
 
 def normalize_chat_identity(
@@ -1557,6 +1695,690 @@ class WhatsAppConnector:
             time.sleep(0.25)
 
         return False
+
+    def list_visible_message_snapshots(
+        self,
+        *,
+        limit=200,
+    ):
+        """Extrae mensajes actualmente cargados del chat activo.
+
+        Este método pertenece al transporte WhatsApp:
+        - no persiste;
+        - no conoce clientes ni expedientes;
+        - no conoce SQLite;
+        - no envía mensajes.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        effective_limit = max(
+            1,
+            int(limit),
+        )
+
+        rows = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const main =
+                        document.querySelector(
+                            '#main'
+                        );
+
+                    if (!main) {
+                        return [];
+                    }
+
+                    function contentFromNode(
+                        node
+                    ) {
+                        if (!node) {
+                            return '';
+                        }
+
+                        let result = '';
+
+                        function walk(
+                            current
+                        ) {
+                            if (
+                                current.nodeType
+                                === Node.TEXT_NODE
+                            ) {
+                                result += (
+                                    current.textContent
+                                    || ''
+                                );
+                                return;
+                            }
+
+                            if (
+                                current.nodeType
+                                !== Node.ELEMENT_NODE
+                            ) {
+                                return;
+                            }
+
+                            if (
+                                current.tagName
+                                === 'IMG'
+                            ) {
+                                const alt =
+                                    current.getAttribute(
+                                        'alt'
+                                    );
+
+                                if (alt) {
+                                    result += alt;
+                                }
+
+                                return;
+                            }
+
+                            for (
+                                const child
+                                of current.childNodes
+                            ) {
+                                walk(child);
+                            }
+                        }
+
+                        walk(node);
+
+                        return result.trim();
+                    }
+
+                    const roots =
+                        Array.from(
+                            main.querySelectorAll(
+                                '[data-testid^="conv-msg-"]'
+                            )
+                        );
+
+                    return roots.map(
+                        root => {
+                            const rawTestId =
+                                root.getAttribute(
+                                    'data-testid'
+                                );
+
+                            const providerId =
+                                rawTestId
+                                ? rawTestId.replace(
+                                    /^conv-msg-/,
+                                    ''
+                                )
+                                : '';
+
+                            const preNode =
+                                root.querySelector(
+                                    '[data-pre-plain-text]'
+                                );
+
+                            const selectableNodes =
+                                Array.from(
+                                    root.querySelectorAll(
+                                        '[data-testid="selectable-text"]'
+                                    )
+                                )
+                                .filter(
+                                    node => {
+                                        const parent =
+                                            node.parentElement
+                                            ? node.parentElement
+                                                .closest(
+                                                    '[data-testid="selectable-text"]'
+                                                )
+                                            : null;
+
+                                        return !parent;
+                                    }
+                                );
+
+                            const bodyText =
+                                selectableNodes
+                                .map(
+                                    contentFromNode
+                                )
+                                .filter(Boolean)
+                                .join('\\n')
+                                .trim();
+
+                            const meta =
+                                root.querySelector(
+                                    '[data-testid="msg-meta"]'
+                                );
+
+                            const metaText =
+                                meta
+                                ? String(
+                                    meta.innerText
+                                    || meta.textContent
+                                    || ''
+                                ).trim()
+                                : '';
+
+                            const arias =
+                                Array.from(
+                                    root.querySelectorAll(
+                                        '[aria-label]'
+                                    )
+                                )
+                                .map(
+                                    node =>
+                                        String(
+                                            node.getAttribute(
+                                                'aria-label'
+                                            )
+                                            || ''
+                                        ).trim()
+                                )
+                                .filter(Boolean);
+
+                            const testids =
+                                Array.from(
+                                    root.querySelectorAll(
+                                        '[data-testid]'
+                                    )
+                                )
+                                .map(
+                                    node =>
+                                        node.getAttribute(
+                                            'data-testid'
+                                        )
+                                )
+                                .filter(Boolean);
+
+                            const sticker =
+                                Boolean(
+                                    root.querySelector(
+                                        '[data-testid="sticker-container"]'
+                                    )
+                                );
+
+                            const hasTailIn =
+                                Boolean(
+                                    root.querySelector(
+                                        '[data-testid="tail-in"]'
+                                    )
+                                );
+
+                            const hasTailOut =
+                                Boolean(
+                                    root.querySelector(
+                                        '[data-testid="tail-out"]'
+                                    )
+                                );
+
+                            const imageInfo =
+                                Array.from(
+                                    root.querySelectorAll(
+                                        'img'
+                                    )
+                                )
+                                .map(
+                                    img => ({
+                                        alt:
+                                            img.getAttribute(
+                                                'alt'
+                                            ),
+                                        src:
+                                            String(
+                                                img.getAttribute(
+                                                    'src'
+                                                )
+                                                || ''
+                                            ).slice(
+                                                0,
+                                                250
+                                            )
+                                    })
+                                );
+
+                            const reactionLabels =
+                                Array.from(
+                                    root.querySelectorAll(
+                                        '[data-testid="reaction-bubble"]'
+                                    )
+                                )
+                                .map(
+                                    node =>
+                                        node.getAttribute(
+                                            'aria-label'
+                                        )
+                                )
+                                .filter(Boolean);
+
+                            return {
+                                provider_message_id:
+                                    providerId,
+
+                                pre_plain_text:
+                                    preNode
+                                    ? preNode.getAttribute(
+                                        'data-pre-plain-text'
+                                    )
+                                    : null,
+
+                                body_text:
+                                    bodyText,
+
+                                meta_text:
+                                    metaText,
+
+                                arias,
+
+                                testids:
+                                    Array.from(
+                                        new Set(
+                                            testids
+                                        )
+                                    ),
+
+                                has_tail_in:
+                                    hasTailIn,
+
+                                has_tail_out:
+                                    hasTailOut,
+
+                                has_sticker:
+                                    sticker,
+
+                                image_info:
+                                    imageInfo,
+
+                                video_count:
+                                    root.querySelectorAll(
+                                        'video'
+                                    ).length,
+
+                                audio_count:
+                                    root.querySelectorAll(
+                                        'audio'
+                                    ).length,
+
+                                reaction_labels:
+                                    reactionLabels
+                            };
+                        }
+                    );
+                })()
+                """
+            )
+            or []
+        )
+
+        rows = rows[
+            -effective_limit:
+        ]
+
+        parsed_rows = []
+
+        for row in rows:
+            provider_id = str(
+                row.get(
+                    "provider_message_id"
+                )
+                or ""
+            ).strip()
+
+            if not provider_id:
+                continue
+
+            pre = (
+                parse_whatsapp_pre_plain_text(
+                    row.get(
+                        "pre_plain_text"
+                    )
+                )
+            )
+
+            parsed_rows.append(
+                {
+                    "raw":
+                        row,
+                    "provider_message_id":
+                        provider_id,
+                    "body_text":
+                        str(
+                            row.get(
+                                "body_text"
+                            )
+                            or ""
+                        ).strip(),
+                    "sender":
+                        pre.get(
+                            "sender"
+                        ),
+                    "date":
+                        pre.get(
+                            "date"
+                        ),
+                    "time":
+                        (
+                            pre.get(
+                                "time"
+                            )
+                            or str(
+                                row.get(
+                                    "meta_text"
+                                )
+                                or ""
+                            ).strip()
+                            or None
+                        ),
+                    "provider_timestamp":
+                        pre.get(
+                            "provider_timestamp"
+                        ),
+                }
+            )
+
+        # WhatsApp no incluye data-pre-plain-text en
+        # algunos contenidos, por ejemplo stickers.
+        # Inferimos únicamente la fecha de un mensaje
+        # adyacente visible y conservamos la procedencia
+        # en metadata.
+        for index, item in enumerate(
+            parsed_rows
+        ):
+            if item[
+                "provider_timestamp"
+            ]:
+                continue
+
+            raw_time = item.get(
+                "time"
+            )
+
+            if not raw_time:
+                continue
+
+            inferred_date = None
+
+            for cursor in range(
+                index - 1,
+                -1,
+                -1,
+            ):
+                candidate = (
+                    parsed_rows[
+                        cursor
+                    ].get(
+                        "date"
+                    )
+                )
+
+                if candidate:
+                    inferred_date = (
+                        candidate
+                    )
+                    break
+
+            if inferred_date is None:
+                for cursor in range(
+                    index + 1,
+                    len(parsed_rows),
+                ):
+                    candidate = (
+                        parsed_rows[
+                            cursor
+                        ].get(
+                            "date"
+                        )
+                    )
+
+                    if candidate:
+                        inferred_date = (
+                            candidate
+                        )
+                        break
+
+            if inferred_date:
+                try:
+                    parsed = (
+                        datetime.strptime(
+                            (
+                                f"{inferred_date} "
+                                f"{raw_time}"
+                            ),
+                            "%d/%m/%Y %H:%M",
+                        )
+                    )
+
+                    item[
+                        "provider_timestamp"
+                    ] = parsed.isoformat(
+                        timespec="seconds"
+                    )
+
+                    item[
+                        "timestamp_inferred"
+                    ] = True
+
+                except ValueError:
+                    pass
+
+        snapshots = []
+
+        for item in parsed_rows:
+            raw = item[
+                "raw"
+            ]
+
+            arias = [
+                str(value or "")
+                .strip()
+                for value in (
+                    raw.get(
+                        "arias"
+                    )
+                    or []
+                )
+            ]
+
+            normalized_arias = [
+                unicodedata.normalize(
+                    "NFKC",
+                    value,
+                )
+                .casefold()
+                .strip()
+                for value in arias
+            ]
+
+            own_marker = any(
+                value in (
+                    "tú:",
+                    "tu:",
+                    "you:",
+                )
+                for value in normalized_arias
+            )
+
+            read_marker = any(
+                value in (
+                    "leído",
+                    "leido",
+                    "read",
+                )
+                for value in normalized_arias
+            )
+
+            delivered_marker = any(
+                value in (
+                    "entregado",
+                    "delivered",
+                )
+                for value in normalized_arias
+            )
+
+            sent_marker = any(
+                value in (
+                    "enviado",
+                    "sent",
+                )
+                for value in normalized_arias
+            )
+
+            if (
+                own_marker
+                or read_marker
+                or delivered_marker
+                or sent_marker
+                or raw.get(
+                    "has_tail_out"
+                )
+            ):
+                direction = (
+                    MESSAGE_DIRECTION_OUTBOUND
+                )
+
+            elif (
+                item.get(
+                    "sender"
+                )
+                or raw.get(
+                    "has_tail_in"
+                )
+            ):
+                direction = (
+                    MESSAGE_DIRECTION_INBOUND
+                )
+
+            else:
+                direction = (
+                    MESSAGE_DIRECTION_UNKNOWN
+                )
+
+            if (
+                direction
+                == MESSAGE_DIRECTION_INBOUND
+            ):
+                provider_status = (
+                    MESSAGE_STATUS_RECEIVED
+                )
+
+            elif read_marker:
+                provider_status = (
+                    MESSAGE_STATUS_READ
+                )
+
+            elif delivered_marker:
+                provider_status = (
+                    MESSAGE_STATUS_DELIVERED
+                )
+
+            elif sent_marker:
+                provider_status = (
+                    MESSAGE_STATUS_SENT
+                )
+
+            else:
+                provider_status = (
+                    MESSAGE_STATUS_UNKNOWN
+                )
+
+            if raw.get(
+                "has_sticker"
+            ):
+                message_type = (
+                    MESSAGE_TYPE_STICKER
+                )
+
+            elif item.get(
+                "body_text"
+            ):
+                message_type = (
+                    MESSAGE_TYPE_TEXT
+                )
+
+            else:
+                message_type = (
+                    MESSAGE_TYPE_UNKNOWN_MEDIA
+                )
+
+            metadata = {
+                "transport":
+                    "WHATSAPP_WEB",
+                "meta_text":
+                    raw.get(
+                        "meta_text"
+                    ),
+                "timestamp_inferred":
+                    bool(
+                        item.get(
+                            "timestamp_inferred"
+                        )
+                    ),
+                "reaction_labels":
+                    list(
+                        raw.get(
+                            "reaction_labels"
+                        )
+                        or []
+                    ),
+                "image_count":
+                    len(
+                        raw.get(
+                            "image_info"
+                        )
+                        or []
+                    ),
+                "video_count":
+                    int(
+                        raw.get(
+                            "video_count"
+                        )
+                        or 0
+                    ),
+                "audio_count":
+                    int(
+                        raw.get(
+                            "audio_count"
+                        )
+                        or 0
+                    ),
+            }
+
+            snapshots.append(
+                WhatsAppMessageSnapshot(
+                    provider_message_id=(
+                        item[
+                            "provider_message_id"
+                        ]
+                    ),
+                    direction=direction,
+                    body_text=(
+                        item.get(
+                            "body_text"
+                        )
+                        or ""
+                    ),
+                    provider_timestamp=(
+                        item.get(
+                            "provider_timestamp"
+                        )
+                    ),
+                    message_type=(
+                        message_type
+                    ),
+                    provider_status=(
+                        provider_status
+                    ),
+                    sender=(
+                        item.get(
+                            "sender"
+                        )
+                    ),
+                    metadata=metadata,
+                )
+            )
+
+        return snapshots
 
     def get_open_contact_phone(
         self,

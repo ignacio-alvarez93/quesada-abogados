@@ -4,10 +4,18 @@ from backend.automation.connectors.whatsapp_connector import (
     CHAT_KIND_GROUP,
     CHAT_KIND_INDIVIDUAL,
     CHAT_KIND_UNKNOWN,
+    MESSAGE_DIRECTION_INBOUND,
+    MESSAGE_DIRECTION_OUTBOUND,
+    MESSAGE_STATUS_DELIVERED,
+    MESSAGE_STATUS_READ,
+    MESSAGE_STATUS_RECEIVED,
+    MESSAGE_TYPE_STICKER,
+    MESSAGE_TYPE_TEXT,
     WhatsAppChatSnapshot,
     WhatsAppConnector,
     extract_phone_from_profile_text,
     normalize_chat_identity,
+    parse_whatsapp_pre_plain_text,
 )
 
 
@@ -880,6 +888,263 @@ class WhatsAppChatExtractorTest(
             connector
             .get_open_contact_phone(),
             "+34 611 222 333",
+        )
+
+    def test_parse_message_pre_plain_text(
+        self,
+    ):
+        result = (
+            parse_whatsapp_pre_plain_text(
+                "[9:23, 12/8/2026] CLIENTE:"
+            )
+        )
+
+        self.assertEqual(
+            result[
+                "provider_timestamp"
+            ],
+            "2026-08-12T09:23:00",
+        )
+
+        self.assertEqual(
+            result["sender"],
+            "CLIENTE",
+        )
+
+
+    def test_visible_message_snapshots_normalize_text_and_status(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "provider_message_id":
+                        "AC-IN-1",
+                    "pre_plain_text":
+                        "[9:22, 12/8/2026] CLIENTE:",
+                    "body_text":
+                        "Hola 🥰",
+                    "meta_text":
+                        "9:22",
+                    "arias":
+                        ["CLIENTE:"],
+                    "testids":
+                        [
+                            "msg-container",
+                            "selectable-text",
+                            "msg-meta",
+                        ],
+                    "has_tail_in":
+                        True,
+                    "has_tail_out":
+                        False,
+                    "has_sticker":
+                        False,
+                    "image_info":
+                        [],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+                {
+                    "provider_message_id":
+                        "AC-OUT-1",
+                    "pre_plain_text":
+                        "[9:23, 12/8/2026] OPERADOR:",
+                    "body_text":
+                        "Buenos días ❤️",
+                    "meta_text":
+                        "9:23",
+                    "arias":
+                        [
+                            "Tú:",
+                            " Leído ",
+                        ],
+                    "testids":
+                        [
+                            "msg-container",
+                            "selectable-text",
+                            "msg-meta",
+                        ],
+                    "has_tail_in":
+                        False,
+                    "has_tail_out":
+                        False,
+                    "has_sticker":
+                        False,
+                    "image_info":
+                        [],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        messages = (
+            connector
+            .list_visible_message_snapshots()
+        )
+
+        self.assertEqual(
+            len(messages),
+            2,
+        )
+
+        self.assertEqual(
+            messages[0].direction,
+            MESSAGE_DIRECTION_INBOUND,
+        )
+
+        self.assertEqual(
+            messages[0].provider_status,
+            MESSAGE_STATUS_RECEIVED,
+        )
+
+        self.assertEqual(
+            messages[0].message_type,
+            MESSAGE_TYPE_TEXT,
+        )
+
+        self.assertEqual(
+            messages[1].direction,
+            MESSAGE_DIRECTION_OUTBOUND,
+        )
+
+        self.assertEqual(
+            messages[1].provider_status,
+            MESSAGE_STATUS_READ,
+        )
+
+        self.assertEqual(
+            messages[1].body_text,
+            "Buenos días ❤️",
+        )
+
+
+    def test_sticker_infers_adjacent_date(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "provider_message_id":
+                        "AC-TEXT-1",
+                    "pre_plain_text":
+                        "[9:24, 12/8/2026] CLIENTE:",
+                    "body_text":
+                        "Texto",
+                    "meta_text":
+                        "9:24",
+                    "arias":
+                        ["CLIENTE:"],
+                    "testids":
+                        [],
+                    "has_tail_in":
+                        True,
+                    "has_tail_out":
+                        False,
+                    "has_sticker":
+                        False,
+                    "image_info":
+                        [],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+                {
+                    "provider_message_id":
+                        "AC-STICKER-1",
+                    "pre_plain_text":
+                        None,
+                    "body_text":
+                        "",
+                    "meta_text":
+                        "9:25",
+                    "arias":
+                        [
+                            "Tú:",
+                            " Entregado ",
+                        ],
+                    "testids":
+                        [
+                            "sticker-container",
+                        ],
+                    "has_tail_in":
+                        False,
+                    "has_tail_out":
+                        False,
+                    "has_sticker":
+                        True,
+                    "image_info":
+                        [
+                            {
+                                "alt":
+                                    "Sticker sin etiquetas",
+                                "src":
+                                    "blob:test",
+                            }
+                        ],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        messages = (
+            connector
+            .list_visible_message_snapshots()
+        )
+
+        sticker = messages[1]
+
+        self.assertEqual(
+            sticker.message_type,
+            MESSAGE_TYPE_STICKER,
+        )
+
+        self.assertEqual(
+            sticker.direction,
+            MESSAGE_DIRECTION_OUTBOUND,
+        )
+
+        self.assertEqual(
+            sticker.provider_status,
+            MESSAGE_STATUS_DELIVERED,
+        )
+
+        self.assertEqual(
+            sticker.provider_timestamp,
+            "2026-08-12T09:25:00",
+        )
+
+        self.assertTrue(
+            sticker.metadata[
+                "timestamp_inferred"
+            ]
         )
 
 
