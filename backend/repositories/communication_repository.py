@@ -101,6 +101,15 @@ class CommunicationRepository(Protocol):
     ) -> CommunicationMessage:
         ...
 
+    def get_or_create_message_with_status(
+        self,
+        message: CommunicationMessage,
+    ) -> tuple[
+        CommunicationMessage,
+        bool,
+    ]:
+        ...
+
     def get_message(
         self,
         message_id: int,

@@ -1190,6 +1190,68 @@ class CommunicationServiceTest(
             20,
         )
 
+    def test_inbound_provider_message_is_idempotent(
+        self,
+    ):
+        result = (
+            self.service
+            .get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    "phone:34600123456"
+                ),
+                phone=(
+                    "+34 600 123 456"
+                ),
+            )
+        )
+
+        thread = result["thread"]
+
+        first = (
+            self.service
+            .register_inbound_message(
+                thread_id=thread.id,
+                body_text="Hola",
+                provider_message_id=(
+                    "wa-in-idempotent-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-10T12:00:00"
+                ),
+            )
+        )
+
+        second = (
+            self.service
+            .register_inbound_message(
+                thread_id=thread.id,
+                body_text="Hola",
+                provider_message_id=(
+                    "wa-in-idempotent-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-10T12:00:00"
+                ),
+            )
+        )
+
+        self.assertEqual(
+            first.id,
+            second.id,
+        )
+
+        messages = (
+            self.service.repository
+            .list_messages(
+                thread.id
+            )
+        )
+
+        self.assertEqual(
+            len(messages),
+            1,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

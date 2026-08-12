@@ -11,6 +11,7 @@ from backend.communications.models import (
     CommunicationMessage,
     CommunicationMessageAttempt,
     CommunicationThread,
+    DIRECTION_INBOUND,
     DIRECTION_OUTBOUND,
     MESSAGE_STATUS_PENDING,
     MESSAGE_STATUS_SENT,
@@ -413,6 +414,158 @@ class CommunicationRepositoryTest(
         self.assertEqual(
             messages[0].body_text,
             "Mensaje de prueba",
+        )
+
+    def test_provider_message_is_idempotent(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "provider-idempotency"
+                ),
+                external_address=(
+                    "+34600111111"
+                ),
+            )
+        )
+
+        candidate = CommunicationMessage(
+            id=None,
+            thread_id=thread.id,
+            client_id=None,
+            expedient_id=None,
+            direction=DIRECTION_INBOUND,
+            body_text="Mensaje único",
+            status=MESSAGE_STATUS_PENDING,
+            provider_message_id=(
+                "wa-provider-001"
+            ),
+            provider_timestamp=(
+                "2026-08-10T10:00:00"
+            ),
+        )
+
+        first, first_created = (
+            self.repo
+            .get_or_create_message_with_status(
+                candidate
+            )
+        )
+
+        second, second_created = (
+            self.repo
+            .get_or_create_message_with_status(
+                candidate
+            )
+        )
+
+        self.assertTrue(
+            first_created
+        )
+
+        self.assertFalse(
+            second_created
+        )
+
+        self.assertEqual(
+            first.id,
+            second.id,
+        )
+
+        messages = self.repo.list_messages(
+            thread.id
+        )
+
+        self.assertEqual(
+            len(messages),
+            1,
+        )
+
+
+    def test_historical_message_does_not_rewind_thread(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "historical-order"
+                ),
+                external_address=(
+                    "+34600222222"
+                ),
+            )
+        )
+
+        newer = CommunicationMessage(
+            id=None,
+            thread_id=thread.id,
+            client_id=None,
+            expedient_id=None,
+            direction=DIRECTION_INBOUND,
+            body_text="Nuevo",
+            status=MESSAGE_STATUS_PENDING,
+            provider_message_id=(
+                "wa-newer"
+            ),
+            provider_timestamp=(
+                "2026-08-10T10:00:00"
+            ),
+        )
+
+        older = CommunicationMessage(
+            id=None,
+            thread_id=thread.id,
+            client_id=None,
+            expedient_id=None,
+            direction=DIRECTION_INBOUND,
+            body_text="Antiguo",
+            status=MESSAGE_STATUS_PENDING,
+            provider_message_id=(
+                "wa-older"
+            ),
+            provider_timestamp=(
+                "2026-06-01T10:00:00"
+            ),
+        )
+
+        self.repo.get_or_create_message_with_status(
+            newer
+        )
+
+        self.repo.get_or_create_message_with_status(
+            older
+        )
+
+        with self.repo._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT last_message_at
+                FROM communication_threads
+                WHERE id = ?
+                """,
+                (
+                    int(thread.id),
+                ),
+            ).fetchone()
+
+        self.assertIsNotNone(
+            row
+        )
+
+        self.assertEqual(
+            row["last_message_at"],
+            "2026-08-10T10:00:00",
         )
 
 

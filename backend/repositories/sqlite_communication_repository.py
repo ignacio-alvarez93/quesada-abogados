@@ -28,11 +28,19 @@ DEFAULT_DB_PATH = (
     / "quesada.db"
 )
 
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "database"
-    / "migrations"
-    / "20260810_create_communication_core.sql"
+MIGRATION_PATHS = (
+    (
+        Path(__file__).resolve().parents[2]
+        / "database"
+        / "migrations"
+        / "20260810_create_communication_core.sql"
+    ),
+    (
+        Path(__file__).resolve().parents[2]
+        / "database"
+        / "migrations"
+        / "20260812_harden_communication_message_identity.sql"
+    ),
 )
 
 
@@ -93,17 +101,22 @@ class SQLiteCommunicationRepository:
             conn.close()
 
     def ensure_schema(self):
-        if not MIGRATION_PATH.exists():
-            raise FileNotFoundError(
-                f"No existe la migración: {MIGRATION_PATH}"
-            )
+        for migration_path in MIGRATION_PATHS:
+            if not migration_path.exists():
+                raise FileNotFoundError(
+                    (
+                        "No existe la migración: "
+                        f"{migration_path}"
+                    )
+                )
 
         with self._connection() as conn:
-            conn.executescript(
-                MIGRATION_PATH.read_text(
-                    encoding="utf-8"
+            for migration_path in MIGRATION_PATHS:
+                conn.executescript(
+                    migration_path.read_text(
+                        encoding="utf-8"
+                    )
                 )
-            )
 
     @staticmethod
     def _account_from_row(row):
@@ -1008,6 +1021,57 @@ class SQLiteCommunicationRepository:
                 for row in rows
             ]
 
+    @staticmethod
+    def _update_thread_last_message(
+        conn,
+        *,
+        thread_id,
+        provider_timestamp=None,
+    ):
+        provider_value = (
+            str(
+                provider_timestamp
+                or ""
+            ).strip()
+            or None
+        )
+
+        conn.execute(
+            """
+            UPDATE communication_threads
+            SET
+                last_message_at =
+                    CASE
+                        WHEN last_message_at IS NULL
+                        THEN COALESCE(
+                            ?,
+                            CURRENT_TIMESTAMP
+                        )
+
+                        WHEN ? IS NOT NULL
+                             AND ? > last_message_at
+                        THEN ?
+
+                        WHEN ? IS NULL
+                             AND CURRENT_TIMESTAMP
+                                 > last_message_at
+                        THEN CURRENT_TIMESTAMP
+
+                        ELSE last_message_at
+                    END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                provider_value,
+                provider_value,
+                provider_value,
+                provider_value,
+                provider_value,
+                int(thread_id),
+            ),
+        )
+
     def create_message(
         self,
         message,
@@ -1053,17 +1117,12 @@ class SQLiteCommunicationRepository:
                 cursor.lastrowid
             )
 
-            conn.execute(
-                """
-                UPDATE communication_threads
-                SET
-                    last_message_at =
-                        CURRENT_TIMESTAMP,
-                    updated_at =
-                        CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (int(message.thread_id),),
+            self._update_thread_last_message(
+                conn,
+                thread_id=message.thread_id,
+                provider_timestamp=(
+                    message.provider_timestamp
+                ),
             )
 
             row = conn.execute(
@@ -1076,6 +1135,137 @@ class SQLiteCommunicationRepository:
             ).fetchone()
 
             return self._message_from_row(row)
+
+    def get_or_create_message_with_status(
+        self,
+        message,
+    ):
+        self.ensure_schema()
+
+        provider_message_id = (
+            str(
+                message.provider_message_id
+                or ""
+            ).strip()
+            or None
+        )
+
+        if provider_message_id is None:
+            return (
+                self.create_message(
+                    message
+                ),
+                True,
+            )
+
+        with self._connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM communication_messages
+                WHERE thread_id = ?
+                  AND provider_message_id = ?
+                """,
+                (
+                    int(message.thread_id),
+                    provider_message_id,
+                ),
+            ).fetchone()
+
+            if existing:
+                return (
+                    self._message_from_row(
+                        existing
+                    ),
+                    False,
+                )
+
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO communication_messages (
+                        thread_id,
+                        client_id,
+                        expedient_id,
+                        direction,
+                        body_text,
+                        status,
+                        provider_message_id,
+                        provider_timestamp,
+                        created_by,
+                        sent_by,
+                        metadata_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(message.thread_id),
+                        message.client_id,
+                        message.expedient_id,
+                        message.direction,
+                        message.body_text,
+                        message.status,
+                        provider_message_id,
+                        message.provider_timestamp,
+                        message.created_by,
+                        message.sent_by,
+                        _json_dump(
+                            message.metadata
+                        ),
+                    ),
+                )
+
+                message_id = int(
+                    cursor.lastrowid
+                )
+
+            except sqlite3.IntegrityError:
+                existing = conn.execute(
+                    """
+                    SELECT *
+                    FROM communication_messages
+                    WHERE thread_id = ?
+                      AND provider_message_id = ?
+                    """,
+                    (
+                        int(message.thread_id),
+                        provider_message_id,
+                    ),
+                ).fetchone()
+
+                if existing:
+                    return (
+                        self._message_from_row(
+                            existing
+                        ),
+                        False,
+                    )
+
+                raise
+
+            self._update_thread_last_message(
+                conn,
+                thread_id=message.thread_id,
+                provider_timestamp=(
+                    message.provider_timestamp
+                ),
+            )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_messages
+                WHERE id = ?
+                """,
+                (message_id,),
+            ).fetchone()
+
+            return (
+                self._message_from_row(
+                    row
+                ),
+                True,
+            )
 
     def get_message(
         self,

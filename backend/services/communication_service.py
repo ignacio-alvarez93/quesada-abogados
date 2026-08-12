@@ -619,9 +619,61 @@ class CommunicationService:
                 "Conversación no encontrada"
             )
 
+        message, _created = (
+            self.repository
+            .get_or_create_message_with_status(
+                CommunicationMessage(
+                    id=None,
+                    thread_id=thread.id,
+                    client_id=thread.client_id,
+                    expedient_id=None,
+                    direction=(
+                        DIRECTION_INBOUND
+                    ),
+                    body_text=str(
+                        body_text
+                        or ""
+                    ),
+                    status=(
+                        MESSAGE_STATUS_PENDING
+                    ),
+                    provider_message_id=(
+                        provider_message_id
+                    ),
+                    provider_timestamp=(
+                        provider_timestamp
+                    ),
+                    metadata=metadata,
+                )
+            )
+        )
+
+        return message
+
+    def register_inbound_message_with_status(
+        self,
+        *,
+        thread_id,
+        body_text,
+        provider_message_id=None,
+        provider_timestamp=None,
+        metadata=None,
+    ):
+        thread = (
+            self.repository
+            .get_thread(
+                thread_id
+            )
+        )
+
+        if not thread:
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
         return (
             self.repository
-            .create_message(
+            .get_or_create_message_with_status(
                 CommunicationMessage(
                     id=None,
                     thread_id=thread.id,
