@@ -87,6 +87,8 @@ def communications_view(
         ),
         "context": None,
         "context_error": None,
+        "messages": [],
+        "messages_error": None,
         "search": "",
         "linkage": "ALL",
         "page": 1,
@@ -371,6 +373,34 @@ def communications_view(
                 exc
             )
 
+    def load_thread_messages():
+        thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if thread_id is None:
+            state["messages"] = []
+            state["messages_error"] = None
+            return
+
+        try:
+            state["messages"] = list(
+                communication_service
+                .list_thread_messages(
+                    int(thread_id),
+                    limit=500,
+                )
+                or []
+            )
+
+            state["messages_error"] = None
+
+        except Exception as exc:
+            state["messages"] = []
+            state["messages_error"] = str(
+                exc
+            )
+
     def select_thread(
         thread_id,
     ):
@@ -381,6 +411,7 @@ def communications_view(
         )
 
         load_thread_context()
+        load_thread_messages()
 
         _safe_update()
 
@@ -510,6 +541,7 @@ def communications_view(
                     ) + 1
 
             load_thread_context()
+            load_thread_messages()
 
             total_pages = max(
                 1,
@@ -1092,6 +1124,304 @@ def communications_view(
             ),
         )
 
+    def _message_type(message):
+        metadata = (
+            message.metadata
+            or {}
+        )
+
+        return str(
+            metadata.get(
+                "message_type"
+            )
+            or "TEXT"
+        ).strip().upper()
+
+
+    def _message_body(message):
+        body = str(
+            message.body_text
+            or ""
+        ).strip()
+
+        message_type = _message_type(
+            message
+        )
+
+        if body:
+            return body
+
+        if message_type == "STICKER":
+            return "🖼 Sticker"
+
+        if message_type == "UNKNOWN_MEDIA":
+            return "📎 Contenido multimedia"
+
+        return "Mensaje sin contenido"
+
+
+    def _message_time(message):
+        value = str(
+            message.provider_timestamp
+            or ""
+        ).strip()
+
+        if not value:
+            return ""
+
+        if (
+            len(value) >= 16
+            and "T" in value
+        ):
+            return value[11:16]
+
+        return value
+
+
+    def _message_status_symbol(message):
+        if str(
+            message.direction
+            or ""
+        ).strip().upper() != "OUTBOUND":
+            return ""
+
+        status = str(
+            message.status
+            or ""
+        ).strip().upper()
+
+        if status == "READ":
+            return "✓✓"
+
+        if status == "DELIVERED":
+            return "✓✓"
+
+        if status in (
+            "SENT",
+            "SENDING",
+            "QUEUED",
+        ):
+            return "✓"
+
+        return ""
+
+
+    def _build_message_bubble(
+        message,
+    ):
+        outbound = (
+            str(
+                message.direction
+                or ""
+            ).strip().upper()
+            == "OUTBOUND"
+        )
+
+        footer_controls = []
+
+        timestamp = _message_time(
+            message
+        )
+
+        if timestamp:
+            footer_controls.append(
+                ft.Text(
+                    timestamp,
+                    size=9,
+                    color=Q_MUTED,
+                )
+            )
+
+        status_symbol = (
+            _message_status_symbol(
+                message
+            )
+        )
+
+        if status_symbol:
+            footer_controls.append(
+                ft.Text(
+                    status_symbol,
+                    size=10,
+                    color=Q_PRIMARY,
+                    weight=(
+                        ft.FontWeight.BOLD
+                    ),
+                )
+            )
+
+        bubble = ft.Container(
+            width=360,
+            padding=ft.padding.symmetric(
+                horizontal=12,
+                vertical=9,
+            ),
+            bgcolor=(
+                "#EAF3FF"
+                if outbound
+                else Q_WHITE
+            ),
+            border=ft.border.all(
+                1,
+                (
+                    "#C7DCF8"
+                    if outbound
+                    else Q_BORDER
+                ),
+            ),
+            border_radius=12,
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        _message_body(
+                            message
+                        ),
+                        size=12,
+                        color=Q_TEXT,
+                        selectable=True,
+                    ),
+                    ft.Row(
+                        controls=(
+                            footer_controls
+                        ),
+                        alignment=(
+                            ft.MainAxisAlignment.END
+                        ),
+                        spacing=4,
+                    ),
+                ],
+                spacing=5,
+            ),
+        )
+
+        return ft.Row(
+            controls=[
+                bubble,
+            ],
+            alignment=(
+                ft.MainAxisAlignment.END
+                if outbound
+                else ft.MainAxisAlignment.START
+            ),
+        )
+
+
+    def _build_message_history():
+        error = state.get(
+            "messages_error"
+        )
+
+        if error:
+            return ft.Container(
+                expand=True,
+                alignment=ft.Alignment(
+                    0,
+                    0,
+                ),
+                content=ft.Column(
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.ERROR_OUTLINE,
+                            color="#B42318",
+                            size=30,
+                        ),
+                        ft.Text(
+                            "No se pudo cargar el historial",
+                            weight=(
+                                ft.FontWeight.BOLD
+                            ),
+                            color="#B42318",
+                        ),
+                        ft.Text(
+                            str(error),
+                            size=10,
+                            color=Q_MUTED,
+                            text_align=(
+                                ft.TextAlign.CENTER
+                            ),
+                        ),
+                    ],
+                    horizontal_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                    spacing=7,
+                ),
+            )
+
+        messages = list(
+            state.get(
+                "messages"
+            )
+            or []
+        )
+
+        if not messages:
+            return ft.Container(
+                expand=True,
+                alignment=ft.Alignment(
+                    0,
+                    0,
+                ),
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            "💬",
+                            size=40,
+                        ),
+                        ft.Text(
+                            "No hay mensajes sincronizados todavía",
+                            size=15,
+                            weight=(
+                                ft.FontWeight.BOLD
+                            ),
+                            color=Q_PRIMARY_DARK,
+                        ),
+                        ft.Text(
+                            (
+                                "La conversación está registrada, "
+                                "pero todavía no contiene historial."
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                            text_align=(
+                                ft.TextAlign.CENTER
+                            ),
+                        ),
+                    ],
+                    spacing=7,
+                    horizontal_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                    alignment=(
+                        ft.MainAxisAlignment.CENTER
+                    ),
+                ),
+            )
+
+        return ft.Column(
+            controls=[
+                _build_message_bubble(
+                    message
+                )
+                for message in messages
+            ],
+            spacing=8,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+
+    def _disabled_send_button():
+        button = primary_button(
+            "Enviar",
+            None,
+        )
+
+        button.disabled = True
+
+        return button
+
+
     def build_chat_panel():
         item = selected_item()
 
@@ -1189,67 +1519,8 @@ def communications_view(
                         expand=True,
                         padding=20,
                         bgcolor="#FAFBFD",
-                        content=ft.Column(
-                            controls=[
-                                ft.Container(
-                                    expand=True,
-                                    alignment=(
-                                        ft.Alignment(
-                                            0,
-                                            0,
-                                        )
-                                    ),
-                                    content=ft.Column(
-                                        controls=[
-                                            ft.Text(
-                                                "💬",
-                                                size=40,
-                                            ),
-                                            ft.Text(
-                                                (
-                                                    "No hay mensajes "
-                                                    "sincronizados todavía"
-                                                ),
-                                                size=15,
-                                                weight=(
-                                                    ft.FontWeight.BOLD
-                                                ),
-                                                color=Q_PRIMARY_DARK,
-                                            ),
-                                            ft.Text(
-                                                (
-                                                    "La conversación ya "
-                                                    "está registrada y "
-                                                    "preparada para la "
-                                                    "sincronización del "
-                                                    "historial."
-                                                ),
-                                                size=11,
-                                                color=Q_MUTED,
-                                                text_align=(
-                                                    ft.TextAlign.CENTER
-                                                ),
-                                            ),
-                                            ft.Text(
-                                                (
-                                                    f"Mensajes registrados: "
-                                                    f"{item.message_count}"
-                                                ),
-                                                size=10,
-                                                color=Q_MUTED,
-                                            ),
-                                        ],
-                                        spacing=7,
-                                        horizontal_alignment=(
-                                            ft.CrossAxisAlignment.CENTER
-                                        ),
-                                        alignment=(
-                                            ft.MainAxisAlignment.CENTER
-                                        ),
-                                    ),
-                                ),
-                            ],
-                            expand=True,
+                        content=(
+                            _build_message_history()
                         ),
                     ),
                     ft.Container(
@@ -1270,10 +1541,7 @@ def communications_view(
                                     border_radius=10,
                                     expand=True,
                                 ),
-                                primary_button(
-                                    "Enviar",
-                                    placeholder_sync,
-                                ),
+                                _disabled_send_button(),
                             ],
                             spacing=10,
                         ),

@@ -1428,6 +1428,89 @@ class CommunicationServiceTest(
             1,
         )
 
+    def test_list_thread_messages_delegates_to_repository(
+        self,
+    ):
+        repository = (
+            SQLiteCommunicationRepository(
+                db_path=self.db_path
+            )
+        )
+
+        service = CommunicationService(
+            repository=repository
+        )
+
+        account = (
+            service
+            .ensure_whatsapp_dev_account()
+        )
+
+        thread = (
+            repository
+            .get_or_create_thread(
+                CommunicationThread(
+                    id=None,
+                    account_id=account.id,
+                    client_id=None,
+                    external_thread_key=(
+                        "phone:34600000001"
+                    ),
+                    external_address=(
+                        "+34600000001"
+                    ),
+                    external_display_name=(
+                        "TEST"
+                    ),
+                    match_status=(
+                        THREAD_MATCH_UNMATCHED
+                    ),
+                )
+            )
+        )
+
+        service.import_provider_message(
+            thread_id=thread.id,
+            direction=DIRECTION_INBOUND,
+            body_text="Mensaje test",
+            provider_message_id=(
+                "PROVIDER-MESSAGE-UI-1"
+            ),
+            provider_timestamp=(
+                "2026-08-12T09:22:00"
+            ),
+            status=(
+                MESSAGE_STATUS_RECEIVED
+            ),
+            metadata={
+                "message_type": "TEXT",
+            },
+        )
+
+        messages = (
+            service
+            .list_thread_messages(
+                thread.id,
+                limit=500,
+            )
+        )
+
+        self.assertEqual(
+            len(messages),
+            1,
+        )
+
+        self.assertEqual(
+            messages[0].body_text,
+            "Mensaje test",
+        )
+
+        self.assertEqual(
+            messages[0].provider_message_id,
+            "PROVIDER-MESSAGE-UI-1",
+        )
+
+
 
 if __name__ == "__main__":
     unittest.main()

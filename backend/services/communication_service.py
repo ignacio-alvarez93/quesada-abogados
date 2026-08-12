@@ -152,6 +152,41 @@ class CommunicationService:
             )
         )
 
+    def list_thread_messages(
+        self,
+        thread_id,
+        *,
+        limit=500,
+    ):
+        if thread_id in (
+            None,
+            "",
+        ):
+            return []
+
+        thread = (
+            self.repository
+            .get_thread(
+                int(thread_id)
+            )
+        )
+
+        if not thread:
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
+        return (
+            self.repository
+            .list_messages(
+                thread.id,
+                limit=max(
+                    1,
+                    int(limit),
+                ),
+            )
+        )
+
     def list_thread_overviews(
         self,
         *,
