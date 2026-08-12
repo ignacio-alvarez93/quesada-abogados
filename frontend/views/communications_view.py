@@ -262,7 +262,11 @@ def communications_view(
             ),
         )
 
-    def _avatar(item):
+    def _avatar(
+        item,
+        *,
+        size=42,
+    ):
         name = _display_name(
             item
         ).strip()
@@ -276,10 +280,17 @@ def communications_view(
         if not initials:
             initials = "?"
 
+        size = max(
+            30,
+            int(size),
+        )
+
         return ft.Container(
-            width=42,
-            height=42,
-            border_radius=21,
+            width=size,
+            height=size,
+            border_radius=(
+                size / 2
+            ),
             bgcolor=(
                 "#DCEBFF"
                 if _is_linked(item)
@@ -626,6 +637,111 @@ def communications_view(
             ),
         )
 
+    def set_linkage_filter(
+        linkage,
+    ):
+        normalized = str(
+            linkage
+            or "ALL"
+        ).strip().upper()
+
+        label_by_value = {
+            value: label
+            for label, value
+            in LINKAGE_FILTER_VALUES.items()
+        }
+
+        label = (
+            label_by_value.get(
+                normalized,
+                "Todas",
+            )
+        )
+
+        linkage_filter.input.value = (
+            label
+        )
+
+        state[
+            "linkage"
+        ] = normalized
+
+        state[
+            "page"
+        ] = 1
+
+        load_data(
+            preserve_selection=True,
+        )
+
+        _safe_update()
+
+    def build_linkage_pill(
+        label,
+        value,
+    ):
+        selected = (
+            state.get(
+                "linkage",
+                "ALL",
+            )
+            == value
+        )
+
+        if value == "LINKED":
+            inactive_bg = "#ECFDF3"
+            inactive_fg = "#027A48"
+            inactive_border = "#ABEFC6"
+
+        elif value == "UNLINKED":
+            inactive_bg = "#FFF7E6"
+            inactive_fg = "#B54708"
+            inactive_border = "#FEDF89"
+
+        else:
+            inactive_bg = "#F8FAFC"
+            inactive_fg = Q_PRIMARY_DARK
+            inactive_border = Q_BORDER
+
+        return ft.Container(
+            bgcolor=(
+                Q_PRIMARY
+                if selected
+                else inactive_bg
+            ),
+            border=ft.border.all(
+                1,
+                (
+                    Q_PRIMARY
+                    if selected
+                    else inactive_border
+                ),
+            ),
+            border_radius=999,
+            padding=ft.padding.symmetric(
+                horizontal=11,
+                vertical=6,
+            ),
+            ink=True,
+            on_click=(
+                lambda e,
+                linkage=value:
+                    set_linkage_filter(
+                        linkage
+                    )
+            ),
+            content=ft.Text(
+                label,
+                size=10,
+                weight=ft.FontWeight.W_600,
+                color=(
+                    Q_WHITE
+                    if selected
+                    else inactive_fg
+                ),
+            ),
+        )
+
     def build_conversation_card(
         item,
     ):
@@ -667,8 +783,11 @@ def communications_view(
                     else Q_BORDER
                 ),
             ),
-            border_radius=12,
-            padding=12,
+            border_radius=10,
+            padding=ft.padding.symmetric(
+                horizontal=10,
+                vertical=8,
+            ),
             ink=True,
             on_click=(
                 lambda e,
@@ -680,7 +799,8 @@ def communications_view(
             content=ft.Row(
                 controls=[
                     _avatar(
-                        item
+                        item,
+                        size=36,
                     ),
                     ft.Column(
                         controls=[
@@ -690,7 +810,7 @@ def communications_view(
                                         _display_name(
                                             item
                                         ),
-                                        size=13,
+                                        size=12,
                                         weight=(
                                             ft.FontWeight.BOLD
                                         ),
@@ -805,13 +925,13 @@ def communications_view(
         else:
             list_content = ft.Column(
                 controls=cards,
-                spacing=8,
+                spacing=6,
                 scroll=ft.ScrollMode.AUTO,
                 expand=True,
             )
 
         return ft.Container(
-            width=390,
+            width=385,
             bgcolor=Q_WHITE,
             border=ft.border.all(
                 1,
@@ -840,6 +960,24 @@ def communications_view(
                                 color=Q_MUTED,
                             ),
                         ],
+                    ),
+                    ft.Row(
+                        controls=[
+                            build_linkage_pill(
+                                "Todas",
+                                "ALL",
+                            ),
+                            build_linkage_pill(
+                                "Vinculadas",
+                                "LINKED",
+                            ),
+                            build_linkage_pill(
+                                "Sin vincular",
+                                "UNLINKED",
+                            ),
+                        ],
+                        spacing=6,
+                        wrap=True,
                     ),
                     list_content,
                     ft.Divider(
@@ -1272,7 +1410,9 @@ def communications_view(
 
         linkage_filter.on_select = (
             lambda value:
-                refresh()
+                set_linkage_filter(
+                    selected_linkage()
+                )
         )
 
         return ft.Container(
@@ -1408,7 +1548,7 @@ def communications_view(
                     ),
                     build_filters(),
                     ft.Container(
-                        height=575,
+                        expand=True,
                         content=ft.Row(
                             controls=[
                                 build_conversation_list(),
