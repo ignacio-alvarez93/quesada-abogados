@@ -1599,6 +1599,83 @@ class CommunicationServiceTest(
             1,
         )
 
+    def test_get_latest_thread_provider_message_id(
+        self,
+    ):
+        repository = (
+            SQLiteCommunicationRepository(
+                self.db_path
+            )
+        )
+
+        service = CommunicationService(
+            repository=repository
+        )
+
+        account = (
+            service
+            .ensure_whatsapp_dev_account()
+        )
+
+        thread = (
+            repository
+            .get_or_create_thread(
+                CommunicationThread(
+                    id=None,
+                    account_id=account.id,
+                    client_id=None,
+                    external_thread_key=(
+                        "checkpoint-thread"
+                    ),
+                    external_address=(
+                        "+34600888888"
+                    ),
+                    match_status=(
+                        THREAD_MATCH_UNMATCHED
+                    ),
+                )
+            )
+        )
+
+        service.import_provider_message(
+            thread_id=thread.id,
+            direction=DIRECTION_INBOUND,
+            body_text="Anterior",
+            provider_message_id=(
+                "CHECKPOINT-OLD"
+            ),
+            provider_timestamp=(
+                "2026-08-13T08:00:00"
+            ),
+            status=(
+                MESSAGE_STATUS_RECEIVED
+            ),
+        )
+
+        service.import_provider_message(
+            thread_id=thread.id,
+            direction=DIRECTION_INBOUND,
+            body_text="Último",
+            provider_message_id=(
+                "CHECKPOINT-NEW"
+            ),
+            provider_timestamp=(
+                "2026-08-13T09:00:00"
+            ),
+            status=(
+                MESSAGE_STATUS_RECEIVED
+            ),
+        )
+
+        self.assertEqual(
+            service
+            .get_latest_thread_provider_message_id(
+                thread.id
+            ),
+            "CHECKPOINT-NEW",
+        )
+
+
     def test_list_thread_messages_delegates_to_repository(
         self,
     ):
@@ -1681,6 +1758,90 @@ class CommunicationServiceTest(
             "PROVIDER-MESSAGE-UI-1",
         )
 
+
+
+    def test_list_thread_messages_before_delegates_to_repository(
+        self,
+    ):
+        repository = SQLiteCommunicationRepository(
+            db_path=self.db_path
+        )
+
+        service = CommunicationService(
+            repository=repository
+        )
+
+        account = (
+            service
+            .ensure_whatsapp_dev_account()
+        )
+
+        thread = repository.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "history-before-service"
+                ),
+                external_address=(
+                    "+34600900123"
+                ),
+                match_status=(
+                    THREAD_MATCH_UNMATCHED
+                ),
+            )
+        )
+
+        created = []
+
+        for index in range(
+            1,
+            5,
+        ):
+            result = service.import_provider_message(
+                thread_id=thread.id,
+                direction=DIRECTION_INBOUND,
+                body_text=(
+                    f"Servicio {index}"
+                ),
+                provider_message_id=(
+                    f"SERVICE-HISTORY-{index}"
+                ),
+                provider_timestamp=(
+                    "2026-08-13T"
+                    f"{index + 8:02d}:00:00"
+                ),
+                status=MESSAGE_STATUS_RECEIVED,
+            )
+
+            created.append(
+                result[
+                    "message"
+                ]
+            )
+
+        previous = (
+            service
+            .list_thread_messages_before(
+                thread.id,
+                before_message_id=(
+                    created[3].id
+                ),
+                limit=2,
+            )
+        )
+
+        self.assertEqual(
+            [
+                message.body_text
+                for message in previous
+            ],
+            [
+                "Servicio 2",
+                "Servicio 3",
+            ],
+        )
 
 
 if __name__ == "__main__":

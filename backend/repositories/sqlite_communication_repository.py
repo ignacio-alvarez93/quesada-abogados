@@ -1498,6 +1498,220 @@ class SQLiteCommunicationRepository:
                 for row in rows
             ]
 
+    def list_latest_messages(
+        self,
+        thread_id,
+        *,
+        limit=50,
+    ):
+        """Devuelve la ventana más reciente en orden cronológico.
+
+        La selección interior usa DESC para que LIMIT recorte
+        desde el final del historial. La consulta exterior vuelve
+        a ASC porque ése es el orden requerido por la UI.
+        """
+        self.ensure_schema()
+
+        normalized_limit = max(
+            1,
+            int(
+                limit
+            ),
+        )
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM (
+                    SELECT *
+                    FROM communication_messages
+                    WHERE thread_id = ?
+                    ORDER BY
+                        COALESCE(
+                            provider_timestamp,
+                            created_at
+                        ) DESC,
+                        id DESC
+                    LIMIT ?
+                ) AS recent_messages
+                ORDER BY
+                    COALESCE(
+                        provider_timestamp,
+                        created_at
+                    ) ASC,
+                    id ASC
+                """,
+                (
+                    int(
+                        thread_id
+                    ),
+                    normalized_limit,
+                ),
+            ).fetchall()
+
+            return [
+                self._message_from_row(
+                    row
+                )
+                for row in rows
+            ]
+
+    def list_messages_before(
+        self,
+        thread_id,
+        *,
+        before_message_id,
+        limit=50,
+    ):
+        """Devuelve la página inmediatamente anterior al cursor.
+
+        El caller solo necesita conocer el id del mensaje más
+        antiguo visible. El repositorio resuelve internamente
+        la clave cronológica real usada por communication_messages:
+
+            COALESCE(provider_timestamp, created_at), id
+
+        De este modo el frontend no replica semántica SQL ni
+        necesita conocer created_at.
+        """
+        self.ensure_schema()
+
+        normalized_thread_id = int(
+            thread_id
+        )
+        normalized_before_id = int(
+            before_message_id
+        )
+        normalized_limit = max(
+            1,
+            int(
+                limit
+            ),
+        )
+
+        with self._connection() as conn:
+            anchor = conn.execute(
+                """
+                SELECT
+                    id,
+                    COALESCE(
+                        provider_timestamp,
+                        created_at
+                    ) AS order_timestamp
+                FROM communication_messages
+                WHERE thread_id = ?
+                  AND id = ?
+                LIMIT 1
+                """,
+                (
+                    normalized_thread_id,
+                    normalized_before_id,
+                ),
+            ).fetchone()
+
+            if not anchor:
+                return []
+
+            anchor_timestamp = (
+                anchor[
+                    "order_timestamp"
+                ]
+            )
+            anchor_id = int(
+                anchor[
+                    "id"
+                ]
+            )
+
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM (
+                    SELECT *
+                    FROM communication_messages
+                    WHERE thread_id = ?
+                      AND (
+                            COALESCE(
+                                provider_timestamp,
+                                created_at
+                            ) < ?
+                            OR (
+                                COALESCE(
+                                    provider_timestamp,
+                                    created_at
+                                ) = ?
+                                AND id < ?
+                            )
+                      )
+                    ORDER BY
+                        COALESCE(
+                            provider_timestamp,
+                            created_at
+                        ) DESC,
+                        id DESC
+                    LIMIT ?
+                ) AS previous_messages
+                ORDER BY
+                    COALESCE(
+                        provider_timestamp,
+                        created_at
+                    ) ASC,
+                    id ASC
+                """,
+                (
+                    normalized_thread_id,
+                    anchor_timestamp,
+                    anchor_timestamp,
+                    anchor_id,
+                    normalized_limit,
+                ),
+            ).fetchall()
+
+            return [
+                self._message_from_row(
+                    row
+                )
+                for row in rows
+            ]
+
+    def get_latest_provider_message(
+        self,
+        thread_id,
+    ):
+        """Devuelve el mensaje provider más reciente del thread.
+
+        No utiliza list_messages(), porque ese contrato
+        devuelve orden cronológico ASC y su LIMIT recorta
+        desde el inicio histórico de la conversación.
+        """
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_messages
+                WHERE thread_id = ?
+                  AND provider_message_id IS NOT NULL
+                  AND TRIM(provider_message_id) <> ''
+                ORDER BY
+                    COALESCE(
+                        provider_timestamp,
+                        created_at
+                    ) DESC,
+                    id DESC
+                LIMIT 1
+                """,
+                (
+                    int(thread_id),
+                ),
+            ).fetchone()
+
+            return self._message_from_row(
+                row
+            )
+
     def update_message_status(
         self,
         message_id,

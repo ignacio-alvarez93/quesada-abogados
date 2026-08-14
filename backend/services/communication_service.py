@@ -258,6 +258,137 @@ class CommunicationService:
             )
         )
 
+    def list_latest_thread_messages(
+        self,
+        thread_id,
+        *,
+        limit=50,
+    ):
+        """Devuelve la ventana más reciente del historial del thread."""
+        if thread_id in (
+            None,
+            "",
+        ):
+            return []
+
+        thread = (
+            self.repository
+            .get_thread(
+                int(
+                    thread_id
+                )
+            )
+        )
+
+        if not thread:
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
+        return (
+            self.repository
+            .list_latest_messages(
+                thread.id,
+                limit=max(
+                    1,
+                    int(
+                        limit
+                    ),
+                ),
+            )
+        )
+
+    def list_thread_messages_before(
+        self,
+        thread_id,
+        *,
+        before_message_id,
+        limit=50,
+    ):
+        """Devuelve una página histórica anterior al mensaje cursor."""
+        if thread_id in (
+            None,
+            "",
+        ):
+            return []
+
+        if before_message_id in (
+            None,
+            "",
+        ):
+            return []
+
+        thread = (
+            self.repository
+            .get_thread(
+                int(
+                    thread_id
+                )
+            )
+        )
+
+        if not thread:
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
+        return (
+            self.repository
+            .list_messages_before(
+                thread.id,
+                before_message_id=int(
+                    before_message_id
+                ),
+                limit=max(
+                    1,
+                    int(
+                        limit
+                    ),
+                ),
+            )
+        )
+
+    def get_latest_thread_provider_message_id(
+        self,
+        thread_id,
+    ):
+        """Obtiene el último provider_message_id persistido del thread."""
+        if thread_id in (
+            None,
+            "",
+        ):
+            return None
+
+        thread = (
+            self.repository
+            .get_thread(
+                int(thread_id)
+            )
+        )
+
+        if not thread:
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
+        message = (
+            self.repository
+            .get_latest_provider_message(
+                thread.id
+            )
+        )
+
+        if message is None:
+            return None
+
+        return (
+            str(
+                message.provider_message_id
+                or ""
+            ).strip()
+            or None
+        )
+
     def list_thread_overviews(
         self,
         *,

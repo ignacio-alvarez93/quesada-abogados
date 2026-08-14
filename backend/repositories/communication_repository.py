@@ -132,6 +132,31 @@ class CommunicationRepository(Protocol):
     ) -> list[CommunicationMessage]:
         ...
 
+    def list_latest_messages(
+        self,
+        thread_id: int,
+        *,
+        limit: int = 50,
+    ) -> list[CommunicationMessage]:
+        """Devuelve los últimos mensajes en orden cronológico ASC."""
+        ...
+
+    def list_messages_before(
+        self,
+        thread_id: int,
+        *,
+        before_message_id: int,
+        limit: int = 50,
+    ) -> list[CommunicationMessage]:
+        """Devuelve mensajes anteriores al cursor, en orden ASC."""
+        ...
+
+    def get_latest_provider_message(
+        self,
+        thread_id: int,
+    ) -> CommunicationMessage | None:
+        ...
+
     def update_message_status(
         self,
         message_id: int,

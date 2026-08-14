@@ -490,6 +490,251 @@ class CommunicationRepositoryTest(
         )
 
 
+    def test_list_latest_messages_returns_recent_window_in_ascending_order(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "latest-window-test"
+                ),
+                external_address=(
+                    "+34600123456"
+                ),
+            )
+        )
+
+        samples = [
+            (
+                "Primero",
+                "LATEST-WINDOW-1",
+                "2026-08-13T08:00:00",
+            ),
+            (
+                "Segundo",
+                "LATEST-WINDOW-2",
+                "2026-08-13T09:00:00",
+            ),
+            (
+                "Tercero",
+                "LATEST-WINDOW-3",
+                "2026-08-13T10:00:00",
+            ),
+        ]
+
+        for (
+            body_text,
+            provider_id,
+            timestamp,
+        ) in samples:
+            self.repo.create_message(
+                CommunicationMessage(
+                    id=None,
+                    thread_id=thread.id,
+                    client_id=None,
+                    expedient_id=None,
+                    direction=DIRECTION_INBOUND,
+                    body_text=body_text,
+                    status=MESSAGE_STATUS_PENDING,
+                    provider_message_id=(
+                        provider_id
+                    ),
+                    provider_timestamp=(
+                        timestamp
+                    ),
+                )
+            )
+
+        messages = (
+            self.repo
+            .list_latest_messages(
+                thread.id,
+                limit=2,
+            )
+        )
+
+        self.assertEqual(
+            [
+                message.body_text
+                for message in messages
+            ],
+            [
+                "Segundo",
+                "Tercero",
+            ],
+        )
+
+
+    def test_list_messages_before_returns_previous_page_in_ascending_order(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "history-before-window"
+                ),
+                external_address=(
+                    "+34600111222"
+                ),
+            )
+        )
+
+        created = []
+
+        for index in range(
+            1,
+            7,
+        ):
+            message = self.repo.create_message(
+                CommunicationMessage(
+                    id=None,
+                    thread_id=thread.id,
+                    client_id=None,
+                    expedient_id=None,
+                    direction=DIRECTION_INBOUND,
+                    body_text=(
+                        f"Mensaje {index}"
+                    ),
+                    status=MESSAGE_STATUS_PENDING,
+                    provider_message_id=(
+                        f"HISTORY-BEFORE-{index}"
+                    ),
+                    provider_timestamp=(
+                        "2026-08-13T"
+                        f"{index + 7:02d}:00:00"
+                    ),
+                )
+            )
+            created.append(
+                message
+            )
+
+        previous = (
+            self.repo
+            .list_messages_before(
+                thread.id,
+                before_message_id=(
+                    created[4].id
+                ),
+                limit=3,
+            )
+        )
+
+        self.assertEqual(
+            [
+                message.body_text
+                for message in previous
+            ],
+            [
+                "Mensaje 2",
+                "Mensaje 3",
+                "Mensaje 4",
+            ],
+        )
+
+        oldest_page = (
+            self.repo
+            .list_messages_before(
+                thread.id,
+                before_message_id=(
+                    created[0].id
+                ),
+                limit=3,
+            )
+        )
+
+        self.assertEqual(
+            oldest_page,
+            [],
+        )
+
+
+    def test_get_latest_provider_message_returns_newest(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "latest-provider-test"
+                ),
+                external_address=(
+                    "+34600999999"
+                ),
+            )
+        )
+
+        older = CommunicationMessage(
+            id=None,
+            thread_id=thread.id,
+            client_id=None,
+            expedient_id=None,
+            direction=DIRECTION_INBOUND,
+            body_text="Antiguo",
+            status=MESSAGE_STATUS_PENDING,
+            provider_message_id=(
+                "PROVIDER-OLD"
+            ),
+            provider_timestamp=(
+                "2026-08-13T08:00:00"
+            ),
+        )
+
+        newer = CommunicationMessage(
+            id=None,
+            thread_id=thread.id,
+            client_id=None,
+            expedient_id=None,
+            direction=DIRECTION_INBOUND,
+            body_text="Nuevo",
+            status=MESSAGE_STATUS_PENDING,
+            provider_message_id=(
+                "PROVIDER-NEW"
+            ),
+            provider_timestamp=(
+                "2026-08-13T09:00:00"
+            ),
+        )
+
+        self.repo.get_or_create_message_with_status(
+            newer
+        )
+
+        self.repo.get_or_create_message_with_status(
+            older
+        )
+
+        latest = (
+            self.repo
+            .get_latest_provider_message(
+                thread.id
+            )
+        )
+
+        self.assertIsNotNone(
+            latest
+        )
+
+        self.assertEqual(
+            latest.provider_message_id,
+            "PROVIDER-NEW",
+        )
+
+
     def test_historical_message_does_not_rewind_thread(
         self,
     ):
