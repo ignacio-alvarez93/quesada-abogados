@@ -431,6 +431,385 @@ class CommunicationRepositoryTest(
                 missing
             )
 
+    def test_call_follow_up_schema_is_idempotent(
+        self,
+    ):
+        self.repo.ensure_schema()
+        self.repo.ensure_schema()
+
+        conn = sqlite3.connect(
+            str(self.db_path)
+        )
+
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                    """
+                ).fetchall()
+            }
+
+            self.assertIn(
+                "communication_call_followups",
+                tables,
+            )
+
+            self.assertIn(
+                "communication_call_callbacks",
+                tables,
+            )
+
+        finally:
+            conn.close()
+
+    def test_call_follow_up_schema_supports_multiple_callbacks(
+        self,
+    ):
+        source = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600111111",
+                status=CALL_STATUS_MISSED,
+            )
+        )
+
+        first_callback = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_OUTBOUND,
+                phone_number="+34600111111",
+            )
+        )
+
+        second_callback = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_OUTBOUND,
+                phone_number="+34600111111",
+            )
+        )
+
+        conn = sqlite3.connect(
+            str(self.db_path)
+        )
+
+        try:
+            conn.execute(
+                "PRAGMA foreign_keys = ON"
+            )
+
+            conn.execute(
+                """
+                INSERT INTO
+                    communication_call_followups (
+                        source_call_id,
+                        status
+                    )
+                VALUES (?, 'PENDING')
+                """,
+                (
+                    source.id,
+                ),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO
+                    communication_call_callbacks (
+                        source_call_id,
+                        callback_call_id
+                    )
+                VALUES (?, ?)
+                """,
+                (
+                    source.id,
+                    first_callback.id,
+                ),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO
+                    communication_call_callbacks (
+                        source_call_id,
+                        callback_call_id
+                    )
+                VALUES (?, ?)
+                """,
+                (
+                    source.id,
+                    second_callback.id,
+                ),
+            )
+
+            conn.commit()
+
+            callback_count = (
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM communication_call_callbacks
+                    WHERE source_call_id = ?
+                    """,
+                    (
+                        source.id,
+                    ),
+                ).fetchone()[0]
+            )
+
+            self.assertEqual(
+                callback_count,
+                2,
+            )
+
+            with self.assertRaises(
+                sqlite3.IntegrityError
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO
+                        communication_call_followups (
+                            source_call_id,
+                            status
+                        )
+                    VALUES (?, 'PENDING')
+                    """,
+                    (
+                        source.id,
+                    ),
+                )
+
+        finally:
+            conn.close()
+
+    def test_call_callback_requires_follow_up(
+        self,
+    ):
+        source = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600222222",
+                status=CALL_STATUS_MISSED,
+            )
+        )
+
+        callback = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_OUTBOUND,
+                phone_number="+34600222222",
+            )
+        )
+
+        conn = sqlite3.connect(
+            str(self.db_path)
+        )
+
+        try:
+            conn.execute(
+                "PRAGMA foreign_keys = ON"
+            )
+
+            with self.assertRaises(
+                sqlite3.IntegrityError
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO
+                        communication_call_callbacks (
+                            source_call_id,
+                            callback_call_id
+                        )
+                    VALUES (?, ?)
+                    """,
+                    (
+                        source.id,
+                        callback.id,
+                    ),
+                )
+
+        finally:
+            conn.close()
+
+    def test_callback_call_cannot_belong_to_two_follow_ups(
+        self,
+    ):
+        first_source = (
+            self.repo.create_call(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600333331",
+                    status=CALL_STATUS_MISSED,
+                )
+            )
+        )
+
+        second_source = (
+            self.repo.create_call(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600333332",
+                    status=CALL_STATUS_MISSED,
+                )
+            )
+        )
+
+        callback = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_OUTBOUND,
+                phone_number="+34600333331",
+            )
+        )
+
+        conn = sqlite3.connect(
+            str(self.db_path)
+        )
+
+        try:
+            conn.execute(
+                "PRAGMA foreign_keys = ON"
+            )
+
+            for source in (
+                first_source,
+                second_source,
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO
+                        communication_call_followups (
+                            source_call_id,
+                            status
+                        )
+                    VALUES (?, 'PENDING')
+                    """,
+                    (
+                        source.id,
+                    ),
+                )
+
+            conn.execute(
+                """
+                INSERT INTO
+                    communication_call_callbacks (
+                        source_call_id,
+                        callback_call_id
+                    )
+                VALUES (?, ?)
+                """,
+                (
+                    first_source.id,
+                    callback.id,
+                ),
+            )
+
+            with self.assertRaises(
+                sqlite3.IntegrityError
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO
+                        communication_call_callbacks (
+                            source_call_id,
+                            callback_call_id
+                        )
+                    VALUES (?, ?)
+                    """,
+                    (
+                        second_source.id,
+                        callback.id,
+                    ),
+                )
+
+        finally:
+            conn.close()
+
+    def test_resolved_follow_up_requires_resolved_at(
+        self,
+    ):
+        source = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600444444",
+                status=CALL_STATUS_MISSED,
+            )
+        )
+
+        conn = sqlite3.connect(
+            str(self.db_path)
+        )
+
+        try:
+            conn.execute(
+                "PRAGMA foreign_keys = ON"
+            )
+
+            with self.assertRaises(
+                sqlite3.IntegrityError
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO
+                        communication_call_followups (
+                            source_call_id,
+                            status,
+                            resolved_at
+                        )
+                    VALUES (
+                        ?,
+                        'RESOLVED',
+                        NULL
+                    )
+                    """,
+                    (
+                        source.id,
+                    ),
+                )
+
+            conn.execute(
+                """
+                INSERT INTO
+                    communication_call_followups (
+                        source_call_id,
+                        status,
+                        resolved_at
+                    )
+                VALUES (
+                    ?,
+                    'RESOLVED',
+                    ?
+                )
+                """,
+                (
+                    source.id,
+                    "2026-08-14T15:30:00+02:00",
+                ),
+            )
+
+            conn.commit()
+
+        finally:
+            conn.close()
+
     def test_account_is_idempotent(self):
         first = self._create_account()
         second = self._create_account()

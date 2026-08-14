@@ -50,6 +50,12 @@ MIGRATION_PATHS = (
         / "migrations"
         / "20260814_create_communication_calls.sql"
     ),
+    (
+        Path(__file__).resolve().parents[2]
+        / "database"
+        / "migrations"
+        / "20260814_create_communication_call_followups.sql"
+    ),
 )
 
 
