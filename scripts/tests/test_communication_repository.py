@@ -4,9 +4,13 @@ import unittest
 from pathlib import Path
 
 from backend.communications.calls import (
+    CALL_STATUS_ANSWERED,
     CALL_STATUS_CREATED,
+    CALL_STATUS_ENDED,
     CALL_STATUS_MISSED,
+    CALL_STATUS_RINGING,
     CommunicationCall,
+    transition_call_status_at,
 )
 from backend.communications.models import (
     ATTEMPT_STATUS_ERROR,
@@ -287,6 +291,144 @@ class CommunicationRepositoryTest(
                     ),
                     talk_duration_seconds=-1,
                 )
+            )
+
+    def test_call_lifecycle_update_roundtrips(
+        self,
+    ):
+        created = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600123456",
+                display_name_snapshot=(
+                    "CLIENTE TEST"
+                ),
+                client_id=10,
+                expedient_id=20,
+                reason_code=(
+                    "EXPEDIENT_STATUS"
+                ),
+                provider="MOBILE_LINK",
+            )
+        )
+
+        ringing = transition_call_status_at(
+            created,
+            CALL_STATUS_RINGING,
+            "2026-08-14T15:00:00+02:00",
+        )
+
+        answered = transition_call_status_at(
+            ringing,
+            CALL_STATUS_ANSWERED,
+            "2026-08-14T15:00:05+02:00",
+        )
+
+        ended = transition_call_status_at(
+            answered,
+            CALL_STATUS_ENDED,
+            "2026-08-14T15:02:05+02:00",
+        )
+
+        stored = (
+            self.repo
+            .update_call_state(
+                ended
+            )
+        )
+
+        self.assertEqual(
+            stored.status,
+            CALL_STATUS_ENDED,
+        )
+
+        self.assertEqual(
+            stored.ringing_at,
+            "2026-08-14T15:00:00+02:00",
+        )
+
+        self.assertEqual(
+            stored.answered_at,
+            "2026-08-14T15:00:05+02:00",
+        )
+
+        self.assertEqual(
+            stored.ended_at,
+            "2026-08-14T15:02:05+02:00",
+        )
+
+        self.assertEqual(
+            stored.ring_duration_seconds,
+            5,
+        )
+
+        self.assertEqual(
+            stored.talk_duration_seconds,
+            120,
+        )
+
+        self.assertEqual(
+            stored.total_duration_seconds,
+            125,
+        )
+
+        # ---------------------------------------------
+        # update_call_state NO debe alterar identidad
+        # ni contexto de la llamada.
+        # ---------------------------------------------
+
+        self.assertEqual(
+            stored.phone_number,
+            "+34600123456",
+        )
+
+        self.assertEqual(
+            stored.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            stored.expedient_id,
+            20,
+        )
+
+        self.assertEqual(
+            stored.reason_code,
+            "EXPEDIENT_STATUS",
+        )
+
+        self.assertEqual(
+            stored.provider,
+            "MOBILE_LINK",
+        )
+
+        reloaded = self.repo.get_call(
+            created.id
+        )
+
+        self.assertEqual(
+            reloaded,
+            stored,
+        )
+
+    def test_call_lifecycle_update_rejects_unknown_call(
+        self,
+    ):
+        missing = CommunicationCall(
+            id=999999,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600999999",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "no encontrada",
+        ):
+            self.repo.update_call_state(
+                missing
             )
 
     def test_account_is_idempotent(self):

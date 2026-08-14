@@ -492,6 +492,87 @@ class SQLiteCommunicationRepository:
                 row
             )
 
+    def update_call_state(
+        self,
+        call,
+    ):
+        """
+        Persiste únicamente lifecycle y timing de una llamada.
+
+        No permite modificar mediante esta operación:
+        - identidad/interlocutor;
+        - canal o dirección;
+        - vínculos CRM;
+        - proveedor;
+        - motivo, resultado o notas.
+
+        Las transiciones válidas deben haberse aplicado
+        previamente en el dominio de llamadas.
+        """
+        self.ensure_schema()
+
+        if (
+            call is None
+            or call.id in (
+                None,
+                "",
+            )
+        ):
+            raise ValueError(
+                "La llamada debe tener id "
+                "para actualizar su estado"
+            )
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE communication_calls
+                SET
+                    status = ?,
+                    dialed_at = ?,
+                    ringing_at = ?,
+                    answered_at = ?,
+                    ended_at = ?,
+                    ring_duration_seconds = ?,
+                    talk_duration_seconds = ?,
+                    total_duration_seconds = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    call.status,
+                    call.dialed_at,
+                    call.ringing_at,
+                    call.answered_at,
+                    call.ended_at,
+                    call.ring_duration_seconds,
+                    call.talk_duration_seconds,
+                    call.total_duration_seconds,
+                    int(call.id),
+                ),
+            )
+
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    "Llamada de comunicación "
+                    "no encontrada"
+                )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_calls
+                WHERE id = ?
+                """,
+                (
+                    int(call.id),
+                ),
+            ).fetchone()
+
+            return self._call_from_row(
+                row
+            )
+
     def save_account(
         self,
         account,
