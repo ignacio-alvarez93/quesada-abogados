@@ -1434,6 +1434,284 @@ class SQLiteCommunicationRepository:
             )
         )
 
+    def _try_update_call_follow_up_in_connection(
+        self,
+        conn,
+        follow_up,
+        *,
+        expected_status,
+    ):
+        """
+        Compare-and-set no destructivo.
+
+        Si expected_status ya no coincide:
+        - NO modifica el seguimiento;
+        - devuelve el estado actual;
+        - NO lanza por el mero cambio concurrente.
+
+        Una fila inexistente sí es un error estructural.
+        """
+        if (
+            follow_up is None
+            or follow_up.id in (
+                None,
+                "",
+            )
+        ):
+            raise ValueError(
+                "El seguimiento debe tener id "
+                "para ser actualizado"
+            )
+
+        normalized_expected = str(
+            expected_status
+            or ""
+        ).strip().upper()
+
+        if not normalized_expected:
+            raise ValueError(
+                "expected_status es obligatorio"
+            )
+
+        cursor = conn.execute(
+            """
+            UPDATE communication_call_followups
+            SET
+                status = ?,
+                resolved_at = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND status = ?
+            """,
+            (
+                follow_up.status,
+                follow_up.resolved_at,
+                int(follow_up.id),
+                normalized_expected,
+            ),
+        )
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM communication_call_followups
+            WHERE id = ?
+            """,
+            (
+                int(follow_up.id),
+            ),
+        ).fetchone()
+
+        if row is None:
+            raise ValueError(
+                "Seguimiento de llamada "
+                "no encontrado"
+            )
+
+        return (
+            self._call_follow_up_from_row(
+                row
+            ),
+            cursor.rowcount == 1,
+        )
+
+    def try_update_call_follow_up(
+        self,
+        follow_up,
+        *,
+        expected_status,
+    ):
+        """
+        CAS público recuperable.
+
+        Se usa cuando un cambio concurrente del seguimiento
+        no debe invalidar otro hecho ya conocido.
+        """
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            return (
+                self
+                ._try_update_call_follow_up_in_connection(
+                    conn,
+                    follow_up,
+                    expected_status=(
+                        expected_status
+                    ),
+                )
+            )
+
+    def _assert_callback_follow_up_in_connection(
+        self,
+        conn,
+        *,
+        callback_call_id,
+        follow_up,
+    ):
+        row = conn.execute(
+            """
+            SELECT
+                cb.source_call_id,
+                f.id AS follow_up_id
+            FROM communication_call_callbacks cb
+            INNER JOIN communication_call_followups f
+                ON f.source_call_id = cb.source_call_id
+            WHERE cb.callback_call_id = ?
+            """,
+            (
+                int(callback_call_id),
+            ),
+        ).fetchone()
+
+        if row is None:
+            raise ValueError(
+                "La llamada de devolución "
+                "no está vinculada a un seguimiento"
+            )
+
+        if (
+            int(row["follow_up_id"])
+            != int(follow_up.id)
+            or int(row["source_call_id"])
+            != int(follow_up.source_call_id)
+        ):
+            raise ValueError(
+                "El seguimiento no corresponde "
+                "a la llamada de devolución"
+            )
+
+    def update_call_state_with_callback_requeue(
+        self,
+        call,
+        *,
+        follow_up,
+        expected_follow_up_status,
+    ):
+        """
+        Persiste lifecycle de callback y trata de reabrir
+        su seguimiento dentro de la misma transacción.
+
+        Si el follow-up dejó de estar IN_PROGRESS porque fue
+        RESOLVED o ya volvió a PENDING, la llamada telefónica
+        se confirma igualmente y el seguimiento se conserva.
+        """
+        self.ensure_schema()
+
+        if (
+            call is None
+            or call.id in (
+                None,
+                "",
+            )
+        ):
+            raise ValueError(
+                "La llamada debe tener id "
+                "para actualizar su estado"
+            )
+
+        with self._connection() as conn:
+            (
+                self
+                ._assert_callback_follow_up_in_connection(
+                    conn,
+                    callback_call_id=call.id,
+                    follow_up=follow_up,
+                )
+            )
+
+            persisted = (
+                self
+                ._update_call_state_in_connection(
+                    conn,
+                    call,
+                )
+            )
+
+            (
+                persisted_follow_up,
+                requeued,
+            ) = (
+                self
+                ._try_update_call_follow_up_in_connection(
+                    conn,
+                    follow_up,
+                    expected_status=(
+                        expected_follow_up_status
+                    ),
+                )
+            )
+
+            return (
+                persisted,
+                persisted_follow_up,
+                requeued,
+            )
+
+    def update_call_provider_reconciliation_with_callback_requeue(
+        self,
+        call,
+        *,
+        follow_up,
+        expected_follow_up_status,
+    ):
+        """
+        Reconciliación histórica de callback terminal +
+        reapertura de seguimiento bajo una sola transacción.
+        """
+        self.ensure_schema()
+
+        (
+            provider,
+            external_call_key,
+        ) = (
+            self
+            ._provider_reconciliation_identity(
+                call
+            )
+        )
+
+        with self._connection() as conn:
+            (
+                self
+                ._assert_callback_follow_up_in_connection(
+                    conn,
+                    callback_call_id=call.id,
+                    follow_up=follow_up,
+                )
+            )
+
+            persisted = (
+                self
+                ._update_call_provider_reconciliation_in_connection(
+                    conn,
+                    call,
+                    provider=provider,
+                    external_call_key=(
+                        external_call_key
+                    ),
+                )
+            )
+
+            (
+                persisted_follow_up,
+                requeued,
+            ) = (
+                self
+                ._try_update_call_follow_up_in_connection(
+                    conn,
+                    follow_up,
+                    expected_status=(
+                        expected_follow_up_status
+                    ),
+                )
+            )
+
+            return (
+                persisted,
+                persisted_follow_up,
+                requeued,
+            )
+
     def update_call_follow_up(
         self,
         follow_up,

@@ -563,13 +563,19 @@ class CommunicationCallService:
             )
         )
 
-    def _requeue_callback_follow_up_if_needed(
+    def _prepare_callback_follow_up_requeue(
         self,
         call,
     ):
         """
-        Si una devolución termina sin contacto efectivo,
-        vuelve a dejar su seguimiento en PENDING.
+        Obtiene y valida en dominio la transición operativa
+        necesaria para una callback sin contacto.
+
+        Devuelve:
+            (follow_up_actual, follow_up_pending)
+
+        Si no hay nada que reabrir:
+            (follow_up_actual_o_None, None)
         """
         relation = (
             self.repository
@@ -579,7 +585,10 @@ class CommunicationCallService:
         )
 
         if relation is None:
-            return None
+            return (
+                None,
+                None,
+            )
 
         follow_up = (
             self.repository
@@ -589,13 +598,19 @@ class CommunicationCallService:
         )
 
         if follow_up is None:
-            return None
+            return (
+                None,
+                None,
+            )
 
         if (
             follow_up.status
             == CALL_FOLLOW_UP_RESOLVED
         ):
-            return follow_up
+            return (
+                follow_up,
+                None,
+            )
 
         pending = transition_call_follow_up(
             follow_up,
@@ -603,14 +618,56 @@ class CommunicationCallService:
         )
 
         if pending is follow_up:
-            return follow_up
+            return (
+                follow_up,
+                None,
+            )
 
         return (
-            self.repository
-            .update_call_follow_up(
-                pending
+            follow_up,
+            pending,
+        )
+
+    def _requeue_callback_follow_up_if_needed(
+        self,
+        call,
+    ):
+        """
+        Reparación idempotente para una callback ya persistida.
+
+        Usa CAS para no resucitar un seguimiento RESOLVED
+        si cambió concurrentemente.
+        """
+        (
+            current,
+            pending,
+        ) = (
+            self
+            ._prepare_callback_follow_up_requeue(
+                call
             )
         )
+
+        if current is None:
+            return None
+
+        if pending is None:
+            return current
+
+        (
+            persisted,
+            _changed,
+        ) = (
+            self.repository
+            .try_update_call_follow_up(
+                pending,
+                expected_status=(
+                    current.status
+                ),
+            )
+        )
+
+        return persisted
 
     def reconcile_provider_call(
         self,
@@ -682,12 +739,58 @@ class CommunicationCallService:
                     follow_up_guaranteed = True
 
                 else:
-                    persisted = (
-                        self.repository
-                        .update_call_provider_reconciliation(
-                            merged
+                    (
+                        current_follow_up,
+                        pending_follow_up,
+                    ) = (
+                        (
+                            self
+                            ._prepare_callback_follow_up_requeue(
+                                merged
+                            )
+                        )
+                        if (
+                            merged.direction
+                            == CALL_DIRECTION_OUTBOUND
+                            and merged.status
+                            in CALLBACK_REQUEUE_STATUSES
+                        )
+                        else (
+                            None,
+                            None,
                         )
                     )
+
+                    if (
+                        current_follow_up
+                        is not None
+                        and pending_follow_up
+                        is not None
+                    ):
+                        (
+                            persisted,
+                            _follow_up,
+                            _requeued,
+                        ) = (
+                            self.repository
+                            .update_call_provider_reconciliation_with_callback_requeue(
+                                merged,
+                                follow_up=(
+                                    pending_follow_up
+                                ),
+                                expected_follow_up_status=(
+                                    current_follow_up.status
+                                ),
+                            )
+                        )
+
+                    else:
+                        persisted = (
+                            self.repository
+                            .update_call_provider_reconciliation(
+                                merged
+                            )
+                        )
 
         if (
             persisted.direction
@@ -730,8 +833,14 @@ class CommunicationCallService:
         """
         Aplica un evento realtime de proveedor.
 
-        INBOUND + MISSED se persiste junto a su follow-up
-        dentro de una única transacción.
+        Garantías compuestas:
+        - INBOUND + MISSED:
+          lifecycle + follow-up son atómicos;
+        - callback OUTBOUND sin contacto:
+          lifecycle terminal + requeue son atómicos
+          cuando el seguimiento continúa IN_PROGRESS.
+
+        Un seguimiento RESOLVED nunca se resucita.
         """
         call = self.repository.get_call(
             int(call_id)
@@ -751,6 +860,28 @@ class CommunicationCallService:
             )
         )
 
+        (
+            current_follow_up,
+            pending_follow_up,
+        ) = (
+            (
+                self
+                ._prepare_callback_follow_up_requeue(
+                    transitioned
+                )
+            )
+            if (
+                transitioned.direction
+                == CALL_DIRECTION_OUTBOUND
+                and transitioned.status
+                in CALLBACK_REQUEUE_STATUSES
+            )
+            else (
+                None,
+                None,
+            )
+        )
+
         if (
             transitioned.direction
             == CALL_DIRECTION_INBOUND
@@ -767,24 +898,34 @@ class CommunicationCallService:
                 )
             )
 
+        elif (
+            current_follow_up
+            is not None
+            and pending_follow_up
+            is not None
+        ):
+            (
+                persisted,
+                _follow_up,
+                _requeued,
+            ) = (
+                self.repository
+                .update_call_state_with_callback_requeue(
+                    transitioned,
+                    follow_up=(
+                        pending_follow_up
+                    ),
+                    expected_follow_up_status=(
+                        current_follow_up.status
+                    ),
+                )
+            )
+
         else:
             persisted = (
                 self.repository
                 .update_call_state(
                     transitioned
-                )
-            )
-
-        if (
-            persisted.direction
-            == CALL_DIRECTION_OUTBOUND
-            and persisted.status
-            in CALLBACK_REQUEUE_STATUSES
-        ):
-            (
-                self
-                ._requeue_callback_follow_up_if_needed(
-                    persisted
                 )
             )
 
