@@ -1,3 +1,4 @@
+import time
 """
 Orquestación de sincronización entre WhatsApp Web y Comunicaciones.
 
@@ -94,6 +95,22 @@ SYNC_REASON_MESSAGE_IMPORT_ERROR = (
 )
 
 
+# Fallos de inventario que pueden deberse a un estado
+# transitorio del DOM, perfil o extracción de identidad.
+#
+# No incluimos grupos/self/system/account-changed porque
+# representan estados terminales conocidos, no fallos
+# transitorios de descubrimiento.
+INVENTORY_RETRYABLE_REASONS = {
+    SYNC_REASON_OPEN_FAILED,
+    SYNC_REASON_PROFILE_OPEN_FAILED,
+    SYNC_REASON_UNKNOWN_CHAT,
+    SYNC_REASON_PHONE_MISSING,
+    SYNC_REASON_PHONE_INVALID,
+    SYNC_REASON_IDENTITY_UNVERIFIABLE,
+}
+
+
 class WhatsAppSyncService:
     def __init__(
         self,
@@ -120,6 +137,7 @@ class WhatsAppSyncService:
         limit=200,
         expected_active_identity=None,
         expected_last_provider_message_id=None,
+        after_provider_message_id=None,
     ):
         """Sincroniza los mensajes ya cargados del chat abierto.
 
@@ -131,6 +149,7 @@ class WhatsAppSyncService:
             thread_id
         )
 
+
         snapshots = (
             self.connector
             .list_visible_message_snapshots(
@@ -141,6 +160,7 @@ class WhatsAppSyncService:
             )
         )
 
+
         expected_identity = str(
             expected_active_identity
             or ""
@@ -148,6 +168,11 @@ class WhatsAppSyncService:
 
         expected_last_id = str(
             expected_last_provider_message_id
+            or ""
+        ).strip()
+
+        after_provider_id = str(
+            after_provider_message_id
             or ""
         ).strip()
 
@@ -270,13 +295,76 @@ class WhatsAppSyncService:
                     "guard": guard,
                 }
 
+        snapshots_to_process = snapshots
+
+        incremental = False
+        anchor_found = False
+
+        if after_provider_id:
+            anchor_index = None
+
+            for index, snapshot in enumerate(
+                snapshots
+            ):
+                provider_id = str(
+                    getattr(
+                        snapshot,
+                        "provider_message_id",
+                        "",
+                    )
+                    or ""
+                ).strip()
+
+                if provider_id == after_provider_id:
+                    anchor_index = index
+                    break
+
+            if anchor_index is not None:
+                anchor_found = True
+                incremental = True
+
+                # El anchor también se reprocesa.
+                #
+                # No solo buscamos mensajes nuevos: el último
+                # mensaje ya conocido puede haber avanzado de
+                # SENT -> DELIVERED -> READ conservando exactamente
+                # el mismo provider_message_id.
+                #
+                # La importación es idempotente, por lo que un
+                # anchor sin cambios simplemente será reused.
+                snapshots_to_process = (
+                    snapshots[
+                        anchor_index:
+                    ]
+                )
+
         items = []
+
 
         summary = {
             "thread_id":
                 normalized_thread_id,
             "scanned":
+                len(
+                    snapshots_to_process
+                ),
+            "extracted":
                 len(snapshots),
+            "sync_mode":
+                (
+                    "INCREMENTAL"
+                    if incremental
+                    else (
+                        "FULL_FALLBACK"
+                        if after_provider_id
+                        else "FULL"
+                    )
+                ),
+            "anchor_provider_message_id":
+                after_provider_id
+                or None,
+            "anchor_found":
+                anchor_found,
             "created":
                 0,
             "reused":
@@ -289,7 +377,7 @@ class WhatsAppSyncService:
                 0,
         }
 
-        for snapshot in snapshots:
+        for snapshot in snapshots_to_process:
             provider_id = str(
                 getattr(
                     snapshot,
@@ -481,6 +569,8 @@ class WhatsAppSyncService:
 
             items.append(item)
 
+
+
         return {
             "summary":
                 summary,
@@ -493,6 +583,31 @@ class WhatsAppSyncService:
             "guard":
                 guard,
         }
+
+    @staticmethod
+    def _is_inventory_retryable_item(
+        item,
+    ):
+        if not isinstance(
+            item,
+            dict,
+        ):
+            return True
+
+        if (
+            item.get(
+                "status"
+            )
+            == SYNC_STATUS_ERROR
+        ):
+            return True
+
+        return (
+            item.get(
+                "reason"
+            )
+            in INVENTORY_RETRYABLE_REASONS
+        )
 
     @staticmethod
     def build_phone_thread_key(
@@ -515,7 +630,7 @@ class WhatsAppSyncService:
         display_name,
         open_result,
     ):
-        """Interpreta estados conocidos de chats sin composer."""
+        """Interpreta estados terminales tras una apertura no verificable."""
         main_text = str(
             open_result.get(
                 "main_text"
@@ -528,10 +643,45 @@ class WhatsAppSyncService:
             .casefold()
         )
 
+        composer_aria_label = str(
+            open_result.get(
+                "composer_aria_label"
+            )
+            or ""
+        ).strip()
+
+        lowered_composer_aria = (
+            composer_aria_label
+            .casefold()
+        )
+
         name = str(
             display_name
             or ""
         ).strip()
+
+        # WhatsApp puede abrir correctamente un grupo
+        # pero no exponer active_display_name en el header.
+        #
+        # En ese caso open_chat() rechaza la navegación por
+        # CHAT_IDENTITY_MISMATCH —correctamente, porque no
+        # debemos relajar la verificación genérica—, pero el
+        # propio composer identifica de forma inequívoca que
+        # estamos ante un grupo.
+        #
+        # Ejemplo real:
+        # "Escribir un mensaje para el grupo 🃏"
+        if (
+            "para el grupo "
+            in lowered_composer_aria
+        ):
+            return {
+                "recognized": True,
+                "kind":
+                    CHAT_KIND_GROUP,
+                "reason":
+                    SYNC_REASON_GROUP_IDENTITY_PENDING,
+            }
 
         if (
             "conectado a una nueva cuenta de whatsapp"
@@ -579,6 +729,24 @@ class WhatsAppSyncService:
                     CHAT_KIND_GROUP,
                 "reason":
                     SYNC_REASON_GROUP_READ_ONLY,
+            }
+
+        # Meta AI se presenta en WhatsApp Web como un
+        # contacto individual con composer y drawer de
+        # "Info. del contacto", pero no expone teléfono.
+        #
+        # No es una identidad de cliente y no debe quedar
+        # como PHONE_MISSING recuperable.
+        if (
+            name.casefold()
+            == "meta ai"
+        ):
+            return {
+                "recognized": True,
+                "kind":
+                    CHAT_KIND_UNKNOWN,
+                "reason":
+                    SYNC_REASON_SYSTEM_CHAT,
             }
 
         if (
@@ -664,6 +832,28 @@ class WhatsAppSyncService:
             "reused":
                 False,
         }
+
+        display_name = str(
+            snapshot.display_name
+            or ""
+        ).strip()
+
+        # Meta AI es una conversación propia del proveedor,
+        # no un contacto CRM. WhatsApp Web la expone como
+        # contacto individual sin número de teléfono.
+        if (
+            display_name.casefold()
+            == "meta ai"
+        ):
+            result["status"] = (
+                SYNC_STATUS_SKIPPED
+            )
+
+            result["reason"] = (
+                SYNC_REASON_SYSTEM_CHAT
+            )
+
+            return result
 
         virtual_offset = getattr(
             snapshot,
@@ -971,7 +1161,19 @@ class WhatsAppSyncService:
         )
 
         visited_offsets = set()
-        results = []
+
+        # Último resultado conocido por posición virtual.
+        # Permite reintentar una fila previamente visitada
+        # sin duplicarla en el resultado final.
+        result_by_offset = {}
+
+        # Posiciones localizadas pero todavía no resueltas
+        # de forma terminal.
+        retry_pending_offsets = set()
+
+        # Número de posiciones pendientes que sí quedaron
+        # resueltas durante el recovery pass.
+        retry_recovered_offsets = set()
 
         def build_ratios(
             pass_step,
@@ -1047,9 +1249,8 @@ class WhatsAppSyncService:
                     "attempts"
                 ] = attempt + 1
 
-                if (
-                    item.get("status")
-                    != SYNC_STATUS_ERROR
+                if not self._is_inventory_retryable_item(
+                    item
                 ):
                     break
 
@@ -1072,9 +1273,15 @@ class WhatsAppSyncService:
 
         def run_pass(
             pass_step,
+            *,
+            retry_pending=False,
         ):
             discovered_before = len(
                 visited_offsets
+            )
+
+            recovered_before = len(
+                retry_recovered_offsets
             )
 
             for ratio in build_ratios(
@@ -1128,14 +1335,26 @@ class WhatsAppSyncService:
                         virtual_offset
                     )
 
-                    if (
+                    already_visited = (
                         virtual_offset
                         in visited_offsets
-                    ):
-                        continue
+                    )
 
-                    visited_offsets.add(
+                    if already_visited:
+                        if not (
+                            retry_pending
+                            and virtual_offset
+                            in retry_pending_offsets
+                        ):
+                            continue
+                    else:
+                        visited_offsets.add(
+                            virtual_offset
+                        )
+
+                    was_pending = (
                         virtual_offset
+                        in retry_pending_offsets
                     )
 
                     item = (
@@ -1145,32 +1364,66 @@ class WhatsAppSyncService:
                         )
                     )
 
-                    results.append(
+                    result_by_offset[
+                        virtual_offset
+                    ] = item
+
+                    if self._is_inventory_retryable_item(
                         item
+                    ):
+                        retry_pending_offsets.add(
+                            virtual_offset
+                        )
+                    else:
+                        retry_pending_offsets.discard(
+                            virtual_offset
+                        )
+
+                        if was_pending:
+                            retry_recovered_offsets.add(
+                                virtual_offset
+                            )
+
+            return {
+                "discovered_rows": (
+                    len(
+                        visited_offsets
                     )
+                    - discovered_before
+                ),
+                "recovered_rows": (
+                    len(
+                        retry_recovered_offsets
+                    )
+                    - recovered_before
+                ),
+            }
 
-            return (
-                len(
-                    visited_offsets
-                )
-                - discovered_before
-            )
-
-        initial_pass_rows = (
+        initial_pass_result = (
             run_pass(
                 step
             )
         )
 
-        recovery_pass_used = (
-            expected_rows > 0
-            and len(
-                visited_offsets
+        initial_pass_rows = (
+            initial_pass_result[
+                "discovered_rows"
+            ]
+        )
+
+        recovery_pass_used = bool(
+            (
+                expected_rows > 0
+                and len(
+                    visited_offsets
+                )
+                < expected_rows
             )
-            < expected_rows
+            or retry_pending_offsets
         )
 
         recovery_pass_rows = 0
+        recovery_retry_rows = 0
 
         if recovery_pass_used:
             recovery_step = max(
@@ -1181,11 +1434,33 @@ class WhatsAppSyncService:
                 ),
             )
 
-            recovery_pass_rows = (
+            recovery_result = (
                 run_pass(
-                    recovery_step
+                    recovery_step,
+                    retry_pending=True,
                 )
             )
+
+            recovery_pass_rows = (
+                recovery_result[
+                    "discovered_rows"
+                ]
+            )
+
+            recovery_retry_rows = (
+                recovery_result[
+                    "recovered_rows"
+                ]
+            )
+
+        results = [
+            result_by_offset[
+                offset
+            ]
+            for offset in sorted(
+                result_by_offset
+            )
+        ]
 
         unique_phone_threads = {
             item.get(
@@ -1218,6 +1493,37 @@ class WhatsAppSyncService:
                 recovery_pass_used,
             "recovery_pass_rows":
                 recovery_pass_rows,
+
+            # Filas previamente visitadas que estaban
+            # pendientes y pudieron recuperarse.
+            "recovery_retry_rows":
+                recovery_retry_rows,
+
+            # Cobertura DOM e integridad de inventario son
+            # conceptos distintos.
+            "retry_pending_rows":
+                len(
+                    retry_pending_offsets
+                ),
+            "retry_pending_offsets":
+                sorted(
+                    retry_pending_offsets
+                ),
+            "retry_recovered_rows":
+                len(
+                    retry_recovered_offsets
+                ),
+
+            "integrity_complete":
+                (
+                    expected_rows > 0
+                    and len(
+                        visited_offsets
+                    )
+                    == expected_rows
+                    and not retry_pending_offsets
+                ),
+
             "ready":
                 sum(
                     1

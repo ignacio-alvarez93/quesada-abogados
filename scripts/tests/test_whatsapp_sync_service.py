@@ -748,6 +748,150 @@ class WhatsAppSyncServiceTest(
             [],
         )
 
+    def test_classify_group_from_composer_aria(
+        self,
+    ):
+        result = (
+            WhatsAppSyncService
+            .classify_non_writable_chat(
+                display_name="🃏",
+                open_result={
+                    "opened": False,
+                    "composer_found": True,
+                    "composer_aria_label":
+                        "Escribir un mensaje para el grupo 🃏",
+                    "active_display_name": "",
+                    "main_text":
+                        "Suizo salió del grupo.",
+                    "reason":
+                        "CHAT_IDENTITY_MISMATCH",
+                },
+            )
+        )
+
+        self.assertTrue(
+            result["recognized"]
+        )
+
+        self.assertEqual(
+            result["kind"],
+            CHAT_KIND_GROUP,
+        )
+
+        self.assertEqual(
+            result["reason"],
+            SYNC_REASON_GROUP_IDENTITY_PENDING,
+        )
+
+
+    def test_group_composer_identity_mismatch_is_terminal_group(
+        self,
+    ):
+        connector = FakeConnector(
+            open_result={
+                "opened": False,
+                "composer_found": True,
+                "composer_aria_label":
+                    "Escribir un mensaje para el grupo 🃏",
+                "active_display_name": "",
+                "main_text":
+                    "Suizo salió del grupo. Escribe un mensaje",
+                "reason":
+                    "CHAT_IDENTITY_MISMATCH",
+            },
+        )
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=(
+                FakeCommunicationService()
+            ),
+        )
+
+        snapshot = SimpleNamespace(
+            position=36,
+            display_name="🃏",
+            virtual_offset=None,
+        )
+
+        result = service.inspect_snapshot(
+            snapshot,
+            persist=True,
+        )
+
+        self.assertEqual(
+            result["status"],
+            SYNC_STATUS_SKIPPED,
+        )
+
+        self.assertEqual(
+            result["kind"],
+            CHAT_KIND_GROUP,
+        )
+
+        self.assertEqual(
+            result["reason"],
+            SYNC_REASON_GROUP_IDENTITY_PENDING,
+        )
+
+        self.assertFalse(
+            result["persisted"]
+        )
+
+        self.assertFalse(
+            service._is_inventory_retryable_item(
+                result
+            )
+        )
+
+
+    def test_meta_ai_is_terminal_system_chat(
+        self,
+    ):
+        connector = FakeConnector(
+            kind=CHAT_KIND_INDIVIDUAL,
+            phone=None,
+        )
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=(
+                FakeCommunicationService()
+            ),
+        )
+
+        snapshot = SimpleNamespace(
+            position=31,
+            display_name="Meta AI",
+            virtual_offset=2983,
+        )
+
+        result = service.inspect_snapshot(
+            snapshot,
+            persist=True,
+        )
+
+        self.assertEqual(
+            result["status"],
+            SYNC_STATUS_SKIPPED,
+        )
+
+        self.assertEqual(
+            result["reason"],
+            SYNC_REASON_SYSTEM_CHAT,
+        )
+
+        self.assertFalse(
+            result["persisted"]
+        )
+
+        self.assertFalse(
+            service._is_inventory_retryable_item(
+                result
+            )
+        )
+
+
     def test_full_traversal_deduplicates_virtual_offsets(
         self,
     ):
@@ -785,6 +929,19 @@ class WhatsAppSyncServiceTest(
             summary[
                 "coverage_complete"
             ]
+        )
+
+        self.assertTrue(
+            summary[
+                "integrity_complete"
+            ]
+        )
+
+        self.assertEqual(
+            summary[
+                "retry_pending_rows"
+            ],
+            0,
         )
 
         self.assertEqual(
@@ -951,6 +1108,214 @@ class WhatsAppSyncServiceTest(
                 152,
             },
         )
+
+    def test_full_traversal_retries_retryable_visited_offset(
+        self,
+    ):
+        connector = FakeConnector()
+
+        connector.viewport_snapshots = {
+            0.0: [
+                SimpleNamespace(
+                    position=0,
+                    display_name="CLIENTE A",
+                    virtual_offset=0,
+                ),
+            ],
+            0.5: [
+                SimpleNamespace(
+                    position=1,
+                    display_name="CLIENTE B",
+                    virtual_offset=76,
+                ),
+            ],
+            1.0: [
+                SimpleNamespace(
+                    position=2,
+                    display_name="CLIENTE C",
+                    virtual_offset=152,
+                ),
+            ],
+        }
+
+        connector.prepare_chat_interface = lambda: {
+            "ready": True,
+            "chat_list": {
+                "total_rows": 3,
+            },
+        }
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=(
+                FakeCommunicationService()
+            ),
+        )
+
+        original_inspect = (
+            service.inspect_snapshot
+        )
+
+        calls = {
+            76: 0,
+        }
+
+        def inspect_snapshot(
+            snapshot,
+            *,
+            persist=False,
+        ):
+            if snapshot.virtual_offset == 76:
+                calls[76] += 1
+
+                if calls[76] == 1:
+                    return {
+                        "position":
+                            snapshot.position,
+                        "display_name":
+                            snapshot.display_name,
+                        "kind":
+                            CHAT_KIND_INDIVIDUAL,
+                        "status":
+                            SYNC_STATUS_SKIPPED,
+                        "reason":
+                            SYNC_REASON_PHONE_MISSING,
+                        "persisted":
+                            False,
+                        "created":
+                            False,
+                        "reused":
+                            False,
+                    }
+
+            return original_inspect(
+                snapshot,
+                persist=persist,
+            )
+
+        service.inspect_snapshot = (
+            inspect_snapshot
+        )
+
+        result = service.inspect_all_chats(
+            persist=False,
+            retries=0,
+            step_ratio=0.5,
+            wait_seconds=0,
+        )
+
+        summary = result["summary"]
+
+        self.assertTrue(
+            summary["coverage_complete"]
+        )
+
+        self.assertTrue(
+            summary["recovery_pass_used"]
+        )
+
+        self.assertEqual(
+            calls[76],
+            2,
+        )
+
+        self.assertEqual(
+            summary["retry_pending_rows"],
+            0,
+        )
+
+        self.assertEqual(
+            summary["retry_recovered_rows"],
+            1,
+        )
+
+        self.assertEqual(
+            summary["recovery_retry_rows"],
+            1,
+        )
+
+        self.assertTrue(
+            summary["integrity_complete"]
+        )
+
+
+    def test_full_traversal_reports_pending_integrity_failure(
+        self,
+    ):
+        connector = FakeConnector()
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=(
+                FakeCommunicationService()
+            ),
+        )
+
+        original_inspect = (
+            service.inspect_snapshot
+        )
+
+        def inspect_snapshot(
+            snapshot,
+            *,
+            persist=False,
+        ):
+            if snapshot.virtual_offset == 76:
+                return {
+                    "position":
+                        snapshot.position,
+                    "display_name":
+                        snapshot.display_name,
+                    "kind":
+                        CHAT_KIND_INDIVIDUAL,
+                    "status":
+                        SYNC_STATUS_SKIPPED,
+                    "reason":
+                        SYNC_REASON_PHONE_MISSING,
+                    "persisted":
+                        False,
+                    "created":
+                        False,
+                    "reused":
+                        False,
+                }
+
+            return original_inspect(
+                snapshot,
+                persist=persist,
+            )
+
+        service.inspect_snapshot = (
+            inspect_snapshot
+        )
+
+        result = service.inspect_all_chats(
+            persist=False,
+            retries=0,
+            step_ratio=0.5,
+            wait_seconds=0,
+        )
+
+        summary = result["summary"]
+
+        self.assertTrue(
+            summary["coverage_complete"]
+        )
+
+        self.assertEqual(
+            summary["retry_pending_rows"],
+            1,
+        )
+
+        self.assertEqual(
+            summary["retry_pending_offsets"],
+            [76],
+        )
+
+        self.assertFalse(
+            summary["integrity_complete"]
+        )
+
 
     def test_full_traversal_persistence_is_idempotent(
         self,
@@ -1506,6 +1871,314 @@ class WhatsAppSyncServiceTest(
                 "status_advanced"
             ],
             1,
+        )
+
+
+    def test_incremental_anchor_can_advance_provider_status(
+        self,
+    ):
+        delivered = WhatsAppMessageSnapshot(
+            provider_message_id="MSG-STATUS-ANCHOR",
+            direction=MESSAGE_DIRECTION_OUTBOUND,
+            body_text="Mensaje",
+            provider_timestamp=(
+                "2026-08-14T08:30:00"
+            ),
+            message_type=MESSAGE_TYPE_TEXT,
+            provider_status=MESSAGE_STATUS_DELIVERED,
+        )
+
+        connector = FakeMessageConnector(
+            [
+                delivered,
+            ]
+        )
+
+        communication = (
+            FakeMessageCommunicationService()
+        )
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=communication,
+        )
+
+        first = service.sync_open_chat_messages(
+            thread_id=50,
+        )
+
+        self.assertEqual(
+            first["summary"]["created"],
+            1,
+        )
+
+        read = WhatsAppMessageSnapshot(
+            provider_message_id="MSG-STATUS-ANCHOR",
+            direction=MESSAGE_DIRECTION_OUTBOUND,
+            body_text="Mensaje",
+            provider_timestamp=(
+                "2026-08-14T08:30:00"
+            ),
+            message_type=MESSAGE_TYPE_TEXT,
+            provider_status=MESSAGE_STATUS_READ,
+        )
+
+        connector.snapshots = [
+            read,
+        ]
+
+        second = service.sync_open_chat_messages(
+            thread_id=50,
+            after_provider_message_id=(
+                "MSG-STATUS-ANCHOR"
+            ),
+        )
+
+        self.assertEqual(
+            second["summary"]["sync_mode"],
+            "INCREMENTAL",
+        )
+
+        self.assertTrue(
+            second["summary"]["anchor_found"]
+        )
+
+        self.assertEqual(
+            second["summary"]["scanned"],
+            1,
+        )
+
+        self.assertEqual(
+            second["summary"]["created"],
+            0,
+        )
+
+        self.assertEqual(
+            second["summary"]["reused"],
+            1,
+        )
+
+        self.assertEqual(
+            second["summary"]["status_advanced"],
+            1,
+        )
+
+        self.assertEqual(
+            second["items"][0][
+                "provider_message_id"
+            ],
+            "MSG-STATUS-ANCHOR",
+        )
+
+        self.assertTrue(
+            second["items"][0][
+                "status_advanced"
+            ]
+        )
+
+
+    def test_sync_open_chat_messages_incremental_processes_only_after_anchor(
+        self,
+    ):
+        snapshots = [
+            WhatsAppMessageSnapshot(
+                provider_message_id="MSG-10",
+                direction=(
+                    MESSAGE_DIRECTION_INBOUND
+                ),
+                body_text="Anterior",
+                provider_timestamp=(
+                    "2026-08-13T09:00:00"
+                ),
+                message_type=(
+                    MESSAGE_TYPE_TEXT
+                ),
+                provider_status=(
+                    MESSAGE_STATUS_RECEIVED
+                ),
+            ),
+            WhatsAppMessageSnapshot(
+                provider_message_id="MSG-11",
+                direction=(
+                    MESSAGE_DIRECTION_INBOUND
+                ),
+                body_text="Nuevo 1",
+                provider_timestamp=(
+                    "2026-08-13T09:01:00"
+                ),
+                message_type=(
+                    MESSAGE_TYPE_TEXT
+                ),
+                provider_status=(
+                    MESSAGE_STATUS_RECEIVED
+                ),
+            ),
+            WhatsAppMessageSnapshot(
+                provider_message_id="MSG-12",
+                direction=(
+                    MESSAGE_DIRECTION_INBOUND
+                ),
+                body_text="Nuevo 2",
+                provider_timestamp=(
+                    "2026-08-13T09:02:00"
+                ),
+                message_type=(
+                    MESSAGE_TYPE_TEXT
+                ),
+                provider_status=(
+                    MESSAGE_STATUS_RECEIVED
+                ),
+            ),
+        ]
+
+        connector = FakeMessageConnector(
+            snapshots
+        )
+
+        communication = (
+            FakeMessageCommunicationService()
+        )
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=(
+                communication
+            ),
+        )
+
+        result = (
+            service.sync_open_chat_messages(
+                thread_id=50,
+                after_provider_message_id=(
+                    "MSG-10"
+                ),
+            )
+        )
+
+        summary = result["summary"]
+
+        self.assertEqual(
+            summary["extracted"],
+            3,
+        )
+
+        self.assertEqual(
+            summary["scanned"],
+            3,
+        )
+
+        self.assertEqual(
+            summary["sync_mode"],
+            "INCREMENTAL",
+        )
+
+        self.assertTrue(
+            summary["anchor_found"]
+        )
+
+        self.assertEqual(
+            [
+                call[
+                    "provider_message_id"
+                ]
+                for call in communication.calls
+            ],
+            [
+                "MSG-10",
+                "MSG-11",
+                "MSG-12",
+            ],
+        )
+
+
+    def test_sync_open_chat_messages_incremental_falls_back_when_anchor_missing(
+        self,
+    ):
+        snapshots = [
+            WhatsAppMessageSnapshot(
+                provider_message_id="MSG-21",
+                direction=(
+                    MESSAGE_DIRECTION_INBOUND
+                ),
+                body_text="Uno",
+                provider_timestamp=(
+                    "2026-08-13T09:01:00"
+                ),
+                message_type=(
+                    MESSAGE_TYPE_TEXT
+                ),
+                provider_status=(
+                    MESSAGE_STATUS_RECEIVED
+                ),
+            ),
+            WhatsAppMessageSnapshot(
+                provider_message_id="MSG-22",
+                direction=(
+                    MESSAGE_DIRECTION_INBOUND
+                ),
+                body_text="Dos",
+                provider_timestamp=(
+                    "2026-08-13T09:02:00"
+                ),
+                message_type=(
+                    MESSAGE_TYPE_TEXT
+                ),
+                provider_status=(
+                    MESSAGE_STATUS_RECEIVED
+                ),
+            ),
+        ]
+
+        connector = FakeMessageConnector(
+            snapshots
+        )
+
+        communication = (
+            FakeMessageCommunicationService()
+        )
+
+        service = WhatsAppSyncService(
+            connector=connector,
+            communication_service=(
+                communication
+            ),
+        )
+
+        result = (
+            service.sync_open_chat_messages(
+                thread_id=50,
+                after_provider_message_id=(
+                    "MSG-NO-VISIBLE"
+                ),
+            )
+        )
+
+        summary = result["summary"]
+
+        self.assertEqual(
+            summary["extracted"],
+            2,
+        )
+
+        self.assertEqual(
+            summary["scanned"],
+            2,
+        )
+
+        self.assertEqual(
+            summary["sync_mode"],
+            "FULL_FALLBACK",
+        )
+
+        self.assertFalse(
+            summary["anchor_found"]
+        )
+
+        self.assertEqual(
+            len(
+                communication.calls
+            ),
+            2,
         )
 
 
