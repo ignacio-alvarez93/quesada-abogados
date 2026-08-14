@@ -20,6 +20,7 @@ from backend.automation.connectors.whatsapp_connector import (
     SESSION_STATUS_NEEDS_LOGIN,
     SESSION_STATUS_READY,
     WhatsAppConnector,
+    diff_sidebar_chat_fingerprints,
 )
 from backend.services.communication_service import (
     CommunicationService,
@@ -82,6 +83,29 @@ class WhatsAppRuntimeService:
         # Solo se lee/escribe dentro del worker SeleniumBase/CDP.
         self._active_chat_fingerprint = None
 
+        # Última fotografía ligera del sidebar de WhatsApp.
+        #
+        # Igual que la huella del chat activo, únicamente se
+        # lee/escribe desde el worker único SeleniumBase/CDP.
+        #
+        # La primera lectura establece baseline y NO genera
+        # falsos eventos SIDEBAR_THREAD_APPEARED.
+        self._sidebar_chat_fingerprint = None
+
+        # Último destinatario cuya identidad telefónica
+        # fue verificada fuertemente antes de un envío.
+        #
+        # Esta cache NO sustituye la verificación fuerte:
+        # únicamente permite reutilizarla mientras:
+        # - se solicite el mismo thread;
+        # - el teléfono persistido no haya cambiado;
+        # - WhatsApp siga mostrando la misma identidad;
+        # - esa identidad resuelva de forma única al mismo
+        #   thread CRM.
+        self._verified_send_thread_id = None
+        self._verified_send_phone = None
+        self._verified_send_identity = None
+
         # Watcher ligero del chat activo.
         #
         # Este hilo NO toca SeleniumBase/CDP directamente:
@@ -91,6 +115,7 @@ class WhatsAppRuntimeService:
         self._active_chat_watch_thread = None
         self._active_chat_watch_stop = None
         self._active_chat_watch_lock = threading.Lock()
+        self._active_chat_watch_on_change = None
 
         # Diagnóstico ligero del watcher.
         #
@@ -467,6 +492,139 @@ class WhatsAppRuntimeService:
             "routing": routing,
         }
 
+    def _open_latest_thread_for_selection_impl(
+        self,
+        thread_id,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+    ):
+        """Navega al último thread solicitado sin preverify fuerte.
+
+        Esta ruta se utiliza exclusivamente para selección visual
+        desde el CRM.
+
+        Seguridad:
+        - abre el chat por teléfono mediante _open_thread_impl();
+        - _open_thread_impl() usa verify_identity=False;
+        - invalida cualquier cache fuerte de envío anterior;
+        - NO abre el perfil del contacto;
+        - NO autoriza un envío.
+
+        send_text_message() mantiene su propia barrera fuerte y,
+        al no existir cache válida, ejecutará STRONG_VERIFY antes
+        de alcanzar el transporte.
+        """
+        requested_thread_id = int(
+            thread_id
+        )
+
+        with self._desired_thread_lock:
+            desired_thread_id = (
+                self._desired_thread_id
+            )
+
+        if (
+            desired_thread_id
+            != requested_thread_id
+        ):
+            return {
+                "skipped": True,
+                "reason":
+                    "STALE_SELECTION",
+                "requested_thread_id":
+                    requested_thread_id,
+                "desired_thread_id":
+                    desired_thread_id,
+            }
+
+        # Una navegación ligera nunca puede heredar una
+        # autorización fuerte perteneciente al chat anterior.
+        self._clear_verified_send_route()
+
+
+        result = (
+            self._open_thread_impl(
+                requested_thread_id,
+                wait_timeout=wait_timeout,
+                routing_timeout=routing_timeout,
+            )
+        )
+
+
+        with self._desired_thread_lock:
+            desired_thread_id = (
+                self._desired_thread_id
+            )
+
+        if (
+            desired_thread_id
+            != requested_thread_id
+        ):
+            self._clear_verified_send_route()
+
+            return {
+                "skipped": True,
+                "reason":
+                    "STALE_SELECTION_AFTER_OPEN",
+                "requested_thread_id":
+                    requested_thread_id,
+                "desired_thread_id":
+                    desired_thread_id,
+            }
+
+        # Explicitamos el contrato para callers/UI.
+        routing = dict(
+            result.get(
+                "routing"
+            )
+            or {}
+        )
+
+        routing[
+            "selection_light"
+        ] = True
+
+        routing[
+            "send_preverified"
+        ] = False
+
+        result[
+            "routing"
+        ] = routing
+
+        return result
+
+
+    def open_thread_for_selection(
+        self,
+        thread_id,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+    ):
+        """Abre rápidamente un thread solicitado desde la UI.
+
+        No sustituye verify_and_open_thread(): aquella operación
+        continúa siendo la variante de verificación fuerte.
+        """
+        requested_thread_id = int(
+            thread_id
+        )
+
+        with self._desired_thread_lock:
+            self._desired_thread_id = (
+                requested_thread_id
+            )
+
+        return self._run_serialized(
+            self._open_latest_thread_for_selection_impl,
+            requested_thread_id,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+        )
+
+
     def _verify_and_open_latest_thread_impl(
         self,
         thread_id,
@@ -496,11 +654,152 @@ class WhatsAppRuntimeService:
                     desired_thread_id,
             }
 
-        return self._open_thread_impl(
-            requested_thread_id,
-            wait_timeout=wait_timeout,
-            routing_timeout=routing_timeout,
+        # Optimización de routing de selección:
+        # Selección CRM = navegar primero al destino mediante
+        # la ruta ligera. No inspeccionamos el perfil del chat
+        # anterior, porque sabemos que el usuario ha pedido
+        # expresamente otro thread.
+        result = (
+            self._open_thread_impl(
+                requested_thread_id,
+                wait_timeout=wait_timeout,
+                routing_timeout=routing_timeout,
+            )
         )
+
+        with self._desired_thread_lock:
+            desired_thread_id = (
+                self._desired_thread_id
+            )
+
+        if (
+            desired_thread_id
+            != requested_thread_id
+        ):
+            self._clear_verified_send_route()
+
+            return {
+                "skipped": True,
+                "reason": "STALE_SELECTION_AFTER_OPEN",
+                "requested_thread_id":
+                    requested_thread_id,
+                "desired_thread_id":
+                    desired_thread_id,
+            }
+
+        thread = (
+            result.get(
+                "thread"
+            )
+            if isinstance(
+                result,
+                dict,
+            )
+            else None
+        )
+
+        connector = self._connector
+
+        if (
+            thread is None
+            or connector is None
+        ):
+            self._clear_verified_send_route()
+
+            return result
+
+        phone = str(
+            thread.external_address
+            or ""
+        ).strip()
+
+        if not phone:
+            self._clear_verified_send_route()
+
+            return result
+
+        # El destino ya está abierto. Ahora hacemos UNA única
+        # verificación fuerte sobre ese chat activo.
+        verification = (
+            connector
+            ._verify_active_chat_phone(
+                phone,
+                timeout=min(
+                    8,
+                    max(
+                        1,
+                        int(
+                            routing_timeout
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        with self._desired_thread_lock:
+            desired_thread_id = (
+                self._desired_thread_id
+            )
+
+        if (
+            desired_thread_id
+            != requested_thread_id
+        ):
+            self._clear_verified_send_route()
+
+            return {
+                "skipped": True,
+                "reason":
+                    "STALE_SELECTION_AFTER_VERIFY",
+                "requested_thread_id":
+                    requested_thread_id,
+                "desired_thread_id":
+                    desired_thread_id,
+            }
+
+        if not verification.get(
+            "verified"
+        ):
+            self._clear_verified_send_route()
+
+            reason = (
+                verification.get(
+                    "reason"
+                )
+                or "IDENTITY_UNVERIFIABLE"
+            )
+
+            raise RuntimeError(
+                "No se pudo verificar el "
+                "destinatario WhatsApp "
+                f"({reason})"
+            )
+
+        routing = dict(
+            result.get(
+                "routing"
+            )
+            or {}
+        )
+
+        routing.update(
+            verification
+        )
+
+        result[
+            "routing"
+        ] = routing
+
+        remembered = (
+            self._remember_verified_send_route(
+                thread=thread,
+                connector=connector,
+            )
+        )
+
+
+        return result
+
 
     def verify_and_open_thread(
         self,
@@ -525,6 +824,211 @@ class WhatsAppRuntimeService:
             routing_timeout=routing_timeout,
         )
 
+    def _clear_verified_send_route(
+        self,
+    ):
+        self._verified_send_thread_id = None
+        self._verified_send_phone = None
+        self._verified_send_identity = None
+
+    @staticmethod
+    def _resolved_thread_id(
+        resolution,
+    ):
+        if not isinstance(
+            resolution,
+            dict,
+        ):
+            return None
+
+        thread = resolution.get(
+            "thread"
+        )
+
+        if thread is None:
+            return None
+
+        value = getattr(
+            thread,
+            "thread_id",
+            None,
+        )
+
+        if value is None:
+            value = getattr(
+                thread,
+                "id",
+                None,
+            )
+
+        if value in (
+            None,
+            "",
+        ):
+            return None
+
+        try:
+            return int(
+                value
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+    def _remember_verified_send_route(
+        self,
+        *,
+        thread,
+        connector,
+    ):
+        try:
+            fingerprint = (
+                connector
+                .get_active_chat_fingerprint()
+            )
+        except Exception:
+            self._clear_verified_send_route()
+            return False
+
+        identity = str(
+            getattr(
+                fingerprint,
+                "active_identity",
+                "",
+            )
+            or ""
+        ).strip()
+
+        if (
+            not getattr(
+                fingerprint,
+                "chat_open",
+                False,
+            )
+            or not identity
+        ):
+            self._clear_verified_send_route()
+            return False
+
+        phone = str(
+            thread.external_address
+            or ""
+        ).strip()
+
+        if not phone:
+            self._clear_verified_send_route()
+            return False
+
+        self._verified_send_thread_id = int(
+            thread.id
+        )
+
+        self._verified_send_phone = phone
+
+        self._verified_send_identity = identity
+
+
+        return True
+
+    def _can_reuse_verified_send_route(
+        self,
+        *,
+        thread,
+        connector,
+    ):
+        requested_thread_id = int(
+            thread.id
+        )
+
+        phone = str(
+            thread.external_address
+            or ""
+        ).strip()
+
+        if (
+            self._verified_send_thread_id
+            != requested_thread_id
+            or self._verified_send_phone
+            != phone
+            or not self._verified_send_identity
+        ):
+            return False
+
+        try:
+            fingerprint = (
+                connector
+                .get_active_chat_fingerprint()
+            )
+        except Exception:
+            self._clear_verified_send_route()
+            return False
+
+        current_identity = str(
+            getattr(
+                fingerprint,
+                "active_identity",
+                "",
+            )
+            or ""
+        ).strip()
+
+        if (
+            not getattr(
+                fingerprint,
+                "chat_open",
+                False,
+            )
+            or not current_identity
+            or (
+                current_identity
+                != self._verified_send_identity
+            )
+        ):
+            self._clear_verified_send_route()
+
+
+            return False
+
+        try:
+            resolution = (
+                self.communication_service
+                .resolve_whatsapp_thread_by_identity(
+                    current_identity
+                )
+            )
+        except Exception:
+            self._clear_verified_send_route()
+
+
+            return False
+
+        if (
+            not isinstance(
+                resolution,
+                dict,
+            )
+            or not resolution.get(
+                "matched"
+            )
+            or resolution.get(
+                "ambiguous"
+            )
+            or (
+                self._resolved_thread_id(
+                    resolution
+                )
+                != requested_thread_id
+            )
+        ):
+            self._clear_verified_send_route()
+
+
+            return False
+
+        return True
+
     def _send_text_message_impl(
         self,
         *,
@@ -544,15 +1048,63 @@ class WhatsAppRuntimeService:
                 "thread_id es obligatorio"
             )
 
-        routing_result = (
-            self._verify_and_open_thread_impl(
-                thread_id,
+        connector = (
+            self._ensure_ready_impl(
                 wait_timeout=wait_timeout,
-                routing_timeout=(
-                    routing_timeout
-                ),
             )
         )
+
+        thread = (
+            self.communication_service
+            .get_thread(
+                thread_id
+            )
+        )
+
+        if thread is None:
+            self._clear_verified_send_route()
+
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
+        phone = str(
+            thread.external_address
+            or ""
+        ).strip()
+
+        if not phone:
+            self._clear_verified_send_route()
+
+            raise ValueError(
+                "La conversación no tiene "
+                "teléfono WhatsApp verificable"
+            )
+
+        if not self._can_reuse_verified_send_route(
+            thread=thread,
+            connector=connector,
+        ):
+            routing_result = (
+                self._verify_and_open_thread_impl(
+                    thread_id,
+                    wait_timeout=wait_timeout,
+                    routing_timeout=(
+                        routing_timeout
+                    ),
+                )
+            )
+
+            verified_thread = (
+                routing_result[
+                    "thread"
+                ]
+            )
+
+            self._remember_verified_send_route(
+                thread=verified_thread,
+                connector=connector,
+            )
 
         return (
             self._get_outbound_service()
@@ -623,6 +1175,15 @@ class WhatsAppRuntimeService:
             changed = True
 
         elif (
+            previous.last_provider_message_status
+            != current.last_provider_message_status
+        ):
+            # El provider id puede permanecer idéntico mientras
+            # WhatsApp avanza SENT -> DELIVERED -> READ.
+            change_type = "MESSAGE_CHANGED"
+            changed = True
+
+        elif (
             previous.visible_message_count
             != current.visible_message_count
         ):
@@ -672,11 +1233,114 @@ class WhatsAppRuntimeService:
         result["resolution"] = None
         result["sync"] = None
 
+        # ==================================================
+        # REALTIME SIDEBAR
+        # ==================================================
+        #
+        # Esta lectura:
+        # - no navega;
+        # - no hace click;
+        # - no desplaza WhatsApp;
+        # - no persiste;
+        # - no cambia el chat activo.
+        #
+        # La primera iteración crea únicamente el baseline.
+        sidebar_current = (
+            self._connector
+            .get_sidebar_chat_fingerprint(
+                viewport_only=True,
+            )
+        )
+
+        sidebar_previous = (
+            self._sidebar_chat_fingerprint
+        )
+
+        sidebar_initial_available = False
+
+        if sidebar_previous is None:
+            sidebar_changes = []
+            sidebar_change_type = (
+                "SIDEBAR_INITIAL"
+            )
+            sidebar_changed = False
+
+            # El primer fingerprint no representa un delta,
+            # pero sí contiene estado útil que el consumidor
+            # necesita hidratar: preview, hora y unread.
+            sidebar_initial_available = bool(
+                sidebar_current
+            )
+        else:
+            sidebar_changes = (
+                diff_sidebar_chat_fingerprints(
+                    sidebar_previous,
+                    sidebar_current,
+                )
+            )
+
+            sidebar_changed = bool(
+                sidebar_changes
+            )
+
+            sidebar_change_type = (
+                "SIDEBAR_CHANGED"
+                if sidebar_changed
+                else "SIDEBAR_UNCHANGED"
+            )
+
+        self._sidebar_chat_fingerprint = (
+            sidebar_current
+        )
+
+        result[
+            "sidebar_previous"
+        ] = sidebar_previous
+
+        result[
+            "sidebar"
+        ] = sidebar_current
+
+        result[
+            "sidebar_changes"
+        ] = sidebar_changes
+
+        result[
+            "sidebar_changed"
+        ] = sidebar_changed
+
+        result[
+            "sidebar_change_type"
+        ] = sidebar_change_type
+
+        result[
+            "sidebar_initial_available"
+        ] = bool(
+            sidebar_initial_available
+        )
+
+        # changed representa ahora cualquier modificación
+        # observable que interese al consumidor del watcher.
+        #
+        # Mantiene compatibilidad:
+        # - change_type continúa describiendo el chat activo;
+        # - sidebar_* describe exclusivamente la bandeja.
+        result["changed"] = bool(
+            result.get(
+                "changed"
+            )
+            or sidebar_changed
+            or sidebar_initial_available
+        )
+
         if (
             result.get(
                 "change_type"
             )
-            != "MESSAGE_CHANGED"
+            not in (
+                "MESSAGE_CHANGED",
+                "CHAT_CHANGED",
+            )
         ):
             return result
 
@@ -763,6 +1427,45 @@ class WhatsAppRuntimeService:
 
             return result
 
+        after_provider_message_id = None
+
+        if (
+            result.get(
+                "change_type"
+            )
+            == "MESSAGE_CHANGED"
+            and result.get(
+                "previous"
+            )
+            is not None
+        ):
+            after_provider_message_id = (
+                result[
+                    "previous"
+                ].last_provider_message_id
+            )
+
+        elif (
+            result.get(
+                "change_type"
+            )
+            == "CHAT_CHANGED"
+        ):
+            try:
+                after_provider_message_id = (
+                    self.communication_service
+                    .get_latest_thread_provider_message_id(
+                        thread_id
+                    )
+                )
+
+            except Exception:
+                # El checkpoint es exclusivamente una
+                # optimización. Un fallo al obtenerlo
+                # nunca bloquea el sync completo seguro.
+                after_provider_message_id = None
+
+
         try:
             result["sync"] = (
                 self._get_sync_service()
@@ -774,6 +1477,9 @@ class WhatsAppRuntimeService:
                     ),
                     expected_last_provider_message_id=(
                         current.last_provider_message_id
+                    ),
+                    after_provider_message_id=(
+                        after_provider_message_id
                     ),
                 )
             )
@@ -803,6 +1509,28 @@ class WhatsAppRuntimeService:
             wait_timeout=wait_timeout,
             sync_limit=sync_limit,
         )
+
+
+    def set_active_chat_watch_callback(
+        self,
+        on_change,
+    ):
+        if (
+            on_change is not None
+            and not callable(
+                on_change
+            )
+        ):
+            raise TypeError(
+                "on_change debe ser callable o None"
+            )
+
+        with self._active_chat_watch_lock:
+            self._active_chat_watch_on_change = (
+                on_change
+            )
+
+        return True
 
 
     @property
@@ -845,7 +1573,6 @@ class WhatsAppRuntimeService:
         stop_event,
         interval_seconds,
         wait_timeout,
-        on_change,
     ):
         while not stop_event.is_set():
             try:
@@ -950,6 +1677,11 @@ class WhatsAppRuntimeService:
                                 sync_result,
                         }
 
+                with self._active_chat_watch_lock:
+                    on_change = (
+                        self._active_chat_watch_on_change
+                    )
+
                 if (
                     result.get(
                         "changed"
@@ -1020,7 +1752,7 @@ class WhatsAppRuntimeService:
     def start_active_chat_watch(
         self,
         *,
-        interval_seconds=1.0,
+        interval_seconds=0.5,
         wait_timeout=5,
         on_change=None,
     ):
@@ -1039,6 +1771,10 @@ class WhatsAppRuntimeService:
         )
 
         with self._active_chat_watch_lock:
+            self._active_chat_watch_on_change = (
+                on_change
+            )
+
             current = (
                 self._active_chat_watch_thread
             )
@@ -1067,8 +1803,6 @@ class WhatsAppRuntimeService:
                         interval,
                     "wait_timeout":
                         effective_wait_timeout,
-                    "on_change":
-                        on_change,
                 },
                 name=(
                     "whatsapp-active-chat-watch"
@@ -1182,6 +1916,8 @@ class WhatsAppRuntimeService:
             self._connector = None
             self._outbound_service = None
             self._sync_service = None
+            self._active_chat_fingerprint = None
+            self._sidebar_chat_fingerprint = None
 
     def close(
         self,
@@ -1212,5 +1948,7 @@ class WhatsAppRuntimeService:
             self._desired_thread_id = None
 
         self._active_chat_fingerprint = None
+
+        self._clear_verified_send_route()
 
         return result

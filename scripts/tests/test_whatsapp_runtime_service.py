@@ -37,6 +37,7 @@ class FakeConnector:
         self.sync_snapshots = []
 
         self.active_chat_fingerprints = []
+        self.sidebar_chat_fingerprints = []
 
         self.open_phone_calls = []
         self.routing_result = {
@@ -50,6 +51,19 @@ class FakeConnector:
                 "+34600111222"
             ),
         }
+
+        self.active_phone_verification_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        self.active_phone_verification_calls = []
+
 
         self.__class__.instances.append(
             self
@@ -143,6 +157,32 @@ class FakeConnector:
 
         return value
 
+    def get_sidebar_chat_fingerprint(
+        self,
+        *,
+        viewport_only=True,
+    ):
+        if not self.sidebar_chat_fingerprints:
+            # Compatibilidad con tests históricos:
+            # si no preparan sidebar explícitamente,
+            # se considera una bandeja estable vacía.
+            return {}
+
+        value = (
+            self.sidebar_chat_fingerprints
+            .pop(0)
+        )
+
+        if isinstance(
+            value,
+            BaseException,
+        ):
+            raise value
+
+        return dict(
+            value
+        )
+
     def list_visible_message_snapshots(
         self,
         *,
@@ -153,6 +193,35 @@ class FakeConnector:
                 -int(limit):
             ]
         )
+
+    def _verify_active_chat_phone(
+        self,
+        phone,
+        *,
+        timeout=10,
+    ):
+        self.active_phone_verification_calls.append(
+            (
+                phone,
+                timeout,
+            )
+        )
+
+        result = dict(
+            self.active_phone_verification_result
+        )
+
+        result[
+            "expected_phone"
+        ] = str(
+            result.get(
+                "expected_phone"
+            )
+            or phone
+        )
+
+        return result
+
 
 
 class FakeThread:
@@ -181,6 +250,24 @@ class FakeCommunicationService:
         self,
     ):
         self.thread = FakeThread()
+        self.latest_provider_message_id = None
+
+    def get_latest_thread_provider_message_id(
+        self,
+        thread_id,
+    ):
+        if (
+            self.thread is None
+            or int(thread_id)
+            != int(self.thread.id)
+        ):
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
+        return (
+            self.latest_provider_message_id
+        )
 
     def get_thread(
         self,
@@ -194,6 +281,32 @@ class FakeCommunicationService:
             return self.thread
 
         return None
+
+
+class FakeSuccessfulOutboundService:
+    def __init__(
+        self,
+    ):
+        self.calls = []
+
+    def send_text_message(
+        self,
+        **kwargs,
+    ):
+        self.calls.append(
+            dict(
+                kwargs
+            )
+        )
+
+        return {
+            "ok": True,
+            "uncertain": False,
+            "message": None,
+            "attempt": None,
+            "provider_snapshot": None,
+            "error": None,
+        }
 
 
 class WhatsAppRuntimeServiceTest(
@@ -340,6 +453,69 @@ class WhatsAppRuntimeServiceTest(
         )
 
 
+    def test_open_thread_for_selection_uses_light_route_without_preverify(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        result = (
+            runtime
+            .open_thread_for_selection(
+                7,
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    False,
+                    9,
+                )
+            ],
+        )
+
+        # La selección visual NO abre/verifica el perfil.
+        self.assertEqual(
+            connector.active_phone_verification_calls,
+            [],
+        )
+
+        self.assertTrue(
+            result[
+                "routing"
+            ][
+                "opened"
+            ]
+        )
+
+        self.assertTrue(
+            result[
+                "routing"
+            ][
+                "selection_light"
+            ]
+        )
+
+        self.assertFalse(
+            result[
+                "routing"
+            ][
+                "send_preverified"
+            ]
+        )
+
+        self.assertIsNone(
+            runtime._verified_send_thread_id
+        )
+
+
     def test_verify_and_open_thread_routes_by_persisted_phone(
         self,
     ):
@@ -383,36 +559,166 @@ class WhatsAppRuntimeServiceTest(
             7,
         )
 
-    def test_verify_and_open_thread_uses_lightweight_navigation(
+    def test_light_selection_requires_strong_verify_on_first_send(
         self,
     ):
         runtime = self._runtime()
 
         connector = runtime.start()
 
-        # La selección ordinaria de una conversación no abre
-        # el perfil ni exige verificación fuerte por teléfono.
-        # Esa verificación se reserva para operaciones sensibles
-        # como el envío.
+        # Selección: navegación ligera.
+        selected = (
+            runtime
+            .open_thread_for_selection(
+                7,
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        self.assertTrue(
+            selected[
+                "routing"
+            ][
+                "opened"
+            ]
+        )
+
+        self.assertIsNone(
+            runtime._verified_send_thread_id
+        )
+
+        # El primer envío debe entrar por la barrera fuerte.
         connector.routing_result = {
             "opened": True,
-            "verified": False,
+            "verified": True,
             "reason": None,
             "expected_phone":
                 "+34600111222",
-            "observed_phone": None,
+            "observed_phone":
+                "+34600111222",
         }
 
-        result = runtime.verify_and_open_thread(
-            7,
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        sent = runtime.send_text_message(
+            thread_id=7,
+            body_text=(
+                "Mensaje tras selección ligera"
+            ),
             wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        self.assertTrue(
+            sent[
+                "ok"
+            ]
+        )
+
+        # Primera llamada = selección ligera.
+        # Segunda llamada = STRONG_VERIFY previo al envío.
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    False,
+                    9,
+                ),
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    True,
+                    9,
+                ),
+            ],
+        )
+
+        self.assertEqual(
+            len(
+                outbound.calls
+            ),
+            1,
+        )
+
+
+    def test_verify_and_open_thread_preverifies_for_first_send(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        fingerprint = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "Test Contact"
+                ),
+                active_identity=(
+                    "test contact"
+                ),
+                visible_message_count=10,
+                last_provider_message_id=(
+                    "MSG-10"
+                ),
+            )
+        )
+
+        # 1. recordar cache tras selección;
+        # 2. validar cache al primer envío.
+        connector.active_chat_fingerprints = [
+            fingerprint,
+            fingerprint,
+        ]
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": True,
+                "ambiguous": False,
+                "match_basis":
+                    "DISPLAY_NAME",
+                "thread":
+                    runtime.communication_service.thread,
+                "matches": [
+                    runtime.communication_service.thread,
+                ],
+                "identity":
+                    identity,
+            }
+        )
+
+        result = (
+            runtime.verify_and_open_thread(
+                7,
+                wait_timeout=1,
+                routing_timeout=9,
+            )
         )
 
         self.assertTrue(
             result[
                 "routing"
             ][
-                "opened"
+                "verified"
             ]
         )
 
@@ -423,17 +729,49 @@ class WhatsAppRuntimeServiceTest(
                     "+34 600 111 222",
                     "Test Contact",
                     False,
-                    15,
+                    9,
                 )
             ],
         )
 
         self.assertEqual(
-            result[
-                "thread"
-            ].id,
+            runtime._verified_send_thread_id,
             7,
         )
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        sent = runtime.send_text_message(
+            thread_id=7,
+            body_text="Primer mensaje",
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        self.assertTrue(
+            sent["ok"]
+        )
+
+        # La primera pulsación de Enviar NO debe repetir la
+        # verificación fuerte que ya se hizo al seleccionar.
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    False,
+                    9,
+                )
+            ],
+        )
+
 
     def test_observe_active_chat_detects_initial_and_unchanged_state(
         self,
@@ -688,6 +1026,132 @@ class WhatsAppRuntimeServiceTest(
         )
 
 
+    def test_active_chat_watch_emits_sidebar_only_change(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        active = (
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MSG-10",
+            )
+        )
+
+        connector.active_chat_fingerprints = [
+            active,
+            active,
+            active,
+        ]
+
+        connector.sidebar_chat_fingerprints = [
+            {
+                "alla": {
+                    "identity":
+                        "alla",
+                    "display_name":
+                        "Alla",
+                    "primary_detail":
+                        "13:40",
+                    "preview":
+                        "Vale",
+                    "unread_count":
+                        0,
+                    "position":
+                        4,
+                    "virtual_offset":
+                        304,
+                    "ambiguous":
+                        False,
+                },
+            },
+            {
+                "alla": {
+                    "identity":
+                        "alla",
+                    "display_name":
+                        "Alla",
+                    "primary_detail":
+                        "13:56",
+                    "preview":
+                        "Nuevo mensaje",
+                    "unread_count":
+                        1,
+                    "position":
+                        0,
+                    "virtual_offset":
+                        0,
+                    "ambiguous":
+                        False,
+                },
+            },
+        ]
+
+        received = []
+        event = threading.Event()
+
+        def on_change(
+            result,
+        ):
+            if result.get(
+                "sidebar_changed"
+            ):
+                received.append(
+                    result
+                )
+                event.set()
+
+        runtime.start_active_chat_watch(
+            interval_seconds=0.05,
+            wait_timeout=1,
+            on_change=on_change,
+        )
+
+        self.assertTrue(
+            event.wait(
+                timeout=1,
+            )
+        )
+
+        runtime.stop_active_chat_watch()
+
+        self.assertGreaterEqual(
+            len(
+                received
+            ),
+            1,
+        )
+
+        result = received[
+            0
+        ]
+
+        self.assertEqual(
+            result[
+                "change_type"
+            ],
+            "UNCHANGED",
+        )
+
+        self.assertTrue(
+            result[
+                "sidebar_changed"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "sidebar_changes"
+            ][0][
+                "identity"
+            ],
+            "alla",
+        )
+
     def test_active_chat_watch_survives_temporary_observation_error(
         self,
     ):
@@ -777,6 +1241,327 @@ class WhatsAppRuntimeServiceTest(
 
         self.assertFalse(
             runtime.started
+        )
+
+
+    def test_send_text_message_reuses_verified_route_for_same_active_thread(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        fingerprint = WhatsAppActiveChatFingerprint(
+            chat_open=True,
+            active_display_name=(
+                "Test Contact"
+            ),
+            active_identity=(
+                "test contact"
+            ),
+            visible_message_count=10,
+            last_provider_message_id=(
+                "MSG-10"
+            ),
+        )
+
+        # Primera huella:
+        # cache tras verificación fuerte.
+        #
+        # Segunda huella:
+        # validación del fast-path.
+        connector.active_chat_fingerprints = [
+            fingerprint,
+            fingerprint,
+        ]
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": True,
+                "ambiguous": False,
+                "match_basis":
+                    "DISPLAY_NAME",
+                "thread":
+                    runtime.communication_service.thread,
+                "matches": [
+                    runtime.communication_service.thread,
+                ],
+                "identity":
+                    identity,
+            }
+        )
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        first = runtime.send_text_message(
+            thread_id=7,
+            body_text="Primero",
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        second = runtime.send_text_message(
+            thread_id=7,
+            body_text="Segundo",
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        self.assertTrue(
+            first["ok"]
+        )
+
+        self.assertTrue(
+            second["ok"]
+        )
+
+        # Solo el primer envío exige verificación fuerte.
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    True,
+                    9,
+                )
+            ],
+        )
+
+        self.assertEqual(
+            len(
+                outbound.calls
+            ),
+            2,
+        )
+
+
+    def test_send_text_message_rejects_cache_after_manual_chat_change(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        expected_fingerprint = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "Test Contact"
+                ),
+                active_identity=(
+                    "test contact"
+                ),
+                visible_message_count=10,
+                last_provider_message_id=(
+                    "MSG-10"
+                ),
+            )
+        )
+
+        other_fingerprint = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "Other Contact"
+                ),
+                active_identity=(
+                    "other contact"
+                ),
+                visible_message_count=5,
+                last_provider_message_id=(
+                    "OTHER-5"
+                ),
+            )
+        )
+
+        # 1. recordar primera verificación;
+        # 2. detectar que el usuario cambió de chat;
+        # 3. recordar de nuevo la ruta tras fallback fuerte.
+        connector.active_chat_fingerprints = [
+            expected_fingerprint,
+            other_fingerprint,
+            expected_fingerprint,
+        ]
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": True,
+                "ambiguous": False,
+                "thread":
+                    runtime.communication_service.thread,
+                "matches": [
+                    runtime.communication_service.thread,
+                ],
+                "identity":
+                    identity,
+            }
+        )
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        runtime.send_text_message(
+            thread_id=7,
+            body_text="Primero",
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        runtime.send_text_message(
+            thread_id=7,
+            body_text="Segundo",
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        # Al cambiar el chat activo, el segundo envío
+        # vuelve obligatoriamente por strong verification.
+        self.assertEqual(
+            len(
+                connector.open_phone_calls
+            ),
+            2,
+        )
+
+
+    def test_send_text_message_rejects_cache_when_identity_is_ambiguous(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        fingerprint = WhatsAppActiveChatFingerprint(
+            chat_open=True,
+            active_display_name=(
+                "Test Contact"
+            ),
+            active_identity=(
+                "test contact"
+            ),
+            visible_message_count=10,
+            last_provider_message_id=(
+                "MSG-10"
+            ),
+        )
+
+        connector.active_chat_fingerprints = [
+            fingerprint,
+            fingerprint,
+            fingerprint,
+        ]
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": False,
+                "ambiguous": True,
+                "thread": None,
+                "matches": [
+                    object(),
+                    object(),
+                ],
+                "identity":
+                    identity,
+            }
+        )
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        runtime.send_text_message(
+            thread_id=7,
+            body_text="Primero",
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        runtime.send_text_message(
+            thread_id=7,
+            body_text="Segundo",
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        # Un nombre ambiguo nunca autoriza fast-path.
+        self.assertEqual(
+            len(
+                connector.open_phone_calls
+            ),
+            2,
+        )
+
+
+    def test_close_clears_verified_send_route(
+        self,
+    ):
+        runtime = self._runtime()
+
+        runtime.start()
+
+        runtime._verified_send_thread_id = 7
+        runtime._verified_send_phone = (
+            "+34 600 111 222"
+        )
+        runtime._verified_send_identity = (
+            "test contact"
+        )
+
+        runtime.close()
+
+        self.assertIsNone(
+            runtime._verified_send_thread_id
+        )
+
+        self.assertIsNone(
+            runtime._verified_send_phone
+        )
+
+        self.assertIsNone(
+            runtime._verified_send_identity
         )
 
 
@@ -1017,6 +1802,327 @@ class WhatsAppRuntimeServiceTest(
         )
 
 
+    def test_observe_and_sync_sidebar_first_snapshot_is_baseline(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MSG-10",
+            ),
+        ]
+
+        connector.sidebar_chat_fingerprints = [
+            {
+                "alla": {
+                    "identity":
+                        "alla",
+                    "display_name":
+                        "Alla",
+                    "primary_detail":
+                        "13:40",
+                    "preview":
+                        "Hola",
+                    "unread_count":
+                        1,
+                    "position":
+                        0,
+                    "virtual_offset":
+                        0,
+                    "ambiguous":
+                        False,
+                },
+            },
+        ]
+
+        result = (
+            runtime
+            .observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            result[
+                "sidebar_change_type"
+            ],
+            "SIDEBAR_INITIAL",
+        )
+
+        self.assertFalse(
+            result[
+                "sidebar_changed"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "sidebar_changes"
+            ],
+            [],
+        )
+
+        self.assertIn(
+            "alla",
+            result[
+                "sidebar"
+            ],
+        )
+
+    def test_observe_and_sync_sidebar_change_sets_global_changed(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        active = (
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MSG-10",
+            )
+        )
+
+        connector.active_chat_fingerprints = [
+            active,
+            active,
+        ]
+
+        connector.sidebar_chat_fingerprints = [
+            {
+                "alla": {
+                    "identity":
+                        "alla",
+                    "display_name":
+                        "Alla",
+                    "primary_detail":
+                        "13:40",
+                    "preview":
+                        "Vale",
+                    "unread_count":
+                        0,
+                    "position":
+                        4,
+                    "virtual_offset":
+                        304,
+                    "ambiguous":
+                        False,
+                },
+            },
+            {
+                "alla": {
+                    "identity":
+                        "alla",
+                    "display_name":
+                        "Alla",
+                    "primary_detail":
+                        "13:55",
+                    "preview":
+                        "Necesito hablar contigo",
+                    "unread_count":
+                        1,
+                    "position":
+                        0,
+                    "virtual_offset":
+                        0,
+                    "ambiguous":
+                        False,
+                },
+            },
+        ]
+
+        runtime.observe_and_sync_active_chat(
+            wait_timeout=1,
+        )
+
+        result = (
+            runtime
+            .observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        # El chat activo no ha cambiado.
+        self.assertEqual(
+            result[
+                "change_type"
+            ],
+            "UNCHANGED",
+        )
+
+        # Pero el resultado global sí debe notificarse.
+        self.assertTrue(
+            result[
+                "changed"
+            ]
+        )
+
+        self.assertTrue(
+            result[
+                "sidebar_changed"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "sidebar_change_type"
+            ],
+            "SIDEBAR_CHANGED",
+        )
+
+        self.assertEqual(
+            len(
+                result[
+                    "sidebar_changes"
+                ]
+            ),
+            1,
+        )
+
+        change = result[
+            "sidebar_changes"
+        ][0]
+
+        self.assertEqual(
+            change[
+                "identity"
+            ],
+            "alla",
+        )
+
+        self.assertEqual(
+            change[
+                "change_type"
+            ],
+            "SIDEBAR_THREAD_CHANGED",
+        )
+
+        self.assertTrue(
+            change[
+                "preview_changed"
+            ]
+        )
+
+        self.assertTrue(
+            change[
+                "unread_changed"
+            ]
+        )
+
+        # Un cambio lateral jamás debe intentar
+        # sincronizar el chat activo por sí mismo.
+        self.assertIsNone(
+            result[
+                "sync"
+            ]
+        )
+
+    def test_observe_and_sync_sidebar_reorder_is_not_content_change(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        active = (
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MSG-10",
+            )
+        )
+
+        connector.active_chat_fingerprints = [
+            active,
+            active,
+        ]
+
+        base = {
+            "identity":
+                "alla",
+            "display_name":
+                "Alla",
+            "primary_detail":
+                "13:40",
+            "preview":
+                "Vale",
+            "unread_count":
+                0,
+            "position":
+                4,
+            "virtual_offset":
+                304,
+            "ambiguous":
+                False,
+        }
+
+        connector.sidebar_chat_fingerprints = [
+            {
+                "alla":
+                    dict(
+                        base
+                    ),
+            },
+            {
+                "alla": {
+                    **base,
+                    "position":
+                        0,
+                    "virtual_offset":
+                        0,
+                },
+            },
+        ]
+
+        runtime.observe_and_sync_active_chat(
+            wait_timeout=1,
+        )
+
+        result = (
+            runtime
+            .observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "sidebar_changed"
+            ]
+        )
+
+        change = result[
+            "sidebar_changes"
+        ][0]
+
+        self.assertEqual(
+            change[
+                "change_type"
+            ],
+            "SIDEBAR_THREAD_REORDERED",
+        )
+
+        self.assertFalse(
+            change[
+                "content_changed"
+            ]
+        )
+
+        self.assertIsNone(
+            result[
+                "sync"
+            ]
+        )
+
     def test_observe_and_sync_unchanged_does_not_sync(
         self,
     ):
@@ -1208,6 +2314,15 @@ class WhatsAppRuntimeServiceTest(
             "MSG-11",
         )
 
+        self.assertEqual(
+            sync_calls[
+                0
+            ][
+                "after_provider_message_id"
+            ],
+            "MSG-10",
+        )
+
         self.assertFalse(
             result[
                 "sync"
@@ -1351,11 +2466,27 @@ class WhatsAppRuntimeServiceTest(
         )
 
 
-    def test_observe_and_sync_chat_changed_does_not_resolve(
+    def test_observe_and_sync_chat_changed_resolves_and_syncs(
         self,
     ):
         runtime = self._runtime()
         connector = runtime.start()
+
+        runtime.communication_service.thread = (
+            FakeThread(
+                thread_id=77,
+                external_address=(
+                    "+34 671 225 902"
+                ),
+                external_display_name=(
+                    "Deneb"
+                ),
+            )
+        )
+
+        runtime.communication_service.latest_provider_message_id = (
+            "DENEB-19"
+        )
 
         connector.active_chat_fingerprints = [
             WhatsAppActiveChatFingerprint(
@@ -1374,18 +2505,77 @@ class WhatsAppRuntimeServiceTest(
             ),
         ]
 
+        # Baseline inicial.
         runtime.observe_and_sync_active_chat(
             wait_timeout=1,
         )
 
+        resolved_thread = type(
+            "ResolvedThread",
+            (),
+            {
+                "thread_id": 77,
+            },
+        )()
+
+        resolution_calls = []
+
+        def resolve(
+            identity,
+        ):
+            resolution_calls.append(
+                identity
+            )
+
+            return {
+                "matched": True,
+                "ambiguous": False,
+                "match_basis":
+                    "DISPLAY_NAME",
+                "thread":
+                    resolved_thread,
+                "matches": [
+                    resolved_thread,
+                ],
+                "identity":
+                    identity,
+            }
+
         runtime.communication_service.resolve_whatsapp_thread_by_identity = (
-            lambda identity:
-                (_ for _ in ())
-                .throw(
-                    AssertionError(
-                        "CHAT_CHANGED no debe resolver"
+            resolve
+        )
+
+        sync_calls = []
+
+        class SyncService:
+            def sync_open_chat_messages(
+                self,
+                **kwargs,
+            ):
+                sync_calls.append(
+                    dict(
+                        kwargs
                     )
                 )
+
+                return {
+                    "summary": {
+                        "thread_id": 77,
+                        "scanned": 20,
+                        "created": 1,
+                        "reused": 19,
+                        "status_advanced": 0,
+                        "skipped": 0,
+                        "errors": 0,
+                    },
+                    "items": [],
+                    "error": False,
+                    "aborted": False,
+                    "abort_reason": None,
+                }
+
+        runtime._sync_service = (
+            SyncService()
         )
 
         result = (
@@ -1399,10 +2589,53 @@ class WhatsAppRuntimeServiceTest(
             "CHAT_CHANGED",
         )
 
-        self.assertIsNone(
-            result["sync"]
+        self.assertEqual(
+            resolution_calls,
+            [
+                "deneb",
+            ],
         )
 
+        self.assertEqual(
+            len(
+                sync_calls
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            sync_calls[0][
+                "thread_id"
+            ],
+            77,
+        )
+
+        self.assertEqual(
+            sync_calls[0][
+                "expected_active_identity"
+            ],
+            "deneb",
+        )
+
+        self.assertEqual(
+            sync_calls[0][
+                "expected_last_provider_message_id"
+            ],
+            "DENEB-20",
+        )
+
+        self.assertEqual(
+            sync_calls[0][
+                "after_provider_message_id"
+            ],
+            "DENEB-19",
+        )
+
+        self.assertFalse(
+            result["sync"][
+                "aborted"
+            ]
+        )
 
     def test_observe_and_sync_window_changed_does_not_resolve(
         self,
@@ -2134,6 +3367,127 @@ class WhatsAppRuntimeServiceTest(
         self.assertIsNone(
             runtime.active_chat_watch_last_error
         )
+
+
+    def test_status_only_fingerprint_change_is_message_changed(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.active_chat_fingerprints = [
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                20,
+                "MSG-STATUS-1",
+                "SENT",
+            ),
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                20,
+                "MSG-STATUS-1",
+                "READ",
+            ),
+        ]
+
+        first = runtime.observe_active_chat(
+            wait_timeout=1,
+        )
+
+        second = runtime.observe_active_chat(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            first["change_type"],
+            "INITIAL",
+        )
+
+        self.assertTrue(
+            second["changed"]
+        )
+
+        self.assertEqual(
+            second["change_type"],
+            "MESSAGE_CHANGED",
+        )
+
+        self.assertEqual(
+            second[
+                "previous"
+            ].last_provider_message_status,
+            "SENT",
+        )
+
+        self.assertEqual(
+            second[
+                "current"
+            ].last_provider_message_status,
+            "READ",
+        )
+
+
+    def test_active_chat_watch_default_interval_is_500ms(
+        self,
+    ):
+        import inspect
+
+        signature = inspect.signature(
+            WhatsAppRuntimeService.start_active_chat_watch
+        )
+
+        self.assertEqual(
+            signature.parameters[
+                "interval_seconds"
+            ].default,
+            0.5,
+        )
+
+    def test_active_chat_watch_loop_uses_interruptible_event_wait(
+        self,
+    ):
+        from pathlib import Path
+
+        source = Path(
+            "backend/services/whatsapp_runtime_service.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        start = source.index(
+            "    def _active_chat_watch_loop("
+        )
+
+        end = source.index(
+            "\n    def start_active_chat_watch(",
+            start,
+        )
+
+        block = source[
+            start:
+            end
+        ]
+
+        self.assertIn(
+            "stop_event.wait(",
+            block,
+        )
+
+        self.assertIn(
+            "interval_seconds",
+            block,
+        )
+
+        self.assertNotIn(
+            "time.sleep(interval_seconds)",
+            block,
+        )
+
 
 
 
