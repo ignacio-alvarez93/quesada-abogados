@@ -566,18 +566,12 @@ class CommunicationCallService:
         """
         Incorpora o enriquece un snapshot histórico.
 
-        No simula eventos realtime.
+        Una llamada histórica nueva INBOUND + MISSED se crea
+        junto a su follow-up en la misma transacción.
 
-        Si la identidad externa no existe:
-            crea directamente la llamada materializada.
-
-        Si ya existe:
-            reconcilia únicamente conocimiento compatible.
-
-        Efectos operativos:
-        - INBOUND + MISSED garantiza follow-up PENDING;
-        - callback saliente fallido vuelve a PENDING
-          cuando exista relación explícita.
+        Si una llamada existente avanza a MISSED mediante
+        reconciliación, actualización + follow-up también son
+        atómicos.
         """
         materialized = (
             materialize_provider_call_snapshot(
@@ -585,11 +579,26 @@ class CommunicationCallService:
             )
         )
 
+        requires_follow_up = (
+            materialized.direction
+            == CALL_DIRECTION_INBOUND
+            and materialized.status
+            == CALL_STATUS_MISSED
+        )
+
         persisted, created = (
             self.repository
             .get_or_create_call_with_identity(
-                materialized
+                materialized,
+                create_follow_up_if_created=(
+                    requires_follow_up
+                ),
             )
+        )
+
+        follow_up_guaranteed = (
+            created
+            and requires_follow_up
         )
 
         if not created:
@@ -601,19 +610,41 @@ class CommunicationCallService:
             )
 
             if merged != persisted:
-                persisted = (
-                    self.repository
-                    .update_call_provider_reconciliation(
-                        merged
+                if (
+                    merged.direction
+                    == CALL_DIRECTION_INBOUND
+                    and merged.status
+                    == CALL_STATUS_MISSED
+                ):
+                    (
+                        persisted,
+                        _follow_up,
+                    ) = (
+                        self.repository
+                        .update_call_provider_reconciliation_with_follow_up(
+                            merged
+                        )
                     )
-                )
+
+                    follow_up_guaranteed = True
+
+                else:
+                    persisted = (
+                        self.repository
+                        .update_call_provider_reconciliation(
+                            merged
+                        )
+                    )
 
         if (
             persisted.direction
             == CALL_DIRECTION_INBOUND
             and persisted.status
             == CALL_STATUS_MISSED
+            and not follow_up_guaranteed
         ):
+            # Reparación idempotente para llamadas MISSED
+            # ya existentes cuyo lifecycle no necesita cambio.
             (
                 self.repository
                 .get_or_create_call_follow_up(
@@ -644,14 +675,10 @@ class CommunicationCallService:
         event_at,
     ):
         """
-        Aplica un evento de proveedor sobre una llamada.
+        Aplica un evento realtime de proveedor.
 
-        El servicio:
-        1. recupera la llamada;
-        2. delega transición/timing al dominio;
-        3. persiste lifecycle;
-        4. si acaba como INBOUND + MISSED,
-           crea de forma idempotente su seguimiento PENDING.
+        INBOUND + MISSED se persiste junto a su follow-up
+        dentro de una única transacción.
         """
         call = self.repository.get_call(
             int(call_id)
@@ -671,23 +698,27 @@ class CommunicationCallService:
             )
         )
 
-        persisted = (
-            self.repository
-            .update_call_state(
-                transitioned
-            )
-        )
-
         if (
-            persisted.direction
+            transitioned.direction
             == CALL_DIRECTION_INBOUND
-            and persisted.status
+            and transitioned.status
             == CALL_STATUS_MISSED
         ):
             (
+                persisted,
+                _follow_up,
+            ) = (
                 self.repository
-                .get_or_create_call_follow_up(
-                    persisted.id
+                .update_call_state_with_follow_up(
+                    transitioned
+                )
+            )
+
+        else:
+            persisted = (
+                self.repository
+                .update_call_state(
+                    transitioned
                 )
             )
 

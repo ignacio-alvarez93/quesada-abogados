@@ -717,6 +717,8 @@ class SQLiteCommunicationRepository:
     def get_or_create_call_with_identity(
         self,
         call,
+        *,
+        create_follow_up_if_created=False,
     ):
         """
         Inserta una llamada o reutiliza la ya persistida.
@@ -747,11 +749,22 @@ class SQLiteCommunicationRepository:
 
         with self._connection() as conn:
             if external_call_key is None:
+                created = self._insert_call(
+                    conn,
+                    candidate,
+                )
+
+                if create_follow_up_if_created:
+                    (
+                        self
+                        ._get_or_create_call_follow_up_in_connection(
+                            conn,
+                            created.id,
+                        )
+                    )
+
                 return (
-                    self._insert_call(
-                        conn,
-                        candidate,
-                    ),
+                    created,
                     True,
                 )
 
@@ -781,6 +794,15 @@ class SQLiteCommunicationRepository:
                     conn,
                     candidate,
                 )
+
+                if create_follow_up_if_created:
+                    (
+                        self
+                        ._get_or_create_call_follow_up_in_connection(
+                            conn,
+                            created.id,
+                        )
+                    )
 
                 return (
                     created,
@@ -833,22 +855,69 @@ class SQLiteCommunicationRepository:
                 row
             )
 
+    def _update_call_state_in_connection(
+        self,
+        conn,
+        call,
+    ):
+        cursor = conn.execute(
+            """
+            UPDATE communication_calls
+            SET
+                status = ?,
+                dialed_at = ?,
+                ringing_at = ?,
+                answered_at = ?,
+                ended_at = ?,
+                ring_duration_seconds = ?,
+                talk_duration_seconds = ?,
+                total_duration_seconds = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                call.status,
+                call.dialed_at,
+                call.ringing_at,
+                call.answered_at,
+                call.ended_at,
+                call.ring_duration_seconds,
+                call.talk_duration_seconds,
+                call.total_duration_seconds,
+                int(call.id),
+            ),
+        )
+
+        if cursor.rowcount != 1:
+            raise ValueError(
+                "Llamada de comunicación "
+                "no encontrada"
+            )
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM communication_calls
+            WHERE id = ?
+            """,
+            (
+                int(call.id),
+            ),
+        ).fetchone()
+
+        return self._call_from_row(
+            row
+        )
+
     def update_call_state(
         self,
         call,
     ):
         """
-        Persiste únicamente lifecycle y timing de una llamada.
+        Persiste únicamente lifecycle y timing.
 
-        No permite modificar mediante esta operación:
-        - identidad/interlocutor;
-        - canal o dirección;
-        - vínculos CRM;
-        - proveedor;
-        - motivo, resultado o notas.
-
-        Las transiciones válidas deben haberse aplicado
-        previamente en el dominio de llamadas.
+        No modifica identidad, interlocutor, vínculos CRM,
+        proveedor, motivo, resultado ni notas.
         """
         self.ensure_schema()
 
@@ -865,77 +934,65 @@ class SQLiteCommunicationRepository:
             )
 
         with self._connection() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE communication_calls
-                SET
-                    status = ?,
-                    dialed_at = ?,
-                    ringing_at = ?,
-                    answered_at = ?,
-                    ended_at = ?,
-                    ring_duration_seconds = ?,
-                    talk_duration_seconds = ?,
-                    total_duration_seconds = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (
-                    call.status,
-                    call.dialed_at,
-                    call.ringing_at,
-                    call.answered_at,
-                    call.ended_at,
-                    call.ring_duration_seconds,
-                    call.talk_duration_seconds,
-                    call.total_duration_seconds,
-                    int(call.id),
-                ),
-            )
-
-            if cursor.rowcount != 1:
-                raise ValueError(
-                    "Llamada de comunicación "
-                    "no encontrada"
+            return (
+                self
+                ._update_call_state_in_connection(
+                    conn,
+                    call,
                 )
-
-            row = conn.execute(
-                """
-                SELECT *
-                FROM communication_calls
-                WHERE id = ?
-                """,
-                (
-                    int(call.id),
-                ),
-            ).fetchone()
-
-            return self._call_from_row(
-                row
             )
 
-    def update_call_provider_reconciliation(
+    def update_call_state_with_follow_up(
         self,
         call,
     ):
         """
-        Persiste únicamente conocimiento reconciliable
-        procedente del proveedor.
+        Persiste lifecycle y garantiza el follow-up
+        dentro de una única transacción.
 
-        Puede actualizar:
-        - provider_call_id;
-        - display_name_snapshot;
-        - lifecycle/timestamps/duraciones;
-        - metadata_json.
-
-        Nunca modifica:
-        - provider / external_call_key;
-        - channel / direction / phone_number;
-        - thread/client/expedient;
-        - reason/outcome/notes/created_by.
+        El servicio decide cuándo procede esta operación.
+        El repository no decide qué estado requiere seguimiento.
         """
         self.ensure_schema()
 
+        if (
+            call is None
+            or call.id in (
+                None,
+                "",
+            )
+        ):
+            raise ValueError(
+                "La llamada debe tener id "
+                "para actualizar su estado"
+            )
+
+        with self._connection() as conn:
+            persisted = (
+                self
+                ._update_call_state_in_connection(
+                    conn,
+                    call,
+                )
+            )
+
+            follow_up = (
+                self
+                ._get_or_create_call_follow_up_in_connection(
+                    conn,
+                    persisted.id,
+                )
+            )
+
+            return (
+                persisted,
+                follow_up,
+            )
+
+    @staticmethod
+    def _provider_reconciliation_identity(
+        call,
+    ):
         if (
             call is None
             or call.id in (
@@ -967,66 +1024,157 @@ class SQLiteCommunicationRepository:
                 "identidad externa completa"
             )
 
-        with self._connection() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE communication_calls
-                SET
-                    provider_call_id = ?,
-                    display_name_snapshot = ?,
-                    status = ?,
-                    dialed_at = ?,
-                    ringing_at = ?,
-                    answered_at = ?,
-                    ended_at = ?,
-                    ring_duration_seconds = ?,
-                    talk_duration_seconds = ?,
-                    total_duration_seconds = ?,
-                    metadata_json = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                  AND provider = ?
-                  AND external_call_key = ?
-                """,
-                (
-                    call.provider_call_id,
-                    call.display_name_snapshot,
-                    call.status,
-                    call.dialed_at,
-                    call.ringing_at,
-                    call.answered_at,
-                    call.ended_at,
-                    call.ring_duration_seconds,
-                    call.talk_duration_seconds,
-                    call.total_duration_seconds,
-                    _json_dump(
-                        call.metadata
-                    ),
-                    int(call.id),
-                    provider,
-                    external_call_key,
+        return (
+            provider,
+            external_call_key,
+        )
+
+    def _update_call_provider_reconciliation_in_connection(
+        self,
+        conn,
+        call,
+        *,
+        provider,
+        external_call_key,
+    ):
+        cursor = conn.execute(
+            """
+            UPDATE communication_calls
+            SET
+                provider_call_id = ?,
+                display_name_snapshot = ?,
+                status = ?,
+                dialed_at = ?,
+                ringing_at = ?,
+                answered_at = ?,
+                ended_at = ?,
+                ring_duration_seconds = ?,
+                talk_duration_seconds = ?,
+                total_duration_seconds = ?,
+                metadata_json = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND provider = ?
+              AND external_call_key = ?
+            """,
+            (
+                call.provider_call_id,
+                call.display_name_snapshot,
+                call.status,
+                call.dialed_at,
+                call.ringing_at,
+                call.answered_at,
+                call.ended_at,
+                call.ring_duration_seconds,
+                call.talk_duration_seconds,
+                call.total_duration_seconds,
+                _json_dump(
+                    call.metadata
                 ),
+                int(call.id),
+                provider,
+                external_call_key,
+            ),
+        )
+
+        if cursor.rowcount != 1:
+            raise ValueError(
+                "Llamada de comunicación "
+                "no encontrada para reconciliar"
             )
 
-            if cursor.rowcount != 1:
-                raise ValueError(
-                    "Llamada de comunicación "
-                    "no encontrada para reconciliar"
+        row = conn.execute(
+            """
+            SELECT *
+            FROM communication_calls
+            WHERE id = ?
+            """,
+            (
+                int(call.id),
+            ),
+        ).fetchone()
+
+        return self._call_from_row(
+            row
+        )
+
+    def update_call_provider_reconciliation(
+        self,
+        call,
+    ):
+        """
+        Persiste únicamente conocimiento reconciliable
+        procedente del proveedor.
+        """
+        self.ensure_schema()
+
+        (
+            provider,
+            external_call_key,
+        ) = (
+            self
+            ._provider_reconciliation_identity(
+                call
+            )
+        )
+
+        with self._connection() as conn:
+            return (
+                self
+                ._update_call_provider_reconciliation_in_connection(
+                    conn,
+                    call,
+                    provider=provider,
+                    external_call_key=(
+                        external_call_key
+                    ),
                 )
+            )
 
-            row = conn.execute(
-                """
-                SELECT *
-                FROM communication_calls
-                WHERE id = ?
-                """,
-                (
-                    int(call.id),
-                ),
-            ).fetchone()
+    def update_call_provider_reconciliation_with_follow_up(
+        self,
+        call,
+    ):
+        """
+        Reconciliación de proveedor + follow-up
+        en una única transacción.
+        """
+        self.ensure_schema()
 
-            return self._call_from_row(
-                row
+        (
+            provider,
+            external_call_key,
+        ) = (
+            self
+            ._provider_reconciliation_identity(
+                call
+            )
+        )
+
+        with self._connection() as conn:
+            persisted = (
+                self
+                ._update_call_provider_reconciliation_in_connection(
+                    conn,
+                    call,
+                    provider=provider,
+                    external_call_key=(
+                        external_call_key
+                    ),
+                )
+            )
+
+            follow_up = (
+                self
+                ._get_or_create_call_follow_up_in_connection(
+                    conn,
+                    persisted.id,
+                )
+            )
+
+            return (
+                persisted,
+                follow_up,
             )
 
     def get_call_follow_up(
@@ -1077,23 +1225,49 @@ class SQLiteCommunicationRepository:
                 )
             )
 
-    def get_or_create_call_follow_up(
+    def _get_or_create_call_follow_up_in_connection(
         self,
+        conn,
         source_call_id,
     ):
-        """
-        Crea como máximo un seguimiento por llamada origen.
-
-        La operación es idempotente para soportar eventos
-        repetidos o reconciliaciones posteriores.
-        """
-        self.ensure_schema()
-
         normalized_source_call_id = int(
             source_call_id
         )
 
-        with self._connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM communication_call_followups
+            WHERE source_call_id = ?
+            """,
+            (
+                normalized_source_call_id,
+            ),
+        ).fetchone()
+
+        if existing:
+            return (
+                self._call_follow_up_from_row(
+                    existing
+                )
+            )
+
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO
+                    communication_call_followups (
+                        source_call_id,
+                        status
+                    )
+                VALUES (?, 'PENDING')
+                """,
+                (
+                    normalized_source_call_id,
+                ),
+            )
+
+        except sqlite3.IntegrityError as exc:
             existing = conn.execute(
                 """
                 SELECT *
@@ -1112,59 +1286,46 @@ class SQLiteCommunicationRepository:
                     )
                 )
 
-            try:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO
-                        communication_call_followups (
-                            source_call_id,
-                            status
-                        )
-                    VALUES (?, 'PENDING')
-                    """,
-                    (
-                        normalized_source_call_id,
-                    ),
-                )
+            raise ValueError(
+                "Llamada origen no encontrada "
+                "para crear seguimiento"
+            ) from exc
 
-            except sqlite3.IntegrityError as exc:
-                existing = conn.execute(
-                    """
-                    SELECT *
-                    FROM communication_call_followups
-                    WHERE source_call_id = ?
-                    """,
-                    (
-                        normalized_source_call_id,
-                    ),
-                ).fetchone()
+        row = conn.execute(
+            """
+            SELECT *
+            FROM communication_call_followups
+            WHERE id = ?
+            """,
+            (
+                int(cursor.lastrowid),
+            ),
+        ).fetchone()
 
-                if existing:
-                    return (
-                        self._call_follow_up_from_row(
-                            existing
-                        )
-                    )
+        return (
+            self._call_follow_up_from_row(
+                row
+            )
+        )
 
-                raise ValueError(
-                    "Llamada origen no encontrada "
-                    "para crear seguimiento"
-                ) from exc
+    def get_or_create_call_follow_up(
+        self,
+        source_call_id,
+    ):
+        """
+        Crea como máximo un seguimiento por llamada origen.
 
-            row = conn.execute(
-                """
-                SELECT *
-                FROM communication_call_followups
-                WHERE id = ?
-                """,
-                (
-                    int(cursor.lastrowid),
-                ),
-            ).fetchone()
+        La operación es idempotente para soportar eventos
+        repetidos o reconciliaciones posteriores.
+        """
+        self.ensure_schema()
 
+        with self._connection() as conn:
             return (
-                self._call_follow_up_from_row(
-                    row
+                self
+                ._get_or_create_call_follow_up_in_connection(
+                    conn,
+                    source_call_id,
                 )
             )
 
