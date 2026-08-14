@@ -12,6 +12,9 @@ from backend.communications.calls import (
     CALL_STATUS_RINGING,
     CALL_TERMINAL_STATUSES,
     CommunicationCall,
+    InvalidCallTransition,
+    can_transition_call_status,
+    transition_call_status,
 )
 from backend.communications.models import (
     CHANNEL_PHONE,
@@ -125,6 +128,165 @@ class CommunicationCallDomainTest(
         self.assertEqual(
             missed.talk_duration_seconds,
             0,
+        )
+
+    def test_inbound_call_starts_ringing(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+        )
+
+        ringing = transition_call_status(
+            call,
+            CALL_STATUS_RINGING,
+        )
+
+        self.assertEqual(
+            call.status,
+            CALL_STATUS_CREATED,
+        )
+
+        self.assertEqual(
+            ringing.status,
+            CALL_STATUS_RINGING,
+        )
+
+    def test_outbound_call_starts_dialing(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_WHATSAPP,
+            direction=DIRECTION_OUTBOUND,
+            phone_number="+34600123456",
+        )
+
+        dialing = transition_call_status(
+            call,
+            "DIALING",
+        )
+
+        self.assertEqual(
+            dialing.status,
+            "DIALING",
+        )
+
+    def test_inbound_cannot_start_dialing(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+        )
+
+        with self.assertRaises(
+            InvalidCallTransition
+        ):
+            transition_call_status(
+                call,
+                "DIALING",
+            )
+
+    def test_outbound_cannot_start_ringing(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_OUTBOUND,
+            phone_number="+34600123456",
+        )
+
+        with self.assertRaises(
+            InvalidCallTransition
+        ):
+            transition_call_status(
+                call,
+                CALL_STATUS_RINGING,
+            )
+
+    def test_answered_call_can_end(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+            status=CALL_STATUS_ANSWERED,
+        )
+
+        ended = transition_call_status(
+            call,
+            CALL_STATUS_ENDED,
+        )
+
+        self.assertEqual(
+            ended.status,
+            CALL_STATUS_ENDED,
+        )
+
+    def test_terminal_call_cannot_restart(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+            status=CALL_STATUS_MISSED,
+        )
+
+        with self.assertRaises(
+            InvalidCallTransition
+        ):
+            transition_call_status(
+                call,
+                CALL_STATUS_ANSWERED,
+            )
+
+    def test_duplicate_provider_state_is_noop(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+            status=CALL_STATUS_RINGING,
+        )
+
+        repeated = transition_call_status(
+            call,
+            CALL_STATUS_RINGING,
+        )
+
+        self.assertIs(
+            repeated,
+            call,
+        )
+
+    def test_transition_predicate_is_pure(
+        self,
+    ):
+        self.assertTrue(
+            can_transition_call_status(
+                CALL_STATUS_RINGING,
+                CALL_STATUS_ANSWERED,
+            )
+        )
+
+        self.assertFalse(
+            can_transition_call_status(
+                CALL_STATUS_ENDED,
+                CALL_STATUS_RINGING,
+            )
         )
 
 
