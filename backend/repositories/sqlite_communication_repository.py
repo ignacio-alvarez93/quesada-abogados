@@ -1017,6 +1017,34 @@ class SQLiteCommunicationRepository:
                 )
             )
 
+    def get_call_callback_by_callback_call(
+        self,
+        callback_call_id,
+    ):
+        """
+        Obtiene la relación de devolución a partir
+        de la llamada saliente concreta.
+        """
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_call_callbacks
+                WHERE callback_call_id = ?
+                """,
+                (
+                    int(callback_call_id),
+                ),
+            ).fetchone()
+
+            return (
+                self._call_callback_from_row(
+                    row
+                )
+            )
+
     def list_callback_calls(
         self,
         source_call_id,

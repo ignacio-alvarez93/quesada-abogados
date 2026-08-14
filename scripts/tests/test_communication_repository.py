@@ -1288,6 +1288,54 @@ class CommunicationRepositoryTest(
             },
         )
 
+    def test_callback_reverse_lookup(
+        self,
+    ):
+        source = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600600001",
+                status=CALL_STATUS_MISSED,
+            )
+        )
+
+        self.repo.get_or_create_call_follow_up(
+            source.id
+        )
+
+        callback = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_OUTBOUND,
+                phone_number="+34600600001",
+            )
+        )
+
+        linked = self.repo.link_callback_call(
+            source_call_id=source.id,
+            callback_call_id=callback.id,
+        )
+
+        found = (
+            self.repo
+            .get_call_callback_by_callback_call(
+                callback.id
+            )
+        )
+
+        self.assertEqual(
+            found,
+            linked,
+        )
+
+        self.assertEqual(
+            found.source_call_id,
+            source.id,
+        )
+
     def test_account_is_idempotent(self):
         first = self._create_account()
         second = self._create_account()

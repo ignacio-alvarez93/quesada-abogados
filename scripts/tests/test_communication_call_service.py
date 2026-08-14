@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 
 from backend.communications.call_followups import (
+    CALL_FOLLOW_UP_IN_PROGRESS,
     CALL_FOLLOW_UP_PENDING,
+    CALL_FOLLOW_UP_RESOLVED,
 )
 from backend.communications.calls import (
     CALL_STATUS_ANSWERED,
@@ -506,6 +508,421 @@ class CommunicationCallServiceTest(
         self.assertEqual(
             inventory[0].follow_up_status,
             CALL_FOLLOW_UP_PENDING,
+        )
+
+
+    def test_callback_inherits_source_context(
+        self,
+    ):
+        source = (
+            self.service
+            .create_inbound_call(
+                channel=CHANNEL_PHONE,
+                phone_number="+34600610001",
+                client_id=10,
+                expedient_id=20,
+                display_name_snapshot=(
+                    "CLIENTE TEST"
+                ),
+                reason_code=(
+                    "EXPEDIENT_STATUS"
+                ),
+                provider="MOBILE_LINK",
+            )
+        )
+
+        self.service.apply_call_event(
+            source.id,
+            status=CALL_STATUS_RINGING,
+            event_at=(
+                "2026-08-14T18:00:00+02:00"
+            ),
+        )
+
+        source = (
+            self.service
+            .apply_call_event(
+                source.id,
+                status=CALL_STATUS_MISSED,
+                event_at=(
+                    "2026-08-14T18:00:10+02:00"
+                ),
+            )
+        )
+
+        callback = (
+            self.service
+            .create_callback_call(
+                source.id,
+                created_by="TEST",
+            )
+        )
+
+        self.assertEqual(
+            callback.direction,
+            DIRECTION_OUTBOUND,
+        )
+
+        self.assertEqual(
+            callback.channel,
+            source.channel,
+        )
+
+        self.assertEqual(
+            callback.phone_number,
+            source.phone_number,
+        )
+
+        self.assertEqual(
+            callback.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            callback.expedient_id,
+            20,
+        )
+
+        self.assertEqual(
+            callback.display_name_snapshot,
+            "CLIENTE TEST",
+        )
+
+        self.assertEqual(
+            callback.reason_code,
+            "EXPEDIENT_STATUS",
+        )
+
+        self.assertEqual(
+            callback.provider,
+            "MOBILE_LINK",
+        )
+
+        relation = (
+            self.repository
+            .get_call_callback_by_callback_call(
+                callback.id
+            )
+        )
+
+        self.assertIsNotNone(
+            relation
+        )
+
+        self.assertEqual(
+            relation.source_call_id,
+            source.id,
+        )
+
+        follow_up = (
+            self.repository
+            .get_call_follow_up_by_source_call(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            follow_up.status,
+            CALL_FOLLOW_UP_IN_PROGRESS,
+        )
+
+    def test_second_callback_is_blocked_while_follow_up_in_progress(
+        self,
+    ):
+        source = (
+            self.service
+            .create_inbound_call(
+                channel=CHANNEL_PHONE,
+                phone_number="+34600610002",
+            )
+        )
+
+        self.service.apply_call_event(
+            source.id,
+            status=CALL_STATUS_RINGING,
+            event_at=(
+                "2026-08-14T18:10:00+02:00"
+            ),
+        )
+
+        source = (
+            self.service
+            .apply_call_event(
+                source.id,
+                status=CALL_STATUS_MISSED,
+                event_at=(
+                    "2026-08-14T18:10:10+02:00"
+                ),
+            )
+        )
+
+        self.service.create_callback_call(
+            source.id
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "ya está en curso",
+        ):
+            self.service.create_callback_call(
+                source.id
+            )
+
+    def test_unsuccessful_callback_returns_follow_up_to_pending(
+        self,
+    ):
+        source = (
+            self.service
+            .create_inbound_call(
+                channel=CHANNEL_PHONE,
+                phone_number="+34600610003",
+            )
+        )
+
+        self.service.apply_call_event(
+            source.id,
+            status=CALL_STATUS_RINGING,
+            event_at=(
+                "2026-08-14T18:20:00+02:00"
+            ),
+        )
+
+        source = (
+            self.service
+            .apply_call_event(
+                source.id,
+                status=CALL_STATUS_MISSED,
+                event_at=(
+                    "2026-08-14T18:20:08+02:00"
+                ),
+            )
+        )
+
+        callback = (
+            self.service
+            .create_callback_call(
+                source.id
+            )
+        )
+
+        self.service.apply_call_event(
+            callback.id,
+            status=CALL_STATUS_DIALING,
+            event_at=(
+                "2026-08-14T18:25:00+02:00"
+            ),
+        )
+
+        self.service.apply_call_event(
+            callback.id,
+            status=CALL_STATUS_MISSED,
+            event_at=(
+                "2026-08-14T18:25:20+02:00"
+            ),
+        )
+
+        follow_up = (
+            self.repository
+            .get_call_follow_up_by_source_call(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            follow_up.status,
+            CALL_FOLLOW_UP_PENDING,
+        )
+
+        callbacks = (
+            self.service
+            .list_callback_calls(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            len(callbacks),
+            1,
+        )
+
+        self.assertEqual(
+            callbacks[0].id,
+            callback.id,
+        )
+
+    def test_answered_callback_remains_in_progress_until_resolved(
+        self,
+    ):
+        source = (
+            self.service
+            .create_inbound_call(
+                channel=CHANNEL_PHONE,
+                phone_number="+34600610004",
+            )
+        )
+
+        self.service.apply_call_event(
+            source.id,
+            status=CALL_STATUS_RINGING,
+            event_at=(
+                "2026-08-14T18:30:00+02:00"
+            ),
+        )
+
+        source = (
+            self.service
+            .apply_call_event(
+                source.id,
+                status=CALL_STATUS_MISSED,
+                event_at=(
+                    "2026-08-14T18:30:10+02:00"
+                ),
+            )
+        )
+
+        callback = (
+            self.service
+            .create_callback_call(
+                source.id
+            )
+        )
+
+        self.service.apply_call_event(
+            callback.id,
+            status=CALL_STATUS_DIALING,
+            event_at=(
+                "2026-08-14T18:35:00+02:00"
+            ),
+        )
+
+        self.service.apply_call_event(
+            callback.id,
+            status=CALL_STATUS_ANSWERED,
+            event_at=(
+                "2026-08-14T18:35:05+02:00"
+            ),
+        )
+
+        self.service.apply_call_event(
+            callback.id,
+            status=CALL_STATUS_ENDED,
+            event_at=(
+                "2026-08-14T18:37:05+02:00"
+            ),
+        )
+
+        follow_up = (
+            self.repository
+            .get_call_follow_up_by_source_call(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            follow_up.status,
+            CALL_FOLLOW_UP_IN_PROGRESS,
+        )
+
+    def test_follow_up_can_be_resolved_explicitly(
+        self,
+    ):
+        source = (
+            self.service
+            .create_inbound_call(
+                channel=CHANNEL_PHONE,
+                phone_number="+34600610005",
+            )
+        )
+
+        self.service.apply_call_event(
+            source.id,
+            status=CALL_STATUS_RINGING,
+            event_at=(
+                "2026-08-14T18:40:00+02:00"
+            ),
+        )
+
+        source = (
+            self.service
+            .apply_call_event(
+                source.id,
+                status=CALL_STATUS_MISSED,
+                event_at=(
+                    "2026-08-14T18:40:10+02:00"
+                ),
+            )
+        )
+
+        callback = (
+            self.service
+            .create_callback_call(
+                source.id
+            )
+        )
+
+        follow_up = (
+            self.repository
+            .get_call_follow_up_by_source_call(
+                source.id
+            )
+        )
+
+        resolved = (
+            self.service
+            .resolve_follow_up(
+                follow_up.id,
+                resolved_at=(
+                    "2026-08-14T18:45:00+02:00"
+                ),
+            )
+        )
+
+        self.assertEqual(
+            resolved.status,
+            CALL_FOLLOW_UP_RESOLVED,
+        )
+
+        self.assertEqual(
+            resolved.resolved_at,
+            "2026-08-14T18:45:00+02:00",
+        )
+
+        inventory = (
+            self.service
+            .list_pending_follow_ups()
+        )
+
+        self.assertNotIn(
+            source.id,
+            {
+                item.source_call_id
+                for item in inventory
+            },
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "ya está resuelto",
+        ):
+            self.service.create_callback_call(
+                source.id
+            )
+
+        callbacks = (
+            self.service
+            .list_callback_calls(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            [
+                item.id
+                for item in callbacks
+            ],
+            [
+                callback.id,
+            ],
         )
 
 
