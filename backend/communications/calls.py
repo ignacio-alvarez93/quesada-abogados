@@ -736,7 +736,17 @@ def _calculate_call_durations(
                     call.ended_at,
                 )
             )
-        else:
+        elif (
+            call.status
+            != CALL_STATUS_ENDED
+        ):
+            # Los terminales no atendidos tienen
+            # conversación conocida de cero segundos.
+            #
+            # ENDED implica que la llamada fue atendida,
+            # pero un snapshot histórico podría no exponer
+            # answered_at. En ese caso la duración hablada
+            # es DESCONOCIDA, no cero.
             talk_duration = 0
 
         total_start = (
@@ -764,6 +774,99 @@ def _calculate_call_durations(
             total_duration
         ),
     )
+
+
+
+def materialize_call_timing(
+    call,
+):
+    """
+    Valida y materializa timing ya observado.
+
+    A diferencia de transition_call_status_at(), esta función
+    NO simula eventos ni cambia el estado de la llamada.
+
+    Está pensada para snapshots históricos en los que el
+    proveedor entrega hechos ya consolidados.
+
+    - normaliza timestamps;
+    - valida orden cronológico;
+    - calcula duraciones cuando existen datos suficientes;
+    - no consulta el reloj;
+    - no inventa timestamps ausentes.
+    """
+    timestamp_fields = (
+        "dialed_at",
+        "ringing_at",
+        "answered_at",
+        "ended_at",
+    )
+
+    normalized = {}
+
+    previous_dt = None
+
+    for field_name in timestamp_fields:
+        value = getattr(
+            call,
+            field_name,
+        )
+
+        if value in (
+            None,
+            "",
+        ):
+            normalized[
+                field_name
+            ] = None
+            continue
+
+        text_value = (
+            _call_timestamp_text(
+                value
+            )
+        )
+
+        current_dt = (
+            _parse_call_timestamp(
+                text_value
+            )
+        )
+
+        if previous_dt is not None:
+            try:
+                out_of_order = (
+                    current_dt
+                    < previous_dt
+                )
+
+            except TypeError as exc:
+                raise InvalidCallTimestamp(
+                    "No se pueden mezclar timestamps "
+                    "con y sin zona horaria."
+                ) from exc
+
+            if out_of_order:
+                raise InvalidCallTimestamp(
+                    "Los timestamps de la llamada "
+                    "están fuera de orden."
+                )
+
+        previous_dt = current_dt
+
+        normalized[
+            field_name
+        ] = text_value
+
+    timed = replace(
+        call,
+        **normalized,
+    )
+
+    return _calculate_call_durations(
+        timed
+    )
+
 
 
 def transition_call_status_at(
