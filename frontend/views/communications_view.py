@@ -1724,6 +1724,263 @@ def communications_view(
         return True
 
 
+    def _reload_conversation_items_for_sidebar_discovery():
+        """Recarga únicamente el modelo lateral de conversaciones.
+
+        Se utiliza cuando el watcher acaba de crear un thread
+        que todavía no existía cuando Flet cargó state["items"].
+
+        No modifica:
+        - selección central;
+        - contexto;
+        - historial;
+        - compositor;
+        - routing de WhatsApp.
+        """
+        selected_before = state.get(
+            "selected_thread_id"
+        )
+
+        try:
+            result = (
+                communication_service
+                .list_thread_overviews(
+                    channel=(
+                        selected_channel()
+                    ),
+                    linkage=(
+                        selected_linkage()
+                    ),
+                    search=(
+                        search_input.value
+                        or ""
+                    ),
+                    include_archived=False,
+                    limit=5000,
+                )
+            )
+
+        except Exception as exc:
+            print(
+                "[WA-FLET] sidebar discovery "
+                "model reload failed",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
+            return False
+
+        state[
+            "summary"
+        ] = (
+            result.get(
+                "summary"
+            )
+            or {}
+        )
+
+        state[
+            "items"
+        ] = list(
+            result.get(
+                "items"
+            )
+            or []
+        )
+
+        # Una actualización lateral en background jamás
+        # modifica la conversación que está viendo el usuario.
+        state[
+            "selected_thread_id"
+        ] = selected_before
+
+        return True
+
+
+    def _absorb_whatsapp_sidebar_discoveries(
+        result,
+    ):
+        """Integra threads descubiertos por Runtime en el modelo Flet.
+
+        Runtime/CommunicationService ya realizaron la
+        persistencia. El frontend:
+        - consume thread_id;
+        - actualiza cachés;
+        - recarga state["items"] solo si nació un thread;
+        - nunca crea ni persiste conversaciones.
+        """
+        if not isinstance(
+            result,
+            dict,
+        ):
+            return False
+
+        discoveries = list(
+            result.get(
+                "sidebar_discoveries"
+            )
+            or []
+        )
+
+        if not discoveries:
+            return False
+
+        positive_cache = state.setdefault(
+            "whatsapp_sidebar_identity_cache",
+            {},
+        )
+
+        negative_cache = state.setdefault(
+            "whatsapp_sidebar_identity_negative_cache",
+            {},
+        )
+
+        created_thread_ids = []
+        absorbed = False
+
+        for discovery in discoveries:
+            if not isinstance(
+                discovery,
+                dict,
+            ):
+                continue
+
+            if not discovery.get(
+                "discovered"
+            ):
+                continue
+
+            thread_id = discovery.get(
+                "thread_id"
+            )
+
+            if thread_id in (
+                None,
+                "",
+            ):
+                continue
+
+            try:
+                thread_id = int(
+                    thread_id
+                )
+            except Exception:
+                continue
+
+            identity = str(
+                discovery.get(
+                    "identity"
+                )
+                or ""
+            ).strip()
+
+            if identity:
+                positive_cache[
+                    identity
+                ] = thread_id
+
+                # Si el resolver había cacheado previamente
+                # "no existe", el descubrimiento backend es
+                # ahora la autoridad y elimina ese negativo.
+                negative_cache.pop(
+                    identity,
+                    None,
+                )
+
+            if discovery.get(
+                "created"
+            ):
+                created_thread_ids.append(
+                    thread_id
+                )
+
+            absorbed = True
+
+        if not absorbed:
+            return False
+
+        if not created_thread_ids:
+            return True
+
+        current_ids = {
+            int(
+                item.thread_id
+            )
+            for item in (
+                state.get(
+                    "items"
+                )
+                or []
+            )
+            if getattr(
+                item,
+                "thread_id",
+                None,
+            )
+            not in (
+                None,
+                "",
+            )
+        }
+
+        missing_created_ids = [
+            thread_id
+            for thread_id
+            in created_thread_ids
+            if thread_id
+            not in current_ids
+        ]
+
+        if not missing_created_ids:
+            return True
+
+        reloaded = (
+            _reload_conversation_items_for_sidebar_discovery()
+        )
+
+        if not reloaded:
+            return True
+
+        # Un thread recién descubierto con trabajo pendiente
+        # debe quedar visible al principio del modelo local.
+        #
+        # Esto NO selecciona ni abre la conversación.
+        reloaded_ids = {
+            int(
+                item.thread_id
+            )
+            for item in (
+                state.get(
+                    "items"
+                )
+                or []
+            )
+            if getattr(
+                item,
+                "thread_id",
+                None,
+            )
+            not in (
+                None,
+                "",
+            )
+        }
+
+        for thread_id in created_thread_ids:
+            if thread_id not in reloaded_ids:
+                # Puede quedar fuera por filtros activos
+                # (por ejemplo LINKED o búsqueda).
+                continue
+
+            _promote_realtime_thread(
+                thread_id
+            )
+
+        return True
+
+
     def _apply_whatsapp_sidebar_result(
         result,
     ):
@@ -1737,6 +1994,10 @@ def communications_view(
             dict,
         ):
             return False
+
+        _absorb_whatsapp_sidebar_discoveries(
+            result
+        )
 
         if (
             str(

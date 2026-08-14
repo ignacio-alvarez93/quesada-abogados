@@ -916,6 +916,140 @@ class CommunicationService:
                 items,
         }
 
+    def discover_whatsapp_sidebar_thread(
+        self,
+        *,
+        identity,
+        display_name=None,
+        preview=None,
+        primary_detail=None,
+        unread_count=0,
+    ):
+        """Descubre pasivamente un thread telefónico del sidebar.
+
+        Contrato de seguridad:
+        - no conoce SeleniumBase;
+        - no abre chats;
+        - no navega;
+        - solo persiste cuando la identidad visible permite
+          obtener un teléfono válido;
+        - utiliza la misma clave canónica phone:<digits>
+          que el inventario WhatsApp.
+        """
+        raw_identity = str(
+            identity
+            or ""
+        ).strip()
+
+        raw_display_name = str(
+            display_name
+            or ""
+        ).strip()
+
+        # En un contacto no guardado WhatsApp suele mostrar
+        # el propio teléfono como nombre visible. Probamos
+        # primero el display original porque conserva símbolos
+        # como "+" que la identidad normalizada puede perder.
+        phone_source = (
+            raw_display_name
+            or raw_identity
+        )
+
+        normalized = normalize_phone(
+            phone_source
+        )
+
+        if (
+            not normalized.valid
+            and raw_identity
+            and raw_identity != phone_source
+        ):
+            normalized = normalize_phone(
+                raw_identity
+            )
+
+        if not normalized.valid:
+            return {
+                "discovered": False,
+                "created": False,
+                "reused": False,
+                "reason":
+                    "SIDEBAR_IDENTITY_NOT_PHONE",
+                "thread": None,
+                "match": None,
+                "phone": None,
+                "external_thread_key": None,
+            }
+
+        external_thread_key = (
+            f"phone:{normalized.digits}"
+        )
+
+        persisted = (
+            self.get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    external_thread_key
+                ),
+                phone=normalized.e164,
+                display_name=(
+                    raw_display_name
+                    or raw_identity
+                    or normalized.e164
+                ),
+                metadata={
+                    "source":
+                        "whatsapp_sidebar_discovery",
+                    "discovery":
+                        "PASSIVE",
+                    "preview":
+                        str(
+                            preview
+                            or ""
+                        ).strip(),
+                    "primary_detail":
+                        str(
+                            primary_detail
+                            or ""
+                        ).strip(),
+                    "unread_count":
+                        max(
+                            0,
+                            int(
+                                unread_count
+                                or 0
+                            ),
+                        ),
+                },
+            )
+        )
+
+        created = bool(
+            persisted.get(
+                "created",
+                False,
+            )
+        )
+
+        return {
+            "discovered": True,
+            "created": created,
+            "reused": not created,
+            "reason": None,
+            "thread":
+                persisted.get(
+                    "thread"
+                ),
+            "match":
+                persisted.get(
+                    "match"
+                ),
+            "phone":
+                normalized.e164,
+            "external_thread_key":
+                external_thread_key,
+        }
+
+
     def get_or_create_whatsapp_thread(
         self,
         *,

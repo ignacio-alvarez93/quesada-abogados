@@ -321,6 +321,118 @@ class CommunicationServiceTest(
             THREAD_MATCH_UNMATCHED,
         )
 
+    def test_passive_sidebar_discovery_creates_unknown_phone_once(
+        self,
+    ):
+        first = (
+            self.service
+            .discover_whatsapp_sidebar_thread(
+                identity=(
+                    "34 600 999 888"
+                ),
+                display_name=(
+                    "+34 600 999 888"
+                ),
+                preview="Hola",
+                primary_detail="13:05",
+                unread_count=1,
+            )
+        )
+
+        second = (
+            self.service
+            .discover_whatsapp_sidebar_thread(
+                identity=(
+                    "34 600 999 888"
+                ),
+                display_name=(
+                    "+34 600 999 888"
+                ),
+                preview="Hola otra vez",
+                primary_detail="13:06",
+                unread_count=2,
+            )
+        )
+
+        self.assertTrue(
+            first["discovered"]
+        )
+        self.assertTrue(
+            first["created"]
+        )
+        self.assertFalse(
+            first["reused"]
+        )
+
+        self.assertTrue(
+            second["discovered"]
+        )
+        self.assertFalse(
+            second["created"]
+        )
+        self.assertTrue(
+            second["reused"]
+        )
+
+        self.assertEqual(
+            first["thread"].id,
+            second["thread"].id,
+        )
+
+        self.assertEqual(
+            first[
+                "external_thread_key"
+            ],
+            "phone:34600999888",
+        )
+
+        self.assertEqual(
+            first["thread"].external_address,
+            "+34600999888",
+        )
+
+        self.assertIsNone(
+            first["thread"].client_id
+        )
+
+        self.assertEqual(
+            first["thread"].match_status,
+            THREAD_MATCH_UNMATCHED,
+        )
+
+    def test_passive_sidebar_discovery_rejects_non_phone_identity(
+        self,
+    ):
+        result = (
+            self.service
+            .discover_whatsapp_sidebar_thread(
+                identity="mohamed",
+                display_name="Mohamed",
+                preview="Hola",
+                unread_count=1,
+            )
+        )
+
+        self.assertFalse(
+            result["discovered"]
+        )
+        self.assertFalse(
+            result["created"]
+        )
+        self.assertFalse(
+            result["reused"]
+        )
+
+        self.assertEqual(
+            result["reason"],
+            "SIDEBAR_IDENTITY_NOT_PHONE",
+        )
+
+        self.assertIsNone(
+            result["thread"]
+        )
+
+
     def test_whatsapp_thread_is_idempotent(
         self,
     ):

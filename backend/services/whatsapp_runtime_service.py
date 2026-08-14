@@ -1319,6 +1319,207 @@ class WhatsAppRuntimeService:
             sidebar_initial_available
         )
 
+        # Descubrimiento pasivo de conversaciones telefónicas.
+        #
+        # INVARIANTE:
+        # esta fase trabaja exclusivamente sobre el fingerprint
+        # ya leído del sidebar. No abre chats, no hace click,
+        # no desplaza WhatsApp y no abre perfiles.
+        sidebar_discoveries = []
+
+        discovery_candidates = []
+
+        if sidebar_previous is None:
+            # Al arrancar podemos encontrar ya un mensaje nuevo
+            # esperando. No exigimos APPEARED porque el primer
+            # fingerprint es baseline.
+            discovery_candidates = [
+                {
+                    "change_type":
+                        "SIDEBAR_INITIAL",
+                    "identity":
+                        identity,
+                    "current":
+                        current,
+                }
+                for identity, current
+                in sidebar_current.items()
+            ]
+        else:
+            discovery_candidates = list(
+                sidebar_changes
+            )
+
+        for candidate in discovery_candidates:
+            if not isinstance(
+                candidate,
+                dict,
+            ):
+                continue
+
+            current_sidebar = candidate.get(
+                "current"
+            )
+
+            if not isinstance(
+                current_sidebar,
+                dict,
+            ):
+                continue
+
+            if bool(
+                current_sidebar.get(
+                    "ambiguous"
+                )
+            ):
+                continue
+
+            try:
+                candidate_unread = max(
+                    0,
+                    int(
+                        current_sidebar.get(
+                            "unread_count"
+                        )
+                        or 0
+                    ),
+                )
+            except Exception:
+                candidate_unread = 0
+
+            # Solo descubrimos automáticamente trabajo pendiente.
+            # Una fila histórica visible sin unread puede ser mera
+            # virtualización y no justifica persistencia nueva.
+            if candidate_unread <= 0:
+                continue
+
+            identity = str(
+                candidate.get(
+                    "identity"
+                )
+                or current_sidebar.get(
+                    "identity"
+                )
+                or ""
+            ).strip()
+
+            if not identity:
+                continue
+
+            try:
+                discovery = (
+                    self.communication_service
+                    .discover_whatsapp_sidebar_thread(
+                        identity=identity,
+                        display_name=(
+                            current_sidebar.get(
+                                "display_name"
+                            )
+                        ),
+                        preview=(
+                            current_sidebar.get(
+                                "preview"
+                            )
+                        ),
+                        primary_detail=(
+                            current_sidebar.get(
+                                "primary_detail"
+                            )
+                        ),
+                        unread_count=(
+                            candidate_unread
+                        ),
+                    )
+                )
+
+            except Exception as exc:
+                sidebar_discoveries.append(
+                    {
+                        "identity":
+                            identity,
+                        "discovered":
+                            False,
+                        "created":
+                            False,
+                        "reused":
+                            False,
+                        "reason":
+                            "DISCOVERY_ERROR",
+                        "error_type":
+                            type(
+                                exc
+                            ).__name__,
+                    }
+                )
+                continue
+
+            if not isinstance(
+                discovery,
+                dict,
+            ):
+                continue
+
+            thread = discovery.get(
+                "thread"
+            )
+
+            thread_id = getattr(
+                thread,
+                "id",
+                None,
+            )
+
+            sidebar_discoveries.append(
+                {
+                    "identity":
+                        identity,
+                    "discovered":
+                        bool(
+                            discovery.get(
+                                "discovered"
+                            )
+                        ),
+                    "created":
+                        bool(
+                            discovery.get(
+                                "created"
+                            )
+                        ),
+                    "reused":
+                        bool(
+                            discovery.get(
+                                "reused"
+                            )
+                        ),
+                    "reason":
+                        discovery.get(
+                            "reason"
+                        ),
+                    "thread_id":
+                        (
+                            int(thread_id)
+                            if thread_id
+                            not in (
+                                None,
+                                "",
+                            )
+                            else None
+                        ),
+                    "phone":
+                        discovery.get(
+                            "phone"
+                        ),
+                    "external_thread_key":
+                        discovery.get(
+                            "external_thread_key"
+                        ),
+                }
+            )
+
+        result[
+            "sidebar_discoveries"
+        ] = sidebar_discoveries
+
         # changed representa ahora cualquier modificación
         # observable que interese al consumidor del watcher.
         #

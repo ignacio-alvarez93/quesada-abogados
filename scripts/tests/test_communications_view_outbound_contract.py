@@ -1721,5 +1721,150 @@ class CommunicationsViewWatcherCadenceTests(
 
 
 
+
+class CommunicationsViewPassiveDiscoveryContractTests(
+    unittest.TestCase
+):
+    @classmethod
+    def setUpClass(
+        cls,
+    ):
+        from pathlib import Path
+
+        cls.source = Path(
+            "frontend/views/communications_view.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+    def test_discovered_thread_is_absorbed_before_sidebar_render(
+        self,
+    ):
+        source = self.source
+
+        helper_pos = source.index(
+            "    def _absorb_whatsapp_sidebar_discoveries("
+        )
+
+        apply_pos = source.index(
+            "    def _apply_whatsapp_sidebar_result("
+        )
+
+        self.assertLess(
+            helper_pos,
+            apply_pos,
+        )
+
+        apply_end = source.index(
+            "\n    async def ",
+            apply_pos,
+        )
+
+        block = source[
+            apply_pos:
+            apply_end
+        ]
+
+        absorb_pos = block.index(
+            "_absorb_whatsapp_sidebar_discoveries("
+        )
+
+        initial_pos = block.index(
+            '"SIDEBAR_INITIAL"'
+        )
+
+        self.assertLess(
+            absorb_pos,
+            initial_pos,
+        )
+
+    def test_discovery_refresh_is_sidebar_only(
+        self,
+    ):
+        source = self.source
+
+        start = source.index(
+            "    def _reload_conversation_items_for_sidebar_discovery("
+        )
+
+        end = source.index(
+            "\n    def _absorb_whatsapp_sidebar_discoveries(",
+            start,
+        )
+
+        block = source[
+            start:
+            end
+        ]
+
+        self.assertIn(
+            "list_thread_overviews(",
+            block,
+        )
+
+        self.assertNotIn(
+            "load_data(",
+            block,
+        )
+
+        self.assertNotIn(
+            "load_thread_context(",
+            block,
+        )
+
+        self.assertNotIn(
+            "load_thread_messages(",
+            block,
+        )
+
+        self.assertNotIn(
+            "_route_whatsapp_thread(",
+            block,
+        )
+
+        self.assertIn(
+            '"selected_thread_id"',
+            block,
+        )
+
+    def test_discovery_positive_cache_invalidates_negative_cache(
+        self,
+    ):
+        source = self.source
+
+        start = source.index(
+            "    def _absorb_whatsapp_sidebar_discoveries("
+        )
+
+        end = source.index(
+            "\n    def _apply_whatsapp_sidebar_result(",
+            start,
+        )
+
+        block = source[
+            start:
+            end
+        ]
+
+        self.assertIn(
+            '"whatsapp_sidebar_identity_cache"',
+            block,
+        )
+
+        self.assertIn(
+            '"whatsapp_sidebar_identity_negative_cache"',
+            block,
+        )
+
+        self.assertIn(
+            "negative_cache.pop(",
+            block,
+        )
+
+        self.assertIn(
+            "_promote_realtime_thread(",
+            block,
+        )
+
 if __name__ == "__main__":
     unittest.main()

@@ -251,6 +251,38 @@ class FakeCommunicationService:
     ):
         self.thread = FakeThread()
         self.latest_provider_message_id = None
+        self.sidebar_discovery_calls = []
+        self.sidebar_discovery_result = None
+
+    def discover_whatsapp_sidebar_thread(
+        self,
+        **kwargs,
+    ):
+        self.sidebar_discovery_calls.append(
+            dict(
+                kwargs
+            )
+        )
+
+        if (
+            self.sidebar_discovery_result
+            is not None
+        ):
+            return dict(
+                self.sidebar_discovery_result
+            )
+
+        return {
+            "discovered": False,
+            "created": False,
+            "reused": False,
+            "reason":
+                "SIDEBAR_IDENTITY_NOT_PHONE",
+            "thread": None,
+            "match": None,
+            "phone": None,
+            "external_thread_key": None,
+        }
 
     def get_latest_thread_provider_message_id(
         self,
@@ -1875,6 +1907,212 @@ class WhatsAppRuntimeServiceTest(
             ],
         )
 
+    def test_initial_unread_phone_sidebar_is_passively_discovered(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        active = (
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MSG-10",
+            )
+        )
+
+        connector.active_chat_fingerprints = [
+            active,
+        ]
+
+        connector.sidebar_chat_fingerprints = [
+            {
+                "34 600 999 888": {
+                    "identity":
+                        "34 600 999 888",
+                    "display_name":
+                        "+34 600 999 888",
+                    "primary_detail":
+                        "13:05",
+                    "preview":
+                        "Hola",
+                    "unread_count":
+                        1,
+                    "position":
+                        0,
+                    "virtual_offset":
+                        0,
+                    "ambiguous":
+                        False,
+                },
+            },
+        ]
+
+        service = (
+            runtime.communication_service
+        )
+
+        service.sidebar_discovery_result = {
+            "discovered": True,
+            "created": True,
+            "reused": False,
+            "reason": None,
+            "thread":
+                service.thread,
+            "match": {
+                "matched": False,
+                "client": None,
+            },
+            "phone":
+                "+34600999888",
+            "external_thread_key":
+                "phone:34600999888",
+        }
+
+        result = (
+            runtime
+            .observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            len(
+                service.sidebar_discovery_calls
+            ),
+            1,
+        )
+
+        call = (
+            service.sidebar_discovery_calls[
+                0
+            ]
+        )
+
+        self.assertEqual(
+            call["display_name"],
+            "+34 600 999 888",
+        )
+
+        self.assertEqual(
+            call["unread_count"],
+            1,
+        )
+
+        discoveries = (
+            result[
+                "sidebar_discoveries"
+            ]
+        )
+
+        self.assertEqual(
+            len(
+                discoveries
+            ),
+            1,
+        )
+
+        discovery = discoveries[0]
+
+        self.assertTrue(
+            discovery["discovered"]
+        )
+
+        self.assertTrue(
+            discovery["created"]
+        )
+
+        self.assertEqual(
+            discovery["thread_id"],
+            service.thread.id,
+        )
+
+        self.assertEqual(
+            discovery[
+                "external_thread_key"
+            ],
+            "phone:34600999888",
+        )
+
+        # Discovery lateral no sincroniza ni navega
+        # por sí mismo el chat activo.
+        self.assertIsNone(
+            result["sync"]
+        )
+
+    def test_sidebar_discovery_ignores_zero_unread_baseline(
+        self,
+    ):
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        active = (
+            WhatsAppActiveChatFingerprint(
+                True,
+                "Mama",
+                "mama",
+                10,
+                "MSG-10",
+            )
+        )
+
+        connector.active_chat_fingerprints = [
+            active,
+        ]
+
+        connector.sidebar_chat_fingerprints = [
+            {
+                "34 600 999 888": {
+                    "identity":
+                        "34 600 999 888",
+                    "display_name":
+                        "+34 600 999 888",
+                    "primary_detail":
+                        "Ayer",
+                    "preview":
+                        "Histórico",
+                    "unread_count":
+                        0,
+                    "position":
+                        4,
+                    "virtual_offset":
+                        304,
+                    "ambiguous":
+                        False,
+                },
+            },
+        ]
+
+        result = (
+            runtime
+            .observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        service = (
+            runtime.communication_service
+        )
+
+        self.assertEqual(
+            service.sidebar_discovery_calls,
+            [],
+        )
+
+        self.assertEqual(
+            result[
+                "sidebar_discoveries"
+            ],
+            [],
+        )
+
+        self.assertIsNone(
+            result["sync"]
+        )
+
+
     def test_observe_and_sync_sidebar_change_sets_global_changed(
         self,
     ):
@@ -3489,6 +3727,428 @@ class WhatsAppRuntimeServiceTest(
         )
 
 
+
+
+    def test_unknown_unread_sidebar_to_explicit_selection_to_phone_sync(
+        self,
+    ):
+        """Simula el ciclo completo de un número desconocido.
+
+        Contratos demostrados:
+        1. unread lateral puede descubrir el thread;
+        2. discovery NO navega al chat;
+        3. solo la selección explícita abre el teléfono;
+        4. el cambio de chat se resuelve por PHONE;
+        5. el nuevo thread entra en sync incremental.
+        """
+        runtime = self._runtime()
+        connector = runtime.start()
+
+        service = (
+            runtime.communication_service
+        )
+
+        # Representamos el thread que habría sido creado
+        # realmente por CommunicationService en A4.
+        service.thread = FakeThread(
+            thread_id=77,
+            external_address=(
+                "+34600999888"
+            ),
+            external_display_name=(
+                "+34 600 999 888"
+            ),
+        )
+
+        service.sidebar_discovery_result = {
+            "discovered": True,
+            "created": True,
+            "reused": False,
+            "reason": None,
+            "thread":
+                service.thread,
+            "match": {
+                "matched": False,
+                "ambiguous": False,
+                "client": None,
+            },
+            "phone":
+                "+34600999888",
+            "external_thread_key":
+                "phone:34600999888",
+        }
+
+        old_chat = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "Chat anterior"
+                ),
+                active_identity=(
+                    "chat anterior"
+                ),
+                visible_message_count=5,
+                last_provider_message_id=(
+                    "OLD-5"
+                ),
+            )
+        )
+
+        unknown_chat = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "+34 600 999 888"
+                ),
+                active_identity=(
+                    "+34 600 999 888"
+                ),
+                visible_message_count=1,
+                last_provider_message_id=(
+                    "A7-SIM-1"
+                ),
+            )
+        )
+
+        connector.active_chat_fingerprints = [
+            old_chat,
+            unknown_chat,
+        ]
+
+        sidebar_unknown = {
+            "34600999888": {
+                "identity":
+                    "34600999888",
+                "display_name":
+                    "+34 600 999 888",
+                "primary_detail":
+                    "13:31",
+                "preview":
+                    "QA-A7-SIM",
+                "unread_count":
+                    1,
+                "position":
+                    0,
+                "virtual_offset":
+                    0,
+                "ambiguous":
+                    False,
+            },
+        }
+
+        connector.sidebar_chat_fingerprints = [
+            sidebar_unknown,
+            sidebar_unknown,
+        ]
+
+        # ----------------------------------------------------
+        # PASO 1 · discovery pasivo
+        # ----------------------------------------------------
+
+        first = (
+            runtime
+            .observe_and_sync_active_chat(
+                wait_timeout=1,
+            )
+        )
+
+        discoveries = (
+            first.get(
+                "sidebar_discoveries"
+            )
+            or []
+        )
+
+        self.assertEqual(
+            len(
+                discoveries
+            ),
+            1,
+        )
+
+        discovery = discoveries[0]
+
+        self.assertTrue(
+            discovery["discovered"]
+        )
+
+        self.assertTrue(
+            discovery["created"]
+        )
+
+        self.assertEqual(
+            discovery["thread_id"],
+            77,
+        )
+
+        self.assertEqual(
+            discovery[
+                "external_thread_key"
+            ],
+            "phone:34600999888",
+        )
+
+        # INVARIANTE CRÍTICO:
+        # descubrir el unread NO puede navegar.
+        self.assertEqual(
+            connector.open_phone_calls,
+            [],
+        )
+
+        self.assertIsNone(
+            first.get(
+                "sync"
+            )
+        )
+
+        # ----------------------------------------------------
+        # PASO 2 · selección EXPLÍCITA del usuario
+        # ----------------------------------------------------
+
+        selected = (
+            runtime
+            .open_thread_for_selection(
+                77,
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        self.assertTrue(
+            selected[
+                "routing"
+            ][
+                "opened"
+            ]
+        )
+
+        self.assertTrue(
+            selected[
+                "routing"
+            ][
+                "selection_light"
+            ]
+        )
+
+        self.assertFalse(
+            selected[
+                "routing"
+            ][
+                "send_preverified"
+            ]
+        )
+
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34600999888",
+                    "+34 600 999 888",
+                    False,
+                    9,
+                )
+            ],
+        )
+
+        # La lectura/selección sigue sin convertirse
+        # en autorización fuerte para envío.
+        self.assertIsNone(
+            runtime._verified_send_thread_id
+        )
+
+        # ----------------------------------------------------
+        # PASO 3 · WhatsApp ya está en el nuevo chat.
+        # El watcher debe resolverlo por teléfono.
+        # ----------------------------------------------------
+
+        resolve_calls = []
+
+        # El resolver productivo devuelve un ThreadOverview.
+        # Su identificador público es thread_id.
+        resolved_overview = SimpleNamespace(
+            thread_id=77,
+            external_address=(
+                "+34600999888"
+            ),
+            external_display_name=(
+                "+34 600 999 888"
+            ),
+        )
+
+        def resolve(
+            identity,
+        ):
+            resolve_calls.append(
+                identity
+            )
+
+            if (
+                identity
+                == "+34 600 999 888"
+            ):
+                return {
+                    "matched": True,
+                    "ambiguous": False,
+                    "match_basis":
+                        "PHONE",
+                    "thread":
+                        resolved_overview,
+                    "matches": [
+                        resolved_overview,
+                    ],
+                    "identity":
+                        identity,
+                }
+
+            return {
+                "matched": False,
+                "ambiguous": False,
+                "match_basis": None,
+                "thread": None,
+                "matches": [],
+                "identity":
+                    identity,
+            }
+
+        service.resolve_whatsapp_thread_by_identity = (
+            resolve
+        )
+
+        service.latest_provider_message_id = (
+            None
+        )
+
+        sync_calls = []
+
+        def sync(
+            **kwargs,
+        ):
+            sync_calls.append(
+                dict(
+                    kwargs
+                )
+            )
+
+            return {
+                "summary": {
+                    "thread_id": 77,
+                    "scanned": 1,
+                    "created": 1,
+                    "reused": 0,
+                    "status_advanced": 0,
+                    "skipped": 0,
+                    "errors": 0,
+                },
+                "items": [],
+                "aborted": False,
+                "abort_reason": None,
+                "guard": {
+                    "passed": True,
+                },
+            }
+
+        runtime._sync_service = (
+            SimpleNamespace(
+                sync_open_chat_messages=(
+                    sync
+                )
+            )
+        )
+
+        second = (
+            runtime
+            .observe_and_sync_active_chat(
+                wait_timeout=1,
+                sync_limit=200,
+            )
+        )
+
+        self.assertEqual(
+            second[
+                "change_type"
+            ],
+            "CHAT_CHANGED",
+        )
+
+        self.assertEqual(
+            resolve_calls,
+            [
+                "+34 600 999 888",
+            ],
+        )
+
+        self.assertEqual(
+            second[
+                "resolution"
+            ][
+                "match_basis"
+            ],
+            "PHONE",
+        )
+
+        self.assertEqual(
+            second[
+                "resolution"
+            ][
+                "thread"
+            ].thread_id,
+            77,
+        )
+
+        self.assertEqual(
+            len(
+                sync_calls
+            ),
+            1,
+        )
+
+        sync_call = (
+            sync_calls[0]
+        )
+
+        self.assertEqual(
+            sync_call[
+                "thread_id"
+            ],
+            77,
+        )
+
+        self.assertEqual(
+            sync_call[
+                "expected_active_identity"
+            ],
+            "+34 600 999 888",
+        )
+
+        self.assertEqual(
+            sync_call[
+                "expected_last_provider_message_id"
+            ],
+            "A7-SIM-1",
+        )
+
+        self.assertIsNone(
+            sync_call[
+                "after_provider_message_id"
+            ]
+        )
+
+        self.assertFalse(
+            second[
+                "sync"
+            ][
+                "aborted"
+            ]
+        )
+
+        # Solo existe una navegación y ocurrió DESPUÉS
+        # de la selección explícita.
+        self.assertEqual(
+            len(
+                connector.open_phone_calls
+            ),
+            1,
+        )
 
 
 if __name__ == "__main__":
