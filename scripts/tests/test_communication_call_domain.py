@@ -12,9 +12,11 @@ from backend.communications.calls import (
     CALL_STATUS_RINGING,
     CALL_TERMINAL_STATUSES,
     CommunicationCall,
+    InvalidCallTimestamp,
     InvalidCallTransition,
     can_transition_call_status,
     transition_call_status,
+    transition_call_status_at,
 )
 from backend.communications.models import (
     CHANNEL_PHONE,
@@ -287,6 +289,309 @@ class CommunicationCallDomainTest(
                 CALL_STATUS_ENDED,
                 CALL_STATUS_RINGING,
             )
+        )
+
+    def test_inbound_call_timing(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_RINGING,
+            "2026-08-14T15:00:00+02:00",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_ANSWERED,
+            "2026-08-14T15:00:07+02:00",
+        )
+
+        self.assertEqual(
+            call.ring_duration_seconds,
+            7,
+        )
+
+        self.assertIsNone(
+            call.talk_duration_seconds
+        )
+
+        self.assertIsNone(
+            call.total_duration_seconds
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_ENDED,
+            "2026-08-14T15:03:07+02:00",
+        )
+
+        self.assertEqual(
+            call.ring_duration_seconds,
+            7,
+        )
+
+        self.assertEqual(
+            call.talk_duration_seconds,
+            180,
+        )
+
+        self.assertEqual(
+            call.total_duration_seconds,
+            187,
+        )
+
+    def test_outbound_call_timing(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_OUTBOUND,
+            phone_number="+34600123456",
+        )
+
+        call = transition_call_status_at(
+            call,
+            "DIALING",
+            "2026-08-14T15:00:00+02:00",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_RINGING,
+            "2026-08-14T15:00:03+02:00",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_ANSWERED,
+            "2026-08-14T15:00:08+02:00",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_ENDED,
+            "2026-08-14T15:05:08+02:00",
+        )
+
+        self.assertEqual(
+            call.ring_duration_seconds,
+            5,
+        )
+
+        self.assertEqual(
+            call.talk_duration_seconds,
+            300,
+        )
+
+        self.assertEqual(
+            call.total_duration_seconds,
+            308,
+        )
+
+    def test_missed_call_has_zero_talk_duration(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_RINGING,
+            "2026-08-14T15:00:00+02:00",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_MISSED,
+            "2026-08-14T15:00:12+02:00",
+        )
+
+        self.assertEqual(
+            call.ring_duration_seconds,
+            12,
+        )
+
+        self.assertEqual(
+            call.talk_duration_seconds,
+            0,
+        )
+
+        self.assertEqual(
+            call.total_duration_seconds,
+            12,
+        )
+
+    def test_active_answered_call_has_no_final_duration(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_RINGING,
+            "2026-08-14T15:00:00+02:00",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_ANSWERED,
+            "2026-08-14T15:00:04+02:00",
+        )
+
+        self.assertEqual(
+            call.ring_duration_seconds,
+            4,
+        )
+
+        self.assertIsNone(
+            call.talk_duration_seconds
+        )
+
+        self.assertIsNone(
+            call.total_duration_seconds
+        )
+
+    def test_duplicate_timed_event_is_noop(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+        )
+
+        ringing = transition_call_status_at(
+            call,
+            CALL_STATUS_RINGING,
+            "2026-08-14T15:00:00+02:00",
+        )
+
+        duplicate = (
+            transition_call_status_at(
+                ringing,
+                CALL_STATUS_RINGING,
+                "2026-08-14T15:00:05+02:00",
+            )
+        )
+
+        self.assertIs(
+            duplicate,
+            ringing,
+        )
+
+        self.assertEqual(
+            duplicate.ringing_at,
+            "2026-08-14T15:00:00+02:00",
+        )
+
+    def test_out_of_order_timestamp_is_rejected(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_RINGING,
+            "2026-08-14T15:00:10+02:00",
+        )
+
+        with self.assertRaises(
+            InvalidCallTimestamp
+        ):
+            transition_call_status_at(
+                call,
+                CALL_STATUS_ANSWERED,
+                "2026-08-14T15:00:09+02:00",
+            )
+
+    def test_mixed_timezone_awareness_is_rejected(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600123456",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_RINGING,
+            "2026-08-14T15:00:00+02:00",
+        )
+
+        with self.assertRaises(
+            InvalidCallTimestamp
+        ):
+            transition_call_status_at(
+                call,
+                CALL_STATUS_ANSWERED,
+                "2026-08-14T15:00:05",
+            )
+
+    def test_direct_outbound_answer_without_ring_is_supported(
+        self,
+    ):
+        call = CommunicationCall(
+            id=1,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_OUTBOUND,
+            phone_number="+34600123456",
+        )
+
+        call = transition_call_status_at(
+            call,
+            "DIALING",
+            "2026-08-14T15:00:00+02:00",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_ANSWERED,
+            "2026-08-14T15:00:04+02:00",
+        )
+
+        call = transition_call_status_at(
+            call,
+            CALL_STATUS_ENDED,
+            "2026-08-14T15:01:04+02:00",
+        )
+
+        self.assertIsNone(
+            call.ring_duration_seconds
+        )
+
+        self.assertEqual(
+            call.talk_duration_seconds,
+            60,
+        )
+
+        self.assertEqual(
+            call.total_duration_seconds,
+            64,
         )
 
 

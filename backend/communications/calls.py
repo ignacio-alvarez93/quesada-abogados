@@ -12,6 +12,7 @@ a un cliente, expediente o conversación del CRM.
 """
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 
@@ -264,4 +265,302 @@ def transition_call_status(
     return replace(
         call,
         status=target,
+    )
+
+
+class InvalidCallTimestamp(ValueError):
+    """Timestamp de llamada inválido o fuera de orden."""
+
+
+def _parse_call_timestamp(value):
+    """
+    Convierte un timestamp ISO-8601 a datetime.
+
+    Admite tanto +HH:MM como el sufijo Z.
+    No consulta el reloj del sistema.
+    """
+    if isinstance(
+        value,
+        datetime,
+    ):
+        return value
+
+    raw = str(
+        value
+        or ""
+    ).strip()
+
+    if not raw:
+        raise InvalidCallTimestamp(
+            "El timestamp de llamada es obligatorio."
+        )
+
+    normalized = raw
+
+    if normalized.endswith("Z"):
+        normalized = (
+            normalized[:-1]
+            + "+00:00"
+        )
+
+    try:
+        return datetime.fromisoformat(
+            normalized
+        )
+
+    except ValueError as exc:
+        raise InvalidCallTimestamp(
+            "Timestamp de llamada no válido: "
+            f"{raw}"
+        ) from exc
+
+
+def _call_timestamp_text(value):
+    if isinstance(
+        value,
+        datetime,
+    ):
+        return value.isoformat()
+
+    raw = str(
+        value
+        or ""
+    ).strip()
+
+    _parse_call_timestamp(
+        raw
+    )
+
+    return raw
+
+
+def _elapsed_seconds(
+    start,
+    end,
+):
+    if not start or not end:
+        return None
+
+    start_dt = _parse_call_timestamp(
+        start
+    )
+
+    end_dt = _parse_call_timestamp(
+        end
+    )
+
+    try:
+        elapsed = (
+            end_dt
+            - start_dt
+        ).total_seconds()
+
+    except TypeError as exc:
+        raise InvalidCallTimestamp(
+            "No se pueden mezclar timestamps "
+            "con y sin zona horaria."
+        ) from exc
+
+    if elapsed < 0:
+        raise InvalidCallTimestamp(
+            "Los timestamps de la llamada "
+            "están fuera de orden."
+        )
+
+    return int(
+        elapsed
+    )
+
+
+def _validate_call_event_order(
+    call,
+    event_at,
+):
+    event_dt = _parse_call_timestamp(
+        event_at
+    )
+
+    existing = (
+        call.dialed_at,
+        call.ringing_at,
+        call.answered_at,
+        call.ended_at,
+    )
+
+    for timestamp in existing:
+        if not timestamp:
+            continue
+
+        previous_dt = (
+            _parse_call_timestamp(
+                timestamp
+            )
+        )
+
+        try:
+            out_of_order = (
+                event_dt
+                < previous_dt
+            )
+
+        except TypeError as exc:
+            raise InvalidCallTimestamp(
+                "No se pueden mezclar timestamps "
+                "con y sin zona horaria."
+            ) from exc
+
+        if out_of_order:
+            raise InvalidCallTimestamp(
+                "El evento de llamada es anterior "
+                "a un evento ya registrado."
+            )
+
+
+def _calculate_call_durations(
+    call,
+):
+    """
+    Calcula únicamente duraciones definitivas.
+
+    Mientras la llamada siga activa, talk/total permanecen None.
+    """
+    ring_duration = None
+    talk_duration = None
+    total_duration = None
+
+    if call.ringing_at:
+        ring_end = (
+            call.answered_at
+            or call.ended_at
+        )
+
+        if ring_end:
+            ring_duration = (
+                _elapsed_seconds(
+                    call.ringing_at,
+                    ring_end,
+                )
+            )
+
+    if call.ended_at:
+        if call.answered_at:
+            talk_duration = (
+                _elapsed_seconds(
+                    call.answered_at,
+                    call.ended_at,
+                )
+            )
+        else:
+            talk_duration = 0
+
+        total_start = (
+            call.dialed_at
+            or call.ringing_at
+        )
+
+        if total_start:
+            total_duration = (
+                _elapsed_seconds(
+                    total_start,
+                    call.ended_at,
+                )
+            )
+
+    return replace(
+        call,
+        ring_duration_seconds=(
+            ring_duration
+        ),
+        talk_duration_seconds=(
+            talk_duration
+        ),
+        total_duration_seconds=(
+            total_duration
+        ),
+    )
+
+
+def transition_call_status_at(
+    call,
+    target_status,
+    event_at,
+):
+    """
+    Aplica una transición y registra su timestamp.
+
+    Es dominio puro:
+    - no consulta el reloj;
+    - no persiste;
+    - no conoce proveedores;
+    - eventos repetidos son NOOP.
+    """
+    target = str(
+        target_status
+        or ""
+    ).strip().upper()
+
+    current = str(
+        call.status
+        or ""
+    ).strip().upper()
+
+    if current == target:
+        return call
+
+    event_text = (
+        _call_timestamp_text(
+            event_at
+        )
+    )
+
+    _validate_call_event_order(
+        call,
+        event_text,
+    )
+
+    transitioned = (
+        transition_call_status(
+            call,
+            target,
+        )
+    )
+
+    changes = {}
+
+    if (
+        target
+        == CALL_STATUS_DIALING
+    ):
+        changes[
+            "dialed_at"
+        ] = event_text
+
+    elif (
+        target
+        == CALL_STATUS_RINGING
+    ):
+        changes[
+            "ringing_at"
+        ] = event_text
+
+    elif (
+        target
+        == CALL_STATUS_ANSWERED
+    ):
+        changes[
+            "answered_at"
+        ] = event_text
+
+    if target in CALL_TERMINAL_STATUSES:
+        changes[
+            "ended_at"
+        ] = event_text
+
+    timed = replace(
+        transitioned,
+        **changes,
+    )
+
+    return _calculate_call_durations(
+        timed
     )
