@@ -1329,6 +1329,111 @@ class SQLiteCommunicationRepository:
                 )
             )
 
+    def _update_call_follow_up_in_connection(
+        self,
+        conn,
+        follow_up,
+        *,
+        expected_status=None,
+    ):
+        """
+        Persiste el seguimiento dentro de una conexión existente.
+
+        expected_status permite compare-and-set:
+
+            UPDATE ...
+            WHERE id = ?
+              AND status = ?
+
+        Esto evita que dos workers consuman simultáneamente
+        el mismo trabajo operativo.
+        """
+        sql = """
+            UPDATE communication_call_followups
+            SET
+                status = ?,
+                resolved_at = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """
+
+        params = [
+            follow_up.status,
+            follow_up.resolved_at,
+            int(follow_up.id),
+        ]
+
+        normalized_expected = (
+            str(
+                expected_status
+                or ""
+            )
+            .strip()
+            .upper()
+            or None
+        )
+
+        if normalized_expected is not None:
+            sql += """
+              AND status = ?
+            """
+
+            params.append(
+                normalized_expected
+            )
+
+        cursor = conn.execute(
+            sql,
+            params,
+        )
+
+        if cursor.rowcount != 1:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_call_followups
+                WHERE id = ?
+                """,
+                (
+                    int(follow_up.id),
+                ),
+            ).fetchone()
+
+            if row is None:
+                raise ValueError(
+                    "Seguimiento de llamada "
+                    "no encontrado"
+                )
+
+            if normalized_expected is not None:
+                raise ValueError(
+                    "El seguimiento de llamada "
+                    "cambió de estado durante "
+                    "la operación"
+                )
+
+            raise ValueError(
+                "Seguimiento de llamada "
+                "no encontrado"
+            )
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM communication_call_followups
+            WHERE id = ?
+            """,
+            (
+                int(follow_up.id),
+            ),
+        ).fetchone()
+
+        return (
+            self._call_follow_up_from_row(
+                row
+            )
+        )
+
     def update_call_follow_up(
         self,
         follow_up,
@@ -1354,44 +1459,136 @@ class SQLiteCommunicationRepository:
             )
 
         with self._connection() as conn:
+            return (
+                self
+                ._update_call_follow_up_in_connection(
+                    conn,
+                    follow_up,
+                )
+            )
+
+    def _link_callback_call_in_connection(
+        self,
+        conn,
+        *,
+        source_call_id,
+        callback_call_id,
+    ):
+        source_id = int(
+            source_call_id
+        )
+
+        callback_id = int(
+            callback_call_id
+        )
+
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM communication_call_callbacks
+            WHERE source_call_id = ?
+              AND callback_call_id = ?
+            """,
+            (
+                source_id,
+                callback_id,
+            ),
+        ).fetchone()
+
+        if existing:
+            return (
+                self._call_callback_from_row(
+                    existing
+                )
+            )
+
+        try:
             cursor = conn.execute(
                 """
-                UPDATE communication_call_followups
-                SET
-                    status = ?,
-                    resolved_at = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                INSERT INTO
+                    communication_call_callbacks (
+                        source_call_id,
+                        callback_call_id
+                    )
+                VALUES (?, ?)
                 """,
                 (
-                    follow_up.status,
-                    follow_up.resolved_at,
-                    int(follow_up.id),
+                    source_id,
+                    callback_id,
                 ),
             )
 
-            if cursor.rowcount != 1:
-                raise ValueError(
-                    "Seguimiento de llamada "
-                    "no encontrado"
-                )
-
-            row = conn.execute(
+        except sqlite3.IntegrityError as exc:
+            conflicting = conn.execute(
                 """
                 SELECT *
-                FROM communication_call_followups
-                WHERE id = ?
+                FROM communication_call_callbacks
+                WHERE callback_call_id = ?
                 """,
                 (
-                    int(follow_up.id),
+                    callback_id,
                 ),
             ).fetchone()
 
-            return (
-                self._call_follow_up_from_row(
-                    row
-                )
+            if conflicting:
+                raise ValueError(
+                    "La llamada de devolución "
+                    "ya está vinculada a otro "
+                    "seguimiento"
+                ) from exc
+
+            follow_up = conn.execute(
+                """
+                SELECT id
+                FROM communication_call_followups
+                WHERE source_call_id = ?
+                """,
+                (
+                    source_id,
+                ),
+            ).fetchone()
+
+            if not follow_up:
+                raise ValueError(
+                    "Seguimiento de llamada "
+                    "no encontrado"
+                ) from exc
+
+            callback_call = conn.execute(
+                """
+                SELECT id
+                FROM communication_calls
+                WHERE id = ?
+                """,
+                (
+                    callback_id,
+                ),
+            ).fetchone()
+
+            if not callback_call:
+                raise ValueError(
+                    "Llamada de devolución "
+                    "no encontrada"
+                ) from exc
+
+            raise
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM communication_call_callbacks
+            WHERE id = ?
+            """,
+            (
+                int(cursor.lastrowid),
+            ),
+        ).fetchone()
+
+        return (
+            self._call_callback_from_row(
+                row
             )
+        )
 
     def link_callback_call(
         self,
@@ -1409,121 +1606,139 @@ class SQLiteCommunicationRepository:
         """
         self.ensure_schema()
 
+        with self._connection() as conn:
+            return (
+                self
+                ._link_callback_call_in_connection(
+                    conn,
+                    source_call_id=(
+                        source_call_id
+                    ),
+                    callback_call_id=(
+                        callback_call_id
+                    ),
+                )
+            )
+
+    def create_callback_workflow(
+        self,
+        *,
+        source_call_id,
+        callback,
+        follow_up,
+        expected_follow_up_status,
+    ):
+        """
+        Consume un seguimiento y crea su callback
+        dentro de una única transacción.
+
+        Orden deliberado:
+
+        1. compare-and-set del follow-up;
+        2. INSERT de CommunicationCall OUTBOUND;
+        3. INSERT de la relación callback.
+
+        Si otro worker ya consumió el PENDING, el paso 1
+        falla y no se crea ninguna llamada.
+
+        Si fallan los pasos 2 o 3, el claim también hace
+        rollback.
+        """
+        self.ensure_schema()
+
         source_id = int(
             source_call_id
         )
 
-        callback_id = int(
-            callback_call_id
+        if (
+            follow_up is None
+            or follow_up.id in (
+                None,
+                "",
+            )
+        ):
+            raise ValueError(
+                "El seguimiento debe tener id "
+                "para iniciar una devolución"
+            )
+
+        if int(
+            follow_up.source_call_id
+        ) != source_id:
+            raise ValueError(
+                "El seguimiento no pertenece "
+                "a la llamada origen"
+            )
+
+        if callback is None:
+            raise ValueError(
+                "La llamada de devolución "
+                "es obligatoria"
+            )
+
+        if callback.id not in (
+            None,
+            "",
+        ):
+            raise ValueError(
+                "La llamada de devolución "
+                "debe ser nueva"
+            )
+
+        expected_status = str(
+            expected_follow_up_status
+            or ""
+        ).strip().upper()
+
+        if not expected_status:
+            raise ValueError(
+                "expected_follow_up_status "
+                "es obligatorio"
+            )
+
+        candidate = (
+            self
+            ._normalize_call_provider_identity(
+                callback
+            )
         )
 
         with self._connection() as conn:
-            existing = conn.execute(
-                """
-                SELECT *
-                FROM communication_call_callbacks
-                WHERE source_call_id = ?
-                  AND callback_call_id = ?
-                """,
-                (
-                    source_id,
-                    callback_id,
-                ),
-            ).fetchone()
-
-            if existing:
-                return (
-                    self._call_callback_from_row(
-                        existing
-                    )
-                )
-
-            try:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO
-                        communication_call_callbacks (
-                            source_call_id,
-                            callback_call_id
-                        )
-                    VALUES (?, ?)
-                    """,
-                    (
-                        source_id,
-                        callback_id,
+            claimed_follow_up = (
+                self
+                ._update_call_follow_up_in_connection(
+                    conn,
+                    follow_up,
+                    expected_status=(
+                        expected_status
                     ),
                 )
+            )
 
-            except sqlite3.IntegrityError as exc:
-                conflicting = conn.execute(
-                    """
-                    SELECT *
-                    FROM communication_call_callbacks
-                    WHERE callback_call_id = ?
-                    """,
-                    (
-                        callback_id,
+            created_callback = (
+                self._insert_call(
+                    conn,
+                    candidate,
+                )
+            )
+
+            relation = (
+                self
+                ._link_callback_call_in_connection(
+                    conn,
+                    source_call_id=(
+                        source_id
                     ),
-                ).fetchone()
-
-                if conflicting:
-                    raise ValueError(
-                        "La llamada de devolución "
-                        "ya está vinculada a otro "
-                        "seguimiento"
-                    ) from exc
-
-                follow_up = conn.execute(
-                    """
-                    SELECT id
-                    FROM communication_call_followups
-                    WHERE source_call_id = ?
-                    """,
-                    (
-                        source_id,
+                    callback_call_id=(
+                        created_callback.id
                     ),
-                ).fetchone()
-
-                if not follow_up:
-                    raise ValueError(
-                        "Seguimiento de llamada "
-                        "no encontrado"
-                    ) from exc
-
-                callback_call = conn.execute(
-                    """
-                    SELECT id
-                    FROM communication_calls
-                    WHERE id = ?
-                    """,
-                    (
-                        callback_id,
-                    ),
-                ).fetchone()
-
-                if not callback_call:
-                    raise ValueError(
-                        "Llamada de devolución "
-                        "no encontrada"
-                    ) from exc
-
-                raise
-
-            row = conn.execute(
-                """
-                SELECT *
-                FROM communication_call_callbacks
-                WHERE id = ?
-                """,
-                (
-                    int(cursor.lastrowid),
-                ),
-            ).fetchone()
+                )
+            )
 
             return (
-                self._call_callback_from_row(
-                    row
-                )
+                created_callback,
+                relation,
+                claimed_follow_up,
             )
 
     def get_call_callback_by_callback_call(

@@ -1,9 +1,15 @@
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import patch
 
+from backend.communications.call_followups import (
+    CALL_FOLLOW_UP_IN_PROGRESS,
+    CALL_FOLLOW_UP_PENDING,
+)
 from backend.communications.call_snapshots import (
     ProviderCallSnapshot,
 )
@@ -333,6 +339,389 @@ class CommunicationCallTransactionTest(
         self.assertEqual(
             follow_up.status,
             "PENDING",
+        )
+
+
+    def _create_missed_source(
+        self,
+        *,
+        key,
+        phone,
+    ):
+        ringing = (
+            self._create_ringing_inbound(
+                key=key,
+                phone=phone,
+            )
+        )
+
+        return (
+            self.service
+            .apply_call_event(
+                ringing.id,
+                status=CALL_STATUS_MISSED,
+                event_at=(
+                    "2026-08-14T18:00:10+02:00"
+                ),
+            )
+        )
+
+    def _count_outbound_calls(
+        self,
+    ):
+        conn = sqlite3.connect(
+            str(self.db_path)
+        )
+
+        try:
+            return int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM communication_calls
+                    WHERE direction = 'OUTBOUND'
+                    """
+                ).fetchone()[0]
+            )
+
+        finally:
+            conn.close()
+
+    def test_callback_workflow_commits_claim_call_and_relation(
+        self,
+    ):
+        source = (
+            self._create_missed_source(
+                key="atomic-callback-001",
+                phone="+34600920001",
+            )
+        )
+
+        callback = (
+            self.service
+            .create_callback_call(
+                source.id
+            )
+        )
+
+        follow_up = (
+            self.repository
+            .get_call_follow_up_by_source_call(
+                source.id
+            )
+        )
+
+        callbacks = (
+            self.repository
+            .list_callback_calls(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            follow_up.status,
+            CALL_FOLLOW_UP_IN_PROGRESS,
+        )
+
+        self.assertEqual(
+            len(callbacks),
+            1,
+        )
+
+        self.assertEqual(
+            callbacks[0].id,
+            callback.id,
+        )
+
+        self.assertEqual(
+            self._count_outbound_calls(),
+            1,
+        )
+
+    def test_callback_workflow_rolls_back_claim_and_call_when_link_fails(
+        self,
+    ):
+        source = (
+            self._create_missed_source(
+                key="atomic-callback-002",
+                phone="+34600920002",
+            )
+        )
+
+        with patch.object(
+            self.repository,
+            "_link_callback_call_in_connection",
+            side_effect=RuntimeError(
+                "Fallo vínculo simulado"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Fallo vínculo simulado",
+            ):
+                (
+                    self.service
+                    .create_callback_call(
+                        source.id
+                    )
+                )
+
+        follow_up = (
+            self.repository
+            .get_call_follow_up_by_source_call(
+                source.id
+            )
+        )
+
+        callbacks = (
+            self.repository
+            .list_callback_calls(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            follow_up.status,
+            CALL_FOLLOW_UP_PENDING,
+        )
+
+        self.assertEqual(
+            callbacks,
+            [],
+        )
+
+        self.assertEqual(
+            self._count_outbound_calls(),
+            0,
+        )
+
+    def test_second_callback_cannot_consume_in_progress_follow_up(
+        self,
+    ):
+        source = (
+            self._create_missed_source(
+                key="atomic-callback-003",
+                phone="+34600920003",
+            )
+        )
+
+        first = (
+            self.service
+            .create_callback_call(
+                source.id
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "ya está en curso",
+        ):
+            (
+                self.service
+                .create_callback_call(
+                    source.id
+                )
+            )
+
+        callbacks = (
+            self.repository
+            .list_callback_calls(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            len(callbacks),
+            1,
+        )
+
+        self.assertEqual(
+            callbacks[0].id,
+            first.id,
+        )
+
+        self.assertEqual(
+            self._count_outbound_calls(),
+            1,
+        )
+
+    def test_callback_claim_is_atomic_between_two_workers(
+        self,
+    ):
+        source = (
+            self._create_missed_source(
+                key="atomic-callback-004",
+                phone="+34600920004",
+            )
+        )
+
+        repo_a = (
+            SQLiteCommunicationRepository(
+                self.db_path
+            )
+        )
+
+        repo_b = (
+            SQLiteCommunicationRepository(
+                self.db_path
+            )
+        )
+
+        repo_a.ensure_schema()
+        repo_b.ensure_schema()
+
+        service_a = CommunicationCallService(
+            repository=repo_a
+        )
+
+        service_b = CommunicationCallService(
+            repository=repo_b
+        )
+
+        barrier = Barrier(
+            2
+        )
+
+        original_a = (
+            repo_a.create_callback_workflow
+        )
+
+        original_b = (
+            repo_b.create_callback_workflow
+        )
+
+        def delayed_a(
+            *args,
+            **kwargs,
+        ):
+            barrier.wait(
+                timeout=10
+            )
+
+            return original_a(
+                *args,
+                **kwargs,
+            )
+
+        def delayed_b(
+            *args,
+            **kwargs,
+        ):
+            barrier.wait(
+                timeout=10
+            )
+
+            return original_b(
+                *args,
+                **kwargs,
+            )
+
+        repo_a.create_callback_workflow = (
+            delayed_a
+        )
+
+        repo_b.create_callback_workflow = (
+            delayed_b
+        )
+
+        def run_worker(
+            service,
+        ):
+            try:
+                callback = (
+                    service
+                    .create_callback_call(
+                        source.id
+                    )
+                )
+
+                return (
+                    "CREATED",
+                    callback.id,
+                )
+
+            except Exception as exc:
+                return (
+                    "REJECTED",
+                    type(exc).__name__,
+                    str(exc),
+                )
+
+        with ThreadPoolExecutor(
+            max_workers=2
+        ) as executor:
+            future_a = executor.submit(
+                run_worker,
+                service_a,
+            )
+
+            future_b = executor.submit(
+                run_worker,
+                service_b,
+            )
+
+            results = [
+                future_a.result(
+                    timeout=20
+                ),
+                future_b.result(
+                    timeout=20
+                ),
+            ]
+
+        created = [
+            result
+            for result in results
+            if result[0]
+            == "CREATED"
+        ]
+
+        rejected = [
+            result
+            for result in results
+            if result[0]
+            == "REJECTED"
+        ]
+
+        self.assertEqual(
+            len(created),
+            1,
+            results,
+        )
+
+        self.assertEqual(
+            len(rejected),
+            1,
+            results,
+        )
+
+        follow_up = (
+            self.repository
+            .get_call_follow_up_by_source_call(
+                source.id
+            )
+        )
+
+        callbacks = (
+            self.repository
+            .list_callback_calls(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            follow_up.status,
+            CALL_FOLLOW_UP_IN_PROGRESS,
+        )
+
+        self.assertEqual(
+            len(callbacks),
+            1,
+        )
+
+        self.assertEqual(
+            self._count_outbound_calls(),
+            1,
         )
 
 

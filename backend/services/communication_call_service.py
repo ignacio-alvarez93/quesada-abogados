@@ -342,15 +342,14 @@ class CommunicationCallService:
         """
         Crea un nuevo intento de devolución.
 
-        La llamada saliente hereda por defecto:
-        - teléfono;
-        - canal;
-        - contexto CRM;
-        - identidad visible;
-        - motivo;
-        - proveedor.
+        El dominio valida PENDING -> IN_PROGRESS.
 
-        El follow-up debe estar PENDING.
+        El repository reclama PENDING mediante compare-and-set
+        y persiste atómicamente:
+
+        - follow-up IN_PROGRESS;
+        - CommunicationCall OUTBOUND;
+        - relación de callback.
         """
         source = self.repository.get_call(
             int(source_call_id)
@@ -403,14 +402,61 @@ class CommunicationCallService:
                 "ya está en curso"
             )
 
-        callback = self.create_outbound_call(
-            channel=(
-                channel
-                or source.channel
-            ),
-            phone_number=(
-                source.phone_number
-            ),
+        active = transition_call_follow_up(
+            follow_up,
+            CALL_FOLLOW_UP_IN_PROGRESS,
+        )
+
+        callback_channel = (
+            self._normalize_required_text(
+                (
+                    channel
+                    or source.channel
+                ),
+                field_name="channel",
+            )
+            .upper()
+        )
+
+        callback_phone = (
+            self._normalize_required_text(
+                source.phone_number,
+                field_name="phone_number",
+            )
+        )
+
+        resolved_reason_code = str(
+            (
+                reason_code
+                if reason_code is not None
+                else source.reason_code
+            )
+            or ""
+        ).strip().upper() or None
+
+        resolved_reason_detail = str(
+            (
+                reason_detail
+                if reason_detail is not None
+                else source.reason_detail
+            )
+            or ""
+        ).strip() or None
+
+        resolved_provider = str(
+            (
+                provider
+                if provider is not None
+                else source.provider
+            )
+            or ""
+        ).strip().upper() or None
+
+        callback_candidate = CommunicationCall(
+            id=None,
+            channel=callback_channel,
+            direction=CALL_DIRECTION_OUTBOUND,
+            phone_number=callback_phone,
             thread_id=source.thread_id,
             client_id=source.client_id,
             expedient_id=(
@@ -420,37 +466,44 @@ class CommunicationCallService:
                 source.display_name_snapshot
             ),
             reason_code=(
-                reason_code
-                if reason_code is not None
-                else source.reason_code
+                resolved_reason_code
             ),
             reason_detail=(
-                reason_detail
-                if reason_detail is not None
-                else source.reason_detail
+                resolved_reason_detail
             ),
-            provider=(
-                provider
-                if provider is not None
-                else source.provider
+            status=CALL_STATUS_CREATED,
+            provider=resolved_provider,
+            notes=(
+                str(
+                    notes
+                    or ""
+                ).strip()
+                or None
             ),
-            notes=notes,
-            created_by=created_by,
+            created_by=(
+                str(
+                    created_by
+                    or ""
+                ).strip()
+                or None
+            ),
             metadata=metadata,
         )
 
-        self.repository.link_callback_call(
-            source_call_id=source.id,
-            callback_call_id=callback.id,
-        )
-
-        active = transition_call_follow_up(
-            follow_up,
-            CALL_FOLLOW_UP_IN_PROGRESS,
-        )
-
-        self.repository.update_call_follow_up(
-            active
+        (
+            callback,
+            _relation,
+            _claimed_follow_up,
+        ) = (
+            self.repository
+            .create_callback_workflow(
+                source_call_id=source.id,
+                callback=callback_candidate,
+                follow_up=active,
+                expected_follow_up_status=(
+                    follow_up.status
+                ),
+            )
         )
 
         return callback
