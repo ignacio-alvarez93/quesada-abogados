@@ -166,6 +166,13 @@ class WhatsAppActiveChatFingerprint:
     visible_message_count: int
     last_provider_message_id: str | None
 
+    # Estado observable del último mensaje cuando WhatsApp
+    # expone SENT / DELIVERED / READ en su accesibilidad.
+    #
+    # Default para conservar compatibilidad con todos los
+    # constructores posicionales históricos del runtime/tests.
+    last_provider_message_status: str | None = None
+
 
 @dataclass(frozen=True)
 class WhatsAppChatSnapshot:
@@ -307,6 +314,249 @@ def normalize_chat_identity(
             cleaned
         ).split()
     ).casefold()
+
+
+def diff_sidebar_chat_fingerprints(
+    previous,
+    current,
+):
+    """Compara dos huellas del sidebar de WhatsApp.
+
+    Devuelve únicamente identidades cuyo estado observable
+    cambió entre snapshots.
+
+    Regla crítica:
+    position y virtual_offset son cambios operativos.
+    Por sí solos NO significan mensaje nuevo.
+
+    content_changed solo se activa cuando cambia alguna
+    señal funcional:
+    - preview;
+    - primary_detail;
+    - unread_count;
+    - ambiguous;
+    - aparición/desaparición.
+    """
+    previous = (
+        previous
+        if isinstance(
+            previous,
+            dict,
+        )
+        else {}
+    )
+
+    current = (
+        current
+        if isinstance(
+            current,
+            dict,
+        )
+        else {}
+    )
+
+    identities = set(
+        previous
+    ) | set(
+        current
+    )
+
+    changes = []
+
+    for identity in sorted(
+        identities
+    ):
+        before = previous.get(
+            identity
+        )
+
+        after = current.get(
+            identity
+        )
+
+        appeared = (
+            before is None
+            and after is not None
+        )
+
+        disappeared = (
+            before is not None
+            and after is None
+        )
+
+        if appeared:
+            preview_changed = True
+            primary_detail_changed = True
+            unread_changed = True
+            ambiguous_changed = bool(
+                after.get(
+                    "ambiguous"
+                )
+            )
+            position_changed = True
+            virtual_offset_changed = True
+            content_changed = True
+
+        elif disappeared:
+            preview_changed = True
+            primary_detail_changed = True
+            unread_changed = True
+            ambiguous_changed = bool(
+                before.get(
+                    "ambiguous"
+                )
+            )
+            position_changed = True
+            virtual_offset_changed = True
+            content_changed = True
+
+        else:
+            preview_changed = (
+                str(
+                    before.get(
+                        "preview"
+                    )
+                    or ""
+                )
+                != str(
+                    after.get(
+                        "preview"
+                    )
+                    or ""
+                )
+            )
+
+            primary_detail_changed = (
+                str(
+                    before.get(
+                        "primary_detail"
+                    )
+                    or ""
+                )
+                != str(
+                    after.get(
+                        "primary_detail"
+                    )
+                    or ""
+                )
+            )
+
+            unread_changed = (
+                int(
+                    before.get(
+                        "unread_count"
+                    )
+                    or 0
+                )
+                != int(
+                    after.get(
+                        "unread_count"
+                    )
+                    or 0
+                )
+            )
+
+            ambiguous_changed = (
+                bool(
+                    before.get(
+                        "ambiguous"
+                    )
+                )
+                != bool(
+                    after.get(
+                        "ambiguous"
+                    )
+                )
+            )
+
+            position_changed = (
+                before.get(
+                    "position"
+                )
+                != after.get(
+                    "position"
+                )
+            )
+
+            virtual_offset_changed = (
+                before.get(
+                    "virtual_offset"
+                )
+                != after.get(
+                    "virtual_offset"
+                )
+            )
+
+            content_changed = bool(
+                preview_changed
+                or primary_detail_changed
+                or unread_changed
+                or ambiguous_changed
+            )
+
+        any_changed = bool(
+            appeared
+            or disappeared
+            or content_changed
+            or position_changed
+            or virtual_offset_changed
+        )
+
+        if not any_changed:
+            continue
+
+        if appeared:
+            change_type = (
+                "SIDEBAR_THREAD_APPEARED"
+            )
+
+        elif disappeared:
+            change_type = (
+                "SIDEBAR_THREAD_DISAPPEARED"
+            )
+
+        elif content_changed:
+            change_type = (
+                "SIDEBAR_THREAD_CHANGED"
+            )
+
+        else:
+            change_type = (
+                "SIDEBAR_THREAD_REORDERED"
+            )
+
+        changes.append(
+            {
+                "identity":
+                    identity,
+                "change_type":
+                    change_type,
+                "appeared":
+                    appeared,
+                "disappeared":
+                    disappeared,
+                "content_changed":
+                    content_changed,
+                "preview_changed":
+                    preview_changed,
+                "primary_detail_changed":
+                    primary_detail_changed,
+                "unread_changed":
+                    unread_changed,
+                "ambiguous_changed":
+                    ambiguous_changed,
+                "position_changed":
+                    position_changed,
+                "virtual_offset_changed":
+                    virtual_offset_changed,
+                "previous":
+                    before,
+                "current":
+                    after,
+            }
+        )
+
+    return changes
 
 
 def extract_phone_from_profile_text(
@@ -872,6 +1122,96 @@ class WhatsAppConnector:
 
         return snapshots
 
+    def get_sidebar_chat_fingerprint(
+        self,
+        *,
+        viewport_only=True,
+    ):
+        """Obtiene una huella ligera del sidebar de WhatsApp.
+
+        Reutiliza exclusivamente la lectura DOM ya existente
+        de las filas materializadas.
+
+        No:
+        - navega;
+        - hace click;
+        - desplaza la lista;
+        - usa find_element;
+        - abre perfiles;
+        - persiste datos.
+
+        La clave lógica es la identidad visible normalizada.
+        position y virtual_offset se conservan como información
+        operativa, pero NO forman parte de la identidad lógica
+        de la conversación.
+        """
+
+        snapshots = (
+            self.list_visible_chat_snapshots(
+                viewport_only=viewport_only,
+            )
+        )
+
+        result = {}
+
+        for snapshot in snapshots:
+            identity = (
+                normalize_chat_identity(
+                    snapshot.display_name
+                )
+            )
+
+            if not identity:
+                continue
+
+            # Dos chats visibles con la misma identidad
+            # normalizada son ambiguos.
+            #
+            # No elegimos arbitrariamente uno de ellos.
+            if identity in result:
+                existing = result[
+                    identity
+                ]
+
+                existing[
+                    "ambiguous"
+                ] = True
+
+                continue
+
+            result[
+                identity
+            ] = {
+                "identity":
+                    identity,
+                "display_name":
+                    snapshot.display_name,
+                "primary_detail":
+                    snapshot.primary_detail,
+                "preview":
+                    snapshot.preview,
+                "unread_count":
+                    max(
+                        0,
+                        int(
+                            snapshot.unread_count
+                            or 0
+                        ),
+                    ),
+                "position":
+                    int(
+                        snapshot.position
+                    ),
+                "virtual_offset":
+                    snapshot.virtual_offset,
+                "ambiguous":
+                    False,
+            }
+
+
+        return result
+
+
     def scroll_chat_list_to_ratio(
         self,
         ratio,
@@ -1269,10 +1609,6 @@ class WhatsAppConnector:
                 if callable(
                     mouse_click
                 ):
-                    print(
-                        "[WA-SEARCH] CLEAR contextual close START",
-                        flush=True,
-                    )
 
                     mouse_click()
 
@@ -1293,10 +1629,6 @@ class WhatsAppConnector:
                             current["found"]
                             and not current["text"]
                         ):
-                            print(
-                                "[WA-SEARCH] CLEAR contextual close OK",
-                                flush=True,
-                            )
 
                             try:
                                 self.browser.evaluate(
@@ -1523,6 +1855,397 @@ class WhatsAppConnector:
 
         return False
 
+    def _get_fast_chat_routing_state(
+        self,
+    ):
+        """Comprueba si puede iniciarse routing sin preparación pesada.
+
+        FAST_ROUTE solo se permite cuando una única lectura DOM
+        demuestra simultáneamente:
+
+        - lista de chats presente;
+        - buscador activo presente;
+        - buscador vacío;
+        - ningún diálogo abierto.
+
+        Cualquier duda obliga al caller a usar SAFE_ROUTE.
+        """
+        if not self.browser:
+            return {
+                "ready": False,
+                "reason": "BROWSER_NOT_STARTED",
+                "selector": None,
+                "text": "",
+            }
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const dialogs =
+                        Array.from(
+                            document.querySelectorAll(
+                                '[role="dialog"]'
+                            )
+                        )
+                        .filter(
+                            node =>
+                                node.getClientRects().length
+                                > 0
+                        );
+
+                    if (dialogs.length) {
+                        return {
+                            ready: false,
+                            reason: 'DIALOG_PRESENT',
+                            selector: null,
+                            text: ''
+                        };
+                    }
+
+                    const grid =
+                        document.querySelector(
+                            '[aria-label="Lista de chats"]'
+                        );
+
+                    if (!grid) {
+                        return {
+                            ready: false,
+                            reason: 'CHAT_LIST_NOT_FOUND',
+                            selector: null,
+                            text: ''
+                        };
+                    }
+
+                    const input =
+                        document.querySelector(
+                            'input[role="textbox"]'
+                            + '[data-tab="3"]'
+                        );
+
+                    if (!input) {
+                        return {
+                            ready: false,
+                            reason: 'SEARCH_INPUT_NOT_FOUND',
+                            selector: null,
+                            text: ''
+                        };
+                    }
+
+                    const text =
+                        String(
+                            input.value
+                            || input.innerText
+                            || input.textContent
+                            || ''
+                        ).trim();
+
+                    if (text) {
+                        return {
+                            ready: false,
+                            reason: 'SEARCH_NOT_EMPTY',
+                            selector:
+                                'input[role="textbox"][data-tab="3"]',
+                            text: text
+                        };
+                    }
+
+                    return {
+                        ready: true,
+                        reason: null,
+                        selector:
+                            'input[role="textbox"][data-tab="3"]',
+                        text: ''
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        return {
+            "ready": bool(
+                result.get(
+                    "ready"
+                )
+            ),
+            "reason": (
+                str(
+                    result.get(
+                        "reason"
+                    )
+                    or ""
+                ).strip()
+                or None
+            ),
+            "selector": (
+                str(
+                    result.get(
+                        "selector"
+                    )
+                    or ""
+                ).strip()
+                or None
+            ),
+            "text": str(
+                result.get(
+                    "text"
+                )
+                or ""
+            ),
+        }
+
+
+    def _set_chat_search_value_fast(
+        self,
+        selector,
+        value,
+        *,
+        timeout=0.5,
+    ):
+        """Actualiza el buscador mediante el setter nativo del input.
+
+        Si React/WhatsApp no refleja exactamente el nuevo valor,
+        devuelve False y el caller degrada a teclado CDP.
+        """
+        if not self.browser:
+            return False
+
+        selector = str(
+            selector
+            or ""
+        ).strip()
+
+        if not selector:
+            return False
+
+        value = str(
+            value
+            or ""
+        )
+
+        try:
+            changed = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const selector = %s;
+                        const value = %s;
+
+                        const node =
+                            document.querySelector(
+                                selector
+                            );
+
+                        if (!node) {
+                            return false;
+                        }
+
+                        node.focus();
+
+                        const descriptor =
+                            Object.getOwnPropertyDescriptor(
+                                HTMLInputElement.prototype,
+                                'value'
+                            );
+
+                        if (
+                            descriptor
+                            && descriptor.set
+                        ) {
+                            descriptor.set.call(
+                                node,
+                                value
+                            );
+                        } else {
+                            node.value = value;
+                        }
+
+                        node.dispatchEvent(
+                            new InputEvent(
+                                'input',
+                                {
+                                    bubbles: true,
+                                    inputType:
+                                        value
+                                        ? 'insertText'
+                                        : 'deleteContentBackward',
+                                    data:
+                                        value
+                                        ? value
+                                        : null
+                                }
+                            )
+                        );
+
+                        node.dispatchEvent(
+                            new Event(
+                                'change',
+                                {
+                                    bubbles: true
+                                }
+                            )
+                        );
+
+                        return true;
+                    })()
+                    """
+                    % (
+                        json.dumps(
+                            selector,
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            value,
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+            )
+        except Exception:
+            return False
+
+        if not changed:
+            return False
+
+        deadline = (
+            time.time()
+            + max(
+                0.1,
+                float(timeout),
+            )
+        )
+
+        while time.time() < deadline:
+            state = (
+                self.get_chat_search_state()
+            )
+
+            if (
+                state.get(
+                    "found"
+                )
+                and str(
+                    state.get(
+                        "text"
+                    )
+                    or ""
+                )
+                == value
+            ):
+                return True
+
+            time.sleep(
+                0.02
+            )
+
+        return False
+
+
+    def _request_chat_search_clear_fast(
+        self,
+        selector,
+    ):
+        """Solicita limpiar el buscador sin esperar confirmación.
+
+        Este helper se usa únicamente DESPUÉS de haber abierto
+        y validado correctamente el chat de destino.
+
+        No bloquea esperando a que React termine de restaurar
+        la lista normal.
+
+        Seguridad:
+        el siguiente routing ejecuta siempre
+        _get_fast_chat_routing_state(). Si WhatsApp todavía
+        no está limpio/listo, FAST_ROUTE será rechazado y el
+        flujo degradará a SAFE_ROUTE.
+        """
+        selector = str(
+            selector
+            or ""
+        ).strip()
+
+        if (
+            not self.browser
+            or not selector
+        ):
+            return False
+
+        try:
+            changed = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const selector = %s;
+
+                        const node =
+                            document.querySelector(
+                                selector
+                            );
+
+                        if (!node) {
+                            return false;
+                        }
+
+                        node.focus();
+
+                        const descriptor =
+                            Object.getOwnPropertyDescriptor(
+                                HTMLInputElement.prototype,
+                                'value'
+                            );
+
+                        if (
+                            descriptor
+                            && descriptor.set
+                        ) {
+                            descriptor.set.call(
+                                node,
+                                ''
+                            );
+                        } else {
+                            node.value = '';
+                        }
+
+                        node.dispatchEvent(
+                            new InputEvent(
+                                'input',
+                                {
+                                    bubbles: true,
+                                    inputType:
+                                        'deleteContentBackward',
+                                    data: null
+                                }
+                            )
+                        );
+
+                        node.dispatchEvent(
+                            new Event(
+                                'change',
+                                {
+                                    bubbles: true
+                                }
+                            )
+                        );
+
+                        return true;
+                    })()
+                    """
+                    % json.dumps(
+                        selector,
+                        ensure_ascii=False,
+                    )
+                )
+            )
+
+        except Exception:
+            return False
+
+        return bool(
+            changed
+        )
+
+
     def search_and_open_chat_by_phone(
         self,
         phone,
@@ -1548,96 +2271,103 @@ class WhatsAppConnector:
             or ""
         ).strip()
 
-        # Toda navegación comienza desde un buscador
-        # limpio. Esto también restaura la lista normal
-        # cuando una búsqueda anterior seguía activa.
-        print(
-            "[WA-SEARCH] B0.1 pre-clear START",
-            flush=True,
+        # Optimización de routing de selección.
+        #
+        # Evitamos clear + prepare únicamente cuando una sola
+        # lectura DOM demuestra que la interfaz ya está en un
+        # estado conocido y limpio.
+
+        fast_state = (
+            self._get_fast_chat_routing_state()
         )
 
-        pre_clear = (
-            self.clear_chat_search()
+
+        fast_route = bool(
+            fast_state.get(
+                "ready"
+            )
         )
 
-        print(
-            "[WA-SEARCH] B0.2 pre-clear RESULT "
-            f"{pre_clear}",
-            flush=True,
-        )
+        if fast_route:
 
-        if not pre_clear:
-            return {
-                "opened": False,
-                "reason":
-                    "CHAT_SEARCH_NOT_CLEAR",
+            search_state = {
+                "found": True,
+                "selector":
+                    fast_state.get(
+                        "selector"
+                    ),
+                "text": "",
             }
 
-        print(
-            "[WA-SEARCH] B1.1 prepare_chat_interface START",
-            flush=True,
-        )
+            selector = (
+                fast_state.get(
+                    "selector"
+                )
+            )
 
-        prepared = (
-            self.prepare_chat_interface()
-        )
+        else:
+            print(
+                "[WA-SEARCH] SAFE_ROUTE fallback "
+                f"reason={ascii(fast_state.get('reason'))}",
+                flush=True,
+            )
 
-        print(
-            "[WA-SEARCH] B1.2 prepare_chat_interface OK "
-            f"{ascii(prepared)}",
-            flush=True,
-        )
+            # Ruta conservadora histórica.
 
-        if not prepared.get(
-            "ready"
-        ):
-            return {
-                "opened": False,
-                "reason":
-                    prepared.get(
-                        "reason"
-                    )
-                    or "CHAT_INTERFACE_NOT_READY",
-            }
 
-        print(
-            "[WA-SEARCH] B2.1 get_chat_search_state START",
-            flush=True,
-        )
+            pre_clear = (
+                self.clear_chat_search()
+            )
 
-        search_state = (
-            self.get_chat_search_state()
-        )
 
-        print(
-            "[WA-SEARCH] B2.2 get_chat_search_state OK "
-            f"{ascii(search_state)}",
-            flush=True,
-        )
 
-        if not search_state[
-            "found"
-        ]:
-            return {
-                "opened": False,
-                "reason":
-                    "CHAT_SEARCH_NOT_FOUND",
-            }
+            if not pre_clear:
+                return {
+                    "opened": False,
+                    "reason":
+                        "CHAT_SEARCH_NOT_CLEAR",
+                }
 
-        print(
-            "[WA-SEARCH] B4.1 find selector START",
-            flush=True,
-        )
 
-        selector = (
-            self._find_chat_search_selector()
-        )
 
-        print(
-            "[WA-SEARCH] B4.2 find selector OK "
-            f"{ascii(selector)}",
-            flush=True,
-        )
+            prepared = (
+                self.prepare_chat_interface()
+            )
+
+
+
+            if not prepared.get(
+                "ready"
+            ):
+                return {
+                    "opened": False,
+                    "reason":
+                        prepared.get(
+                            "reason"
+                        )
+                        or "CHAT_INTERFACE_NOT_READY",
+                }
+
+
+            search_state = (
+                self.get_chat_search_state()
+            )
+
+
+            if not search_state[
+                "found"
+            ]:
+                return {
+                    "opened": False,
+                    "reason":
+                        "CHAT_SEARCH_NOT_FOUND",
+                }
+
+
+            selector = (
+                self._find_chat_search_selector()
+            )
+
 
         if not selector:
             return {
@@ -1648,22 +2378,25 @@ class WhatsAppConnector:
 
         # E.164 facilita búsqueda tanto de
         # contactos guardados como números sin guardar.
-        print(
-            "[WA-SEARCH] B5.1 send_keys START "
-            f"selector={ascii(selector)} "
-            f"value={ascii(expected.e164)}",
-            flush=True,
+
+
+        fast_input = (
+            self._set_chat_search_value_fast(
+                selector,
+                expected.e164,
+                timeout=0.35,
+            )
         )
 
-        self.browser.send_keys(
-            selector,
-            expected.e164,
-        )
+        if not fast_input:
+            # Fallback al comportamiento probado mediante
+            # SeleniumBase/CDP.
+            self.browser.send_keys(
+                selector,
+                expected.e164,
+            )
 
-        print(
-            "[WA-SEARCH] B5.2 send_keys OK",
-            flush=True,
-        )
+
 
         # WhatsApp virtualiza y reutiliza las filas del
         # listado lateral. No podemos localizar list-item-N
@@ -1685,8 +2418,6 @@ class WhatsAppConnector:
 
         result_marked = False
         result_text = ""
-        result_target_kind = ""
-
         target_selector = (
             '[data-qa-whatsapp-routing-target="1"]'
         )
@@ -1907,26 +2638,13 @@ class WhatsAppConnector:
                     or ""
                 ).strip()
 
-                result_target_kind = str(
-                    candidate.get(
-                        "target_kind"
-                    )
-                    or ""
-                ).strip()
-
                 break
 
             time.sleep(
                 0.1
             )
 
-        print(
-            "[WA-SEARCH] B6 matched result "
-            f"marked={result_marked} "
-            f"target={ascii(result_target_kind)} "
-            f"text={ascii(result_text)}",
-            flush=True,
-        )
+
 
         if not result_marked:
             try:
@@ -1940,12 +2658,15 @@ class WhatsAppConnector:
                     "CHAT_SEARCH_NO_MATCHING_RESULT",
             }
 
-        # scrollIntoView() puede necesitar un ciclo de layout
-        # antes de que CDP pueda interactuar físicamente con
-        # la superficie recién centrada.
-        time.sleep(
-            0.15
-        )
+        # B6 ya ha hecho scrollIntoView() y ha marcado
+        # exactamente la superficie interactiva.
+        #
+        # Intentamos recuperar el WebElement inmediatamente.
+        # Otros flujos del propio conector ya usan
+        # find_element() -> mouse_click() sin espera fija.
+        #
+        # Solo si Selenium todavía no ve el nodo marcado damos
+        # un pequeño margen de layout y repetimos UNA vez.
 
         try:
             result_element = (
@@ -1955,6 +2676,21 @@ class WhatsAppConnector:
             )
         except Exception:
             result_element = None
+
+        if not result_element:
+            time.sleep(
+                0.05
+            )
+
+            try:
+                result_element = (
+                    self.browser.find_element(
+                        target_selector
+                    )
+                )
+            except Exception:
+                result_element = None
+
 
         if not result_element:
             try:
@@ -1988,41 +2724,41 @@ class WhatsAppConnector:
                     "CHAT_SEARCH_RESULT_NO_MOUSE_CLICK",
             }
 
-        print(
-            "[WA-SEARCH] B7 SeleniumBase mouse_click START",
-            flush=True,
-        )
 
-        mouse_click()
+        cdp_sequential_emitted = False
 
-        print(
-            "[WA-SEARCH] B7 SeleniumBase mouse_click OK",
-            flush=True,
-        )
-
-        # El atributo es únicamente un puente temporal
-        # entre la detección DOM y SeleniumBase.
         try:
-            self.browser.evaluate(
-                """
-                (() => {
-                    document
-                        .querySelectorAll(
-                            '[data-qa-whatsapp-routing-target]'
-                        )
-                        .forEach(
-                            node =>
-                                node.removeAttribute(
-                                    'data-qa-whatsapp-routing-target'
-                                )
-                        );
-
-                    return true;
-                })()
-                """
+            cdp_sequential_emitted = bool(
+                self._dispatch_element_mouse_click_sequential(
+                    result_element
+                )
             )
         except Exception:
             pass
+
+
+        if not cdp_sequential_emitted:
+            # Todavía NO hacemos un segundo click aquí.
+            #
+            # El bloque de confirmación B8 decidirá que no se
+            # abrió el chat y utilizará el retry histórico,
+            # re-localizando antes la fila.
+            print(
+                "[WA-SEARCH] B7 CDP sequential click "
+                "not emitted; confirmation/fallback required",
+                flush=True,
+            )
+
+        # El marcador se mantiene hasta terminar la
+        # confirmación de identidad.
+        #
+        # No participa en B8 y eliminarlo aquí introducía una
+        # llamada CDP adicional en la ruta crítica.
+        #
+        # Si el primer click falla, el propio retry limpia
+        # cualquier marcador antes de volver a localizar.
+        # En todos los casos existe además un cleanup final
+        # después de confirmación/retry.
 
         # Confirmamos que el chat REALMENTE cambió.
         #
@@ -2160,6 +2896,7 @@ class WhatsAppConnector:
         # Primer click: normalmente WhatsApp responde casi
         # inmediatamente. No esperamos todo routing_timeout
         # antes de decidir si hace falta un retry.
+
         opened, active_display_name = (
             wait_for_expected_chat(
                 min(
@@ -2171,6 +2908,7 @@ class WhatsAppConnector:
                 )
             )
         )
+
 
         retried = False
 
@@ -2341,17 +3079,12 @@ class WhatsAppConnector:
                 ):
                     retried = True
 
-                    print(
-                        "[WA-SEARCH] B7.4 retry mouse_click START",
-                        flush=True,
-                    )
+
 
                     retry_click()
 
-                    print(
-                        "[WA-SEARCH] B7.5 retry mouse_click OK",
-                        flush=True,
-                    )
+
+
 
                     opened, active_display_name = (
                         wait_for_expected_chat(
@@ -2365,8 +3098,13 @@ class WhatsAppConnector:
                         )
                     )
 
+
         # El marcador únicamente sirve como puente temporal
         # entre JavaScript y SeleniumBase.
+        #
+        # Cleanup único: se realiza DESPUÉS de confirmar o
+        # agotar el retry, nunca antes de B8.
+
         try:
             self.browser.evaluate(
                 """
@@ -2389,29 +3127,27 @@ class WhatsAppConnector:
         except Exception:
             pass
 
-        print(
-            "[WA-SEARCH] B8 chat identity "
-            f"opened={opened} "
-            f"retried={retried} "
-            f"active={ascii(active_display_name)} "
-            f"expected_name={ascii(display_hint)} "
-            f"expected_phone={ascii(expected.e164)}",
-            flush=True,
-        )
+
 
         # MUY IMPORTANTE:
         # el siguiente routing debe comenzar siempre con
         # el buscador vacío. El chat abierto se mantiene.
         try:
+
             cleared = (
-                self.clear_chat_search()
+                self._request_chat_search_clear_fast(
+                    selector
+                )
             )
 
-            print(
-                "[WA-SEARCH] B9 search cleared "
-                f"{cleared}",
-                flush=True,
-            )
+            if not cleared:
+                # Si ni siquiera pudimos solicitar el clear,
+                # utilizamos inmediatamente el mecanismo
+                # conservador histórico.
+                cleared = (
+                    self.clear_chat_search()
+                )
+
 
         except Exception as exc:
             print(
@@ -2447,20 +3183,11 @@ class WhatsAppConnector:
                 "Teléfono WhatsApp no válido"
             )
 
-        print(
-            "[WA-ROUTE] A1 get_message_composer_state START",
-            flush=True,
-        )
 
         composer = (
             self.get_message_composer_state()
         )
 
-        print(
-            "[WA-ROUTE] A2 get_message_composer_state OK "
-            f"{ascii(composer)}",
-            flush=True,
-        )
 
         if not composer[
             "found"
@@ -2476,10 +3203,6 @@ class WhatsAppConnector:
                     None,
             }
 
-        print(
-            "[WA-ROUTE] A3 open_contact_profile START",
-            flush=True,
-        )
 
         profile_open = (
             self.open_contact_profile(
@@ -2493,11 +3216,6 @@ class WhatsAppConnector:
             )
         )
 
-        print(
-            "[WA-ROUTE] A4 open_contact_profile RESULT "
-            f"{ascii(profile_open)}",
-            flush=True,
-        )
 
         if not profile_open:
             return {
@@ -2512,20 +3230,11 @@ class WhatsAppConnector:
             }
 
         try:
-            print(
-                "[WA-ROUTE] A5 classify_open_profile START",
-                flush=True,
-            )
 
             classification = (
                 self.classify_open_profile()
             )
 
-            print(
-                "[WA-ROUTE] A6 classify_open_profile OK "
-                f"{ascii(classification)}",
-                flush=True,
-            )
 
             kind = classification.get(
                 "kind",
@@ -2549,20 +3258,11 @@ class WhatsAppConnector:
                         None,
                 }
 
-            print(
-                "[WA-ROUTE] A7 get_open_contact_phone START",
-                flush=True,
-            )
 
             observed_raw = (
                 self.get_open_contact_phone()
             )
 
-            print(
-                "[WA-ROUTE] A8 get_open_contact_phone OK "
-                f"{ascii(observed_raw)}",
-                flush=True,
-            )
 
             observed = normalize_phone(
                 observed_raw
@@ -2647,9 +3347,11 @@ class WhatsAppConnector:
         # reutilizar el chat cuando el llamador no exige
         # verificación fuerte de identidad.
         if not verify_identity:
+
             composer = (
                 self.get_message_composer_state()
             )
+
 
             if composer.get(
                 "found"
@@ -2684,10 +3386,6 @@ class WhatsAppConnector:
 
                 return current
 
-        print(
-            "[WA-ROUTE] B1 search_and_open_chat_by_phone START",
-            flush=True,
-        )
 
         searched = (
             self.search_and_open_chat_by_phone(
@@ -2699,11 +3397,6 @@ class WhatsAppConnector:
             )
         )
 
-        print(
-            "[WA-ROUTE] B2 search result "
-            f"{ascii(searched)}",
-            flush=True,
-        )
 
         if not searched.get(
             "opened"
@@ -3000,12 +3693,6 @@ class WhatsAppConnector:
                 selected_selector = selector
                 break
 
-        print(
-            "[WA-OPEN] row locator "
-            f"position={position} "
-            f"selector={ascii(selected_selector)}",
-            flush=True,
-        )
 
         if element is None:
             return {
@@ -3663,6 +4350,8 @@ class WhatsAppConnector:
                                 activeDisplayName,
                             visible_message_count: 0,
                             last_provider_message_id:
+                                null,
+                            last_provider_message_status:
                                 null
                         };
                     }
@@ -3699,6 +4388,62 @@ class WhatsAppConnector:
                         )
                         : '';
 
+                    // El cambio de ✓ a ✓✓ no modifica ni el
+                    // provider id ni el número de mensajes.
+                    //
+                    // Leemos únicamente atributos aria del ÚLTIMO
+                    // mensaje dentro de esta misma evaluate; no
+                    // hacemos extracción completa del historial.
+                    const lastAriaValues =
+                        lastMessage
+                        ? Array.from(
+                            lastMessage.querySelectorAll(
+                                '[aria-label]'
+                            )
+                        ).map(
+                            node => String(
+                                node.getAttribute(
+                                    'aria-label'
+                                )
+                                || ''
+                            )
+                            .normalize('NFKC')
+                            .trim()
+                            .toLocaleLowerCase()
+                        )
+                        : [];
+
+                    let lastProviderMessageStatus = null;
+
+                    if (
+                        lastAriaValues.some(
+                            value =>
+                                value === 'leído'
+                                || value === 'leido'
+                                || value === 'read'
+                        )
+                    ) {
+                        lastProviderMessageStatus = 'READ';
+
+                    } else if (
+                        lastAriaValues.some(
+                            value =>
+                                value === 'entregado'
+                                || value === 'delivered'
+                        )
+                    ) {
+                        lastProviderMessageStatus = 'DELIVERED';
+
+                    } else if (
+                        lastAriaValues.some(
+                            value =>
+                                value === 'enviado'
+                                || value === 'sent'
+                        )
+                    ) {
+                        lastProviderMessageStatus = 'SENT';
+                    }
+
                     return {
                         chat_open: true,
                         active_display_name:
@@ -3707,7 +4452,9 @@ class WhatsAppConnector:
                             messages.length,
                         last_provider_message_id:
                             lastProviderMessageId
-                            || null
+                            || null,
+                        last_provider_message_status:
+                            lastProviderMessageStatus
                     };
                 })()
                 """
@@ -3756,6 +4503,15 @@ class WhatsAppConnector:
                     )
                     or ""
                 ).strip()
+                or None
+            ),
+            last_provider_message_status=(
+                str(
+                    result.get(
+                        "last_provider_message_status"
+                    )
+                    or ""
+                ).strip().upper()
                 or None
             ),
         )
@@ -3883,9 +4639,11 @@ class WhatsAppConnector:
                 "El texto del mensaje no puede estar vacío"
             )
 
+
         initial = (
             self.get_message_composer_state()
         )
+
 
         if not initial[
             "found"
@@ -3901,10 +4659,83 @@ class WhatsAppConnector:
                 "El compositor contiene un borrador previo"
             )
 
-        self.browser.send_keys(
-            MESSAGE_COMPOSER_SELECTOR,
-            value,
+
+        element = (
+            self.browser.find_element(
+                MESSAGE_COMPOSER_SELECTOR
+            )
         )
+
+
+        if not element:
+            raise RuntimeError(
+                "Elemento del compositor no localizado"
+            )
+
+
+        self.browser.loop.run_until_complete(
+            element.focus_async()
+        )
+
+
+
+        try:
+            command = (
+                cdp_input.insert_text(
+                    value
+                )
+            )
+
+            self.browser.loop.run_until_complete(
+                element._tab.send(
+                    command
+                )
+            )
+
+
+        except Exception:
+            # Input.insertText puede haber llegado a Chrome
+            # antes de que la llamada Python falle.
+            #
+            # Nunca repetimos la escritura hasta comprobar
+            # qué quedó realmente en el compositor.
+            after_error = (
+                self.get_message_composer_state()
+            )
+
+            if (
+                after_error[
+                    "text"
+                ]
+                == value
+                and after_error[
+                    "send_found"
+                ]
+            ):
+                # Input.insertText pudo completarse antes
+                # de que Python recibiera la excepción.
+                # No repetimos la escritura.
+                pass
+
+            elif not after_error[
+                "text"
+            ]:
+                # Solo existe fallback cuando sabemos que
+                # CDP no dejó ningún contenido.
+                self.browser.send_keys(
+                    MESSAGE_COMPOSER_SELECTOR,
+                    value,
+                )
+
+
+            else:
+                # Contenido parcial/diferente = estado ambiguo.
+                # No añadimos más texto automáticamente.
+                raise RuntimeError(
+                    "Estado incierto del compositor tras "
+                    "Input.insertText; no se aplica fallback"
+                )
+
 
         deadline = (
             time.time()
@@ -3918,9 +4749,11 @@ class WhatsAppConnector:
             time.time()
             < deadline
         ):
+
             state = (
                 self.get_message_composer_state()
             )
+
 
             if (
                 state["text"]
@@ -3929,6 +4762,8 @@ class WhatsAppConnector:
                     "send_found"
                 ]
             ):
+
+
                 return state
 
             time.sleep(
@@ -3939,6 +4774,110 @@ class WhatsAppConnector:
             "WhatsApp no confirmó el texto "
             "en el compositor"
         )
+
+    def _dispatch_element_mouse_click_sequential(
+        self,
+        element,
+    ):
+        """Emite un click izquierdo CDP de forma secuencial.
+
+        A diferencia de Element.mouse_click(), no usa:
+        - flash_async;
+        - create_task para pressed/released;
+        - page.wait() genérico.
+
+        Cada Input.dispatchMouseEvent debe ser confirmado por
+        CDP antes de emitir el siguiente.
+
+        No implica que la navegación haya tenido éxito:
+        el caller debe validar después la identidad del chat.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        if not element:
+            raise RuntimeError(
+                "Elemento CDP no disponible"
+            )
+
+
+
+        position = (
+            self.browser.loop.run_until_complete(
+                element.get_position_async()
+            )
+        )
+
+        if not position:
+            raise RuntimeError(
+                "No se pudo calcular posición CDP"
+            )
+
+        center = position.center
+
+        if not center:
+            raise RuntimeError(
+                "No se pudo calcular centro CDP"
+            )
+
+
+
+        pressed = (
+            cdp_input.dispatch_mouse_event(
+                "mousePressed",
+                x=float(
+                    center[0]
+                ),
+                y=float(
+                    center[1]
+                ),
+                modifiers=0,
+                button=cdp_input.MouseButton(
+                    "left"
+                ),
+                buttons=1,
+                click_count=1,
+            )
+        )
+
+        self.browser.loop.run_until_complete(
+            element._tab.send(
+                pressed
+            )
+        )
+
+
+
+        released = (
+            cdp_input.dispatch_mouse_event(
+                "mouseReleased",
+                x=float(
+                    center[0]
+                ),
+                y=float(
+                    center[1]
+                ),
+                modifiers=0,
+                button=cdp_input.MouseButton(
+                    "left"
+                ),
+                buttons=1,
+                click_count=1,
+            )
+        )
+
+        self.browser.loop.run_until_complete(
+            element._tab.send(
+                released
+            )
+        )
+
+
+
+        return True
+
 
     def _dispatch_composer_key_event(
         self,
@@ -4106,6 +5045,131 @@ class WhatsAppConnector:
             "del compositor"
         )
 
+    def _dispatch_send_button_fast(
+        self,
+    ):
+        """Intenta despachar un único click DOM en Enviar.
+
+        Estados:
+
+        DISPATCHED
+            El click ya fue emitido. El caller NO puede
+            reintentar automáticamente por ninguna vía.
+
+        NOT_AVAILABLE
+            No se emitió ningún click. El caller puede usar
+            el mecanismo SeleniumBase conservador.
+
+        La confirmación real del envío sigue dependiendo de
+        la aparición posterior de un snapshot OUTBOUND nuevo.
+        """
+        if not self.browser:
+            return {
+                "status": "NOT_AVAILABLE",
+                "reason": "BROWSER_NOT_STARTED",
+            }
+
+        try:
+            result = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const selector = %s;
+
+                        const node =
+                            document.querySelector(
+                                selector
+                            );
+
+                        if (!node) {
+                            return {
+                                status: 'NOT_AVAILABLE',
+                                reason: 'SEND_BUTTON_NOT_FOUND'
+                            };
+                        }
+
+                        const target =
+                            node.closest('button')
+                            || node;
+
+                        const rect =
+                            target.getBoundingClientRect();
+
+                        const style =
+                            window.getComputedStyle(
+                                target
+                            );
+
+                        const visible =
+                            rect.width > 0
+                            && rect.height > 0
+                            && style.display !== 'none'
+                            && style.visibility !== 'hidden';
+
+                        if (!visible) {
+                            return {
+                                status: 'NOT_AVAILABLE',
+                                reason: 'SEND_BUTTON_NOT_VISIBLE'
+                            };
+                        }
+
+                        const disabled =
+                            target.disabled === true
+                            || target.getAttribute(
+                                'aria-disabled'
+                            ) === 'true';
+
+                        if (disabled) {
+                            return {
+                                status: 'NOT_AVAILABLE',
+                                reason: 'SEND_BUTTON_DISABLED'
+                            };
+                        }
+
+                        target.click();
+
+                        return {
+                            status: 'DISPATCHED',
+                            reason: null
+                        };
+                    })()
+                    """
+                    % json.dumps(
+                        MESSAGE_SEND_SELECTOR,
+                        ensure_ascii=False,
+                    )
+                )
+                or {}
+            )
+
+        except Exception as exc:
+            # No sabemos si evaluate llegó a ejecutar click.
+            # Por seguridad, una excepción es ambigua:
+            # nunca debemos emitir un segundo click.
+            raise WhatsAppSendStateUncertainError(
+                "Estado de envío de WhatsApp incierto: "
+                "falló el dispatch DOM del botón Enviar"
+            ) from exc
+
+        return {
+            "status": str(
+                result.get(
+                    "status"
+                )
+                or "NOT_AVAILABLE"
+            ),
+            "reason": (
+                str(
+                    result.get(
+                        "reason"
+                    )
+                    or ""
+                ).strip()
+                or None
+            ),
+        }
+
+
     def send_text_message(
         self,
         text,
@@ -4138,11 +5202,13 @@ class WhatsAppConnector:
                 "El texto del mensaje no puede estar vacío"
             )
 
+
         before = (
             self.list_visible_message_snapshots(
                 limit=200
             )
         )
+
 
         before_ids = {
             item.provider_message_id
@@ -4150,84 +5216,127 @@ class WhatsAppConnector:
             if item.provider_message_id
         }
 
+
         self.set_message_composer_text(
             value
         )
 
-        try:
-            send_button = (
-                self.browser
-                .find_element(
-                    MESSAGE_SEND_SELECTOR
+
+        # Primero intentamos lookup + click en una sola
+        # operación DOM.
+        #
+        # Solo usamos SeleniumBase si sabemos con certeza
+        # que NO se emitió ningún click.
+
+        fast_dispatch = (
+            self._dispatch_send_button_fast()
+        )
+
+        if (
+            fast_dispatch.get(
+                "status"
+            )
+            != "DISPATCHED"
+        ):
+            # Ningún click fue emitido por FAST_DOM.
+            # Podemos degradar con seguridad al mecanismo
+            # histórico probado.
+
+            try:
+                send_button = (
+                    self.browser
+                    .find_element(
+                        MESSAGE_SEND_SELECTOR
+                    )
                 )
+            except Exception as exc:
+                try:
+                    self.clear_message_composer()
+                except Exception:
+                    pass
+
+                raise RuntimeError(
+                    "Botón Enviar de WhatsApp "
+                    "no localizado"
+                ) from exc
+
+
+            if not send_button:
+                try:
+                    self.clear_message_composer()
+                except Exception:
+                    pass
+
+                raise RuntimeError(
+                    "Botón Enviar de WhatsApp "
+                    "no localizado"
+                )
+
+            mouse_click = getattr(
+                send_button,
+                "mouse_click",
+                None,
             )
-        except Exception as exc:
-            try:
-                self.clear_message_composer()
-            except Exception:
-                pass
 
-            raise RuntimeError(
-                "Botón Enviar de WhatsApp "
-                "no localizado"
-            ) from exc
-
-        if not send_button:
-            try:
-                self.clear_message_composer()
-            except Exception:
-                pass
-
-            raise RuntimeError(
-                "Botón Enviar de WhatsApp "
-                "no localizado"
+            click = getattr(
+                send_button,
+                "click",
+                None,
             )
 
-        mouse_click = getattr(
-            send_button,
-            "mouse_click",
-            None,
-        )
-
-        click = getattr(
-            send_button,
-            "click",
-            None,
-        )
-
-        if callable(
-            mouse_click
-        ):
-            click_callable = (
+            if callable(
                 mouse_click
-            )
-        elif callable(
-            click
-        ):
-            click_callable = (
+            ):
+                click_callable = (
+                    mouse_click
+                )
+
+            elif callable(
                 click
-            )
-        else:
+            ):
+                click_callable = (
+                    click
+                )
+
+            else:
+                try:
+                    self.clear_message_composer()
+                except Exception:
+                    pass
+
+                raise RuntimeError(
+                    "Botón Enviar de WhatsApp "
+                    "no soporta click"
+                )
+
+
             try:
-                self.clear_message_composer()
-            except Exception:
-                pass
+                click_callable()
 
-            raise RuntimeError(
-                "Botón Enviar de WhatsApp "
-                "no soporta click"
-            )
+            except Exception as exc:
+                # Exactamente la misma semántica histórica:
+                # una excepción después de intentar click
+                # es ambigua y jamás se reintenta.
+                raise WhatsAppSendStateUncertainError(
+                    "Estado de envío de WhatsApp incierto: "
+                    "falló la operación de click"
+                ) from exc
 
-        try:
-            click_callable()
-        except Exception as exc:
-            # Una excepción durante el click es ambigua:
-            # no se reintenta automáticamente porque el
-            # mensaje podría haber sido enviado igualmente.
-            raise WhatsAppSendStateUncertainError(
-                "Estado de envío de WhatsApp incierto: "
-                "falló la operación de click"
-            ) from exc
+        confirm_attempts = 0
+
+        # Backoff corto al principio:
+        # los mensajes normales suelen materializarse
+        # rápidamente. Tras los primeros intentos,
+        # convergemos al polling conservador histórico
+        # de 100 ms.
+        confirm_poll_delays = (
+            0.02,
+            0.025,
+            0.035,
+            0.05,
+            0.075,
+            0.1,
+        )
 
         deadline = (
             time.time()
@@ -4241,11 +5350,15 @@ class WhatsAppConnector:
             time.time()
             < deadline
         ):
+            confirm_attempts += 1
+
+
             current = (
                 self.list_visible_message_snapshots(
                     limit=200
                 )
             )
+
 
             candidates = [
                 item
@@ -4264,6 +5377,8 @@ class WhatsAppConnector:
             if len(
                 candidates
             ) == 1:
+
+
                 return candidates[
                     0
                 ]
@@ -4277,8 +5392,32 @@ class WhatsAppConnector:
                     "OUTBOUND nuevos con el mismo cuerpo"
                 )
 
+            delay_index = min(
+                max(
+                    0,
+                    confirm_attempts - 1,
+                ),
+                len(
+                    confirm_poll_delays
+                )
+                - 1,
+            )
+
+            remaining = (
+                deadline
+                - time.time()
+            )
+
+            if remaining <= 0:
+                break
+
             time.sleep(
-                0.1
+                min(
+                    confirm_poll_delays[
+                        delay_index
+                    ],
+                    remaining,
+                )
             )
 
         # No reintentamos ni volvemos a pulsar Enviar.
@@ -4436,8 +5575,46 @@ class WhatsAppConnector:
                                     }
                                 );
 
+                            // WhatsApp representa una respuesta
+                            // mediante un bloque semántico:
+                            //
+                            //   [data-testid="quoted-message"]
+                            //
+                            // El selectable-text de la cita NO forma
+                            // parte del body real de la respuesta.
+                            const quotedMessage =
+                                root.querySelector(
+                                    '[data-testid="quoted-message"]'
+                                );
+
+                            const quotedSelectableNodes =
+                                quotedMessage
+                                ? Array.from(
+                                    quotedMessage.querySelectorAll(
+                                        '[data-testid="selectable-text"]'
+                                    )
+                                )
+                                : [];
+
+                            const quotedBodyText =
+                                quotedSelectableNodes
+                                .map(
+                                    contentFromNode
+                                )
+                                .filter(Boolean)
+                                .join('\\n')
+                                .trim();
+
+                            const bodySelectableNodes =
+                                selectableNodes.filter(
+                                    node =>
+                                        !node.closest(
+                                            '[data-testid="quoted-message"]'
+                                        )
+                                );
+
                             const bodyText =
-                                selectableNodes
+                                bodySelectableNodes
                                 .map(
                                     contentFromNode
                                 )
@@ -4630,7 +5807,15 @@ class WhatsAppConnector:
                                     ).length,
 
                                 reaction_labels:
-                                    reactionLabels
+                                    reactionLabels,
+
+                                has_quoted_message:
+                                    Boolean(
+                                        quotedMessage
+                                    ),
+
+                                quoted_body_text:
+                                    quotedBodyText
                             };
                         }
                     );
@@ -5049,6 +6234,35 @@ class WhatsAppConnector:
                         or 0
                     ),
             }
+
+            if bool(
+                raw.get(
+                    "has_quoted_message"
+                )
+            ):
+                quoted_body_text = str(
+                    raw.get(
+                        "quoted_body_text"
+                    )
+                    or ""
+                ).strip()
+
+                metadata[
+                    "reply"
+                ] = {
+                    # WhatsApp confirma semánticamente que
+                    # existe una cita mediante quoted-message.
+                    #
+                    # No inventamos todavía autor ni id del
+                    # mensaje citado si el DOM no los expone
+                    # de forma estable.
+                    "provider_message_id":
+                        None,
+                    "sender":
+                        None,
+                    "body_text":
+                        quoted_body_text,
+                }
 
             snapshots.append(
                 WhatsAppMessageSnapshot(

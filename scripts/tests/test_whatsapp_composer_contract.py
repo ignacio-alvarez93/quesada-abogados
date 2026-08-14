@@ -77,6 +77,30 @@ class FakeBrowser:
         self,
         _script,
     ):
+        script = str(
+            _script
+            or ""
+        )
+
+        # Los tests históricos de send modelan la ruta
+        # SeleniumBase. Cuando aparece el nuevo intento
+        # FAST_DOM indicamos explícitamente que no está
+        # disponible y, sobre todo, que NO se emitió click.
+        #
+        # Esto permite probar con seguridad el fallback
+        # histórico sin falsear una excepción ambigua.
+        if (
+            "SEND_BUTTON_NOT_FOUND"
+            in script
+            and "target.click()"
+            in script
+        ):
+            return {
+                "status": "NOT_AVAILABLE",
+                "reason":
+                    "TEST_FAST_DISPATCH_UNAVAILABLE",
+            }
+
         if not self.states:
             raise AssertionError(
                 "No hay estado evaluate preparado"
@@ -147,9 +171,26 @@ class WhatsAppComposerContractTest(
             },
         )
 
-    def test_set_message_composer_text_uses_cdp_send_keys(
+    @patch(
+        "backend.automation.connectors."
+        "whatsapp_connector."
+        "cdp_input.insert_text"
+    )
+    def test_set_message_composer_text_uses_cdp_insert_text(
         self,
+        insert_text,
     ):
+        command = {
+            "method": "Input.insertText",
+            "params": {
+                "text": "Mensaje prueba",
+            },
+        }
+
+        insert_text.return_value = (
+            command
+        )
+
         connector = (
             WhatsAppConnector()
         )
@@ -178,18 +219,271 @@ class WhatsAppComposerContractTest(
             )
         )
 
+        insert_text.assert_called_once_with(
+            "Mensaje prueba"
+        )
+
+        self.assertTrue(
+            browser.element.focused
+        )
+
+        self.assertEqual(
+            browser.element._tab.commands,
+            [
+                command
+            ],
+        )
+
+        self.assertEqual(
+            browser.send_keys_calls,
+            [],
+        )
+
+        self.assertTrue(
+            result["send_found"]
+        )
+
+        self.assertEqual(
+            result["text"],
+            "Mensaje prueba",
+        )
+
+    def test_set_message_composer_text_falls_back_only_when_cdp_left_empty(
+        self,
+    ):
+        class FailingTab(
+            FakeTab
+        ):
+            async def send(
+                self,
+                command,
+            ):
+                self.commands.append(
+                    command
+                )
+
+                raise RuntimeError(
+                    "TEST_CDP_INSERT_FAILURE"
+                )
+
+        connector = (
+            WhatsAppConnector()
+        )
+
+        browser = FakeBrowser(
+            states=[
+                {
+                    "found": True,
+                    "text": "",
+                    "send_found": False,
+                },
+                {
+                    "found": True,
+                    "text": "",
+                    "send_found": False,
+                },
+                {
+                    "found": True,
+                    "text": "Mensaje fallback",
+                    "send_found": True,
+                },
+            ]
+        )
+
+        browser.element._tab = (
+            FailingTab()
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .set_message_composer_text(
+                "Mensaje fallback"
+            )
+        )
+
+        self.assertTrue(
+            browser.element.focused
+        )
+
+        self.assertEqual(
+            len(
+                browser.element._tab.commands
+            ),
+            1,
+        )
+
         self.assertEqual(
             browser.send_keys_calls,
             [
                 (
                     MESSAGE_COMPOSER_SELECTOR,
-                    "Mensaje prueba",
+                    "Mensaje fallback",
                 )
             ],
         )
 
+        self.assertEqual(
+            result["text"],
+            "Mensaje fallback",
+        )
+
         self.assertTrue(
             result["send_found"]
+        )
+
+    def test_set_message_composer_text_accepts_exact_cdp_write_after_exception(
+        self,
+    ):
+        class FailingTab(
+            FakeTab
+        ):
+            async def send(
+                self,
+                command,
+            ):
+                self.commands.append(
+                    command
+                )
+
+                raise RuntimeError(
+                    "TEST_CDP_EXCEPTION_AFTER_EXACT_WRITE"
+                )
+
+        connector = (
+            WhatsAppConnector()
+        )
+
+        browser = FakeBrowser(
+            states=[
+                {
+                    "found": True,
+                    "text": "",
+                    "send_found": False,
+                },
+                {
+                    "found": True,
+                    "text": "Mensaje exacto",
+                    "send_found": True,
+                },
+                {
+                    "found": True,
+                    "text": "Mensaje exacto",
+                    "send_found": True,
+                },
+            ]
+        )
+
+        browser.element._tab = (
+            FailingTab()
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .set_message_composer_text(
+                "Mensaje exacto"
+            )
+        )
+
+        self.assertTrue(
+            browser.element.focused
+        )
+
+        self.assertEqual(
+            len(
+                browser.element._tab.commands
+            ),
+            1,
+        )
+
+        # CRÍTICO:
+        # Input.insertText pudo llegar a Chrome antes
+        # de que Python recibiera la excepción.
+        #
+        # Si el compositor ya contiene exactamente el
+        # texto solicitado, jamás repetimos la escritura.
+        self.assertEqual(
+            browser.send_keys_calls,
+            [],
+        )
+
+        self.assertEqual(
+            result["text"],
+            "Mensaje exacto",
+        )
+
+        self.assertTrue(
+            result["send_found"]
+        )
+
+    def test_set_message_composer_text_refuses_fallback_after_partial_cdp_write(
+        self,
+    ):
+        class FailingTab(
+            FakeTab
+        ):
+            async def send(
+                self,
+                command,
+            ):
+                self.commands.append(
+                    command
+                )
+
+                raise RuntimeError(
+                    "TEST_CDP_PARTIAL_FAILURE"
+                )
+
+        connector = (
+            WhatsAppConnector()
+        )
+
+        browser = FakeBrowser(
+            states=[
+                {
+                    "found": True,
+                    "text": "",
+                    "send_found": False,
+                },
+                {
+                    "found": True,
+                    "text": "Mensaje",
+                    "send_found": True,
+                },
+            ]
+        )
+
+        browser.element._tab = (
+            FailingTab()
+        )
+
+        connector.browser = browser
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Estado incierto del compositor",
+        ):
+            connector.set_message_composer_text(
+                "Mensaje completo"
+            )
+
+        self.assertTrue(
+            browser.element.focused
+        )
+
+        self.assertEqual(
+            len(
+                browser.element._tab.commands
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            browser.send_keys_calls,
+            [],
         )
 
     def test_set_message_composer_text_refuses_existing_draft(
@@ -378,9 +672,26 @@ class WhatsAppComposerContractTest(
             metadata={},
         )
 
+    @patch(
+        "backend.automation.connectors."
+        "whatsapp_connector."
+        "cdp_input.insert_text"
+    )
     def test_send_text_message_returns_new_outbound_snapshot(
         self,
+        insert_text,
     ):
+        command = {
+            "method": "Input.insertText",
+            "params": {
+                "text": "Hola",
+            },
+        }
+
+        insert_text.return_value = (
+            command
+        )
+
         connector = (
             WhatsAppConnector()
         )
@@ -462,20 +773,155 @@ class WhatsAppComposerContractTest(
             "Hola",
         )
 
+        insert_text.assert_called_once_with(
+            "Hola"
+        )
+
+        self.assertTrue(
+            browser.element.focused
+        )
+
+        self.assertEqual(
+            browser.element._tab.commands,
+            [
+                command
+            ],
+        )
+
+        self.assertEqual(
+            browser.send_keys_calls,
+            [],
+        )
+
         self.assertEqual(
             browser.element.mouse_click_count,
             1,
         )
 
-        self.assertEqual(
-            browser.send_keys_calls,
-            [
-                (
-                    MESSAGE_COMPOSER_SELECTOR,
-                    "Hola",
+    def test_send_text_message_fast_dom_dispatches_without_selenium_click(
+        self,
+    ):
+        class FastDispatchBrowser(
+            FakeBrowser
+        ):
+            def evaluate(
+                self,
+                script,
+            ):
+                source = str(
+                    script
+                    or ""
                 )
-            ],
+
+                if (
+                    "SEND_BUTTON_NOT_FOUND"
+                    in source
+                    and "target.click()"
+                    in source
+                ):
+                    return {
+                        "status": "DISPATCHED",
+                        "reason": None,
+                    }
+
+                return super().evaluate(
+                    script
+                )
+
+            def find_element(
+                self,
+                selector,
+            ):
+                if (
+                    selector
+                    == MESSAGE_SEND_SELECTOR
+                ):
+                    raise AssertionError(
+                        "FAST_DOM no debe buscar "
+                        "el botón mediante SeleniumBase"
+                    )
+
+                return super().find_element(
+                    selector
+                )
+
+        connector = (
+            WhatsAppConnector()
         )
+
+        browser = FastDispatchBrowser(
+            states=[
+                {
+                    "found": True,
+                    "text": "",
+                    "send_found": False,
+                },
+                {
+                    "found": True,
+                    "text": "Hola FAST",
+                    "send_found": True,
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        old_message = self._message(
+            "OLD-FAST-1",
+            direction=(
+                MESSAGE_DIRECTION_INBOUND
+            ),
+            body_text="Anterior",
+            status=(
+                MESSAGE_STATUS_RECEIVED
+            ),
+        )
+
+        sent_message = self._message(
+            "NEW-FAST-1",
+            direction=(
+                MESSAGE_DIRECTION_OUTBOUND
+            ),
+            body_text="Hola FAST",
+        )
+
+        snapshot_batches = iter(
+            [
+                [
+                    old_message,
+                ],
+                [
+                    old_message,
+                    sent_message,
+                ],
+            ]
+        )
+
+        connector.list_visible_message_snapshots = (
+            lambda limit=200:
+                next(
+                    snapshot_batches
+                )
+        )
+
+        result = (
+            connector.send_text_message(
+                "Hola FAST"
+            )
+        )
+
+        self.assertEqual(
+            result.provider_message_id,
+            "NEW-FAST-1",
+        )
+
+        # Ningún click SeleniumBase debe producirse
+        # después de que FAST_DOM indique DISPATCHED.
+        self.assertEqual(
+            browser.element.mouse_click_count,
+            0,
+        )
+
 
     def test_send_text_message_ignores_concurrent_inbound(
         self,

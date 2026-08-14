@@ -348,7 +348,7 @@ class WhatsAppRecipientRoutingTest(
         )
 
 
-    def test_phone_search_always_clears_before_routing(
+    def test_phone_search_uses_fast_route_with_safe_fallback(
         self,
     ):
         source = Path(
@@ -356,25 +356,6 @@ class WhatsAppRecipientRoutingTest(
             "whatsapp_connector.py"
         ).read_text(
             encoding="utf-8"
-        )
-
-        clear_start = source.index(
-            "    def clear_chat_search("
-        )
-
-        clear_end = source.index(
-            "\n    def search_and_open_chat_by_phone(",
-            clear_start,
-        )
-
-        clear_block = source[
-            clear_start:clear_end
-        ]
-
-        self.assertNotIn(
-            'if not state["text"]:\n'
-            "            return True",
-            clear_block,
         )
 
         search_start = source.index(
@@ -390,24 +371,382 @@ class WhatsAppRecipientRoutingTest(
             search_start:search_end
         ]
 
-        pre_clear_position = search_block.index(
-            "pre_clear = ("
+        self.assertIn(
+            "self._get_fast_chat_routing_state()",
+            search_block,
         )
 
-        prepare_position = search_block.index(
-            "self.prepare_chat_interface()"
-        )
-
-        self.assertLess(
-            pre_clear_position,
-            prepare_position,
+        # La ruta conservadora sigue presente como fallback.
+        self.assertIn(
+            "self.clear_chat_search()",
+            search_block,
         )
 
         self.assertIn(
-            "[WA-SEARCH] B9 search cleared",
+            "self.prepare_chat_interface()",
+            search_block,
+        )
+
+        # La escritura DOM rápida nunca elimina el fallback
+        # probado mediante SeleniumBase.
+        self.assertIn(
+            "self._set_chat_search_value_fast(",
+            search_block,
+        )
+
+        self.assertIn(
+            "self.browser.send_keys(",
+            search_block,
+        )
+
+        # La limpieza final sigue siendo obligatoria.
+        self.assertIn(
+            "self._request_chat_search_clear_fast(",
+            search_block,
+        )
+
+        self.assertIn(
+            "if not cleared:",
+            search_block,
+        )
+
+        self.assertIn(
+            "self.clear_chat_search()",
             search_block,
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_phone_search_avoids_fixed_layout_wait_before_mouse_click(
+        self,
+    ):
+        from pathlib import Path
+
+        source = Path(
+            "backend/automation/connectors/"
+            "whatsapp_connector.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        search_start = source.index(
+            "    def search_and_open_chat_by_phone("
+        )
+
+        search_end = source.index(
+            "\n    def _verify_active_chat_phone(",
+            search_start,
+        )
+
+        search_block = source[
+            search_start:
+            search_end
+        ]
+
+        # No debemos pagar 150 ms preventivos en
+        # cada selección.
+        self.assertNotIn(
+            "search_layout_wait_ms=",
+            search_block,
+        )
+
+        self.assertNotIn(
+            "time.sleep(\n"
+            "            0.15\n"
+            "        )",
+            search_block,
+        )
+
+        # El elemento se intenta recuperar inmediatamente.
+        first_find_pos = search_block.index(
+            "self.browser.find_element(\n"
+            "                    target_selector"
+        )
+
+        retry_guard_pos = search_block.index(
+            "if not result_element:",
+            first_find_pos,
+        )
+
+        retry_sleep_pos = search_block.index(
+            "time.sleep(\n"
+            "                0.05\n"
+            "            )",
+            retry_guard_pos,
+        )
+
+        second_find_pos = search_block.index(
+            "self.browser.find_element(\n"
+            "                        target_selector",
+            retry_sleep_pos,
+        )
+
+        self.assertLess(
+            first_find_pos,
+            retry_guard_pos,
+        )
+
+        self.assertLess(
+            retry_guard_pos,
+            retry_sleep_pos,
+        )
+
+        self.assertLess(
+            retry_sleep_pos,
+            second_find_pos,
+        )
+
+        # La interacción probada no cambia.
+        self.assertIn(
+            "mouse_click()",
+            search_block,
+        )
+
+        # Tampoco desaparece el retry físico posterior.
+        self.assertIn(
+            "retry_click()",
+            search_block,
+        )
+
+
+    def test_phone_search_defers_marker_cleanup_until_after_confirmation(
+        self,
+    ):
+        from pathlib import Path
+
+        source = Path(
+            "backend/automation/connectors/"
+            "whatsapp_connector.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        search_start = source.index(
+            "    def search_and_open_chat_by_phone("
+        )
+
+        search_end = source.index(
+            "\n    def _verify_active_chat_phone(",
+            search_start,
+        )
+
+        search_block = source[
+            search_start:
+            search_end
+        ]
+
+        click_pos = search_block.index(
+            "mouse_click()"
+        )
+
+        confirm_pos = search_block.index(
+            "# Confirmamos que el chat REALMENTE cambió."
+        )
+
+        final_cleanup_pos = search_block.index(
+            "# Cleanup único: se realiza DESPUÉS "
+            "de confirmar o"
+        )
+
+        # La confirmación de identidad ocurre antes del
+        # cleanup final del marcador.
+        self.assertLess(
+            click_pos,
+            confirm_pos,
+        )
+
+        self.assertLess(
+            confirm_pos,
+            final_cleanup_pos,
+        )
+
+        # El retry sigue limpiando cualquier marcador viejo
+        # antes de volver a localizar la fila.
+        retry_pos = search_block.index(
+            "retry_marked = ("
+        )
+
+        retry_block = search_block[
+            retry_pos:
+            final_cleanup_pos
+        ]
+
+        self.assertIn(
+            "removeAttribute(",
+            retry_block,
+        )
+
+        # Y existe un cleanup final real tras confirmación/retry.
+        final_cleanup_block = search_block[
+            final_cleanup_pos:
+        ]
+
+        self.assertIn(
+            "removeAttribute(",
+            final_cleanup_block,
+        )
+
+        self.assertIn(
+            "'data-qa-whatsapp-routing-target'",
+            final_cleanup_block,
+        )
+
+        # Interacción y verificación permanecen intactas.
+        self.assertIn(
+            "retry_click()",
+            search_block,
+        )
+
+        self.assertIn(
+            "conversation-info-header-chat-title",
+            search_block,
+        )
+
+
+    def test_phone_search_uses_sequential_cdp_click_with_historical_fallback(
+        self,
+    ):
+        from pathlib import Path
+
+        source = Path(
+            "backend/automation/connectors/"
+            "whatsapp_connector.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "def _dispatch_element_mouse_click_sequential(",
+            source,
+        )
+
+        helper_start = source.index(
+            "    def _dispatch_element_mouse_click_sequential("
+        )
+
+        helper_end = source.index(
+            "\n    def _dispatch_composer_key_event(",
+            helper_start,
+        )
+
+        helper = source[
+            helper_start:
+            helper_end
+        ]
+
+        self.assertIn(
+            "element.get_position_async()",
+            helper,
+        )
+
+        self.assertIn(
+            'cdp_input.dispatch_mouse_event(\n'
+            '                "mousePressed"',
+            helper,
+        )
+
+        self.assertIn(
+            'cdp_input.dispatch_mouse_event(\n'
+            '                "mouseReleased"',
+            helper,
+        )
+
+        self.assertIn(
+            "element._tab.send(",
+            helper,
+        )
+
+        # No debe degradar a GUI/PyAutoGUI.
+        self.assertNotIn(
+            "gui_click",
+            helper,
+        )
+
+        self.assertNotIn(
+            "pyautogui",
+            helper,
+        )
+
+        search_start = source.index(
+            "    def search_and_open_chat_by_phone("
+        )
+
+        search_end = source.index(
+            "\n    def _verify_active_chat_phone(",
+            search_start,
+        )
+
+        search_block = source[
+            search_start:
+            search_end
+        ]
+
+        self.assertIn(
+            "_dispatch_element_mouse_click_sequential(",
+            search_block,
+        )
+
+        # La identidad sigue siendo autoritativa.
+        self.assertIn(
+            "conversation-info-header-chat-title",
+            search_block,
+        )
+
+        # El fallback histórico sigue intacto.
+        self.assertIn(
+            "retry_click()",
+            search_block,
+        )
+
+
+
+    def test_fast_final_clear_has_safe_fallback(
+        self,
+    ):
+        source = Path(
+            "backend/automation/connectors/"
+            "whatsapp_connector.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "def _request_chat_search_clear_fast(",
+            source,
+        )
+
+        search_start = source.index(
+            "    def search_and_open_chat_by_phone("
+        )
+
+        search_end = source.index(
+            "\n    def _verify_active_chat_phone(",
+            search_start,
+        )
+
+        search_block = source[
+            search_start:search_end
+        ]
+
+        fast_clear_pos = search_block.index(
+            "self._request_chat_search_clear_fast("
+        )
+
+        fallback_guard_pos = search_block.index(
+            "if not cleared:",
+            fast_clear_pos,
+        )
+
+        safe_clear_pos = search_block.index(
+            "self.clear_chat_search()",
+            fallback_guard_pos,
+        )
+
+        self.assertLess(
+            fast_clear_pos,
+            fallback_guard_pos,
+        )
+
+        self.assertLess(
+            fallback_guard_pos,
+            safe_clear_pos,
+        )

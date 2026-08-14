@@ -14,6 +14,7 @@ from backend.automation.connectors.whatsapp_connector import (
     WhatsAppActiveChatFingerprint,
     WhatsAppChatSnapshot,
     WhatsAppConnector,
+    diff_sidebar_chat_fingerprints,
     extract_phone_from_profile_text,
     normalize_chat_identity,
     parse_whatsapp_pre_plain_text,
@@ -56,6 +57,320 @@ class FakeBrowser:
 class WhatsAppChatExtractorTest(
     unittest.TestCase
 ):
+    def test_sidebar_delta_detects_content_change(
+        self,
+    ):
+        previous = {
+            "alla": {
+                "identity":
+                    "alla",
+                "display_name":
+                    "Alla",
+                "primary_detail":
+                    "13:40",
+                "preview":
+                    "Vale",
+                "unread_count":
+                    0,
+                "position":
+                    4,
+                "virtual_offset":
+                    304,
+                "ambiguous":
+                    False,
+            },
+        }
+
+        current = {
+            "alla": {
+                "identity":
+                    "alla",
+                "display_name":
+                    "Alla",
+                "primary_detail":
+                    "13:51",
+                "preview":
+                    "¿Puedes llamarme?",
+                "unread_count":
+                    2,
+                "position":
+                    0,
+                "virtual_offset":
+                    0,
+                "ambiguous":
+                    False,
+            },
+        }
+
+        changes = (
+            diff_sidebar_chat_fingerprints(
+                previous,
+                current,
+            )
+        )
+
+        self.assertEqual(
+            len(changes),
+            1,
+        )
+
+        change = changes[0]
+
+        self.assertEqual(
+            change[
+                "change_type"
+            ],
+            "SIDEBAR_THREAD_CHANGED",
+        )
+
+        self.assertTrue(
+            change[
+                "content_changed"
+            ]
+        )
+
+        self.assertTrue(
+            change[
+                "preview_changed"
+            ]
+        )
+
+        self.assertTrue(
+            change[
+                "unread_changed"
+            ]
+        )
+
+        self.assertTrue(
+            change[
+                "primary_detail_changed"
+            ]
+        )
+
+        self.assertTrue(
+            change[
+                "position_changed"
+            ]
+        )
+
+    def test_sidebar_delta_reorder_only_is_not_content_change(
+        self,
+    ):
+        previous = {
+            "cliente": {
+                "identity":
+                    "cliente",
+                "display_name":
+                    "CLIENTE",
+                "primary_detail":
+                    "13:40",
+                "preview":
+                    "Vale",
+                "unread_count":
+                    0,
+                "position":
+                    4,
+                "virtual_offset":
+                    304,
+                "ambiguous":
+                    False,
+            },
+        }
+
+        current = {
+            "cliente": {
+                **previous[
+                    "cliente"
+                ],
+                "position":
+                    0,
+                "virtual_offset":
+                    0,
+            },
+        }
+
+        changes = (
+            diff_sidebar_chat_fingerprints(
+                previous,
+                current,
+            )
+        )
+
+        self.assertEqual(
+            len(changes),
+            1,
+        )
+
+        change = changes[0]
+
+        self.assertEqual(
+            change[
+                "change_type"
+            ],
+            "SIDEBAR_THREAD_REORDERED",
+        )
+
+        self.assertFalse(
+            change[
+                "content_changed"
+            ]
+        )
+
+        self.assertFalse(
+            change[
+                "preview_changed"
+            ]
+        )
+
+        self.assertFalse(
+            change[
+                "unread_changed"
+            ]
+        )
+
+        self.assertTrue(
+            change[
+                "position_changed"
+            ]
+        )
+
+    def test_sidebar_delta_detects_appearance(
+        self,
+    ):
+        current = {
+            "nuevo": {
+                "identity":
+                    "nuevo",
+                "display_name":
+                    "NUEVO",
+                "primary_detail":
+                    "13:52",
+                "preview":
+                    "Hola",
+                "unread_count":
+                    1,
+                "position":
+                    0,
+                "virtual_offset":
+                    0,
+                "ambiguous":
+                    False,
+            },
+        }
+
+        changes = (
+            diff_sidebar_chat_fingerprints(
+                {},
+                current,
+            )
+        )
+
+        self.assertEqual(
+            len(changes),
+            1,
+        )
+
+        self.assertEqual(
+            changes[0][
+                "change_type"
+            ],
+            "SIDEBAR_THREAD_APPEARED",
+        )
+
+        self.assertTrue(
+            changes[0][
+                "content_changed"
+            ]
+        )
+
+    def test_sidebar_delta_detects_disappearance(
+        self,
+    ):
+        previous = {
+            "cliente": {
+                "identity":
+                    "cliente",
+                "display_name":
+                    "CLIENTE",
+                "primary_detail":
+                    "Ayer",
+                "preview":
+                    "Hola",
+                "unread_count":
+                    0,
+                "position":
+                    5,
+                "virtual_offset":
+                    380,
+                "ambiguous":
+                    False,
+            },
+        }
+
+        changes = (
+            diff_sidebar_chat_fingerprints(
+                previous,
+                {},
+            )
+        )
+
+        self.assertEqual(
+            len(changes),
+            1,
+        )
+
+        self.assertEqual(
+            changes[0][
+                "change_type"
+            ],
+            "SIDEBAR_THREAD_DISAPPEARED",
+        )
+
+    def test_sidebar_delta_unchanged_returns_empty(
+        self,
+    ):
+        snapshot = {
+            "identity":
+                "cliente",
+            "display_name":
+                "CLIENTE",
+            "primary_detail":
+                "13:40",
+            "preview":
+                "Hola",
+            "unread_count":
+                0,
+            "position":
+                0,
+            "virtual_offset":
+                0,
+            "ambiguous":
+                False,
+        }
+
+        changes = (
+            diff_sidebar_chat_fingerprints(
+                {
+                    "cliente":
+                        dict(
+                            snapshot
+                        ),
+                },
+                {
+                    "cliente":
+                        dict(
+                            snapshot
+                        ),
+                },
+            )
+        )
+
+        self.assertEqual(
+            changes,
+            [],
+        )
+
+
     def test_normalize_chat_identity_removes_visual_symbols(
         self,
     ):
@@ -237,6 +552,196 @@ class WhatsAppChatExtractorTest(
             result[0].display_name,
             "VISIBLE",
         )
+
+    def test_sidebar_chat_fingerprint_uses_normalized_identity(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "position": 0,
+                    "virtual_offset": 0,
+                    "in_viewport": True,
+                    "display_name":
+                        "😍Mi Amor❤️♾️",
+                    "primary_detail":
+                        "13:45",
+                    "preview":
+                        "Hola",
+                    "unread_count":
+                        2,
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .get_sidebar_chat_fingerprint()
+        )
+
+        self.assertEqual(
+            list(
+                result.keys()
+            ),
+            [
+                "mi amor",
+            ],
+        )
+
+        item = result[
+            "mi amor"
+        ]
+
+        self.assertEqual(
+            item[
+                "display_name"
+            ],
+            "😍Mi Amor❤️♾️",
+        )
+
+        self.assertEqual(
+            item[
+                "preview"
+            ],
+            "Hola",
+        )
+
+        self.assertEqual(
+            item[
+                "primary_detail"
+            ],
+            "13:45",
+        )
+
+        self.assertEqual(
+            item[
+                "unread_count"
+            ],
+            2,
+        )
+
+        self.assertFalse(
+            item[
+                "ambiguous"
+            ]
+        )
+
+    def test_sidebar_chat_fingerprint_marks_duplicate_identity_ambiguous(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "position": 0,
+                    "virtual_offset": 0,
+                    "in_viewport": True,
+                    "display_name":
+                        "CLIENTE",
+                    "primary_detail":
+                        "13:45",
+                    "preview":
+                        "Uno",
+                    "unread_count":
+                        1,
+                },
+                {
+                    "position": 1,
+                    "virtual_offset": 76,
+                    "in_viewport": True,
+                    "display_name":
+                        "CLIENTE",
+                    "primary_detail":
+                        "13:46",
+                    "preview":
+                        "Dos",
+                    "unread_count":
+                        2,
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .get_sidebar_chat_fingerprint()
+        )
+
+        self.assertEqual(
+            len(result),
+            1,
+        )
+
+        self.assertTrue(
+            result[
+                "cliente"
+            ][
+                "ambiguous"
+            ]
+        )
+
+    def test_sidebar_chat_fingerprint_ignores_virtual_position_for_identity(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "position": 17,
+                    "virtual_offset": 1292,
+                    "in_viewport": True,
+                    "display_name":
+                        "CLIENTE",
+                    "primary_detail":
+                        "Ayer",
+                    "preview":
+                        "Hola",
+                    "unread_count":
+                        0,
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .get_sidebar_chat_fingerprint()
+        )
+
+        self.assertIn(
+            "cliente",
+            result,
+        )
+
+        self.assertEqual(
+            result[
+                "cliente"
+            ][
+                "position"
+            ],
+            17,
+        )
+
+        self.assertEqual(
+            result[
+                "cliente"
+            ][
+                "virtual_offset"
+            ],
+            1292,
+        )
+
 
     def test_scroll_chat_list_to_ratio(
         self,
@@ -928,6 +1433,8 @@ class WhatsAppChatExtractorTest(
                     37,
                 "last_provider_message_id":
                     "ABC-123",
+                "last_provider_message_status":
+                    "READ",
             }
         )
 
@@ -965,6 +1472,11 @@ class WhatsAppChatExtractorTest(
         self.assertEqual(
             result.last_provider_message_id,
             "ABC-123",
+        )
+
+        self.assertEqual(
+            result.last_provider_message_status,
+            "READ",
         )
 
 
@@ -1127,6 +1639,113 @@ class WhatsAppChatExtractorTest(
         self.assertEqual(
             messages[1].body_text,
             "Buenos días ❤️",
+        )
+
+
+    def test_visible_reply_separates_quoted_body_from_reply_body(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "provider_message_id":
+                        "AC-REPLY-1",
+                    "pre_plain_text":
+                        "[15:37, 13/8/2026] CLIENTE:",
+                    # El JS productivo ya elimina de body_text
+                    # el selectable-text dentro de quoted-message.
+                    "body_text":
+                        "Muy bien mot",
+                    "meta_text":
+                        "15:37",
+                    "arias":
+                        [
+                            "CLIENTE:",
+                            "Mensaje citado",
+                        ],
+                    "testids":
+                        [
+                            "msg-container",
+                            "quoted-message",
+                            "selectable-text",
+                            "msg-meta",
+                        ],
+                    "has_tail_in":
+                        True,
+                    "has_tail_out":
+                        False,
+                    "center_ratio":
+                        0.25,
+                    "has_sticker":
+                        False,
+                    "image_info":
+                        [],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                    "has_quoted_message":
+                        True,
+                    "quoted_body_text":
+                        "Voy en breve al gym",
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        messages = (
+            connector
+            .list_visible_message_snapshots()
+        )
+
+        self.assertEqual(
+            len(messages),
+            1,
+        )
+
+        message = messages[
+            0
+        ]
+
+        self.assertEqual(
+            message.body_text,
+            "Muy bien mot",
+        )
+
+        self.assertIn(
+            "reply",
+            message.metadata,
+        )
+
+        self.assertEqual(
+            message.metadata[
+                "reply"
+            ][
+                "body_text"
+            ],
+            "Voy en breve al gym",
+        )
+
+        self.assertIsNone(
+            message.metadata[
+                "reply"
+            ][
+                "provider_message_id"
+            ]
+        )
+
+        self.assertIsNone(
+            message.metadata[
+                "reply"
+            ][
+                "sender"
+            ]
         )
 
 
