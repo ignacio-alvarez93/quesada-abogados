@@ -1503,6 +1503,123 @@ class CommunicationRepositoryTest(
                 )
             )
 
+    def test_provider_reconciliation_update_preserves_crm_context(
+        self,
+    ):
+        from dataclasses import replace
+
+        stored = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600820001",
+                client_id=10,
+                expedient_id=20,
+                display_name_snapshot="CRM NAME",
+                reason_code="EXPEDIENT_STATUS",
+                notes="CRM NOTE",
+                status=CALL_STATUS_RINGING,
+                provider="MOBILE_LINK",
+                external_call_key="repo-reconcile-001",
+                ringing_at=(
+                    "2026-08-14T18:10:00+02:00"
+                ),
+                metadata={
+                    "source": "crm",
+                },
+            )
+        )
+
+        candidate = replace(
+            stored,
+            provider_call_id="raw-repo-001",
+            status=CALL_STATUS_MISSED,
+            ended_at=(
+                "2026-08-14T18:10:09+02:00"
+            ),
+            ring_duration_seconds=9,
+            talk_duration_seconds=0,
+            total_duration_seconds=9,
+            metadata={
+                "source": "crm",
+                "history": True,
+            },
+        )
+
+        updated = (
+            self.repo
+            .update_call_provider_reconciliation(
+                candidate
+            )
+        )
+
+        self.assertEqual(
+            updated.provider_call_id,
+            "raw-repo-001",
+        )
+
+        self.assertEqual(
+            updated.status,
+            CALL_STATUS_MISSED,
+        )
+
+        self.assertEqual(
+            updated.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            updated.expedient_id,
+            20,
+        )
+
+        self.assertEqual(
+            updated.phone_number,
+            "+34600820001",
+        )
+
+        self.assertEqual(
+            updated.display_name_snapshot,
+            "CRM NAME",
+        )
+
+        self.assertEqual(
+            updated.reason_code,
+            "EXPEDIENT_STATUS",
+        )
+
+        self.assertEqual(
+            updated.notes,
+            "CRM NOTE",
+        )
+
+        self.assertTrue(
+            updated.metadata["history"]
+        )
+
+    def test_provider_reconciliation_requires_external_identity(
+        self,
+    ):
+        call = CommunicationCall(
+            id=999,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600820002",
+            status=CALL_STATUS_MISSED,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "identidad externa",
+        ):
+            (
+                self.repo
+                .update_call_provider_reconciliation(
+                    call
+                )
+            )
+
     def test_account_is_idempotent(self):
         first = self._create_account()
         second = self._create_account()

@@ -16,6 +16,10 @@ No conoce Enlace móvil.
 No controla directamente proveedores.
 """
 
+from backend.communications.call_snapshots import (
+    materialize_provider_call_snapshot,
+    merge_provider_call_snapshot,
+)
 from backend.communications.call_followups import (
     CALL_FOLLOW_UP_IN_PROGRESS,
     CALL_FOLLOW_UP_PENDING,
@@ -554,6 +558,83 @@ class CommunicationCallService:
                 pending
             )
         )
+
+    def reconcile_provider_call(
+        self,
+        snapshot,
+    ):
+        """
+        Incorpora o enriquece un snapshot histórico.
+
+        No simula eventos realtime.
+
+        Si la identidad externa no existe:
+            crea directamente la llamada materializada.
+
+        Si ya existe:
+            reconcilia únicamente conocimiento compatible.
+
+        Efectos operativos:
+        - INBOUND + MISSED garantiza follow-up PENDING;
+        - callback saliente fallido vuelve a PENDING
+          cuando exista relación explícita.
+        """
+        materialized = (
+            materialize_provider_call_snapshot(
+                snapshot
+            )
+        )
+
+        persisted, created = (
+            self.repository
+            .get_or_create_call_with_identity(
+                materialized
+            )
+        )
+
+        if not created:
+            merged = (
+                merge_provider_call_snapshot(
+                    persisted,
+                    snapshot,
+                )
+            )
+
+            if merged != persisted:
+                persisted = (
+                    self.repository
+                    .update_call_provider_reconciliation(
+                        merged
+                    )
+                )
+
+        if (
+            persisted.direction
+            == CALL_DIRECTION_INBOUND
+            and persisted.status
+            == CALL_STATUS_MISSED
+        ):
+            (
+                self.repository
+                .get_or_create_call_follow_up(
+                    persisted.id
+                )
+            )
+
+        if (
+            persisted.direction
+            == CALL_DIRECTION_OUTBOUND
+            and persisted.status
+            in CALLBACK_REQUEUE_STATUSES
+        ):
+            (
+                self
+                ._requeue_callback_follow_up_if_needed(
+                    persisted
+                )
+            )
+
+        return persisted
 
     def apply_call_event(
         self,

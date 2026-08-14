@@ -2,8 +2,10 @@ import unittest
 
 from backend.communications.call_snapshots import (
     InvalidProviderCallSnapshot,
+    ProviderCallReconciliationConflict,
     ProviderCallSnapshot,
     materialize_provider_call_snapshot,
+    merge_provider_call_snapshot,
 )
 from backend.communications.calls import (
     CALL_STATUS_ANSWERED,
@@ -11,6 +13,7 @@ from backend.communications.calls import (
     CALL_STATUS_ENDED,
     CALL_STATUS_MISSED,
     CALL_STATUS_RINGING,
+    CommunicationCall,
     InvalidCallTimestamp,
 )
 from backend.communications.models import (
@@ -423,6 +426,307 @@ class CommunicationCallSnapshotDomainTest(
         self.assertEqual(
             call.display_name_snapshot,
             "CONTACTO",
+        )
+
+
+    def test_reconciliation_enriches_without_losing_crm_context(
+        self,
+    ):
+        existing = CommunicationCall(
+            id=100,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600810001",
+            client_id=10,
+            expedient_id=20,
+            thread_id=30,
+            reason_code="EXPEDIENT_STATUS",
+            status=CALL_STATUS_RINGING,
+            provider="MOBILE_LINK",
+            external_call_key="merge-001",
+            ringing_at=(
+                "2026-08-14T18:00:00+02:00"
+            ),
+            metadata={
+                "crm_key": "crm_value",
+                "shared": "crm",
+            },
+        )
+
+        merged = merge_provider_call_snapshot(
+            existing,
+            ProviderCallSnapshot(
+                provider="MOBILE_LINK",
+                external_call_key="merge-001",
+                provider_call_id="raw-merge-001",
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="600810001",
+                display_name_snapshot="PROVIDER NAME",
+                status=CALL_STATUS_MISSED,
+                ringing_at=(
+                    "2026-08-14T18:00:00+02:00"
+                ),
+                ended_at=(
+                    "2026-08-14T18:00:12+02:00"
+                ),
+                metadata={
+                    "history_key": "history_value",
+                    "shared": "provider",
+                },
+            ),
+        )
+
+        self.assertEqual(
+            merged.id,
+            100,
+        )
+
+        self.assertEqual(
+            merged.phone_number,
+            "+34600810001",
+        )
+
+        self.assertEqual(
+            merged.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            merged.expedient_id,
+            20,
+        )
+
+        self.assertEqual(
+            merged.thread_id,
+            30,
+        )
+
+        self.assertEqual(
+            merged.reason_code,
+            "EXPEDIENT_STATUS",
+        )
+
+        self.assertEqual(
+            merged.provider_call_id,
+            "raw-merge-001",
+        )
+
+        self.assertEqual(
+            merged.display_name_snapshot,
+            "PROVIDER NAME",
+        )
+
+        self.assertEqual(
+            merged.status,
+            CALL_STATUS_MISSED,
+        )
+
+        self.assertEqual(
+            merged.total_duration_seconds,
+            12,
+        )
+
+        self.assertEqual(
+            merged.metadata["crm_key"],
+            "crm_value",
+        )
+
+        self.assertEqual(
+            merged.metadata["history_key"],
+            "history_value",
+        )
+
+        self.assertEqual(
+            merged.metadata["shared"],
+            "crm",
+        )
+
+    def test_reconciliation_keeps_existing_display_name(
+        self,
+    ):
+        existing = CommunicationCall(
+            id=101,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600810002",
+            display_name_snapshot="CRM NAME",
+            status=CALL_STATUS_RINGING,
+            provider="MOBILE_LINK",
+            external_call_key="merge-002",
+        )
+
+        merged = merge_provider_call_snapshot(
+            existing,
+            ProviderCallSnapshot(
+                provider="MOBILE_LINK",
+                external_call_key="merge-002",
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600810002",
+                display_name_snapshot="PROVIDER NAME",
+                status=CALL_STATUS_RINGING,
+            ),
+        )
+
+        self.assertEqual(
+            merged.display_name_snapshot,
+            "CRM NAME",
+        )
+
+    def test_reconciliation_rejects_channel_conflict(
+        self,
+    ):
+        existing = CommunicationCall(
+            id=102,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600810003",
+            status=CALL_STATUS_RINGING,
+            provider="MOBILE_LINK",
+            external_call_key="merge-003",
+        )
+
+        with self.assertRaisesRegex(
+            ProviderCallReconciliationConflict,
+            "channel",
+        ):
+            merge_provider_call_snapshot(
+                existing,
+                ProviderCallSnapshot(
+                    provider="MOBILE_LINK",
+                    external_call_key="merge-003",
+                    channel="WHATSAPP",
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600810003",
+                    status=CALL_STATUS_RINGING,
+                ),
+            )
+
+    def test_reconciliation_rejects_provider_call_id_conflict(
+        self,
+    ):
+        existing = CommunicationCall(
+            id=103,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600810004",
+            status=CALL_STATUS_RINGING,
+            provider="MOBILE_LINK",
+            provider_call_id="raw-A",
+            external_call_key="merge-004",
+        )
+
+        with self.assertRaisesRegex(
+            ProviderCallReconciliationConflict,
+            "provider_call_id",
+        ):
+            merge_provider_call_snapshot(
+                existing,
+                ProviderCallSnapshot(
+                    provider="MOBILE_LINK",
+                    external_call_key="merge-004",
+                    provider_call_id="raw-B",
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600810004",
+                    status=CALL_STATUS_RINGING,
+                ),
+            )
+
+    def test_reconciliation_rejects_terminal_conflict(
+        self,
+    ):
+        existing = CommunicationCall(
+            id=104,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600810005",
+            status=CALL_STATUS_MISSED,
+            provider="MOBILE_LINK",
+            external_call_key="merge-005",
+            talk_duration_seconds=0,
+        )
+
+        with self.assertRaisesRegex(
+            ProviderCallReconciliationConflict,
+            "status",
+        ):
+            merge_provider_call_snapshot(
+                existing,
+                ProviderCallSnapshot(
+                    provider="MOBILE_LINK",
+                    external_call_key="merge-005",
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600810005",
+                    status=CALL_STATUS_ENDED,
+                ),
+            )
+
+    def test_reconciliation_rejects_lifecycle_regression(
+        self,
+    ):
+        existing = CommunicationCall(
+            id=105,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600810006",
+            status=CALL_STATUS_ANSWERED,
+            provider="MOBILE_LINK",
+            external_call_key="merge-006",
+        )
+
+        with self.assertRaisesRegex(
+            ProviderCallReconciliationConflict,
+            "status",
+        ):
+            merge_provider_call_snapshot(
+                existing,
+                ProviderCallSnapshot(
+                    provider="MOBILE_LINK",
+                    external_call_key="merge-006",
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600810006",
+                    status=CALL_STATUS_RINGING,
+                ),
+            )
+
+    def test_reconciliation_accepts_equivalent_timestamp_representation(
+        self,
+    ):
+        existing = CommunicationCall(
+            id=106,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600810007",
+            status=CALL_STATUS_RINGING,
+            provider="MOBILE_LINK",
+            external_call_key="merge-007",
+            ringing_at=(
+                "2026-08-14T16:00:00Z"
+            ),
+        )
+
+        merged = merge_provider_call_snapshot(
+            existing,
+            ProviderCallSnapshot(
+                provider="MOBILE_LINK",
+                external_call_key="merge-007",
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600810007",
+                status=CALL_STATUS_RINGING,
+                ringing_at=(
+                    "2026-08-14T18:00:00+02:00"
+                ),
+            ),
+        )
+
+        self.assertEqual(
+            merged.ringing_at,
+            "2026-08-14T16:00:00Z",
         )
 
 

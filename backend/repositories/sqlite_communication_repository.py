@@ -914,6 +914,121 @@ class SQLiteCommunicationRepository:
                 row
             )
 
+    def update_call_provider_reconciliation(
+        self,
+        call,
+    ):
+        """
+        Persiste únicamente conocimiento reconciliable
+        procedente del proveedor.
+
+        Puede actualizar:
+        - provider_call_id;
+        - display_name_snapshot;
+        - lifecycle/timestamps/duraciones;
+        - metadata_json.
+
+        Nunca modifica:
+        - provider / external_call_key;
+        - channel / direction / phone_number;
+        - thread/client/expedient;
+        - reason/outcome/notes/created_by.
+        """
+        self.ensure_schema()
+
+        if (
+            call is None
+            or call.id in (
+                None,
+                "",
+            )
+        ):
+            raise ValueError(
+                "La llamada debe tener id "
+                "para reconciliarse"
+            )
+
+        provider = str(
+            call.provider
+            or ""
+        ).strip().upper()
+
+        external_call_key = str(
+            call.external_call_key
+            or ""
+        ).strip()
+
+        if (
+            not provider
+            or not external_call_key
+        ):
+            raise ValueError(
+                "La reconciliación requiere "
+                "identidad externa completa"
+            )
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE communication_calls
+                SET
+                    provider_call_id = ?,
+                    display_name_snapshot = ?,
+                    status = ?,
+                    dialed_at = ?,
+                    ringing_at = ?,
+                    answered_at = ?,
+                    ended_at = ?,
+                    ring_duration_seconds = ?,
+                    talk_duration_seconds = ?,
+                    total_duration_seconds = ?,
+                    metadata_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                  AND provider = ?
+                  AND external_call_key = ?
+                """,
+                (
+                    call.provider_call_id,
+                    call.display_name_snapshot,
+                    call.status,
+                    call.dialed_at,
+                    call.ringing_at,
+                    call.answered_at,
+                    call.ended_at,
+                    call.ring_duration_seconds,
+                    call.talk_duration_seconds,
+                    call.total_duration_seconds,
+                    _json_dump(
+                        call.metadata
+                    ),
+                    int(call.id),
+                    provider,
+                    external_call_key,
+                ),
+            )
+
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    "Llamada de comunicación "
+                    "no encontrada para reconciliar"
+                )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_calls
+                WHERE id = ?
+                """,
+                (
+                    int(call.id),
+                ),
+            ).fetchone()
+
+            return self._call_from_row(
+                row
+            )
+
     def get_call_follow_up(
         self,
         follow_up_id,
