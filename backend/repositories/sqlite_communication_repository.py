@@ -10,6 +10,11 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from backend.communications.call_followups import (
+    CommunicationCallCallback,
+    CommunicationCallFollowUp,
+    CommunicationCallFollowUpOverview,
+)
 from backend.communications.calls import (
     CommunicationCall,
 )
@@ -214,6 +219,103 @@ class SQLiteCommunicationRepository:
             created_by=row["created_by"],
             metadata=_json_load(
                 row["metadata_json"]
+            ),
+        )
+
+    @staticmethod
+    def _call_follow_up_from_row(
+        row,
+    ):
+        if not row:
+            return None
+
+        return CommunicationCallFollowUp(
+            id=int(row["id"]),
+            source_call_id=int(
+                row["source_call_id"]
+            ),
+            status=row["status"],
+            resolved_at=row["resolved_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _call_callback_from_row(
+        row,
+    ):
+        if not row:
+            return None
+
+        return CommunicationCallCallback(
+            id=int(row["id"]),
+            source_call_id=int(
+                row["source_call_id"]
+            ),
+            callback_call_id=int(
+                row["callback_call_id"]
+            ),
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _call_follow_up_overview_from_row(
+        row,
+    ):
+        if not row:
+            return None
+
+        return CommunicationCallFollowUpOverview(
+            follow_up_id=int(
+                row["follow_up_id"]
+            ),
+            source_call_id=int(
+                row["source_call_id"]
+            ),
+            follow_up_status=(
+                row["follow_up_status"]
+            ),
+            channel=row["channel"],
+            phone_number=row["phone_number"],
+            display_name_snapshot=(
+                row["display_name_snapshot"]
+            ),
+            thread_id=(
+                int(row["thread_id"])
+                if row["thread_id"]
+                is not None
+                else None
+            ),
+            client_id=(
+                int(row["client_id"])
+                if row["client_id"]
+                is not None
+                else None
+            ),
+            expedient_id=(
+                int(row["expedient_id"])
+                if row["expedient_id"]
+                is not None
+                else None
+            ),
+            source_call_status=(
+                row["source_call_status"]
+            ),
+            source_call_created_at=(
+                row["source_call_created_at"]
+            ),
+            source_call_ringing_at=(
+                row["source_call_ringing_at"]
+            ),
+            source_call_ended_at=(
+                row["source_call_ended_at"]
+            ),
+            callback_count=int(
+                row["callback_count"]
+                or 0
+            ),
+            latest_callback_at=(
+                row["latest_callback_at"]
             ),
         )
 
@@ -578,6 +680,498 @@ class SQLiteCommunicationRepository:
             return self._call_from_row(
                 row
             )
+
+    def get_call_follow_up(
+        self,
+        follow_up_id,
+    ):
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_call_followups
+                WHERE id = ?
+                """,
+                (
+                    int(follow_up_id),
+                ),
+            ).fetchone()
+
+            return (
+                self._call_follow_up_from_row(
+                    row
+                )
+            )
+
+    def get_call_follow_up_by_source_call(
+        self,
+        source_call_id,
+    ):
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_call_followups
+                WHERE source_call_id = ?
+                """,
+                (
+                    int(source_call_id),
+                ),
+            ).fetchone()
+
+            return (
+                self._call_follow_up_from_row(
+                    row
+                )
+            )
+
+    def get_or_create_call_follow_up(
+        self,
+        source_call_id,
+    ):
+        """
+        Crea como máximo un seguimiento por llamada origen.
+
+        La operación es idempotente para soportar eventos
+        repetidos o reconciliaciones posteriores.
+        """
+        self.ensure_schema()
+
+        normalized_source_call_id = int(
+            source_call_id
+        )
+
+        with self._connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM communication_call_followups
+                WHERE source_call_id = ?
+                """,
+                (
+                    normalized_source_call_id,
+                ),
+            ).fetchone()
+
+            if existing:
+                return (
+                    self._call_follow_up_from_row(
+                        existing
+                    )
+                )
+
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO
+                        communication_call_followups (
+                            source_call_id,
+                            status
+                        )
+                    VALUES (?, 'PENDING')
+                    """,
+                    (
+                        normalized_source_call_id,
+                    ),
+                )
+
+            except sqlite3.IntegrityError as exc:
+                existing = conn.execute(
+                    """
+                    SELECT *
+                    FROM communication_call_followups
+                    WHERE source_call_id = ?
+                    """,
+                    (
+                        normalized_source_call_id,
+                    ),
+                ).fetchone()
+
+                if existing:
+                    return (
+                        self._call_follow_up_from_row(
+                            existing
+                        )
+                    )
+
+                raise ValueError(
+                    "Llamada origen no encontrada "
+                    "para crear seguimiento"
+                ) from exc
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_call_followups
+                WHERE id = ?
+                """,
+                (
+                    int(cursor.lastrowid),
+                ),
+            ).fetchone()
+
+            return (
+                self._call_follow_up_from_row(
+                    row
+                )
+            )
+
+    def update_call_follow_up(
+        self,
+        follow_up,
+    ):
+        """
+        Persiste exclusivamente estado operativo y resolved_at.
+
+        La transición debe haberse validado previamente en
+        backend.communications.call_followups.
+        """
+        self.ensure_schema()
+
+        if (
+            follow_up is None
+            or follow_up.id in (
+                None,
+                "",
+            )
+        ):
+            raise ValueError(
+                "El seguimiento debe tener id "
+                "para ser actualizado"
+            )
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE communication_call_followups
+                SET
+                    status = ?,
+                    resolved_at = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    follow_up.status,
+                    follow_up.resolved_at,
+                    int(follow_up.id),
+                ),
+            )
+
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    "Seguimiento de llamada "
+                    "no encontrado"
+                )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_call_followups
+                WHERE id = ?
+                """,
+                (
+                    int(follow_up.id),
+                ),
+            ).fetchone()
+
+            return (
+                self._call_follow_up_from_row(
+                    row
+                )
+            )
+
+    def link_callback_call(
+        self,
+        *,
+        source_call_id,
+        callback_call_id,
+    ):
+        """
+        Vincula una llamada saliente como intento de devolución.
+
+        La misma pareja es idempotente.
+
+        Una llamada callback concreta no puede pertenecer a
+        dos llamadas origen diferentes.
+        """
+        self.ensure_schema()
+
+        source_id = int(
+            source_call_id
+        )
+
+        callback_id = int(
+            callback_call_id
+        )
+
+        with self._connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM communication_call_callbacks
+                WHERE source_call_id = ?
+                  AND callback_call_id = ?
+                """,
+                (
+                    source_id,
+                    callback_id,
+                ),
+            ).fetchone()
+
+            if existing:
+                return (
+                    self._call_callback_from_row(
+                        existing
+                    )
+                )
+
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO
+                        communication_call_callbacks (
+                            source_call_id,
+                            callback_call_id
+                        )
+                    VALUES (?, ?)
+                    """,
+                    (
+                        source_id,
+                        callback_id,
+                    ),
+                )
+
+            except sqlite3.IntegrityError as exc:
+                conflicting = conn.execute(
+                    """
+                    SELECT *
+                    FROM communication_call_callbacks
+                    WHERE callback_call_id = ?
+                    """,
+                    (
+                        callback_id,
+                    ),
+                ).fetchone()
+
+                if conflicting:
+                    raise ValueError(
+                        "La llamada de devolución "
+                        "ya está vinculada a otro "
+                        "seguimiento"
+                    ) from exc
+
+                follow_up = conn.execute(
+                    """
+                    SELECT id
+                    FROM communication_call_followups
+                    WHERE source_call_id = ?
+                    """,
+                    (
+                        source_id,
+                    ),
+                ).fetchone()
+
+                if not follow_up:
+                    raise ValueError(
+                        "Seguimiento de llamada "
+                        "no encontrado"
+                    ) from exc
+
+                callback_call = conn.execute(
+                    """
+                    SELECT id
+                    FROM communication_calls
+                    WHERE id = ?
+                    """,
+                    (
+                        callback_id,
+                    ),
+                ).fetchone()
+
+                if not callback_call:
+                    raise ValueError(
+                        "Llamada de devolución "
+                        "no encontrada"
+                    ) from exc
+
+                raise
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_call_callbacks
+                WHERE id = ?
+                """,
+                (
+                    int(cursor.lastrowid),
+                ),
+            ).fetchone()
+
+            return (
+                self._call_callback_from_row(
+                    row
+                )
+            )
+
+    def list_callback_calls(
+        self,
+        source_call_id,
+        *,
+        limit=100,
+    ):
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.*
+                FROM communication_call_callbacks cb
+                INNER JOIN communication_calls c
+                    ON c.id = cb.callback_call_id
+                WHERE cb.source_call_id = ?
+                ORDER BY
+                    c.created_at ASC,
+                    c.id ASC
+                LIMIT ?
+                """,
+                (
+                    int(source_call_id),
+                    max(
+                        1,
+                        int(limit),
+                    ),
+                ),
+            ).fetchall()
+
+            return [
+                self._call_from_row(
+                    row
+                )
+                for row in rows
+            ]
+
+    def list_pending_call_follow_ups(
+        self,
+        *,
+        limit=500,
+    ):
+        """
+        Inventario operativo de seguimientos todavía abiertos.
+
+        Incluye PENDING e IN_PROGRESS.
+
+        Los más antiguos aparecen primero para evitar que una
+        llamada perdida quede enterrada por nuevas entradas.
+        """
+        self.ensure_schema()
+
+        normalized_limit = max(
+            1,
+            int(limit),
+        )
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    f.id
+                        AS follow_up_id,
+
+                    f.source_call_id
+                        AS source_call_id,
+
+                    f.status
+                        AS follow_up_status,
+
+                    c.channel
+                        AS channel,
+
+                    c.phone_number
+                        AS phone_number,
+
+                    c.display_name_snapshot
+                        AS display_name_snapshot,
+
+                    c.thread_id
+                        AS thread_id,
+
+                    c.client_id
+                        AS client_id,
+
+                    c.expedient_id
+                        AS expedient_id,
+
+                    c.status
+                        AS source_call_status,
+
+                    c.created_at
+                        AS source_call_created_at,
+
+                    c.ringing_at
+                        AS source_call_ringing_at,
+
+                    c.ended_at
+                        AS source_call_ended_at,
+
+                    (
+                        SELECT COUNT(*)
+                        FROM communication_call_callbacks cb
+                        WHERE
+                            cb.source_call_id
+                            = f.source_call_id
+                    )
+                        AS callback_count,
+
+                    (
+                        SELECT MAX(cc.created_at)
+                        FROM communication_call_callbacks cb2
+                        INNER JOIN communication_calls cc
+                            ON
+                                cc.id
+                                = cb2.callback_call_id
+                        WHERE
+                            cb2.source_call_id
+                            = f.source_call_id
+                    )
+                        AS latest_callback_at
+
+                FROM communication_call_followups f
+
+                INNER JOIN communication_calls c
+                    ON c.id = f.source_call_id
+
+                WHERE
+                    f.status IN (
+                        'PENDING',
+                        'IN_PROGRESS'
+                    )
+
+                ORDER BY
+                    COALESCE(
+                        c.ended_at,
+                        c.ringing_at,
+                        c.created_at
+                    ) ASC,
+                    f.id ASC
+
+                LIMIT ?
+                """,
+                (
+                    normalized_limit,
+                ),
+            ).fetchall()
+
+            return [
+                self
+                ._call_follow_up_overview_from_row(
+                    row
+                )
+                for row in rows
+            ]
 
     def save_account(
         self,

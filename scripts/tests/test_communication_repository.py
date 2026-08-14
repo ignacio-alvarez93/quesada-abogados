@@ -12,6 +12,11 @@ from backend.communications.calls import (
     CommunicationCall,
     transition_call_status_at,
 )
+from backend.communications.call_followups import (
+    CALL_FOLLOW_UP_IN_PROGRESS,
+    CALL_FOLLOW_UP_RESOLVED,
+    transition_call_follow_up,
+)
 from backend.communications.models import (
     ATTEMPT_STATUS_ERROR,
     ATTEMPT_STATUS_SENT,
@@ -809,6 +814,479 @@ class CommunicationRepositoryTest(
 
         finally:
             conn.close()
+
+    def test_call_follow_up_repository_is_idempotent(
+        self,
+    ):
+        source = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600500001",
+                status=CALL_STATUS_MISSED,
+            )
+        )
+
+        first = (
+            self.repo
+            .get_or_create_call_follow_up(
+                source.id
+            )
+        )
+
+        second = (
+            self.repo
+            .get_or_create_call_follow_up(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            first.id,
+            second.id,
+        )
+
+        self.assertEqual(
+            first.source_call_id,
+            source.id,
+        )
+
+        self.assertEqual(
+            first.status,
+            "PENDING",
+        )
+
+        by_id = (
+            self.repo
+            .get_call_follow_up(
+                first.id
+            )
+        )
+
+        by_source = (
+            self.repo
+            .get_call_follow_up_by_source_call(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            by_id,
+            first,
+        )
+
+        self.assertEqual(
+            by_source,
+            first,
+        )
+
+    def test_call_follow_up_repository_persists_lifecycle(
+        self,
+    ):
+        source = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600500002",
+                status=CALL_STATUS_MISSED,
+            )
+        )
+
+        pending = (
+            self.repo
+            .get_or_create_call_follow_up(
+                source.id
+            )
+        )
+
+        active = (
+            transition_call_follow_up(
+                pending,
+                CALL_FOLLOW_UP_IN_PROGRESS,
+            )
+        )
+
+        stored_active = (
+            self.repo
+            .update_call_follow_up(
+                active
+            )
+        )
+
+        self.assertEqual(
+            stored_active.status,
+            CALL_FOLLOW_UP_IN_PROGRESS,
+        )
+
+        resolved = (
+            transition_call_follow_up(
+                stored_active,
+                CALL_FOLLOW_UP_RESOLVED,
+                resolved_at=(
+                    "2026-08-14T16:10:00+02:00"
+                ),
+            )
+        )
+
+        stored_resolved = (
+            self.repo
+            .update_call_follow_up(
+                resolved
+            )
+        )
+
+        self.assertEqual(
+            stored_resolved.status,
+            CALL_FOLLOW_UP_RESOLVED,
+        )
+
+        self.assertEqual(
+            stored_resolved.resolved_at,
+            "2026-08-14T16:10:00+02:00",
+        )
+
+    def test_callback_repository_is_idempotent_and_lists_calls(
+        self,
+    ):
+        source = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600500003",
+                status=CALL_STATUS_MISSED,
+            )
+        )
+
+        self.repo.get_or_create_call_follow_up(
+            source.id
+        )
+
+        first_callback = (
+            self.repo.create_call(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_OUTBOUND,
+                    phone_number="+34600500003",
+                )
+            )
+        )
+
+        second_callback = (
+            self.repo.create_call(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_OUTBOUND,
+                    phone_number="+34600500003",
+                )
+            )
+        )
+
+        first_link = (
+            self.repo.link_callback_call(
+                source_call_id=source.id,
+                callback_call_id=(
+                    first_callback.id
+                ),
+            )
+        )
+
+        repeated_link = (
+            self.repo.link_callback_call(
+                source_call_id=source.id,
+                callback_call_id=(
+                    first_callback.id
+                ),
+            )
+        )
+
+        self.repo.link_callback_call(
+            source_call_id=source.id,
+            callback_call_id=(
+                second_callback.id
+            ),
+        )
+
+        self.assertEqual(
+            first_link.id,
+            repeated_link.id,
+        )
+
+        callbacks = (
+            self.repo
+            .list_callback_calls(
+                source.id
+            )
+        )
+
+        self.assertEqual(
+            [
+                item.id
+                for item in callbacks
+            ],
+            [
+                first_callback.id,
+                second_callback.id,
+            ],
+        )
+
+    def test_callback_call_cannot_be_reused_for_another_follow_up_repository(
+        self,
+    ):
+        first_source = (
+            self.repo.create_call(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600500004",
+                    status=CALL_STATUS_MISSED,
+                )
+            )
+        )
+
+        second_source = (
+            self.repo.create_call(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600500005",
+                    status=CALL_STATUS_MISSED,
+                )
+            )
+        )
+
+        self.repo.get_or_create_call_follow_up(
+            first_source.id
+        )
+
+        self.repo.get_or_create_call_follow_up(
+            second_source.id
+        )
+
+        callback = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_OUTBOUND,
+                phone_number="+34600500004",
+            )
+        )
+
+        self.repo.link_callback_call(
+            source_call_id=first_source.id,
+            callback_call_id=callback.id,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "ya está vinculada",
+        ):
+            self.repo.link_callback_call(
+                source_call_id=second_source.id,
+                callback_call_id=callback.id,
+            )
+
+    def test_pending_call_inventory_projects_context_and_callbacks(
+        self,
+    ):
+        first_source = (
+            self.repo.create_call(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600500006",
+                    display_name_snapshot=(
+                        "CLIENTE TEST"
+                    ),
+                    client_id=10,
+                    expedient_id=20,
+                    status=CALL_STATUS_MISSED,
+                    ringing_at=(
+                        "2026-08-14T15:00:00+02:00"
+                    ),
+                    ended_at=(
+                        "2026-08-14T15:00:10+02:00"
+                    ),
+                )
+            )
+        )
+
+        second_source = (
+            self.repo.create_call(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600500007",
+                    display_name_snapshot=(
+                        "Número no identificado"
+                    ),
+                    status=CALL_STATUS_MISSED,
+                    ringing_at=(
+                        "2026-08-14T15:10:00+02:00"
+                    ),
+                    ended_at=(
+                        "2026-08-14T15:10:05+02:00"
+                    ),
+                )
+            )
+        )
+
+        first_follow_up = (
+            self.repo
+            .get_or_create_call_follow_up(
+                first_source.id
+            )
+        )
+
+        self.repo.get_or_create_call_follow_up(
+            second_source.id
+        )
+
+        callback = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_OUTBOUND,
+                phone_number="+34600500006",
+            )
+        )
+
+        self.repo.link_callback_call(
+            source_call_id=first_source.id,
+            callback_call_id=callback.id,
+        )
+
+        active = (
+            transition_call_follow_up(
+                first_follow_up,
+                CALL_FOLLOW_UP_IN_PROGRESS,
+            )
+        )
+
+        self.repo.update_call_follow_up(
+            active
+        )
+
+        inventory = (
+            self.repo
+            .list_pending_call_follow_ups()
+        )
+
+        self.assertEqual(
+            len(inventory),
+            2,
+        )
+
+        first = inventory[0]
+
+        self.assertEqual(
+            first.source_call_id,
+            first_source.id,
+        )
+
+        self.assertEqual(
+            first.follow_up_status,
+            CALL_FOLLOW_UP_IN_PROGRESS,
+        )
+
+        self.assertEqual(
+            first.phone_number,
+            "+34600500006",
+        )
+
+        self.assertEqual(
+            first.display_name_snapshot,
+            "CLIENTE TEST",
+        )
+
+        self.assertEqual(
+            first.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            first.expedient_id,
+            20,
+        )
+
+        self.assertEqual(
+            first.source_call_status,
+            CALL_STATUS_MISSED,
+        )
+
+        self.assertEqual(
+            first.callback_count,
+            1,
+        )
+
+        self.assertIsNotNone(
+            first.latest_callback_at
+        )
+
+        self.assertEqual(
+            inventory[1].source_call_id,
+            second_source.id,
+        )
+
+        self.assertEqual(
+            inventory[1].callback_count,
+            0,
+        )
+
+    def test_resolved_follow_up_is_excluded_from_pending_inventory(
+        self,
+    ):
+        source = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600500008",
+                status=CALL_STATUS_MISSED,
+            )
+        )
+
+        pending = (
+            self.repo
+            .get_or_create_call_follow_up(
+                source.id
+            )
+        )
+
+        resolved = (
+            transition_call_follow_up(
+                pending,
+                CALL_FOLLOW_UP_RESOLVED,
+                resolved_at=(
+                    "2026-08-14T16:20:00+02:00"
+                ),
+            )
+        )
+
+        self.repo.update_call_follow_up(
+            resolved
+        )
+
+        inventory = (
+            self.repo
+            .list_pending_call_follow_ups()
+        )
+
+        self.assertNotIn(
+            source.id,
+            {
+                item.source_call_id
+                for item in inventory
+            },
+        )
 
     def test_account_is_idempotent(self):
         first = self._create_account()

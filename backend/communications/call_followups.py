@@ -74,6 +74,39 @@ class CommunicationCallCallback:
     created_at: str | None = None
 
 
+@dataclass(frozen=True)
+class CommunicationCallFollowUpOverview:
+    """
+    Proyección de lectura para el inventario operativo.
+
+    Combina el seguimiento con el contexto mínimo de la
+    llamada origen sin introducir SQL en frontend/Flet.
+    """
+
+    follow_up_id: int
+    source_call_id: int
+
+    follow_up_status: str
+
+    channel: str
+    phone_number: str
+
+    display_name_snapshot: str | None = None
+
+    thread_id: int | None = None
+    client_id: int | None = None
+    expedient_id: int | None = None
+
+    source_call_status: str | None = None
+
+    source_call_created_at: str | None = None
+    source_call_ringing_at: str | None = None
+    source_call_ended_at: str | None = None
+
+    callback_count: int = 0
+    latest_callback_at: str | None = None
+
+
 class InvalidCallFollowUpTransition(
     ValueError
 ):
