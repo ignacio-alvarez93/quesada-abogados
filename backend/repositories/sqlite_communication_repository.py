@@ -10,6 +10,9 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from backend.communications.calls import (
+    CommunicationCall,
+)
 from backend.communications.models import (
     CommunicationAccount,
     CommunicationClientContext,
@@ -40,6 +43,12 @@ MIGRATION_PATHS = (
         / "database"
         / "migrations"
         / "20260812_harden_communication_message_identity.sql"
+    ),
+    (
+        Path(__file__).resolve().parents[2]
+        / "database"
+        / "migrations"
+        / "20260814_create_communication_calls.sql"
     ),
 )
 
@@ -117,6 +126,90 @@ class SQLiteCommunicationRepository:
                         encoding="utf-8"
                     )
                 )
+
+    @staticmethod
+    def _call_from_row(row):
+        if not row:
+            return None
+
+        return CommunicationCall(
+            id=int(row["id"]),
+            thread_id=(
+                int(row["thread_id"])
+                if row["thread_id"] is not None
+                else None
+            ),
+            client_id=(
+                int(row["client_id"])
+                if row["client_id"] is not None
+                else None
+            ),
+            expedient_id=(
+                int(row["expedient_id"])
+                if row["expedient_id"] is not None
+                else None
+            ),
+            channel=row["channel"],
+            direction=row["direction"],
+            phone_number=row["phone_number"],
+            display_name_snapshot=(
+                row["display_name_snapshot"]
+            ),
+            reason_code=row["reason_code"],
+            reason_detail=row["reason_detail"],
+            status=row["status"],
+            outcome_code=row["outcome_code"],
+            provider=row["provider"],
+            provider_call_id=(
+                row["provider_call_id"]
+            ),
+            external_call_key=(
+                row["external_call_key"]
+            ),
+            created_at=row["created_at"],
+            dialed_at=row["dialed_at"],
+            ringing_at=row["ringing_at"],
+            answered_at=row["answered_at"],
+            ended_at=row["ended_at"],
+            ring_duration_seconds=(
+                int(
+                    row[
+                        "ring_duration_seconds"
+                    ]
+                )
+                if row[
+                    "ring_duration_seconds"
+                ] is not None
+                else None
+            ),
+            talk_duration_seconds=(
+                int(
+                    row[
+                        "talk_duration_seconds"
+                    ]
+                )
+                if row[
+                    "talk_duration_seconds"
+                ] is not None
+                else None
+            ),
+            total_duration_seconds=(
+                int(
+                    row[
+                        "total_duration_seconds"
+                    ]
+                )
+                if row[
+                    "total_duration_seconds"
+                ] is not None
+                else None
+            ),
+            notes=row["notes"],
+            created_by=row["created_by"],
+            metadata=_json_load(
+                row["metadata_json"]
+            ),
+        )
 
     @staticmethod
     def _account_from_row(row):
@@ -286,6 +379,118 @@ class SQLiteCommunicationRepository:
                 row["metadata_json"]
             ),
         )
+
+    def create_call(
+        self,
+        call,
+    ):
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO communication_calls (
+                    thread_id,
+                    client_id,
+                    expedient_id,
+                    channel,
+                    direction,
+                    phone_number,
+                    display_name_snapshot,
+                    reason_code,
+                    reason_detail,
+                    status,
+                    outcome_code,
+                    provider,
+                    provider_call_id,
+                    external_call_key,
+                    dialed_at,
+                    ringing_at,
+                    answered_at,
+                    ended_at,
+                    ring_duration_seconds,
+                    talk_duration_seconds,
+                    total_duration_seconds,
+                    notes,
+                    created_by,
+                    metadata_json
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    call.thread_id,
+                    call.client_id,
+                    call.expedient_id,
+                    call.channel,
+                    call.direction,
+                    call.phone_number,
+                    call.display_name_snapshot,
+                    call.reason_code,
+                    call.reason_detail,
+                    call.status,
+                    call.outcome_code,
+                    call.provider,
+                    call.provider_call_id,
+                    call.external_call_key,
+                    call.dialed_at,
+                    call.ringing_at,
+                    call.answered_at,
+                    call.ended_at,
+                    call.ring_duration_seconds,
+                    call.talk_duration_seconds,
+                    call.total_duration_seconds,
+                    call.notes,
+                    call.created_by,
+                    _json_dump(
+                        call.metadata
+                    ),
+                ),
+            )
+
+            call_id = int(
+                cursor.lastrowid
+            )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_calls
+                WHERE id = ?
+                """,
+                (
+                    call_id,
+                ),
+            ).fetchone()
+
+            return self._call_from_row(
+                row
+            )
+
+    def get_call(
+        self,
+        call_id,
+    ):
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_calls
+                WHERE id = ?
+                """,
+                (
+                    int(call_id),
+                ),
+            ).fetchone()
+
+            return self._call_from_row(
+                row
+            )
 
     def save_account(
         self,

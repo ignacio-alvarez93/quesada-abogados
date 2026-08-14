@@ -3,9 +3,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from backend.communications.calls import (
+    CALL_STATUS_CREATED,
+    CALL_STATUS_MISSED,
+    CommunicationCall,
+)
 from backend.communications.models import (
     ATTEMPT_STATUS_ERROR,
     ATTEMPT_STATUS_SENT,
+    CHANNEL_PHONE,
     CHANNEL_WHATSAPP,
     CommunicationAccount,
     CommunicationMessage,
@@ -115,6 +121,173 @@ class CommunicationRepositoryTest(
                 is_default=True,
             )
         )
+
+    def test_call_without_crm_links_roundtrips(
+        self,
+    ):
+        created = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_PHONE,
+                direction=DIRECTION_INBOUND,
+                phone_number="+34600999888",
+                display_name_snapshot=(
+                    "Número no identificado"
+                ),
+                status=CALL_STATUS_CREATED,
+                provider="MOBILE_LINK",
+                metadata={
+                    "source": "TEST",
+                    "sequence": 1,
+                },
+            )
+        )
+
+        self.assertIsNotNone(
+            created.id
+        )
+
+        self.assertIsNone(
+            created.thread_id
+        )
+
+        self.assertIsNone(
+            created.client_id
+        )
+
+        self.assertIsNone(
+            created.expedient_id
+        )
+
+        self.assertEqual(
+            created.phone_number,
+            "+34600999888",
+        )
+
+        self.assertIsNone(
+            created.talk_duration_seconds
+        )
+
+        self.assertEqual(
+            created.metadata,
+            {
+                "sequence": 1,
+                "source": "TEST",
+            },
+        )
+
+        stored = self.repo.get_call(
+            created.id
+        )
+
+        self.assertEqual(
+            stored,
+            created,
+        )
+
+    def test_call_with_crm_links_roundtrips(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = (
+            self.repo
+            .get_or_create_thread(
+                CommunicationThread(
+                    id=None,
+                    account_id=account.id,
+                    client_id=10,
+                    external_thread_key=(
+                        "phone:34600123456"
+                    ),
+                    external_address=(
+                        "+34600123456"
+                    ),
+                    external_display_name=(
+                        "CLIENTE TEST"
+                    ),
+                    match_status=(
+                        THREAD_MATCH_MATCHED
+                    ),
+                )
+            )
+        )
+
+        created = self.repo.create_call(
+            CommunicationCall(
+                id=None,
+                channel=CHANNEL_WHATSAPP,
+                direction=DIRECTION_OUTBOUND,
+                phone_number="+34600123456",
+                thread_id=thread.id,
+                client_id=10,
+                expedient_id=20,
+                display_name_snapshot=(
+                    "CLIENTE TEST"
+                ),
+                reason_code=(
+                    "EXPEDIENT_STATUS"
+                ),
+                status=CALL_STATUS_MISSED,
+                ring_duration_seconds=12,
+                talk_duration_seconds=0,
+                total_duration_seconds=12,
+                notes="Sin respuesta",
+                created_by="TEST",
+            )
+        )
+
+        self.assertEqual(
+            created.thread_id,
+            thread.id,
+        )
+
+        self.assertEqual(
+            created.client_id,
+            10,
+        )
+
+        self.assertEqual(
+            created.expedient_id,
+            20,
+        )
+
+        self.assertEqual(
+            created.talk_duration_seconds,
+            0,
+        )
+
+        self.assertEqual(
+            created.total_duration_seconds,
+            12,
+        )
+
+        stored = self.repo.get_call(
+            created.id
+        )
+
+        self.assertEqual(
+            stored,
+            created,
+        )
+
+    def test_call_schema_rejects_negative_duration(
+        self,
+    ):
+        with self.assertRaises(
+            sqlite3.IntegrityError
+        ):
+            self.repo.create_call(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_OUTBOUND,
+                    phone_number=(
+                        "+34600123456"
+                    ),
+                    talk_duration_seconds=-1,
+                )
+            )
 
     def test_account_is_idempotent(self):
         first = self._create_account()
