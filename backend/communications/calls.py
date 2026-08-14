@@ -32,6 +32,292 @@ CALL_DIRECTION_INBOUND = "INBOUND"
 CALL_DIRECTION_OUTBOUND = "OUTBOUND"
 
 
+@dataclass(frozen=True)
+class CallCatalogOption:
+    """
+    Opción estable de catálogo de llamadas.
+
+    code:
+        valor persistido y estable.
+
+    label:
+        texto de presentación actualmente usado por el CRM.
+    """
+
+    code: str
+    label: str
+
+
+CALL_REASON_OPTIONS = (
+    CallCatalogOption(
+        "INITIAL_CONSULTATION",
+        "Consulta inicial",
+    ),
+    CallCatalogOption(
+        "LEGAL_CONSULTATION",
+        "Consulta jurídica",
+    ),
+    CallCatalogOption(
+        "EXPEDIENT_STATUS",
+        "Estado del expediente",
+    ),
+    CallCatalogOption(
+        "MISSING_DOCUMENTATION",
+        "Documentación pendiente",
+    ),
+    CallCatalogOption(
+        "NOTIFICATION_NOTICE",
+        "Aviso de notificación",
+    ),
+    CallCatalogOption(
+        "FOLLOW_UP",
+        "Seguimiento",
+    ),
+    CallCatalogOption(
+        "APPOINTMENT",
+        "Cita",
+    ),
+    CallCatalogOption(
+        "APPOINTMENT_REMINDER",
+        "Recordatorio de cita",
+    ),
+    CallCatalogOption(
+        "PAYMENT",
+        "Pago",
+    ),
+    CallCatalogOption(
+        "DOCUMENT_READY",
+        "Documento disponible",
+    ),
+    CallCatalogOption(
+        "RESOLUTION_NOTICE",
+        "Comunicación de resolución",
+    ),
+    CallCatalogOption(
+        "ADMINISTRATIVE_ACTION",
+        "Actuación administrativa",
+    ),
+    CallCatalogOption(
+        "CLIENT_REQUEST",
+        "Solicitud del cliente",
+    ),
+    CallCatalogOption(
+        "OTHER",
+        "Otro",
+    ),
+)
+
+
+CALL_OUTCOME_OPTIONS = (
+    CallCatalogOption(
+        "CLIENT_INFORMED",
+        "Cliente informado",
+    ),
+    CallCatalogOption(
+        "DOCUMENTS_REQUESTED",
+        "Documentación solicitada",
+    ),
+    CallCatalogOption(
+        "CLIENT_WILL_SEND_DOCUMENTS",
+        "Cliente enviará documentación",
+    ),
+    CallCatalogOption(
+        "FOLLOW_UP_REQUIRED",
+        "Requiere seguimiento",
+    ),
+    CallCatalogOption(
+        "APPOINTMENT_SCHEDULED",
+        "Cita concertada",
+    ),
+    CallCatalogOption(
+        "PAYMENT_COMMITTED",
+        "Compromiso de pago",
+    ),
+    CallCatalogOption(
+        "RESOLVED",
+        "Resuelto",
+    ),
+    CallCatalogOption(
+        "NO_ANSWER",
+        "Sin respuesta",
+    ),
+    CallCatalogOption(
+        "CALL_BACK_LATER",
+        "Volver a llamar",
+    ),
+    CallCatalogOption(
+        "WRONG_NUMBER",
+        "Número incorrecto",
+    ),
+    CallCatalogOption(
+        "OTHER",
+        "Otro",
+    ),
+)
+
+
+def _normalize_call_catalog_code(
+    value,
+):
+    raw = str(
+        value
+        or ""
+    ).strip().upper()
+
+    return raw or None
+
+
+def _build_call_catalog_index(
+    options,
+):
+    index = {}
+
+    for option in options:
+        code = (
+            _normalize_call_catalog_code(
+                option.code
+            )
+        )
+
+        label = str(
+            option.label
+            or ""
+        ).strip()
+
+        if not code:
+            raise ValueError(
+                "El catálogo contiene un código vacío."
+            )
+
+        if not label:
+            raise ValueError(
+                "El catálogo contiene una etiqueta vacía."
+            )
+
+        if code in index:
+            raise ValueError(
+                "Código duplicado en catálogo "
+                f"de llamadas: {code}"
+            )
+
+        index[code] = option
+
+    return index
+
+
+_CALL_REASON_INDEX = (
+    _build_call_catalog_index(
+        CALL_REASON_OPTIONS
+    )
+)
+
+_CALL_OUTCOME_INDEX = (
+    _build_call_catalog_index(
+        CALL_OUTCOME_OPTIONS
+    )
+)
+
+
+def get_call_reason_options():
+    """
+    Devuelve el catálogo inmutable de motivos.
+    """
+    return CALL_REASON_OPTIONS
+
+
+def get_call_outcome_options():
+    """
+    Devuelve el catálogo inmutable de resultados.
+    """
+    return CALL_OUTCOME_OPTIONS
+
+
+def normalize_call_reason_code(
+    value,
+):
+    code = (
+        _normalize_call_catalog_code(
+            value
+        )
+    )
+
+    if code in _CALL_REASON_INDEX:
+        return code
+
+    return None
+
+
+def normalize_call_outcome_code(
+    value,
+):
+    code = (
+        _normalize_call_catalog_code(
+            value
+        )
+    )
+
+    if code in _CALL_OUTCOME_INDEX:
+        return code
+
+    return None
+
+
+def is_valid_call_reason_code(
+    value,
+):
+    return (
+        normalize_call_reason_code(
+            value
+        )
+        is not None
+    )
+
+
+def is_valid_call_outcome_code(
+    value,
+):
+    return (
+        normalize_call_outcome_code(
+            value
+        )
+        is not None
+    )
+
+
+def get_call_reason_label(
+    value,
+):
+    code = (
+        normalize_call_reason_code(
+            value
+        )
+    )
+
+    if code is None:
+        return None
+
+    return _CALL_REASON_INDEX[
+        code
+    ].label
+
+
+def get_call_outcome_label(
+    value,
+):
+    code = (
+        normalize_call_outcome_code(
+            value
+        )
+    )
+
+    if code is None:
+        return None
+
+    return _CALL_OUTCOME_INDEX[
+        code
+    ].label
+
+
 CALL_ALLOWED_TRANSITIONS = {
     CALL_STATUS_CREATED: frozenset(
         {

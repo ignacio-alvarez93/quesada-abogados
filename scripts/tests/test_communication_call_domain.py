@@ -9,12 +9,22 @@ from backend.communications.calls import (
     CALL_STATUS_FAILED,
     CALL_STATUS_MISSED,
     CALL_STATUS_REJECTED,
+    CALL_OUTCOME_OPTIONS,
+    CALL_REASON_OPTIONS,
     CALL_STATUS_RINGING,
     CALL_TERMINAL_STATUSES,
     CommunicationCall,
     InvalidCallTimestamp,
     InvalidCallTransition,
     can_transition_call_status,
+    get_call_outcome_label,
+    get_call_outcome_options,
+    get_call_reason_label,
+    get_call_reason_options,
+    is_valid_call_outcome_code,
+    is_valid_call_reason_code,
+    normalize_call_outcome_code,
+    normalize_call_reason_code,
     transition_call_status,
     transition_call_status_at,
 )
@@ -592,6 +602,192 @@ class CommunicationCallDomainTest(
         self.assertEqual(
             call.total_duration_seconds,
             64,
+        )
+
+    def test_reason_catalog_is_stable_and_unique(
+        self,
+    ):
+        options = (
+            get_call_reason_options()
+        )
+
+        self.assertIs(
+            options,
+            CALL_REASON_OPTIONS,
+        )
+
+        codes = [
+            option.code
+            for option in options
+        ]
+
+        self.assertEqual(
+            len(codes),
+            14,
+        )
+
+        self.assertEqual(
+            len(codes),
+            len(set(codes)),
+        )
+
+        self.assertIn(
+            "EXPEDIENT_STATUS",
+            codes,
+        )
+
+        self.assertIn(
+            "PAYMENT",
+            codes,
+        )
+
+        self.assertIn(
+            "OTHER",
+            codes,
+        )
+
+    def test_outcome_catalog_is_stable_and_unique(
+        self,
+    ):
+        options = (
+            get_call_outcome_options()
+        )
+
+        self.assertIs(
+            options,
+            CALL_OUTCOME_OPTIONS,
+        )
+
+        codes = [
+            option.code
+            for option in options
+        ]
+
+        self.assertEqual(
+            len(codes),
+            11,
+        )
+
+        self.assertEqual(
+            len(codes),
+            len(set(codes)),
+        )
+
+        self.assertIn(
+            "CLIENT_INFORMED",
+            codes,
+        )
+
+        self.assertIn(
+            "NO_ANSWER",
+            codes,
+        )
+
+        self.assertIn(
+            "OTHER",
+            codes,
+        )
+
+    def test_reason_catalog_returns_label(
+        self,
+    ):
+        self.assertEqual(
+            get_call_reason_label(
+                "EXPEDIENT_STATUS"
+            ),
+            "Estado del expediente",
+        )
+
+        self.assertEqual(
+            get_call_reason_label(
+                "MISSING_DOCUMENTATION"
+            ),
+            "Documentación pendiente",
+        )
+
+    def test_outcome_catalog_returns_label(
+        self,
+    ):
+        self.assertEqual(
+            get_call_outcome_label(
+                "CLIENT_INFORMED"
+            ),
+            "Cliente informado",
+        )
+
+        self.assertEqual(
+            get_call_outcome_label(
+                "CALL_BACK_LATER"
+            ),
+            "Volver a llamar",
+        )
+
+    def test_catalog_codes_are_normalized(
+        self,
+    ):
+        self.assertEqual(
+            normalize_call_reason_code(
+                "  expedient_status  "
+            ),
+            "EXPEDIENT_STATUS",
+        )
+
+        self.assertEqual(
+            normalize_call_outcome_code(
+                " client_informed "
+            ),
+            "CLIENT_INFORMED",
+        )
+
+        self.assertTrue(
+            is_valid_call_reason_code(
+                "payment"
+            )
+        )
+
+        self.assertTrue(
+            is_valid_call_outcome_code(
+                "resolved"
+            )
+        )
+
+    def test_unknown_catalog_codes_are_not_valid(
+        self,
+    ):
+        self.assertFalse(
+            is_valid_call_reason_code(
+                "UNKNOWN_REASON"
+            )
+        )
+
+        self.assertFalse(
+            is_valid_call_outcome_code(
+                "UNKNOWN_OUTCOME"
+            )
+        )
+
+        self.assertFalse(
+            is_valid_call_reason_code(
+                None
+            )
+        )
+
+        self.assertFalse(
+            is_valid_call_outcome_code(
+                None
+            )
+        )
+
+        self.assertIsNone(
+            get_call_reason_label(
+                "UNKNOWN_REASON"
+            )
+        )
+
+        self.assertIsNone(
+            get_call_outcome_label(
+                "UNKNOWN_OUTCOME"
+            )
         )
 
 
