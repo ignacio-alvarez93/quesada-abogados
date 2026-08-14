@@ -142,8 +142,7 @@ class CommunicationCallService:
                 "Dirección de llamada no válida"
             )
 
-        return self.repository.create_call(
-            CommunicationCall(
+        candidate = CommunicationCall(
                 id=None,
                 channel=normalized_channel,
                 direction=normalized_direction,
@@ -222,7 +221,27 @@ class CommunicationCallService:
                 ),
                 metadata=metadata,
             )
+
+        persisted, created = (
+            self.repository
+            .get_or_create_call_with_identity(
+                candidate
+            )
         )
+
+        if not created:
+            if (
+                persisted.channel
+                != candidate.channel
+                or persisted.direction
+                != candidate.direction
+            ):
+                raise ValueError(
+                    "Conflicto de identidad externa "
+                    "de llamada"
+                )
+
+        return persisted
 
     def create_inbound_call(
         self,

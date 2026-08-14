@@ -1336,6 +1336,173 @@ class CommunicationRepositoryTest(
             source.id,
         )
 
+    def test_provider_call_identity_is_idempotent(
+        self,
+    ):
+        first_candidate = CommunicationCall(
+            id=None,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600710001",
+            provider=" mobile_link ",
+            provider_call_id=" raw-001 ",
+            external_call_key=" stable-001 ",
+        )
+
+        second_candidate = CommunicationCall(
+            id=None,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600710001",
+            provider="MOBILE_LINK",
+            provider_call_id="raw-001",
+            external_call_key="stable-001",
+        )
+
+        first, first_created = (
+            self.repo
+            .get_or_create_call_with_identity(
+                first_candidate
+            )
+        )
+
+        second, second_created = (
+            self.repo
+            .get_or_create_call_with_identity(
+                second_candidate
+            )
+        )
+
+        self.assertTrue(
+            first_created
+        )
+
+        self.assertFalse(
+            second_created
+        )
+
+        self.assertEqual(
+            first.id,
+            second.id,
+        )
+
+        self.assertEqual(
+            first.provider,
+            "MOBILE_LINK",
+        )
+
+        self.assertEqual(
+            first.provider_call_id,
+            "raw-001",
+        )
+
+        self.assertEqual(
+            first.external_call_key,
+            "stable-001",
+        )
+
+        found = (
+            self.repo
+            .get_call_by_provider_identity(
+                provider=" mobile_link ",
+                external_call_key=" stable-001 ",
+            )
+        )
+
+        self.assertEqual(
+            found.id,
+            first.id,
+        )
+
+    def test_provider_call_identity_is_scoped_by_provider(
+        self,
+    ):
+        mobile, mobile_created = (
+            self.repo
+            .get_or_create_call_with_identity(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_PHONE,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600710002",
+                    provider="MOBILE_LINK",
+                    external_call_key="shared-key",
+                )
+            )
+        )
+
+        whatsapp, whatsapp_created = (
+            self.repo
+            .get_or_create_call_with_identity(
+                CommunicationCall(
+                    id=None,
+                    channel=CHANNEL_WHATSAPP,
+                    direction=DIRECTION_INBOUND,
+                    phone_number="+34600710002",
+                    provider="WHATSAPP_WEB",
+                    external_call_key="shared-key",
+                )
+            )
+        )
+
+        self.assertTrue(
+            mobile_created
+        )
+
+        self.assertTrue(
+            whatsapp_created
+        )
+
+        self.assertNotEqual(
+            mobile.id,
+            whatsapp.id,
+        )
+
+    def test_provider_call_unique_index_rejects_raw_duplicate(
+        self,
+    ):
+        candidate = CommunicationCall(
+            id=None,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600710003",
+            provider="MOBILE_LINK",
+            external_call_key="unique-001",
+        )
+
+        self.repo.create_call(
+            candidate
+        )
+
+        with self.assertRaises(
+            sqlite3.IntegrityError
+        ):
+            self.repo.create_call(
+                candidate
+            )
+
+    def test_external_call_key_requires_provider(
+        self,
+    ):
+        candidate = CommunicationCall(
+            id=None,
+            channel=CHANNEL_PHONE,
+            direction=DIRECTION_INBOUND,
+            phone_number="+34600710004",
+            external_call_key="orphan-key",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "requiere provider",
+        ):
+            (
+                self.repo
+                .get_or_create_call_with_identity(
+                    candidate
+                )
+            )
+
     def test_account_is_idempotent(self):
         first = self._create_account()
         second = self._create_account()

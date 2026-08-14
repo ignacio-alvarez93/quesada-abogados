@@ -926,5 +926,106 @@ class CommunicationCallServiceTest(
         )
 
 
+    def test_provider_call_creation_is_idempotent(
+        self,
+    ):
+        first = (
+            self.service
+            .create_inbound_call(
+                channel=CHANNEL_PHONE,
+                phone_number="+34600720001",
+                provider="mobile_link",
+                provider_call_id="raw-101",
+                external_call_key="stable-101",
+            )
+        )
+
+        second = (
+            self.service
+            .create_inbound_call(
+                channel=CHANNEL_PHONE,
+                phone_number="+34600720001",
+                provider="MOBILE_LINK",
+                provider_call_id="raw-101",
+                external_call_key="stable-101",
+            )
+        )
+
+        self.assertEqual(
+            first.id,
+            second.id,
+        )
+
+        self.assertEqual(
+            second.provider,
+            "MOBILE_LINK",
+        )
+
+    def test_provider_identity_conflict_rejects_direction_change(
+        self,
+    ):
+        first = (
+            self.service
+            .create_inbound_call(
+                channel=CHANNEL_PHONE,
+                phone_number="+34600720002",
+                provider="MOBILE_LINK",
+                external_call_key="stable-102",
+            )
+        )
+
+        self.assertIsNotNone(
+            first.id
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Conflicto de identidad externa",
+        ):
+            (
+                self.service
+                .create_outbound_call(
+                    channel=CHANNEL_PHONE,
+                    phone_number="+34600720002",
+                    provider="MOBILE_LINK",
+                    external_call_key="stable-102",
+                )
+            )
+
+        stored = (
+            self.repository
+            .get_call_by_provider_identity(
+                provider="MOBILE_LINK",
+                external_call_key="stable-102",
+            )
+        )
+
+        self.assertEqual(
+            stored.id,
+            first.id,
+        )
+
+        self.assertEqual(
+            stored.direction,
+            DIRECTION_INBOUND,
+        )
+
+    def test_external_identity_without_provider_is_rejected(
+        self,
+    ):
+        with self.assertRaisesRegex(
+            ValueError,
+            "requiere provider",
+        ):
+            (
+                self.service
+                .create_inbound_call(
+                    channel=CHANNEL_PHONE,
+                    phone_number="+34600720003",
+                    external_call_key="stable-103",
+                )
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

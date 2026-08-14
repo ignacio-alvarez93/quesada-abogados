@@ -7,6 +7,7 @@ El frontend y los servicios de dominio no deben importar sqlite3.
 
 import json
 import sqlite3
+from dataclasses import replace
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -54,6 +55,12 @@ MIGRATION_PATHS = (
         / "database"
         / "migrations"
         / "20260814_create_communication_calls.sql"
+    ),
+    (
+        Path(__file__).resolve().parents[2]
+        / "database"
+        / "migrations"
+        / "20260814_harden_communication_call_identity.sql"
     ),
     (
         Path(__file__).resolve().parents[2]
@@ -488,95 +495,321 @@ class SQLiteCommunicationRepository:
             ),
         )
 
+    @staticmethod
+    def _normalize_call_provider_identity(
+        call,
+    ):
+        """
+        Canonicaliza exclusivamente identidad de proveedor.
+
+        provider se persiste en mayúsculas.
+        external_call_key conserva mayúsculas/minúsculas porque
+        puede representar un identificador case-sensitive.
+        """
+        provider = (
+            str(
+                call.provider
+                or ""
+            )
+            .strip()
+            .upper()
+            or None
+        )
+
+        provider_call_id = (
+            str(
+                call.provider_call_id
+                or ""
+            )
+            .strip()
+            or None
+        )
+
+        external_call_key = (
+            str(
+                call.external_call_key
+                or ""
+            )
+            .strip()
+            or None
+        )
+
+        if (
+            external_call_key is not None
+            and provider is None
+        ):
+            raise ValueError(
+                "external_call_key requiere provider"
+            )
+
+        return replace(
+            call,
+            provider=provider,
+            provider_call_id=provider_call_id,
+            external_call_key=external_call_key,
+        )
+
+    def _insert_call(
+        self,
+        conn,
+        call,
+    ):
+        cursor = conn.execute(
+            """
+            INSERT INTO communication_calls (
+                thread_id,
+                client_id,
+                expedient_id,
+                channel,
+                direction,
+                phone_number,
+                display_name_snapshot,
+                reason_code,
+                reason_detail,
+                status,
+                outcome_code,
+                provider,
+                provider_call_id,
+                external_call_key,
+                dialed_at,
+                ringing_at,
+                answered_at,
+                ended_at,
+                ring_duration_seconds,
+                talk_duration_seconds,
+                total_duration_seconds,
+                notes,
+                created_by,
+                metadata_json
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            (
+                call.thread_id,
+                call.client_id,
+                call.expedient_id,
+                call.channel,
+                call.direction,
+                call.phone_number,
+                call.display_name_snapshot,
+                call.reason_code,
+                call.reason_detail,
+                call.status,
+                call.outcome_code,
+                call.provider,
+                call.provider_call_id,
+                call.external_call_key,
+                call.dialed_at,
+                call.ringing_at,
+                call.answered_at,
+                call.ended_at,
+                call.ring_duration_seconds,
+                call.talk_duration_seconds,
+                call.total_duration_seconds,
+                call.notes,
+                call.created_by,
+                _json_dump(
+                    call.metadata
+                ),
+            ),
+        )
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM communication_calls
+            WHERE id = ?
+            """,
+            (
+                int(
+                    cursor.lastrowid
+                ),
+            ),
+        ).fetchone()
+
+        return self._call_from_row(
+            row
+        )
+
     def create_call(
         self,
         call,
     ):
+        """
+        Inserción estricta.
+
+        Si existe otra llamada con la misma identidad externa,
+        el índice UNIQUE rechazará la duplicidad.
+        """
         self.ensure_schema()
 
+        normalized = (
+            self
+            ._normalize_call_provider_identity(
+                call
+            )
+        )
+
         with self._connection() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO communication_calls (
-                    thread_id,
-                    client_id,
-                    expedient_id,
-                    channel,
-                    direction,
-                    phone_number,
-                    display_name_snapshot,
-                    reason_code,
-                    reason_detail,
-                    status,
-                    outcome_code,
-                    provider,
-                    provider_call_id,
-                    external_call_key,
-                    dialed_at,
-                    ringing_at,
-                    answered_at,
-                    ended_at,
-                    ring_duration_seconds,
-                    talk_duration_seconds,
-                    total_duration_seconds,
-                    notes,
-                    created_by,
-                    metadata_json
-                )
-                VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?
-                )
-                """,
-                (
-                    call.thread_id,
-                    call.client_id,
-                    call.expedient_id,
-                    call.channel,
-                    call.direction,
-                    call.phone_number,
-                    call.display_name_snapshot,
-                    call.reason_code,
-                    call.reason_detail,
-                    call.status,
-                    call.outcome_code,
-                    call.provider,
-                    call.provider_call_id,
-                    call.external_call_key,
-                    call.dialed_at,
-                    call.ringing_at,
-                    call.answered_at,
-                    call.ended_at,
-                    call.ring_duration_seconds,
-                    call.talk_duration_seconds,
-                    call.total_duration_seconds,
-                    call.notes,
-                    call.created_by,
-                    _json_dump(
-                        call.metadata
-                    ),
-                ),
+            return self._insert_call(
+                conn,
+                normalized,
             )
 
-            call_id = int(
-                cursor.lastrowid
-            )
+    def get_call_by_provider_identity(
+        self,
+        *,
+        provider,
+        external_call_key,
+    ):
+        """
+        Recupera una llamada por identidad externa canónica.
+        """
+        self.ensure_schema()
 
+        normalized_provider = (
+            str(
+                provider
+                or ""
+            )
+            .strip()
+            .upper()
+            or None
+        )
+
+        normalized_key = (
+            str(
+                external_call_key
+                or ""
+            )
+            .strip()
+            or None
+        )
+
+        if (
+            normalized_provider is None
+            or normalized_key is None
+        ):
+            return None
+
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 SELECT *
                 FROM communication_calls
-                WHERE id = ?
+                WHERE provider = ?
+                  AND external_call_key = ?
                 """,
                 (
-                    call_id,
+                    normalized_provider,
+                    normalized_key,
                 ),
             ).fetchone()
 
             return self._call_from_row(
                 row
             )
+
+    def get_or_create_call_with_identity(
+        self,
+        call,
+    ):
+        """
+        Inserta una llamada o reutiliza la ya persistida.
+
+        Cuando existe identidad completa:
+            (provider, external_call_key)
+
+        la operación es idempotente y tolera carreras entre
+        observación realtime y reconciliación histórica.
+
+        Sin external_call_key se mantiene el comportamiento de
+        creación normal porque todavía no existe identidad
+        externa suficiente para deduplicar con seguridad.
+        """
+        self.ensure_schema()
+
+        candidate = (
+            self
+            ._normalize_call_provider_identity(
+                call
+            )
+        )
+
+        provider = candidate.provider
+        external_call_key = (
+            candidate.external_call_key
+        )
+
+        with self._connection() as conn:
+            if external_call_key is None:
+                return (
+                    self._insert_call(
+                        conn,
+                        candidate,
+                    ),
+                    True,
+                )
+
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM communication_calls
+                WHERE provider = ?
+                  AND external_call_key = ?
+                """,
+                (
+                    provider,
+                    external_call_key,
+                ),
+            ).fetchone()
+
+            if existing:
+                return (
+                    self._call_from_row(
+                        existing
+                    ),
+                    False,
+                )
+
+            try:
+                created = self._insert_call(
+                    conn,
+                    candidate,
+                )
+
+                return (
+                    created,
+                    True,
+                )
+
+            except sqlite3.IntegrityError:
+                existing = conn.execute(
+                    """
+                    SELECT *
+                    FROM communication_calls
+                    WHERE provider = ?
+                      AND external_call_key = ?
+                    """,
+                    (
+                        provider,
+                        external_call_key,
+                    ),
+                ).fetchone()
+
+                if existing:
+                    return (
+                        self._call_from_row(
+                            existing
+                        ),
+                        False,
+                    )
+
+                raise
 
     def get_call(
         self,
