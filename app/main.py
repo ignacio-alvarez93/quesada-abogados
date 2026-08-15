@@ -14,6 +14,15 @@ load_dotenv(
 import flet as ft
 
 from backend.services.sqlite_runtime_service import configure_sqlite_runtime
+from backend.repositories.sqlite_communication_repository import (
+    SQLiteCommunicationRepository,
+)
+from backend.services.communication_call_service import (
+    CommunicationCallService,
+)
+from backend.services.communication_service import (
+    CommunicationService,
+)
 from backend.services.whatsapp_runtime_service import (
     WhatsAppRuntimeService,
 )
@@ -71,10 +80,44 @@ def main(page: ft.Page):
     current_user = {"value": None}
     main_container = ft.Container(expand=True)
 
+    # Composition root de Comunicaciones.
+    #
+    # Una única abstracción repository alimenta mensajes
+    # y llamadas. SQLite sigue encapsulado en backend/app:
+    # ninguna vista conoce persistencia física.
+    communication_repository = (
+        SQLiteCommunicationRepository()
+    )
+
+    communication_service = (
+        CommunicationService(
+            repository=(
+                communication_repository
+            )
+        )
+    )
+
+    communication_call_service = (
+        CommunicationCallService(
+            repository=(
+                communication_repository
+            )
+        )
+    )
+
     # Runtime único durante toda la sesión del ERP.
-    # El navegador se inicia de forma perezosa cuando
-    # una operación WhatsApp realmente lo necesita.
-    whatsapp_runtime = WhatsAppRuntimeService()
+    #
+    # El navegador sigue iniciándose de forma perezosa.
+    # La persistencia realtime de llamadas queda habilitada
+    # porque CallService se inyecta explícitamente.
+    whatsapp_runtime = WhatsAppRuntimeService(
+        communication_service=(
+            communication_service
+        ),
+        call_service=(
+            communication_call_service
+        ),
+    )
 
     def return_to_context(
         context,
@@ -262,6 +305,9 @@ def main(page: ft.Page):
         elif view_name == "WhatsApp":
             content = communications_view(
                 page,
+                service=(
+                    communication_service
+                ),
                 whatsapp_runtime=(
                     whatsapp_runtime
                 ),
