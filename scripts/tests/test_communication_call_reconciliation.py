@@ -18,7 +18,9 @@ from backend.communications.calls import (
 )
 from backend.communications.models import (
     CHANNEL_PHONE,
+    CHANNEL_WHATSAPP,
     DIRECTION_INBOUND,
+    DIRECTION_OUTBOUND,
 )
 from backend.repositories.sqlite_communication_repository import (
     SQLiteCommunicationRepository,
@@ -358,6 +360,124 @@ class CommunicationCallReconciliationTest(
         self.assertIsNone(
             follow_up
         )
+
+    def test_whatsapp_late_answered_snapshot_creates_without_fake_intermediate_timestamps(
+        self,
+    ):
+        call = (
+            self.service
+            .reconcile_provider_call(
+                ProviderCallSnapshot(
+                    provider="WHATSAPP_WEB",
+                    external_call_key=(
+                        "opaque-late-active-001"
+                    ),
+                    provider_call_id=(
+                        "raw-late-active-001"
+                    ),
+                    channel=(
+                        CHANNEL_WHATSAPP
+                    ),
+                    direction=(
+                        DIRECTION_OUTBOUND
+                    ),
+                    phone_number=(
+                        "+34600999001"
+                    ),
+                    status=(
+                        CALL_STATUS_ANSWERED
+                    ),
+                    metadata={
+                        "source":
+                            "whatsapp_realtime_observation",
+                        "crm_observed_answered_at":
+                            "2026-08-15T10:00:00+02:00",
+                    },
+                )
+            )
+        )
+
+        self.assertEqual(
+            call.status,
+            CALL_STATUS_ANSWERED,
+        )
+
+        self.assertEqual(
+            call.provider,
+            "WHATSAPP_WEB",
+        )
+
+        self.assertEqual(
+            call.external_call_key,
+            "opaque-late-active-001",
+        )
+
+        self.assertIsNone(
+            call.dialed_at
+        )
+
+        self.assertIsNone(
+            call.ringing_at
+        )
+
+        self.assertIsNone(
+            call.answered_at
+        )
+
+        self.assertIsNone(
+            call.ended_at
+        )
+
+        self.assertEqual(
+            call.metadata[
+                "crm_observed_answered_at"
+            ],
+            "2026-08-15T10:00:00+02:00",
+        )
+
+        repeated = (
+            self.service
+            .reconcile_provider_call(
+                ProviderCallSnapshot(
+                    provider="WHATSAPP_WEB",
+                    external_call_key=(
+                        "opaque-late-active-001"
+                    ),
+                    provider_call_id=(
+                        "raw-late-active-001"
+                    ),
+                    channel=(
+                        CHANNEL_WHATSAPP
+                    ),
+                    direction=(
+                        DIRECTION_OUTBOUND
+                    ),
+                    phone_number=(
+                        "+34600999001"
+                    ),
+                    status=(
+                        CALL_STATUS_ANSWERED
+                    ),
+                    metadata={
+                        "source":
+                            "whatsapp_realtime_observation",
+                        "crm_observed_answered_at":
+                            "2026-08-15T10:00:00+02:00",
+                    },
+                )
+            )
+        )
+
+        self.assertEqual(
+            repeated.id,
+            call.id,
+        )
+
+        self.assertEqual(
+            repeated.status,
+            CALL_STATUS_ANSWERED,
+        )
+
 
     def test_terminal_conflict_is_rejected_without_mutation(
         self,

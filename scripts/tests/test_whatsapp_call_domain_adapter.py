@@ -34,6 +34,7 @@ from backend.services.whatsapp_call_domain_adapter import (
     WHATSAPP_CALL_ADAPT_VIDEO_UNSUPPORTED,
     WHATSAPP_CALL_PROVIDER,
     adapt_whatsapp_call_observation,
+    project_whatsapp_call_intent_to_provider_snapshot,
 )
 from backend.services.whatsapp_call_observation import (
     CALL_OBSERVATION_SURFACE_APPEARED,
@@ -583,6 +584,157 @@ class WhatsAppCallDomainAdapterTest(
         self.assertEqual(
             result.intent.observed_at,
             "2026-08-15T08:45:12Z",
+        )
+
+
+    def test_realtime_projection_keeps_observed_at_out_of_provider_timestamps(
+        self,
+    ):
+        adaptation = adapt_whatsapp_call_observation(
+            observation(
+                call_snapshot(
+                    phase=(
+                        WHATSAPP_CALL_PHASE_ACTIVE
+                    ),
+                    direction=(
+                        WHATSAPP_CALL_DIRECTION_INBOUND
+                    ),
+                )
+            ),
+            observed_at=OBSERVED_AT,
+        )
+
+        snapshot = (
+            project_whatsapp_call_intent_to_provider_snapshot(
+                adaptation.intent
+            )
+        )
+
+        self.assertEqual(
+            snapshot.status,
+            CALL_STATUS_ANSWERED,
+        )
+
+        self.assertIsNone(
+            snapshot.dialed_at
+        )
+
+        self.assertIsNone(
+            snapshot.ringing_at
+        )
+
+        self.assertIsNone(
+            snapshot.answered_at
+        )
+
+        self.assertIsNone(
+            snapshot.ended_at
+        )
+
+        self.assertEqual(
+            snapshot.metadata[
+                "crm_observed_answered_at"
+            ],
+            OBSERVED_AT,
+        )
+
+
+    def test_realtime_projection_uses_status_specific_observation_metadata(
+        self,
+    ):
+        cases = (
+            (
+                WHATSAPP_CALL_PHASE_INCOMING_RINGING,
+                WHATSAPP_CALL_DIRECTION_INBOUND,
+                "crm_observed_ringing_at",
+            ),
+            (
+                WHATSAPP_CALL_PHASE_OUTGOING_DIALING,
+                WHATSAPP_CALL_DIRECTION_OUTBOUND,
+                "crm_observed_dialing_at",
+            ),
+            (
+                WHATSAPP_CALL_PHASE_ACTIVE,
+                WHATSAPP_CALL_DIRECTION_OUTBOUND,
+                "crm_observed_answered_at",
+            ),
+        )
+
+        for (
+            phase,
+            direction,
+            metadata_key,
+        ) in cases:
+            with self.subTest(
+                phase=phase
+            ):
+                adaptation = (
+                    adapt_whatsapp_call_observation(
+                        observation(
+                            call_snapshot(
+                                phase=phase,
+                                direction=direction,
+                            )
+                        ),
+                        observed_at=OBSERVED_AT,
+                    )
+                )
+
+                snapshot = (
+                    project_whatsapp_call_intent_to_provider_snapshot(
+                        adaptation.intent
+                    )
+                )
+
+                self.assertEqual(
+                    snapshot.metadata[
+                        metadata_key
+                    ],
+                    OBSERVED_AT,
+                )
+
+
+    def test_projection_preserves_canonical_provider_identity(
+        self,
+    ):
+        adaptation = adapt_whatsapp_call_observation(
+            observation(
+                call_snapshot(
+                    phase=(
+                        WHATSAPP_CALL_PHASE_OUTGOING_DIALING
+                    ),
+                    direction=(
+                        WHATSAPP_CALL_DIRECTION_OUTBOUND
+                    ),
+                )
+            ),
+            observed_at=OBSERVED_AT,
+        )
+
+        snapshot = (
+            project_whatsapp_call_intent_to_provider_snapshot(
+                adaptation.intent
+            )
+        )
+
+        self.assertEqual(
+            snapshot.provider,
+            "WHATSAPP_WEB",
+        )
+
+        self.assertEqual(
+            snapshot.external_call_key,
+            "Opaque_Key_TRUE_false_001",
+        )
+
+        self.assertEqual(
+            snapshot.provider_call_id,
+            "raw-call-001",
+        )
+
+        self.assertEqual(
+            snapshot.phone_number,
+            "+34600111222",
         )
 
 

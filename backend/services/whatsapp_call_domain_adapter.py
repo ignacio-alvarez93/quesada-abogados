@@ -29,6 +29,9 @@ from backend.automation.connectors.whatsapp_call_observer import (
     WHATSAPP_CALL_PHASE_INCOMING_RINGING,
     WHATSAPP_CALL_PHASE_OUTGOING_DIALING,
 )
+from backend.communications.call_snapshots import (
+    ProviderCallSnapshot,
+)
 from backend.communications.calls import (
     CALL_DIRECTION_INBOUND,
     CALL_DIRECTION_OUTBOUND,
@@ -483,4 +486,91 @@ def adapt_whatsapp_call_observation(
             clean_observed_at
         ),
         intent=intent,
+    )
+
+
+def project_whatsapp_call_intent_to_provider_snapshot(
+    intent,
+):
+    """
+    Proyecta un intent realtime a ProviderCallSnapshot.
+
+    Regla fundamental:
+    observed_at es momento de observación CRM.
+
+    NO se copia automáticamente a:
+    - dialed_at;
+    - ringing_at;
+    - answered_at;
+    - ended_at.
+
+    Esos campos quedan reservados a timestamps de lifecycle
+    realmente conocidos/reconciliados del proveedor.
+
+    La observación CRM queda en metadata mediante una clave
+    específica del estado observado.
+    """
+    if not isinstance(
+        intent,
+        WhatsAppCallDomainIntent,
+    ):
+        raise TypeError(
+            "intent debe ser WhatsAppCallDomainIntent"
+        )
+
+    observed_key_by_status = {
+        CALL_STATUS_DIALING:
+            "crm_observed_dialing_at",
+        CALL_STATUS_RINGING:
+            "crm_observed_ringing_at",
+        CALL_STATUS_ANSWERED:
+            "crm_observed_answered_at",
+    }
+
+    observed_key = (
+        observed_key_by_status.get(
+            intent.status
+        )
+    )
+
+    if observed_key is None:
+        raise ValueError(
+            "Estado realtime no proyectable "
+            "a ProviderCallSnapshot"
+        )
+
+    metadata = dict(
+        intent.metadata
+        or {}
+    )
+
+    metadata[
+        observed_key
+    ] = intent.observed_at
+
+    return ProviderCallSnapshot(
+        provider=intent.provider,
+        external_call_key=(
+            intent.external_call_key
+        ),
+        provider_call_id=(
+            intent.provider_call_id
+        ),
+        channel=intent.channel,
+        direction=intent.direction,
+        phone_number=(
+            intent.phone_number
+        ),
+        display_name_snapshot=(
+            intent.display_name_snapshot
+        ),
+        status=intent.status,
+
+        # observed_at NO es timestamp provider.
+        dialed_at=None,
+        ringing_at=None,
+        answered_at=None,
+        ended_at=None,
+
+        metadata=metadata,
     )
