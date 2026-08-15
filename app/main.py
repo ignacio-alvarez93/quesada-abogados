@@ -1,3 +1,4 @@
+import atexit
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -118,6 +119,83 @@ def main(page: ft.Page):
             communication_call_service
         ),
     )
+
+    whatsapp_runtime_closed = {
+        "value": False,
+    }
+
+    def start_whatsapp_session_services():
+        """
+        Activa servicios WhatsApp globales de la sesión ERP.
+
+        Se llama únicamente después de autenticación correcta.
+        start_call_watch() es no bloqueante: el navegador y
+        cualquier espera de READY ocurren en background.
+        """
+        if whatsapp_runtime_closed[
+            "value"
+        ]:
+            return False
+
+        try:
+            whatsapp_runtime.start_call_watch(
+                interval_seconds=0.25,
+                wait_timeout=5,
+            )
+
+            return True
+
+        except Exception as exc:
+            # WhatsApp nunca debe impedir entrar en el ERP.
+            print(
+                "[WA-CALL] no se pudo iniciar "
+                "el watcher de sesión:",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
+            return False
+
+
+    def close_whatsapp_session_services():
+        """
+        Cierre idempotente del runtime global WhatsApp.
+
+        Hoy se registra también mediante atexit.
+        En el futuro podrá reutilizarse desde logout o
+        lifecycle explícito de la ventana.
+        """
+        if whatsapp_runtime_closed[
+            "value"
+        ]:
+            return False
+
+        whatsapp_runtime_closed[
+            "value"
+        ] = True
+
+        try:
+            return whatsapp_runtime.close()
+
+        except Exception as exc:
+            print(
+                "[WA-CALL] error cerrando "
+                "runtime de sesión:",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
+            return False
+
+
+    atexit.register(
+        close_whatsapp_session_services
+    )
+
 
     def return_to_context(
         context,
@@ -422,7 +500,15 @@ def main(page: ft.Page):
 
     def on_login_success(user):
         current_user["value"] = user
+
+        # La UI autenticada se muestra primero.
+        #
+        # WhatsApp arranca después en background para que
+        # un QR, un timeout o cualquier indisponibilidad
+        # del provider nunca bloquee el acceso al ERP.
         navigate("Clientes")
+
+        start_whatsapp_session_services()
 
     def start():
         main_container.content = login_view(page, on_login_success=on_login_success)
