@@ -1875,15 +1875,31 @@ def main():
                 connector.safe_execute("docs", lambda: upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir))
 
         elif cmd in ("q", "quit", "exit", "salir"):
-            print("Cerrando presentación asistida...")
-            write_log(session_dir, "Cerrando presentación asistida")
-            try:
-                if hasattr(browser, "quit"):
-                    browser.quit()
-                elif hasattr(browser, "close"):
-                    browser.close()
-            except Exception:
-                pass
+            print(
+                "Cerrando presentación asistida..."
+            )
+
+            write_log(
+                session_dir,
+                "Cerrando presentación asistida",
+            )
+
+            closed = (
+                connector.close_browser()
+            )
+
+            if not closed:
+                print(
+                    "AVISO: no se pudo confirmar "
+                    "el cierre gobernado de Chrome."
+                )
+
+                write_log(
+                    session_dir,
+                    "Cierre gobernado incompleto; "
+                    "el connector conserva ownership",
+                )
+
             break
 
         else:
