@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from backend.automation.browser_contracts import (
@@ -6,6 +7,7 @@ from backend.automation.browser_contracts import (
     BrowserSessionLifecycleError,
     BrowserSessionMode,
     BrowserSessionState,
+    BrowserShutdownMode,
 )
 from backend.automation.seleniumbase_browser_session import (
     SeleniumBaseBrowserSession,
@@ -14,6 +16,145 @@ from backend.automation.seleniumbase_browser_session import (
 
 class FakeBrowser:
     pass
+
+
+class FakeWebSocket:
+    def __init__(
+        self,
+        loop,
+    ):
+        self.loop = loop
+
+
+class FakeConnection:
+    def __init__(
+        self,
+        loop,
+    ):
+        self.websocket = (
+            FakeWebSocket(
+                loop
+            )
+        )
+
+        self.closed = False
+        self.close_loop = None
+
+    async def aclose(
+        self,
+    ):
+        self.close_loop = (
+            asyncio.get_running_loop()
+        )
+
+        self.closed = True
+
+
+class FakeProcessTransport:
+    def __init__(
+        self,
+        loop,
+    ):
+        self._loop = loop
+
+
+class FakeProcess:
+    def __init__(
+        self,
+        loop,
+    ):
+        self._transport = (
+            FakeProcessTransport(
+                loop
+            )
+        )
+
+        self.pid = 12345
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+        self.wait_loop = None
+
+    def terminate(
+        self,
+    ):
+        self.terminated = True
+
+    def kill(
+        self,
+    ):
+        self.killed = True
+
+    async def wait(
+        self,
+    ):
+        self.wait_loop = (
+            asyncio.get_running_loop()
+        )
+
+        self.returncode = 1
+
+        return self.returncode
+
+
+class FakeDriver:
+    def __init__(
+        self,
+        root_loop,
+        page,
+    ):
+        self.connection = (
+            FakeConnection(
+                root_loop
+            )
+        )
+
+        self._process = (
+            FakeProcess(
+                root_loop
+            )
+        )
+
+        self.page = page
+        self.main_tab = page
+        self.targets = [
+            page,
+        ]
+        self.tabs = [
+            page,
+        ]
+
+
+class GovernedFakeBrowser:
+    def __init__(
+        self,
+    ):
+        self.root_loop = (
+            asyncio.new_event_loop()
+        )
+
+        self.wrapper_loop = (
+            asyncio.new_event_loop()
+        )
+
+        self.page = FakeConnection(
+            self.wrapper_loop
+        )
+
+        self.driver = FakeDriver(
+            self.root_loop,
+            self.page,
+        )
+
+    def dispose_test_loops(
+        self,
+    ):
+        for loop in (
+            self.wrapper_loop,
+            self.root_loop,
+        ):
+            if not loop.is_closed():
+                loop.close()
 
 
 class FactoryProbe:
@@ -425,6 +566,217 @@ def test_failed_session_does_not_restart_implicitly():
     assert len(factory.calls) == 1
 
 
+def test_shutdown_close_uses_resource_owner_loops():
+    browser = GovernedFakeBrowser()
+
+    factory = FactoryProbe(
+        result=browser,
+    )
+
+    session = make_session(
+        factory=factory,
+    )
+
+    try:
+        assert (
+            session.start()
+            is browser
+        )
+
+        result = session.shutdown(
+            BrowserShutdownMode.CLOSE
+        )
+
+        assert result.has_error is False
+
+        assert (
+            result.mode
+            == BrowserShutdownMode.CLOSE
+        )
+
+        assert (
+            result.state_before
+            == BrowserSessionState.READY
+        )
+
+        assert (
+            result.state_after
+            == BrowserSessionState.CLOSED
+        )
+
+        assert result.control_released is True
+        assert result.browser_closed is True
+        assert result.process_terminated is True
+
+        assert browser.page.closed is True
+
+        assert (
+            browser.page.close_loop
+            is browser.wrapper_loop
+        )
+
+        assert (
+            browser.driver.connection.closed
+            is True
+        )
+
+        assert (
+            browser.driver.connection.close_loop
+            is browser.root_loop
+        )
+
+        assert (
+            browser.driver._process.terminated
+            is True
+        )
+
+        assert (
+            browser.driver._process.wait_loop
+            is browser.root_loop
+        )
+
+        assert (
+            session.state
+            == BrowserSessionState.CLOSED
+        )
+
+        assert session.browser is None
+
+        health = session.health()
+
+        assert (
+            health.state
+            == BrowserSessionState.CLOSED
+        )
+
+        assert (
+            health.browser_available
+            is False
+        )
+
+        assert (
+            health.control_available
+            is False
+        )
+
+    finally:
+        browser.dispose_test_loops()
+
+
+def test_shutdown_close_records_transitions():
+    browser = GovernedFakeBrowser()
+
+    session = make_session(
+        factory=FactoryProbe(
+            result=browser,
+        )
+    )
+
+    try:
+        session.start()
+
+        session.shutdown()
+
+        transitions = (
+            session.transition_history
+        )
+
+        assert [
+            transition.current_state
+            for transition in transitions
+        ] == [
+            BrowserSessionState.STARTING,
+            BrowserSessionState.READY,
+            BrowserSessionState.STOPPING,
+            BrowserSessionState.CLOSED,
+        ]
+
+        assert (
+            transitions[-2].reason
+            == "shutdown_requested"
+        )
+
+        assert (
+            transitions[-1].reason
+            == "shutdown_completed"
+        )
+
+    finally:
+        browser.dispose_test_loops()
+
+
+def test_shutdown_close_is_idempotent():
+    browser = GovernedFakeBrowser()
+
+    session = make_session(
+        factory=FactoryProbe(
+            result=browser,
+        )
+    )
+
+    try:
+        session.start()
+
+        first = session.shutdown()
+        second = session.shutdown()
+
+        assert second is first
+
+        assert (
+            session.state
+            == BrowserSessionState.CLOSED
+        )
+
+        assert len(
+            session.transition_history
+        ) == 4
+
+    finally:
+        browser.dispose_test_loops()
+
+
+def test_shutdown_without_start_closes_logically():
+    session = make_session()
+
+    result = session.shutdown()
+
+    assert (
+        result.state_before
+        == BrowserSessionState.CREATED
+    )
+
+    assert (
+        result.state_after
+        == BrowserSessionState.CLOSED
+    )
+
+    assert (
+        session.state
+        == BrowserSessionState.CLOSED
+    )
+
+    assert session.browser is None
+
+
+def test_shutdown_rejects_unimplemented_modes():
+    session = make_session()
+
+    for mode in (
+        BrowserShutdownMode.DETACH,
+        BrowserShutdownMode.KILL,
+    ):
+        try:
+            session.shutdown(
+                mode
+            )
+        except BrowserSessionLifecycleError:
+            pass
+        else:
+            raise AssertionError(
+                f"{mode.value} debería rechazarse todavía"
+            )
+
+
 def test_session_adapter_has_no_provider_dependency():
     path = (
         Path(__file__)
@@ -463,6 +815,11 @@ TESTS = (
     test_factory_failure_marks_failed,
     test_factory_returning_none_is_failure,
     test_failed_session_does_not_restart_implicitly,
+    test_shutdown_close_uses_resource_owner_loops,
+    test_shutdown_close_records_transitions,
+    test_shutdown_close_is_idempotent,
+    test_shutdown_without_start_closes_logically,
+    test_shutdown_rejects_unimplemented_modes,
     test_session_adapter_has_no_provider_dependency,
 )
 

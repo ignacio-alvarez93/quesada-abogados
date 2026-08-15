@@ -22,6 +22,7 @@ Deliberadamente NO implementa todavía:
 No contiene lógica específica de WhatsApp, Mercurio ni DEHú.
 """
 
+import asyncio
 from uuid import uuid4
 
 from backend.automation.browser_contracts import (
@@ -33,6 +34,8 @@ from backend.automation.browser_contracts import (
     BrowserSessionSnapshot,
     BrowserSessionState,
     BrowserSessionTransition,
+    BrowserShutdownMode,
+    BrowserShutdownResult,
 )
 from backend.automation.browser_session import (
     start_seleniumbase_chrome,
@@ -133,6 +136,8 @@ class SeleniumBaseBrowserSession:
         )
 
         self._last_error = ""
+
+        self._last_shutdown_result = None
 
         self._transition_history = []
 
@@ -335,6 +340,555 @@ class SeleniumBaseBrowserSession:
         )
 
         return self._browser
+
+    @staticmethod
+    def _normalize_shutdown_mode(
+        mode,
+    ):
+        if isinstance(
+            mode,
+            BrowserShutdownMode,
+        ):
+            return mode
+
+        try:
+            return BrowserShutdownMode(
+                str(
+                    mode
+                    or ""
+                )
+                .strip()
+                .upper()
+            )
+        except ValueError as exc:
+            raise BrowserSessionConfigurationError(
+                f"shutdown mode inválido: {mode!r}"
+            ) from exc
+
+    @staticmethod
+    def _connection_owner_loop(
+        connection,
+    ):
+        if connection is None:
+            return None
+
+        websocket = getattr(
+            connection,
+            "websocket",
+            None,
+        )
+
+        if websocket is None:
+            return None
+
+        return getattr(
+            websocket,
+            "loop",
+            None,
+        )
+
+    @staticmethod
+    def _connection_is_opened(
+        connection,
+    ):
+        return (
+            connection is not None
+            and getattr(
+                connection,
+                "websocket",
+                None,
+            )
+            is not None
+        )
+
+    @staticmethod
+    def _collect_child_connections(
+        browser,
+        driver,
+    ):
+        """
+        Devuelve conexiones de página/tab deduplicadas.
+
+        La conexión browser-level ``driver.connection`` se
+        gestiona separadamente y siempre se cierra al final.
+        """
+
+        root_connection = getattr(
+            driver,
+            "connection",
+            None,
+        )
+
+        candidates = []
+
+        def add(
+            value,
+        ):
+            if value is not None:
+                candidates.append(
+                    value
+                )
+
+        add(
+            getattr(
+                browser,
+                "page",
+                None,
+            )
+        )
+
+        add(
+            getattr(
+                driver,
+                "page",
+                None,
+            )
+        )
+
+        add(
+            getattr(
+                driver,
+                "main_tab",
+                None,
+            )
+        )
+
+        try:
+            targets = list(
+                getattr(
+                    driver,
+                    "targets",
+                    (),
+                )
+                or ()
+            )
+        except Exception:
+            targets = []
+
+        for target in targets:
+            add(
+                target
+            )
+
+        try:
+            tabs = list(
+                getattr(
+                    driver,
+                    "tabs",
+                    (),
+                )
+                or ()
+            )
+        except Exception:
+            tabs = []
+
+        for tab in tabs:
+            add(
+                tab
+            )
+
+        unique = []
+        seen = set()
+
+        for connection in candidates:
+            if (
+                connection
+                is root_connection
+            ):
+                continue
+
+            identifier = id(
+                connection
+            )
+
+            if identifier in seen:
+                continue
+
+            seen.add(
+                identifier
+            )
+
+            unique.append(
+                connection
+            )
+
+        return tuple(
+            unique
+        )
+
+    @classmethod
+    def _close_connection_on_owner(
+        cls,
+        connection,
+    ):
+        """
+        Cierra una Connection/Tab en el loop propietario
+        de su WebSocket.
+
+        Esta secuencia evita ejecutar ``aclose()`` desde
+        un event loop ajeno al recurso.
+        """
+
+        if not cls._connection_is_opened(
+            connection
+        ):
+            return False
+
+        owner = (
+            cls._connection_owner_loop(
+                connection
+            )
+        )
+
+        if owner is None:
+            raise BrowserSessionLifecycleError(
+                "No se pudo resolver el owner loop "
+                "de una conexión CDP abierta"
+            )
+
+        if owner.is_closed():
+            raise BrowserSessionLifecycleError(
+                "El owner loop de la conexión CDP "
+                "ya está cerrado"
+            )
+
+        owner.run_until_complete(
+            connection.aclose()
+        )
+
+        # Permitir que cancelaciones y callbacks derivados
+        # del cierre se liquiden sobre el mismo owner.
+        owner.run_until_complete(
+            asyncio.sleep(
+                0.05
+            )
+        )
+
+        return True
+
+    @staticmethod
+    def _process_owner_loop(
+        process,
+    ):
+        if process is None:
+            return None
+
+        transport = getattr(
+            process,
+            "_transport",
+            None,
+        )
+
+        return getattr(
+            transport,
+            "_loop",
+            None,
+        )
+
+    @classmethod
+    def _terminate_process_on_owner(
+        cls,
+        process,
+        *,
+        timeout=5.0,
+    ):
+        """
+        Termina y espera al asyncio.subprocess.Process
+        utilizando el loop donde fue creado.
+        """
+
+        if process is None:
+            return None
+
+        owner = (
+            cls._process_owner_loop(
+                process
+            )
+        )
+
+        if owner is None:
+            raise BrowserSessionLifecycleError(
+                "No se pudo resolver el owner loop "
+                "del proceso Chrome"
+            )
+
+        if owner.is_closed():
+            raise BrowserSessionLifecycleError(
+                "El owner loop del proceso Chrome "
+                "ya está cerrado"
+            )
+
+        async def terminate_and_wait():
+            if (
+                process.returncode
+                is None
+            ):
+                process.terminate()
+
+            try:
+                return await asyncio.wait_for(
+                    process.wait(),
+                    timeout=timeout,
+                )
+
+            except asyncio.TimeoutError:
+                process.kill()
+
+                return await asyncio.wait_for(
+                    process.wait(),
+                    timeout=timeout,
+                )
+
+        return owner.run_until_complete(
+            terminate_and_wait()
+        )
+
+    def shutdown(
+        self,
+        mode=BrowserShutdownMode.CLOSE,
+    ):
+        """
+        Finaliza de forma gobernada la sesión.
+
+        En esta fase únicamente se implementa CLOSE.
+
+        Orden probado para sb_cdp.Chrome:
+
+        1. cerrar conexiones Page/Tab en su owner loop;
+        2. cerrar driver.connection en su owner loop;
+        3. terminar Chrome y esperar process.wait()
+           en el owner loop del subprocess;
+        4. liberar la referencia browser;
+        5. marcar la sesión CLOSED.
+
+        Deliberadamente NO utiliza ``driver.stop()``.
+        """
+
+        mode = (
+            self._normalize_shutdown_mode(
+                mode
+            )
+        )
+
+        if (
+            mode
+            != BrowserShutdownMode.CLOSE
+        ):
+            raise BrowserSessionLifecycleError(
+                "Solo BrowserShutdownMode.CLOSE "
+                "está implementado actualmente"
+            )
+
+        if (
+            self._state
+            == BrowserSessionState.CLOSED
+        ):
+            if (
+                self._last_shutdown_result
+                is not None
+            ):
+                return (
+                    self._last_shutdown_result
+                )
+
+            return BrowserShutdownResult(
+                mode=mode,
+                state_before=(
+                    BrowserSessionState.CLOSED
+                ),
+                state_after=(
+                    BrowserSessionState.CLOSED
+                ),
+                control_released=True,
+                browser_closed=True,
+                process_terminated=True,
+            )
+
+        state_before = (
+            self._state
+        )
+
+        # Una sesión nunca arrancada puede cerrarse
+        # limpiamente sin tocar SeleniumBase.
+        if (
+            self._state
+            == BrowserSessionState.CREATED
+            and self._browser is None
+        ):
+            self._transition(
+                BrowserSessionState.CLOSED,
+                reason="shutdown_without_start",
+            )
+
+            result = BrowserShutdownResult(
+                mode=mode,
+                state_before=state_before,
+                state_after=(
+                    BrowserSessionState.CLOSED
+                ),
+                control_released=True,
+                browser_closed=True,
+                process_terminated=True,
+            )
+
+            self._last_shutdown_result = (
+                result
+            )
+
+            return result
+
+        if (
+            self._state
+            != BrowserSessionState.READY
+        ):
+            raise BrowserSessionLifecycleError(
+                "No se puede cerrar una sesión "
+                f"desde estado {self._state.value}"
+            )
+
+        browser = (
+            self._browser
+        )
+
+        if browser is None:
+            raise BrowserSessionLifecycleError(
+                "Sesión READY sin browser asociado"
+            )
+
+        self._transition(
+            BrowserSessionState.STOPPING,
+            reason="shutdown_requested",
+        )
+
+        try:
+            driver = getattr(
+                browser,
+                "driver",
+                None,
+            )
+
+            if driver is None:
+                raise BrowserSessionLifecycleError(
+                    "El wrapper no expone driver"
+                )
+
+            root_connection = getattr(
+                driver,
+                "connection",
+                None,
+            )
+
+            child_connections = (
+                self._collect_child_connections(
+                    browser,
+                    driver,
+                )
+            )
+
+            for connection in child_connections:
+                if not self._connection_is_opened(
+                    connection
+                ):
+                    continue
+
+                self._close_connection_on_owner(
+                    connection
+                )
+
+            if self._connection_is_opened(
+                root_connection
+            ):
+                self._close_connection_on_owner(
+                    root_connection
+                )
+
+            process = getattr(
+                driver,
+                "_process",
+                None,
+            )
+
+            process_code = (
+                self._terminate_process_on_owner(
+                    process
+                )
+                if process is not None
+                else None
+            )
+
+        except Exception as exc:
+            self._last_error = (
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            self._transition(
+                BrowserSessionState.FAILED,
+                reason="shutdown_failed",
+                detail=self._last_error,
+            )
+
+            result = BrowserShutdownResult(
+                mode=mode,
+                state_before=state_before,
+                state_after=(
+                    BrowserSessionState.FAILED
+                ),
+                control_released=False,
+                browser_closed=None,
+                process_terminated=None,
+                error=self._last_error,
+            )
+
+            self._last_shutdown_result = (
+                result
+            )
+
+            return result
+
+        self._browser = None
+        self._last_error = ""
+
+        self._transition(
+            BrowserSessionState.CLOSED,
+            reason="shutdown_completed",
+            detail=(
+                ""
+                if process_code is None
+                else (
+                    "Chrome process returncode="
+                    f"{process_code}"
+                )
+            ),
+        )
+
+        result = BrowserShutdownResult(
+            mode=mode,
+            state_before=state_before,
+            state_after=(
+                BrowserSessionState.CLOSED
+            ),
+            control_released=True,
+            browser_closed=True,
+            process_terminated=(
+                True
+                if process is not None
+                else None
+            ),
+            detail=(
+                ""
+                if process_code is None
+                else (
+                    "Chrome process returncode="
+                    f"{process_code}"
+                )
+            ),
+        )
+
+        self._last_shutdown_result = (
+            result
+        )
+
+        return result
 
     def health(
         self,
