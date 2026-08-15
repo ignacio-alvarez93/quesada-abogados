@@ -1,4 +1,3 @@
-import atexit
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -163,9 +162,9 @@ def main(page: ft.Page):
         """
         Cierre idempotente del runtime global WhatsApp.
 
-        Hoy se registra también mediante atexit.
-        En el futuro podrá reutilizarse desde logout o
-        lifecycle explícito de la ventana.
+        Se ejecuta desde el lifecycle explícito de Flet,
+        antes de que Python comience a desmontar executors
+        y otros recursos globales.
         """
         if whatsapp_runtime_closed[
             "value"
@@ -192,9 +191,20 @@ def main(page: ft.Page):
             return False
 
 
-    atexit.register(
-        close_whatsapp_session_services
-    )
+    def on_page_close(
+        e=None,
+    ):
+        """
+        Finaliza WhatsApp antes de que termine la sesión Flet.
+
+        El helper es idempotente, por lo que futuros caminos
+        explícitos de logout podrán reutilizarlo sin duplicar
+        el cierre del runtime.
+        """
+        return close_whatsapp_session_services()
+
+
+    page.on_close = on_page_close
 
 
     def return_to_context(

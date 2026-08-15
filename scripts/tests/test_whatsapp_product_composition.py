@@ -160,21 +160,45 @@ class WhatsAppProductCompositionTest(
         )
 
 
-    def test_process_exit_closes_whatsapp_runtime(
+    def test_page_close_closes_whatsapp_runtime(
         self,
     ):
-        self.assertIn(
+        self.assertNotIn(
+            "import atexit",
+            self.app_source,
+        )
+
+        self.assertNotIn(
             "atexit.register(",
             self.app_source,
         )
 
         self.assertIn(
-            "close_whatsapp_session_services",
+            "def on_page_close(",
+            self.app_source,
+        )
+
+        self.assertIn(
+            "page.on_close = on_page_close",
+            self.app_source,
+        )
+
+        self.assertIn(
+            "close_whatsapp_session_services()",
             self.app_source,
         )
 
         self.assertIn(
             "whatsapp_runtime.close()",
+            self.app_source,
+        )
+
+
+    def test_page_disconnect_does_not_close_runtime_implicitly(
+        self,
+    ):
+        self.assertNotIn(
+            "page.on_disconnect =",
             self.app_source,
         )
 
