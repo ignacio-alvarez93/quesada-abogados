@@ -11,6 +11,7 @@ Esta primera versión es exclusivamente exploratoria:
 
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from backend.automation.automation_artifacts import (
     save_page_source,
@@ -36,6 +37,80 @@ from backend.automation.automation_logger import (
 
 
 DEHU_URL = "https://dehu.redsara.es/"
+
+
+def normalize_dehu_portal_url(
+    url=None,
+):
+    """
+    Valida un destino que vaya a abrirse dentro del
+    Chrome autenticado de DEHú.
+
+    Solo se admite HTTPS contra el host oficial DEHú.
+    """
+
+    raw = str(
+        url
+        or DEHU_URL
+    ).strip()
+
+    if not raw:
+        raw = DEHU_URL
+
+    try:
+        parsed = urlsplit(
+            raw
+        )
+    except Exception as exc:
+        raise ValueError(
+            "URL DEHú inválida"
+        ) from exc
+
+    if (
+        parsed.scheme.lower()
+        != "https"
+    ):
+        raise ValueError(
+            "DEHú solo admite URLs HTTPS"
+        )
+
+    hostname = str(
+        parsed.hostname
+        or ""
+    ).strip().lower()
+
+    if (
+        hostname
+        != "dehu.redsara.es"
+    ):
+        raise ValueError(
+            "La URL no pertenece al dominio DEHú"
+        )
+
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError(
+            "La URL DEHú no puede contener credenciales"
+        )
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(
+            "Puerto inválido en URL DEHú"
+        ) from exc
+
+    if port not in (
+        None,
+        443,
+    ):
+        raise ValueError(
+            "Puerto no permitido para DEHú"
+        )
+
+    return raw
 
 
 def get_dehu_profile_dir(
@@ -185,17 +260,43 @@ class DehuConnector:
             session.start()
         )
 
+        self.open_portal(
+            DEHU_URL
+        )
+
+        return self.browser
+
+    def open_portal(
+        self,
+        url=None,
+    ):
+        """
+        Navega únicamente a destinos pertenecientes
+        al portal oficial DEHú.
+        """
+
+        if not self.browser:
+            raise RuntimeError(
+                "El navegador DEHú no está iniciado"
+            )
+
+        target = (
+            normalize_dehu_portal_url(
+                url
+            )
+        )
+
         open_url(
             self.browser,
-            DEHU_URL,
+            target,
         )
 
         write_log(
             self.session_dir,
-            f"DEHú: abierta URL {DEHU_URL}",
+            f"DEHú: abierta URL {target}",
         )
 
-        return self.browser
+        return target
 
     def capture(self, label):
         if not self.browser:
