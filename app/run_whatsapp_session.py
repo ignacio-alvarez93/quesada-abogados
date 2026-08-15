@@ -62,8 +62,8 @@ def main():
     )
     print()
     print(
-        "PROFILE:",
-        connector.profile_dir,
+        "PROFILE KEY:",
+        connector.profile_key,
     )
     print()
 

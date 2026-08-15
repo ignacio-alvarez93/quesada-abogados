@@ -28,9 +28,16 @@ import mycdp.input_ as cdp_input
 from backend.automation.browser_actions import (
     open_url,
 )
+from backend.automation.browser_contracts import (
+    BrowserSessionConfig,
+    BrowserSessionMode,
+    BrowserShutdownMode,
+)
 from backend.automation.browser_session import (
     get_project_root,
-    start_seleniumbase_chrome,
+)
+from backend.automation.seleniumbase_browser_session import (
+    SeleniumBaseBrowserSession,
 )
 from backend.communications.phone_normalization import (
     normalize_phone,
@@ -634,32 +641,71 @@ class WhatsAppConnector:
         *,
         profile_key="whatsapp_dev",
         headless=False,
+        browser_session_factory=None,
     ):
         self.profile_key = str(
             profile_key
             or "whatsapp_dev"
         ).strip()
 
-        self.profile_dir = (
-            get_whatsapp_profile_dir(
-                self.profile_key
-            )
-        )
-
         self.headless = bool(
             headless
         )
 
+        self._browser_session_factory = (
+            browser_session_factory
+            or SeleniumBaseBrowserSession
+        )
+
+        if not callable(
+            self._browser_session_factory
+        ):
+            raise TypeError(
+                "browser_session_factory debe ser callable"
+            )
+
+        # BrowserSession es propietaria del lifecycle técnico.
+        #
+        # ``browser`` se conserva como superficie autorizada
+        # del connector para no alterar la semántica WhatsApp
+        # ya existente ni sus adapters CDP especializados.
+        self._browser_session = None
         self.browser = None
 
-    def start(self):
-        self.browser = (
-            start_seleniumbase_chrome(
-                headless=self.headless,
-                user_data_dir=(
-                    self.profile_dir
+    def _build_browser_session(
+        self,
+    ):
+        if (
+            self._browser_session
+            is None
+        ):
+            config = BrowserSessionConfig(
+                consumer="whatsapp",
+                mode=(
+                    BrowserSessionMode.PERSISTENT
                 ),
+                headless=self.headless,
+                profile_key=self.profile_key,
             )
+
+            self._browser_session = (
+                self._browser_session_factory(
+                    config=config,
+                    profile_resolver=(
+                        get_whatsapp_profile_dir
+                    ),
+                )
+            )
+
+        return self._browser_session
+
+    def start(self):
+        session = (
+            self._build_browser_session()
+        )
+
+        self.browser = (
+            session.start()
         )
 
         open_url(
@@ -6366,33 +6412,43 @@ class WhatsAppConnector:
         )
 
     def close(self):
-        """Finaliza únicamente el navegador de esta sesión WhatsApp.
+        """Finaliza la sesión WhatsApp únicamente si es propia.
 
-        El wrapper sb_cdp.Chrome de la versión instalada no expone quit(),
-        pero su driver interno sí dispone de stop()/quit(). Se utiliza
-        driver.stop() para cerrar limpiamente el proceso Chrome y la conexión
-        CDP, sin modificar el comportamiento de Mercurio ni DEHú.
+        El lifecycle físico pertenece a
+        ``SeleniumBaseBrowserSession``.
+
+        Un browser inyectado externamente sin BrowserSession
+        asociada no se destruye: el connector no puede asumir
+        ownership de un recurso que no creó.
+
+        Deliberadamente NO utiliza ``driver.stop()``.
         """
-        if not self.browser:
-            return False
 
-        driver = getattr(
-            self.browser,
-            "driver",
-            None,
+        session = (
+            self._browser_session
         )
 
-        stop = getattr(
-            driver,
-            "stop",
-            None,
-        )
-
-        if not callable(stop):
+        if session is None:
             return False
 
         try:
-            stop()
-            return True
+            result = session.shutdown(
+                BrowserShutdownMode.CLOSE
+            )
         except Exception:
             return False
+
+        successful = bool(
+            result is not None
+            and not result.has_error
+            and result.control_released
+            is True
+            and result.browser_closed
+            is True
+        )
+
+        if successful:
+            self.browser = None
+            self._browser_session = None
+
+        return successful
