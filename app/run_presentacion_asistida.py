@@ -1744,7 +1744,9 @@ def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
         click_continuar_presentador(browser, session_dir)
         pause_humana_final_presentacion(browser, session_dir)
 
-def main():
+def main(
+    lifecycle=None,
+):
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
     parser.add_argument("--expediente-id", default="")
@@ -1789,8 +1791,25 @@ def main():
         f"Formulario objetivo={describe_tipo_formulario_objetivo(tipo_formulario_objetivo)}. "
         f"Mapper interno={describe_mapper_codigo(mapper_codigo)}"
     )
-    connector = MercurioConnector(session_dir=session_dir, expediente_id=args.expediente_id, headless=False)
-    browser = connector.start_browser(url)
+    connector = MercurioConnector(
+        session_dir=session_dir,
+        expediente_id=args.expediente_id,
+        headless=False,
+    )
+
+    # Registrar ownership ANTES de start_browser().
+    #
+    # Si BrowserSession alcanza READY pero open_url() falla,
+    # el finalizador superior todavía conoce el connector
+    # que debe ejecutar el shutdown gobernado.
+    if lifecycle is not None:
+        lifecycle[
+            "connector"
+        ] = connector
+
+    browser = connector.start_browser(
+        url
+    )
 
     if args.auto:
         connector.safe_execute('auto inicial', lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir))
@@ -1888,7 +1907,13 @@ def main():
                 connector.close_browser()
             )
 
-            if not closed:
+            if closed:
+                if lifecycle is not None:
+                    lifecycle[
+                        "connector"
+                    ] = None
+
+            else:
                 print(
                     "AVISO: no se pudo confirmar "
                     "el cierre gobernado de Chrome."
@@ -1907,4 +1932,45 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    lifecycle = {}
+
+    try:
+        main(
+            lifecycle=lifecycle,
+        )
+
+    finally:
+        # Toda salida Python ordinaria debe ofrecer al owner
+        # la oportunidad de cerrar BrowserSession.
+        #
+        # Incluye:
+        # - excepciones no capturadas;
+        # - KeyboardInterrupt;
+        # - EOFError;
+        # - fallo posterior a BrowserSession.start().
+        connector = lifecycle.get(
+            "connector"
+        )
+
+        if connector is not None:
+            try:
+                closed = (
+                    connector.close_browser()
+                )
+
+            except Exception as exc:
+                closed = False
+
+                print(
+                    "ERROR durante cierre final "
+                    "de presentación asistida:",
+                    repr(
+                        exc
+                    ),
+                )
+
+            if not closed:
+                print(
+                    "AVISO: el cierre final gobernado "
+                    "de Chrome no pudo confirmarse."
+                )

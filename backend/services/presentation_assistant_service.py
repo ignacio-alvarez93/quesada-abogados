@@ -187,9 +187,27 @@ def start_presentation_for_expediente(expediente):
 
 
 def close_presentation(context):
-    if not context:
-        return
+    """
+    Comprueba si el runner externo ya ha terminado.
 
-    process = context.get("process")
-    if process and process.poll() is None:
-        process.terminate()
+    El proceso padre no fuerza ``terminate()`` sobre el runner
+    porque éste es el owner de MercurioConnector/BrowserSession.
+
+    Mientras no exista un protocolo explícito de cierre amable,
+    un runner vivo debe finalizar desde su propio lifecycle.
+    """
+
+    if not context:
+        return False
+
+    process = context.get(
+        "process"
+    )
+
+    if process is None:
+        return False
+
+    return (
+        process.poll()
+        is not None
+    )
