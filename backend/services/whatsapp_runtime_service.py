@@ -166,6 +166,24 @@ class WhatsAppRuntimeService:
         self._verified_send_phone = None
         self._verified_send_identity = None
 
+        # Watcher realtime de llamadas WhatsApp.
+        #
+        # Este hilo supervisor NO toca Selenium/CDP:
+        # únicamente llama observe_and_sync_call(), cuya
+        # implementación entra en el worker serializado.
+        #
+        # Es independiente del watcher del chat activo porque
+        # una llamada puede existir aunque no haya chat abierto
+        # ni vista Comunicaciones visible.
+        self._call_watch_thread = None
+        self._call_watch_stop = None
+        self._call_watch_lock = threading.Lock()
+        self._call_watch_on_change = None
+
+        # Diagnóstico del watcher de llamadas.
+        self._call_watch_last_error = None
+        self._call_watch_last_result = None
+
         # Watcher ligero del chat activo.
         #
         # Este hilo NO toca SeleniumBase/CDP directamente:
@@ -1338,6 +1356,299 @@ class WhatsAppRuntimeService:
         )
 
 
+    def set_call_watch_callback(
+        self,
+        on_change,
+    ):
+        if (
+            on_change is not None
+            and not callable(
+                on_change
+            )
+        ):
+            raise TypeError(
+                "on_change debe ser callable o None"
+            )
+
+        with self._call_watch_lock:
+            self._call_watch_on_change = (
+                on_change
+            )
+
+        return True
+
+
+    @property
+    def call_watch_last_error(
+        self,
+    ):
+        with self._call_watch_lock:
+            return (
+                self._call_watch_last_error
+            )
+
+
+    @property
+    def call_watch_last_result(
+        self,
+    ):
+        with self._call_watch_lock:
+            return (
+                self._call_watch_last_result
+            )
+
+
+    @property
+    def call_watch_running(
+        self,
+    ):
+        with self._call_watch_lock:
+            thread = (
+                self._call_watch_thread
+            )
+
+            return bool(
+                thread
+                and thread.is_alive()
+            )
+
+
+    def _call_watch_loop(
+        self,
+        *,
+        stop_event,
+        interval_seconds,
+        wait_timeout,
+    ):
+        """
+        Supervisor realtime de llamadas.
+
+        Nunca toca connector/browser directamente.
+        Toda lectura WhatsApp pasa por
+        observe_and_sync_call() -> _run_serialized().
+        """
+        while not stop_event.is_set():
+            try:
+                result = (
+                    self.observe_and_sync_call(
+                        wait_timeout=(
+                            wait_timeout
+                        ),
+                    )
+                )
+
+                with self._call_watch_lock:
+                    self._call_watch_last_result = (
+                        result
+                    )
+
+                    on_change = (
+                        self._call_watch_on_change
+                    )
+
+                observation = getattr(
+                    result,
+                    "observation",
+                    None,
+                )
+
+                changed = bool(
+                    getattr(
+                        observation,
+                        "changed",
+                        False,
+                    )
+                )
+
+                if (
+                    changed
+                    and callable(
+                        on_change
+                    )
+                ):
+                    try:
+                        on_change(
+                            result
+                        )
+
+                    except Exception as exc:
+                        # El consumidor jamás puede matar
+                        # la vigilancia del transporte.
+                        with self._call_watch_lock:
+                            self._call_watch_last_error = {
+                                "timestamp":
+                                    time.time(),
+                                "stage":
+                                    "CALLBACK",
+                                "reason":
+                                    "CALLBACK_ERROR",
+                                "error_type":
+                                    type(
+                                        exc
+                                    ).__name__,
+                                "message":
+                                    str(
+                                        exc
+                                    ),
+                            }
+
+            except Exception as exc:
+                # Un fallo transitorio de WhatsApp,
+                # Selenium o persistencia no mata el watcher.
+                with self._call_watch_lock:
+                    self._call_watch_last_error = {
+                        "timestamp":
+                            time.time(),
+                        "stage":
+                            "WATCH",
+                        "reason":
+                            "WATCH_ERROR",
+                        "error_type":
+                            type(
+                                exc
+                            ).__name__,
+                        "message":
+                            str(
+                                exc
+                            ),
+                    }
+
+            # Despertar inmediato cuando se solicita stop.
+            if stop_event.wait(
+                interval_seconds
+            ):
+                break
+
+
+    def start_call_watch(
+        self,
+        *,
+        interval_seconds=0.25,
+        wait_timeout=5,
+        on_change=None,
+    ):
+        if (
+            on_change is not None
+            and not callable(
+                on_change
+            )
+        ):
+            raise TypeError(
+                "on_change debe ser callable o None"
+            )
+
+        interval = max(
+            0.05,
+            float(
+                interval_seconds
+            ),
+        )
+
+        effective_wait_timeout = max(
+            1,
+            float(
+                wait_timeout
+            ),
+        )
+
+        with self._call_watch_lock:
+            self._call_watch_on_change = (
+                on_change
+            )
+
+            current = (
+                self._call_watch_thread
+            )
+
+            if (
+                current is not None
+                and current.is_alive()
+            ):
+                return current
+
+            stop_event = (
+                threading.Event()
+            )
+
+            self._call_watch_last_error = None
+            self._call_watch_last_result = None
+
+            thread = threading.Thread(
+                target=(
+                    self._call_watch_loop
+                ),
+                kwargs={
+                    "stop_event":
+                        stop_event,
+                    "interval_seconds":
+                        interval,
+                    "wait_timeout":
+                        effective_wait_timeout,
+                },
+                name=(
+                    "whatsapp-call-watch"
+                ),
+                daemon=True,
+            )
+
+            self._call_watch_stop = (
+                stop_event
+            )
+
+            self._call_watch_thread = (
+                thread
+            )
+
+            thread.start()
+
+            return thread
+
+
+    def stop_call_watch(
+        self,
+        *,
+        join_timeout=5,
+    ):
+        with self._call_watch_lock:
+            thread = (
+                self._call_watch_thread
+            )
+
+            stop_event = (
+                self._call_watch_stop
+            )
+
+        if stop_event is not None:
+            stop_event.set()
+
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread
+            is not threading.current_thread()
+        ):
+            thread.join(
+                timeout=max(
+                    0,
+                    float(
+                        join_timeout
+                    ),
+                )
+            )
+
+        with self._call_watch_lock:
+            if (
+                self._call_watch_thread
+                is thread
+            ):
+                self._call_watch_thread = None
+                self._call_watch_stop = None
+
+        return bool(
+            thread is not None
+        )
+
+
     def _observe_active_chat_impl(
         self,
         *,
@@ -2339,6 +2650,7 @@ class WhatsAppRuntimeService:
         # connector y executor. Si una observación estaba en
         # curso, la serialización garantiza que termine antes
         # de que _close_impl use el mismo worker.
+        self.stop_call_watch()
         self.stop_active_chat_watch()
 
         result = self._run_serialized(
