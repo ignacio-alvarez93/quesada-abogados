@@ -12,7 +12,9 @@ from backend.automation.browser_contracts import (
     BrowserSessionMode,
     BrowserSessionSnapshot,
     BrowserSessionState,
+    BrowserSessionTransition,
     BrowserShutdownMode,
+    BrowserShutdownResult,
 )
 
 
@@ -262,6 +264,125 @@ def test_snapshot_rejects_invalid_contracts():
     )
 
 
+def test_transition_contract():
+    transition = BrowserSessionTransition(
+        previous_state="created",
+        current_state="starting",
+        reason="start_requested",
+        detail="Inicio solicitado",
+    )
+
+    assert (
+        transition.previous_state
+        == BrowserSessionState.CREATED
+    )
+
+    assert (
+        transition.current_state
+        == BrowserSessionState.STARTING
+    )
+
+    assert transition.reason == "start_requested"
+    assert transition.detail == "Inicio solicitado"
+
+
+def test_transition_rejects_same_state():
+    try:
+        BrowserSessionTransition(
+            previous_state=BrowserSessionState.READY,
+            current_state=BrowserSessionState.READY,
+        )
+    except BrowserSessionLifecycleError:
+        return
+
+    raise AssertionError(
+        "Una transición sin cambio debería rechazarse"
+    )
+
+
+def test_transition_is_immutable():
+    transition = BrowserSessionTransition(
+        previous_state=BrowserSessionState.STARTING,
+        current_state=BrowserSessionState.READY,
+    )
+
+    try:
+        transition.current_state = (
+            BrowserSessionState.FAILED
+        )
+    except FrozenInstanceError:
+        return
+
+    raise AssertionError(
+        "BrowserSessionTransition debe ser immutable"
+    )
+
+
+def test_shutdown_result_contract():
+    result = BrowserShutdownResult(
+        mode="detach",
+        state_before="ready",
+        state_after="disconnected",
+        control_released=True,
+        browser_closed=False,
+        process_terminated=None,
+        detail="Control entregado",
+    )
+
+    assert (
+        result.mode
+        == BrowserShutdownMode.DETACH
+    )
+
+    assert (
+        result.state_before
+        == BrowserSessionState.READY
+    )
+
+    assert (
+        result.state_after
+        == BrowserSessionState.DISCONNECTED
+    )
+
+    assert result.control_released is True
+    assert result.browser_closed is False
+    assert result.process_terminated is None
+    assert result.detail == "Control entregado"
+    assert result.has_error is False
+
+
+def test_shutdown_result_preserves_unknown_facts():
+    result = BrowserShutdownResult(
+        mode=BrowserShutdownMode.CLOSE,
+        state_before=BrowserSessionState.STOPPING,
+        state_after=BrowserSessionState.CLOSED,
+        control_released=True,
+        browser_closed=None,
+        process_terminated=None,
+    )
+
+    assert result.browser_closed is None
+    assert result.process_terminated is None
+
+
+def test_shutdown_result_error_contract():
+    result = BrowserShutdownResult(
+        mode=BrowserShutdownMode.KILL,
+        state_before=BrowserSessionState.FAILED,
+        state_after=BrowserSessionState.FAILED,
+        control_released=False,
+        browser_closed=None,
+        process_terminated=None,
+        error="native shutdown unavailable",
+    )
+
+    assert result.has_error is True
+    assert (
+        result.error
+        == "native shutdown unavailable"
+    )
+
+
 def test_error_hierarchy():
     assert issubclass(
         BrowserSessionLifecycleError,
@@ -368,6 +489,12 @@ TESTS = (
     test_identity_is_immutable,
     test_snapshot_contract,
     test_snapshot_rejects_invalid_contracts,
+    test_transition_contract,
+    test_transition_rejects_same_state,
+    test_transition_is_immutable,
+    test_shutdown_result_contract,
+    test_shutdown_result_preserves_unknown_facts,
+    test_shutdown_result_error_contract,
     test_error_hierarchy,
     test_contract_module_has_no_framework_dependency,
 )

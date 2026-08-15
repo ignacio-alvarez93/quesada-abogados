@@ -406,6 +406,213 @@ class BrowserSessionHealth:
 @dataclass(
     frozen=True,
 )
+class BrowserSessionTransition:
+    """
+    Transición técnica de estado de una sesión.
+
+    Este contrato describe un cambio ya decidido u observado.
+
+    No define todavía la matriz de transiciones permitidas.
+    Esa política pertenecerá al lifecycle de BrowserSession.
+
+    ``reason`` y ``detail`` son diagnósticos técnicos.
+    No representan estados de negocio del proveedor.
+    """
+
+    previous_state: BrowserSessionState
+    current_state: BrowserSessionState
+    reason: str = ""
+    detail: str = ""
+
+    def __post_init__(
+        self,
+    ):
+        previous_state = _normalize_enum(
+            self.previous_state,
+            BrowserSessionState,
+            field_name="previous_state",
+        )
+
+        current_state = _normalize_enum(
+            self.current_state,
+            BrowserSessionState,
+            field_name="current_state",
+        )
+
+        if (
+            previous_state
+            == current_state
+        ):
+            raise BrowserSessionLifecycleError(
+                "Una transición requiere cambio de estado"
+            )
+
+        object.__setattr__(
+            self,
+            "previous_state",
+            previous_state,
+        )
+
+        object.__setattr__(
+            self,
+            "current_state",
+            current_state,
+        )
+
+        object.__setattr__(
+            self,
+            "reason",
+            str(
+                self.reason
+                or ""
+            ).strip(),
+        )
+
+        object.__setattr__(
+            self,
+            "detail",
+            str(
+                self.detail
+                or ""
+            ),
+        )
+
+
+@dataclass(
+    frozen=True,
+)
+class BrowserShutdownResult:
+    """
+    Resultado técnico de una petición de shutdown.
+
+    Separa hechos que no deben confundirse:
+
+    ``control_released``:
+        la infraestructura ya no controla la sesión.
+
+    ``browser_closed``:
+        se ha verificado que el navegador quedó cerrado.
+
+    ``process_terminated``:
+        se ha verificado que el proceso correspondiente terminó.
+
+    ``browser_closed`` y ``process_terminated`` son tri-state:
+    None significa que ese hecho no se conoce o no aplica.
+
+    El contrato no conoce stop(), quit(), close(), disconnect()
+    ni ninguna implementación concreta de SeleniumBase.
+    """
+
+    mode: BrowserShutdownMode
+    state_before: BrowserSessionState
+    state_after: BrowserSessionState
+    control_released: bool = False
+    browser_closed: bool | None = None
+    process_terminated: bool | None = None
+    detail: str = ""
+    error: str = ""
+
+    def __post_init__(
+        self,
+    ):
+        mode = _normalize_enum(
+            self.mode,
+            BrowserShutdownMode,
+            field_name="mode",
+        )
+
+        state_before = _normalize_enum(
+            self.state_before,
+            BrowserSessionState,
+            field_name="state_before",
+        )
+
+        state_after = _normalize_enum(
+            self.state_after,
+            BrowserSessionState,
+            field_name="state_after",
+        )
+
+        object.__setattr__(
+            self,
+            "mode",
+            mode,
+        )
+
+        object.__setattr__(
+            self,
+            "state_before",
+            state_before,
+        )
+
+        object.__setattr__(
+            self,
+            "state_after",
+            state_after,
+        )
+
+        object.__setattr__(
+            self,
+            "control_released",
+            bool(
+                self.control_released
+            ),
+        )
+
+        if (
+            self.browser_closed
+            is not None
+        ):
+            object.__setattr__(
+                self,
+                "browser_closed",
+                bool(
+                    self.browser_closed
+                ),
+            )
+
+        if (
+            self.process_terminated
+            is not None
+        ):
+            object.__setattr__(
+                self,
+                "process_terminated",
+                bool(
+                    self.process_terminated
+                ),
+            )
+
+        object.__setattr__(
+            self,
+            "detail",
+            str(
+                self.detail
+                or ""
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "error",
+            str(
+                self.error
+                or ""
+            ),
+        )
+
+    @property
+    def has_error(
+        self,
+    ):
+        return bool(
+            self.error
+        )
+
+
+@dataclass(
+    frozen=True,
+)
 class BrowserSessionSnapshot:
     """
     Fotografía técnica inmutable de una sesión concreta.
