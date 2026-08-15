@@ -7,8 +7,10 @@ from backend.automation.browser_contracts import (
     BrowserSessionConfigurationError,
     BrowserSessionControlError,
     BrowserSessionHealth,
+    BrowserSessionIdentity,
     BrowserSessionLifecycleError,
     BrowserSessionMode,
+    BrowserSessionSnapshot,
     BrowserSessionState,
     BrowserShutdownMode,
 )
@@ -145,6 +147,121 @@ def test_health_contract():
     assert health.last_error == ""
 
 
+def test_identity_from_config():
+    config = BrowserSessionConfig(
+        consumer="whatsapp",
+        mode="persistent",
+        profile_key="whatsapp_dev",
+    )
+
+    identity = BrowserSessionIdentity.from_config(
+        session_id=" session-001 ",
+        config=config,
+    )
+
+    assert identity.session_id == "session-001"
+    assert identity.consumer == "whatsapp"
+    assert (
+        identity.mode
+        == BrowserSessionMode.PERSISTENT
+    )
+    assert identity.profile_key == "whatsapp_dev"
+
+
+def test_identity_rejects_empty_session_id():
+    try:
+        BrowserSessionIdentity(
+            session_id=" ",
+            consumer="dehu",
+            mode=BrowserSessionMode.EPHEMERAL,
+        )
+    except BrowserSessionConfigurationError:
+        return
+
+    raise AssertionError(
+        "session_id vacío debería rechazarse"
+    )
+
+
+def test_identity_is_immutable():
+    identity = BrowserSessionIdentity(
+        session_id="session-002",
+        consumer="mercurio",
+        mode=BrowserSessionMode.ASSISTED,
+    )
+
+    try:
+        identity.session_id = "other"
+    except FrozenInstanceError:
+        return
+
+    raise AssertionError(
+        "BrowserSessionIdentity debe ser immutable"
+    )
+
+
+def test_snapshot_contract():
+    identity = BrowserSessionIdentity(
+        session_id="session-003",
+        consumer="dehu",
+        mode=BrowserSessionMode.EPHEMERAL,
+    )
+
+    health = BrowserSessionHealth(
+        state=BrowserSessionState.READY,
+        browser_available=True,
+        control_available=True,
+    )
+
+    snapshot = BrowserSessionSnapshot(
+        identity=identity,
+        health=health,
+    )
+
+    assert snapshot.identity is identity
+    assert snapshot.health is health
+    assert (
+        snapshot.state
+        == BrowserSessionState.READY
+    )
+
+
+def test_snapshot_rejects_invalid_contracts():
+    health = BrowserSessionHealth(
+        state=BrowserSessionState.CREATED,
+    )
+
+    try:
+        BrowserSessionSnapshot(
+            identity="invalid",
+            health=health,
+        )
+    except BrowserSessionConfigurationError:
+        pass
+    else:
+        raise AssertionError(
+            "identity inválida debería rechazarse"
+        )
+
+    identity = BrowserSessionIdentity(
+        session_id="session-004",
+        consumer="demo",
+        mode=BrowserSessionMode.EPHEMERAL,
+    )
+
+    try:
+        BrowserSessionSnapshot(
+            identity=identity,
+            health="invalid",
+        )
+    except BrowserSessionConfigurationError:
+        return
+
+    raise AssertionError(
+        "health inválido debería rechazarse"
+    )
+
+
 def test_error_hierarchy():
     assert issubclass(
         BrowserSessionLifecycleError,
@@ -246,6 +363,11 @@ TESTS = (
     test_invalid_mode_rejected,
     test_config_is_immutable,
     test_health_contract,
+    test_identity_from_config,
+    test_identity_rejects_empty_session_id,
+    test_identity_is_immutable,
+    test_snapshot_contract,
+    test_snapshot_rejects_invalid_contracts,
     test_error_hierarchy,
     test_contract_module_has_no_framework_dependency,
 )

@@ -207,6 +207,124 @@ class BrowserSessionConfig:
 @dataclass(
     frozen=True,
 )
+class BrowserSessionIdentity:
+    """
+    Identidad lógica e inmutable de una instancia de sesión.
+
+    ``session_id`` identifica una ejecución concreta.
+
+    ``consumer``, ``mode`` y ``profile_key`` permiten
+    correlacionarla con la configuración que la originó.
+
+    No contiene:
+    - PID;
+    - ruta física de perfil;
+    - browser;
+    - driver;
+    - thread;
+    - event loop.
+    """
+
+    session_id: str
+    consumer: str
+    mode: BrowserSessionMode
+    profile_key: str | None = None
+
+    def __post_init__(
+        self,
+    ):
+        session_id = str(
+            self.session_id
+            or ""
+        ).strip()
+
+        consumer = str(
+            self.consumer
+            or ""
+        ).strip()
+
+        if not session_id:
+            raise BrowserSessionConfigurationError(
+                "session_id no puede estar vacío"
+            )
+
+        if not consumer:
+            raise BrowserSessionConfigurationError(
+                "consumer no puede estar vacío"
+            )
+
+        mode = _normalize_enum(
+            self.mode,
+            BrowserSessionMode,
+            field_name="mode",
+        )
+
+        profile_key = (
+            None
+            if self.profile_key is None
+            else str(
+                self.profile_key
+            ).strip()
+        )
+
+        if (
+            self.profile_key is not None
+            and not profile_key
+        ):
+            raise BrowserSessionConfigurationError(
+                "profile_key no puede estar vacío"
+            )
+
+        object.__setattr__(
+            self,
+            "session_id",
+            session_id,
+        )
+
+        object.__setattr__(
+            self,
+            "consumer",
+            consumer,
+        )
+
+        object.__setattr__(
+            self,
+            "mode",
+            mode,
+        )
+
+        object.__setattr__(
+            self,
+            "profile_key",
+            profile_key,
+        )
+
+    @classmethod
+    def from_config(
+        cls,
+        *,
+        session_id,
+        config,
+    ):
+        if not isinstance(
+            config,
+            BrowserSessionConfig,
+        ):
+            raise BrowserSessionConfigurationError(
+                "config debe ser BrowserSessionConfig"
+            )
+
+        return cls(
+            session_id=session_id,
+            consumer=config.consumer,
+            mode=config.mode,
+            profile_key=config.profile_key,
+        )
+
+
+@dataclass(
+    frozen=True,
+)
 class BrowserSessionHealth:
     """
     Fotografía técnica y pasiva de una sesión.
@@ -284,3 +402,42 @@ class BrowserSessionHealth:
                 or ""
             ),
         )
+
+@dataclass(
+    frozen=True,
+)
+class BrowserSessionSnapshot:
+    """
+    Fotografía técnica inmutable de una sesión concreta.
+
+    Combina identidad y health sin introducir detalles
+    específicos de SeleniumBase ni del proveedor.
+    """
+
+    identity: BrowserSessionIdentity
+    health: BrowserSessionHealth
+
+    def __post_init__(
+        self,
+    ):
+        if not isinstance(
+            self.identity,
+            BrowserSessionIdentity,
+        ):
+            raise BrowserSessionConfigurationError(
+                "identity debe ser BrowserSessionIdentity"
+            )
+
+        if not isinstance(
+            self.health,
+            BrowserSessionHealth,
+        ):
+            raise BrowserSessionConfigurationError(
+                "health debe ser BrowserSessionHealth"
+            )
+
+    @property
+    def state(
+        self,
+    ):
+        return self.health.state
