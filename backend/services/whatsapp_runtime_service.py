@@ -25,6 +25,9 @@ from backend.automation.connectors.whatsapp_connector import (
 from backend.services.communication_service import (
     CommunicationService,
 )
+from backend.services.whatsapp_call_observation import (
+    WhatsAppCallObservationTracker,
+)
 from backend.services.whatsapp_outbound_service import (
     WhatsAppOutboundService,
 )
@@ -64,6 +67,14 @@ class WhatsAppRuntimeService:
         self._connector = None
         self._outbound_service = None
         self._sync_service = None
+
+        # Memoria puramente observacional de la superficie
+        # de llamada WhatsApp actualmente visible.
+        #
+        # No persiste ni clasifica outcomes de dominio.
+        self._call_observation_tracker = (
+            WhatsAppCallObservationTracker()
+        )
 
         # SeleniumBase/CDP debe conservar afinidad
         # con un único hilo durante toda la vida
@@ -1161,6 +1172,38 @@ class WhatsAppRuntimeService:
         )
 
 
+    def _observe_call_impl(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """Observa lifecycle provider sin persistir ni clasificar."""
+        current = (
+            self._read_call_snapshot_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        return (
+            self._call_observation_tracker
+            .observe(
+                current
+            )
+        )
+
+
+    def observe_call(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """Observación stateful serializada de llamada WhatsApp."""
+        return self._run_serialized(
+            self._observe_call_impl,
+            wait_timeout=wait_timeout,
+        )
+
+
     def _observe_active_chat_impl(
         self,
         *,
@@ -2153,6 +2196,7 @@ class WhatsAppRuntimeService:
             self._sync_service = None
             self._active_chat_fingerprint = None
             self._sidebar_chat_fingerprint = None
+            self._call_observation_tracker.reset()
 
     def close(
         self,

@@ -6,8 +6,13 @@ import unittest
 from backend.automation.connectors.whatsapp_connector import (
     SESSION_STATUS_READY,
     WHATSAPP_CALL_DIRECTION_INBOUND,
+    WHATSAPP_CALL_DIRECTION_OUTBOUND,
     WHATSAPP_CALL_DIRECTION_UNKNOWN,
     WHATSAPP_CALL_PHASE_ABSENT,
+    WHATSAPP_CALL_PHASE_ACTIVE,
+    WHATSAPP_CALL_PHASE_CONNECTING,
+    WHATSAPP_CALL_PHASE_ENDED_TRANSIENT,
+    WHATSAPP_CALL_PHASE_OUTGOING_DIALING,
     WHATSAPP_CALL_PHASE_INCOMING_RINGING,
     WhatsAppActiveChatFingerprint,
     WhatsAppCallSnapshot,
@@ -571,13 +576,12 @@ class WhatsAppRuntimeServiceTest(
             absent,
         )
 
-        # WA-CALL-3A2 es solo transporte serializado.
-        # Todavía no existe máquina de estados runtime.
-        self.assertFalse(
-            hasattr(
-                runtime,
-                "_active_call_snapshot",
-            )
+        # read_call_snapshot() continúa siendo una API
+        # de transporte pura: no alimenta el tracker stateful.
+        self.assertIsNone(
+            runtime
+            ._call_observation_tracker
+            .active
         )
 
         self.assertEqual(
@@ -586,6 +590,280 @@ class WhatsAppRuntimeServiceTest(
                 runtime._worker_thread_id,
                 runtime._worker_thread_id,
             ],
+        )
+
+
+    def test_observe_call_retains_identity_until_surface_disappears(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connecting = WhatsAppCallSnapshot(
+            present=True,
+            phase=(
+                WHATSAPP_CALL_PHASE_CONNECTING
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_UNKNOWN
+            ),
+            can_hangup=True,
+            identity_complete=False,
+        )
+
+        dialing = WhatsAppCallSnapshot(
+            present=True,
+            phase=(
+                WHATSAPP_CALL_PHASE_OUTGOING_DIALING
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+            provider_call_id="CALL-RUNTIME-001",
+            external_call_key=(
+                "opaque-CALL-RUNTIME-001"
+            ),
+            participant_lid="remote@lid",
+            participant_phone_id=(
+                "34600111222@c.us"
+            ),
+            participant_phone="+34600111222",
+            participant_display_name="Contacto",
+            can_hangup=True,
+            identity_complete=True,
+        )
+
+        ended = WhatsAppCallSnapshot(
+            present=True,
+            phase=(
+                WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+            provider_call_id="CALL-RUNTIME-001",
+            external_call_key=(
+                "opaque-CALL-RUNTIME-001"
+            ),
+            identity_complete=False,
+        )
+
+        absent = WhatsAppCallSnapshot(
+            present=False,
+            phase=(
+                WHATSAPP_CALL_PHASE_ABSENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_UNKNOWN
+            ),
+        )
+
+        connector.call_snapshots = [
+            connecting,
+            dialing,
+            ended,
+            absent,
+        ]
+
+        first = runtime.observe_call(
+            wait_timeout=1,
+        )
+
+        second = runtime.observe_call(
+            wait_timeout=1,
+        )
+
+        third = runtime.observe_call(
+            wait_timeout=1,
+        )
+
+        fourth = runtime.observe_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            first.change_type,
+            "CALL_SURFACE_APPEARED",
+        )
+
+        self.assertEqual(
+            second.change_type,
+            "CALL_UPDATED",
+        )
+
+        self.assertEqual(
+            third.change_type,
+            "CALL_UPDATED",
+        )
+
+        self.assertEqual(
+            third.active.participant_phone,
+            "+34600111222",
+        )
+
+        self.assertTrue(
+            third.active.identity_complete
+        )
+
+        self.assertEqual(
+            fourth.change_type,
+            "CALL_SURFACE_DISAPPEARED",
+        )
+
+        self.assertEqual(
+            fourth
+            .disappeared
+            .provider_call_id,
+            "CALL-RUNTIME-001",
+        )
+
+        self.assertIsNone(
+            runtime
+            ._call_observation_tracker
+            .active
+        )
+
+        self.assertTrue(
+            all(
+                thread_id
+                == runtime._worker_thread_id
+                for thread_id
+                in connector.call_snapshot_thread_ids
+            )
+        )
+
+
+    def test_observe_call_does_not_classify_ringing_disappearance(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        ringing = WhatsAppCallSnapshot(
+            present=True,
+            phase=(
+                WHATSAPP_CALL_PHASE_INCOMING_RINGING
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+            provider_call_id="CALL-RUNTIME-IN",
+            external_call_key=(
+                "opaque-CALL-RUNTIME-IN"
+            ),
+            participant_lid="remote@lid",
+            participant_phone_id=(
+                "34600111222@c.us"
+            ),
+            participant_phone="+34600111222",
+            can_accept=True,
+            can_reject=True,
+            identity_complete=True,
+        )
+
+        absent = WhatsAppCallSnapshot(
+            present=False,
+            phase=(
+                WHATSAPP_CALL_PHASE_ABSENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_UNKNOWN
+            ),
+        )
+
+        connector.call_snapshots = [
+            ringing,
+            absent,
+        ]
+
+        runtime.observe_call(
+            wait_timeout=1,
+        )
+
+        result = runtime.observe_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            result.change_type,
+            "CALL_SURFACE_DISAPPEARED",
+        )
+
+        self.assertEqual(
+            result.disappeared.phase,
+            WHATSAPP_CALL_PHASE_INCOMING_RINGING,
+        )
+
+        self.assertFalse(
+            hasattr(
+                result,
+                "status",
+            )
+        )
+
+        self.assertFalse(
+            hasattr(
+                result,
+                "outcome",
+            )
+        )
+
+
+    def test_close_resets_call_observation_tracker(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_OUTGOING_DIALING
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-CLOSE-001",
+                external_call_key=(
+                    "opaque-CALL-CLOSE-001"
+                ),
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                can_hangup=True,
+                identity_complete=True,
+            )
+        ]
+
+        result = runtime.observe_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            result
+            .active
+            .provider_call_id,
+            "CALL-CLOSE-001",
+        )
+
+        self.assertIsNotNone(
+            runtime
+            ._call_observation_tracker
+            .active
+        )
+
+        runtime.close()
+
+        self.assertIsNone(
+            runtime
+            ._call_observation_tracker
+            .active
         )
 
 
