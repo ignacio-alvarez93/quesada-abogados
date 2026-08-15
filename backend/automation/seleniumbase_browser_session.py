@@ -12,12 +12,19 @@ Primera fase del adapter:
 - profile resolution inyectable.
 
 Deliberadamente NO implementa todavía:
-- shutdown;
 - detach;
 - kill;
 - threads;
-- event loops;
-- watchers.
+- runtime de watchers.
+
+El shutdown CLOSE utiliza una topología owner-aware validada
+sobre SeleniumBase 4.47.1 / sb_cdp.Chrome en Windows.
+
+Ese cierre depende de capacidades internas observadas de
+SeleniumBase/CDP. Por ello la compatibilidad se valida antes
+de destruir recursos y cualquier cambio incompatible deberá
+producir un error Python diagnosticable, nunca un fallback
+silencioso a ``driver.stop()``.
 
 No contiene lógica específica de WhatsApp, Mercurio ni DEHú.
 """
@@ -366,6 +373,139 @@ class SeleniumBaseBrowserSession:
             ) from exc
 
     @staticmethod
+    def _require_shutdown_attribute(
+        obj,
+        attribute_name,
+        *,
+        owner_label,
+    ):
+        """
+        Exige una capacidad necesaria para el shutdown
+        owner-aware.
+
+        Estos guards aíslan cambios de layout interno de
+        SeleniumBase y convierten una incompatibilidad en
+        BrowserSessionLifecycleError diagnosticable.
+        """
+
+        if obj is None:
+            raise BrowserSessionLifecycleError(
+                "Shutdown topology incompatible: "
+                f"{owner_label} no está disponible"
+            )
+
+        if not hasattr(
+            obj,
+            attribute_name,
+        ):
+            raise BrowserSessionLifecycleError(
+                "Shutdown topology incompatible: "
+                f"{owner_label} no expone "
+                f"{attribute_name!r}"
+            )
+
+        return getattr(
+            obj,
+            attribute_name,
+        )
+
+    @classmethod
+    def _validate_shutdown_topology(
+        cls,
+        browser,
+    ):
+        """
+        Valida únicamente las capacidades estructurales
+        mínimas necesarias para CLOSE.
+
+        No ejecuta shutdown ni altera recursos.
+        """
+
+        driver = (
+            cls._require_shutdown_attribute(
+                browser,
+                "driver",
+                owner_label="browser",
+            )
+        )
+
+        root_connection = (
+            cls._require_shutdown_attribute(
+                driver,
+                "connection",
+                owner_label="driver",
+            )
+        )
+
+        process = (
+            cls._require_shutdown_attribute(
+                driver,
+                "_process",
+                owner_label="driver",
+            )
+        )
+
+        if root_connection is not None:
+            aclose = getattr(
+                root_connection,
+                "aclose",
+                None,
+            )
+
+            if not callable(
+                aclose
+            ):
+                raise BrowserSessionLifecycleError(
+                    "Shutdown topology incompatible: "
+                    "driver.connection no expone "
+                    "aclose()"
+                )
+
+        if process is not None:
+            transport = getattr(
+                process,
+                "_transport",
+                None,
+            )
+
+            if transport is None:
+                raise BrowserSessionLifecycleError(
+                    "Shutdown topology incompatible: "
+                    "Chrome process no expone _transport"
+                )
+
+            process_loop = getattr(
+                transport,
+                "_loop",
+                None,
+            )
+
+            if process_loop is None:
+                raise BrowserSessionLifecycleError(
+                    "Shutdown topology incompatible: "
+                    "Chrome process transport no expone "
+                    "_loop"
+                )
+
+            if not callable(
+                getattr(
+                    process,
+                    "wait",
+                    None,
+                )
+            ):
+                raise BrowserSessionLifecycleError(
+                    "Shutdown topology incompatible: "
+                    "Chrome process no expone wait()"
+                )
+
+        return (
+            driver,
+            root_connection,
+            process,
+        )
+
+    @staticmethod
     def _connection_owner_loop(
         connection,
     ):
@@ -552,8 +692,23 @@ class SeleniumBaseBrowserSession:
                 "ya está cerrado"
             )
 
+        aclose = getattr(
+            connection,
+            "aclose",
+            None,
+        )
+
+        if not callable(
+            aclose
+        ):
+            raise BrowserSessionLifecycleError(
+                "Shutdown topology incompatible: "
+                "la conexión CDP abierta no expone "
+                "aclose()"
+            )
+
         owner.run_until_complete(
-            connection.aclose()
+            aclose()
         )
 
         # Permitir que cancelaciones y callbacks derivados
@@ -761,21 +916,12 @@ class SeleniumBaseBrowserSession:
         )
 
         try:
-            driver = getattr(
-                browser,
-                "driver",
-                None,
-            )
-
-            if driver is None:
-                raise BrowserSessionLifecycleError(
-                    "El wrapper no expone driver"
-                )
-
-            root_connection = getattr(
+            (
                 driver,
-                "connection",
-                None,
+                root_connection,
+                process,
+            ) = self._validate_shutdown_topology(
+                browser
             )
 
             child_connections = (
@@ -801,12 +947,6 @@ class SeleniumBaseBrowserSession:
                 self._close_connection_on_owner(
                     root_connection
                 )
-
-            process = getattr(
-                driver,
-                "_process",
-                None,
-            )
 
             process_code = (
                 self._terminate_process_on_owner(

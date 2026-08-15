@@ -1,3 +1,4 @@
+import ast
 import asyncio
 from pathlib import Path
 
@@ -777,6 +778,168 @@ def test_shutdown_rejects_unimplemented_modes():
             )
 
 
+def test_shutdown_topology_rejects_missing_driver():
+    class BrowserWithoutDriver:
+        pass
+
+    factory = FactoryProbe(
+        result=BrowserWithoutDriver()
+    )
+
+    session = make_session(
+        factory=factory,
+    )
+
+    session.start()
+
+    result = session.shutdown()
+
+    assert result.has_error is True
+
+    assert (
+        result.state_after
+        == BrowserSessionState.FAILED
+    )
+
+    assert (
+        "browser"
+        in result.error
+    )
+
+    assert (
+        "driver"
+        in result.error
+    )
+
+
+def test_shutdown_topology_rejects_missing_process_transport():
+    browser = GovernedFakeBrowser()
+
+    browser.driver._process._transport = None
+
+    session = make_session(
+        factory=FactoryProbe(
+            result=browser,
+        )
+    )
+
+    try:
+        session.start()
+
+        result = session.shutdown()
+
+        assert result.has_error is True
+
+        assert (
+            result.state_after
+            == BrowserSessionState.FAILED
+        )
+
+        assert (
+            "_transport"
+            in result.error
+        )
+
+    finally:
+        browser.dispose_test_loops()
+
+
+def test_shutdown_topology_rejects_connection_without_aclose():
+    class ConnectionWithoutClose:
+        def __init__(
+            self,
+            loop,
+        ):
+            self.websocket = (
+                FakeWebSocket(
+                    loop
+                )
+            )
+
+    browser = GovernedFakeBrowser()
+
+    browser.driver.connection = (
+        ConnectionWithoutClose(
+            browser.root_loop
+        )
+    )
+
+    session = make_session(
+        factory=FactoryProbe(
+            result=browser,
+        )
+    )
+
+    try:
+        session.start()
+
+        result = session.shutdown()
+
+        assert result.has_error is True
+
+        assert (
+            "aclose"
+            in result.error
+        )
+
+    finally:
+        browser.dispose_test_loops()
+
+
+def test_session_adapter_never_calls_stop():
+    """
+    Regression guard del bug nativo investigado.
+
+    El source puede documentar ``driver.stop()`` en
+    docstrings, por lo que el guard debe inspeccionar AST
+    y no buscar texto en bruto.
+    """
+
+    source_path = (
+        Path(__file__)
+        .resolve()
+        .parents[2]
+        / "backend"
+        / "automation"
+        / "seleniumbase_browser_session.py"
+    )
+
+    tree = ast.parse(
+        source_path.read_text(
+            encoding="utf-8",
+        )
+    )
+
+    forbidden_calls = []
+
+    for node in ast.walk(
+        tree
+    ):
+        if not isinstance(
+            node,
+            ast.Call,
+        ):
+            continue
+
+        function = node.func
+
+        if (
+            isinstance(
+                function,
+                ast.Attribute,
+            )
+            and function.attr == "stop"
+        ):
+            forbidden_calls.append(
+                node.lineno
+            )
+
+    assert forbidden_calls == [], (
+        "SeleniumBaseBrowserSession no debe llamar "
+        f"a .stop(); líneas: {forbidden_calls}"
+    )
+
+
 def test_session_adapter_has_no_provider_dependency():
     path = (
         Path(__file__)
@@ -820,6 +983,10 @@ TESTS = (
     test_shutdown_close_is_idempotent,
     test_shutdown_without_start_closes_logically,
     test_shutdown_rejects_unimplemented_modes,
+    test_shutdown_topology_rejects_missing_driver,
+    test_shutdown_topology_rejects_missing_process_transport,
+    test_shutdown_topology_rejects_connection_without_aclose,
+    test_session_adapter_never_calls_stop,
     test_session_adapter_has_no_provider_dependency,
 )
 
