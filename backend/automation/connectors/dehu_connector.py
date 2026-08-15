@@ -19,9 +19,16 @@ from backend.automation.automation_artifacts import (
 from backend.automation.browser_actions import (
     open_url,
 )
+from backend.automation.browser_contracts import (
+    BrowserSessionConfig,
+    BrowserSessionMode,
+    BrowserShutdownMode,
+)
 from backend.automation.browser_session import (
     get_project_root,
-    start_seleniumbase_chrome,
+)
+from backend.automation.seleniumbase_browser_session import (
+    SeleniumBaseBrowserSession,
 )
 from backend.automation.automation_logger import (
     write_log,
@@ -31,12 +38,53 @@ from backend.automation.automation_logger import (
 DEHU_URL = "https://dehu.redsara.es/"
 
 
+def get_dehu_profile_dir(
+    profile_key="dehu",
+):
+    clean_key = (
+        str(
+            profile_key
+            or ""
+        )
+        .strip()
+        .replace(
+            "\\",
+            "_",
+        )
+        .replace(
+            "/",
+            "_",
+        )
+    )
+
+    if not clean_key:
+        raise ValueError(
+            "profile_key de DEHú vacío"
+        )
+
+    profile_dir = (
+        get_project_root()
+        / "data"
+        / "browser_profiles"
+        / clean_key
+    )
+
+    profile_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    return profile_dir
+
+
 class DehuConnector:
     def __init__(
         self,
         *,
         session_dir=None,
+        profile_key="dehu",
         headless=False,
+        browser_session_factory=None,
     ):
         timestamp = datetime.now().strftime(
             "%Y%m%d_%H%M%S"
@@ -65,17 +113,76 @@ class DehuConnector:
             exist_ok=True,
         )
 
-        self.headless = bool(headless)
-        self.browser = None
+        self.profile_key = str(
+            profile_key
+            or "dehu"
+        ).strip()
 
-    def start(self):
-        write_log(
-            self.session_dir,
-            "DEHú: iniciando navegador",
+        if not self.profile_key:
+            raise ValueError(
+                "profile_key de DEHú vacío"
+            )
+
+        self.headless = bool(
+            headless
         )
 
-        self.browser = start_seleniumbase_chrome(
-            headless=self.headless
+        self._browser_session_factory = (
+            browser_session_factory
+            or SeleniumBaseBrowserSession
+        )
+
+        if not callable(
+            self._browser_session_factory
+        ):
+            raise TypeError(
+                "browser_session_factory debe ser callable"
+            )
+
+        self._browser_session = None
+        self.browser = None
+
+    def _build_browser_session(
+        self,
+    ):
+        if (
+            self._browser_session
+            is None
+        ):
+            config = BrowserSessionConfig(
+                consumer="dehu",
+                mode=(
+                    BrowserSessionMode.PERSISTENT
+                ),
+                headless=self.headless,
+                profile_key=self.profile_key,
+            )
+
+            self._browser_session = (
+                self._browser_session_factory(
+                    config=config,
+                    profile_resolver=(
+                        get_dehu_profile_dir
+                    ),
+                )
+            )
+
+        return self._browser_session
+
+    def start(
+        self,
+    ):
+        write_log(
+            self.session_dir,
+            "DEHú: iniciando navegador gobernado",
+        )
+
+        session = (
+            self._build_browser_session()
+        )
+
+        self.browser = (
+            session.start()
         )
 
         open_url(
@@ -139,23 +246,65 @@ class DehuConnector:
             ),
         }
 
-    def close(self):
-        if not self.browser:
+    def close(
+        self,
+    ):
+        """
+        Cierra únicamente la BrowserSession propia.
+
+        El perfil Chrome permanece en disco para poder
+        reutilizar cookies, estado y demás datos de sesión
+        compatibles con el portal en futuras ejecuciones.
+
+        Si ``browser`` fuese inyectado externamente sin
+        BrowserSession asociada, el connector no asume
+        ownership y no lo destruye.
+        """
+
+        session = (
+            self._browser_session
+        )
+
+        if session is None:
             return False
 
         try:
-            if hasattr(self.browser, "quit"):
-                self.browser.quit()
-                return True
-
-            if hasattr(self.browser, "close"):
-                self.browser.close()
-                return True
+            result = session.shutdown(
+                BrowserShutdownMode.CLOSE
+            )
 
         except Exception as exc:
             write_log(
                 self.session_dir,
-                f"DEHú: error al cerrar: {exc!r}",
+                "DEHú: error en shutdown gobernado: "
+                f"{exc!r}",
             )
 
-        return False
+            return False
+
+        successful = bool(
+            result is not None
+            and not result.has_error
+            and result.control_released
+            is True
+            and result.browser_closed
+            is True
+        )
+
+        if successful:
+            self.browser = None
+            self._browser_session = None
+
+            write_log(
+                self.session_dir,
+                "DEHú: sesión gobernada cerrada",
+            )
+
+        else:
+            write_log(
+                self.session_dir,
+                "DEHú: shutdown incompleto; "
+                "ownership conservado",
+            )
+
+        return successful
