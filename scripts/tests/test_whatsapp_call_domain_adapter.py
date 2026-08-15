@@ -738,6 +738,49 @@ class WhatsAppCallDomainAdapterTest(
         )
 
 
+    def test_projection_uses_status_specific_provider_phase_metadata(
+        self,
+    ):
+        adaptation = adapt_whatsapp_call_observation(
+            observation(
+                call_snapshot(
+                    phase=(
+                        WHATSAPP_CALL_PHASE_ACTIVE
+                    ),
+                    direction=(
+                        WHATSAPP_CALL_DIRECTION_OUTBOUND
+                    ),
+                )
+            ),
+            observed_at=OBSERVED_AT,
+        )
+
+        snapshot = (
+            project_whatsapp_call_intent_to_provider_snapshot(
+                adaptation.intent
+            )
+        )
+
+        self.assertNotIn(
+            "provider_phase",
+            snapshot.metadata,
+        )
+
+        self.assertEqual(
+            snapshot.metadata[
+                "crm_observed_answered_provider_phase"
+            ],
+            WHATSAPP_CALL_PHASE_ACTIVE,
+        )
+
+        self.assertEqual(
+            snapshot.metadata[
+                "crm_observed_answered_at"
+            ],
+            OBSERVED_AT,
+        )
+
+
     def test_observed_at_requires_timezone(
         self,
     ):

@@ -1,5 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
+import sqlite3
+import tempfile
 import threading
 import unittest
 
@@ -16,6 +18,17 @@ from backend.automation.connectors.whatsapp_connector import (
     WHATSAPP_CALL_PHASE_INCOMING_RINGING,
     WhatsAppActiveChatFingerprint,
     WhatsAppCallSnapshot,
+)
+from backend.services.whatsapp_call_realtime_service import (
+    WHATSAPP_CALL_REALTIME_DISABLED,
+    WHATSAPP_CALL_REALTIME_NOT_ACTIONABLE,
+    WHATSAPP_CALL_REALTIME_RECONCILED,
+)
+from backend.repositories.sqlite_communication_repository import (
+    SQLiteCommunicationRepository,
+)
+from backend.services.communication_call_service import (
+    CommunicationCallService,
 )
 from backend.services.whatsapp_runtime_service import (
     WhatsAppRuntimeService,
@@ -377,6 +390,41 @@ class FakeSuccessfulOutboundService:
         }
 
 
+class FakeCallService:
+    def __init__(
+        self,
+    ):
+        self.snapshots = []
+        self.thread_ids = []
+
+    def reconcile_provider_call(
+        self,
+        snapshot,
+    ):
+        self.snapshots.append(
+            snapshot
+        )
+
+        self.thread_ids.append(
+            threading.get_ident()
+        )
+
+        return SimpleNamespace(
+            id=len(
+                self.snapshots
+            ),
+            provider=(
+                snapshot.provider
+            ),
+            external_call_key=(
+                snapshot.external_call_key
+            ),
+            status=(
+                snapshot.status
+            ),
+        )
+
+
 class WhatsAppRuntimeServiceTest(
     unittest.TestCase
 ):
@@ -387,6 +435,9 @@ class WhatsAppRuntimeServiceTest(
 
     def _runtime(
         self,
+        *,
+        call_service=None,
+        call_clock=None,
     ):
         return WhatsAppRuntimeService(
             profile_key="test_profile",
@@ -394,10 +445,604 @@ class WhatsAppRuntimeServiceTest(
             communication_service=(
                 FakeCommunicationService()
             ),
+            call_service=(
+                call_service
+            ),
+            call_clock=(
+                call_clock
+            ),
             connector_factory=(
                 FakeConnector
             ),
         )
+
+    def test_observe_and_sync_call_is_disabled_without_call_service(
+        self,
+    ):
+        clock_called = []
+
+        def forbidden_clock():
+            clock_called.append(
+                True
+            )
+            raise AssertionError(
+                "No debe consultarse reloj "
+                "si persistencia está deshabilitada"
+            )
+
+        runtime = self._runtime(
+            call_clock=forbidden_clock,
+        )
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_INCOMING_RINGING
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_INBOUND
+                ),
+                provider_call_id="CALL-DISABLED",
+                external_call_key=(
+                    "opaque-disabled"
+                ),
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone=(
+                    "+34600111222"
+                ),
+                is_video=False,
+                identity_complete=True,
+            )
+        ]
+
+        result = (
+            runtime
+            .observe_and_sync_call(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            result.action,
+            WHATSAPP_CALL_REALTIME_DISABLED,
+        )
+
+        self.assertEqual(
+            clock_called,
+            [],
+        )
+
+
+    def test_observe_and_sync_call_reconciles_on_runtime_worker(
+        self,
+    ):
+        call_service = (
+            FakeCallService()
+        )
+
+        runtime = self._runtime(
+            call_service=call_service,
+            call_clock=lambda: (
+                "2026-08-15T09:40:00+00:00"
+            ),
+        )
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_OUTGOING_DIALING
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-RT-001",
+                external_call_key=(
+                    "opaque-rt-001"
+                ),
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone=(
+                    "+34600111222"
+                ),
+                participant_display_name=(
+                    "Contacto"
+                ),
+                is_video=False,
+                identity_complete=True,
+            )
+        ]
+
+        result = (
+            runtime
+            .observe_and_sync_call(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            result.action,
+            WHATSAPP_CALL_REALTIME_RECONCILED,
+        )
+
+        self.assertEqual(
+            len(
+                call_service.snapshots
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            call_service.thread_ids,
+            [
+                runtime._worker_thread_id
+            ],
+        )
+
+        projected = (
+            call_service.snapshots[0]
+        )
+
+        self.assertEqual(
+            projected.external_call_key,
+            "opaque-rt-001",
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_dialing_at"
+            ],
+            "2026-08-15T09:40:00+00:00",
+        )
+
+
+    def test_observe_and_sync_call_late_active_does_not_fake_timestamps(
+        self,
+    ):
+        call_service = (
+            FakeCallService()
+        )
+
+        runtime = self._runtime(
+            call_service=call_service,
+            call_clock=lambda: (
+                "2026-08-15T09:45:00+00:00"
+            ),
+        )
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_INBOUND
+                ),
+                provider_call_id="CALL-LATE-001",
+                external_call_key=(
+                    "opaque-late-001"
+                ),
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone=(
+                    "+34600111222"
+                ),
+                is_video=False,
+                identity_complete=True,
+            )
+        ]
+
+        result = (
+            runtime
+            .observe_and_sync_call(
+                wait_timeout=1,
+            )
+        )
+
+        projected = (
+            result.provider_snapshot
+        )
+
+        self.assertEqual(
+            projected.status,
+            "ANSWERED",
+        )
+
+        self.assertIsNone(
+            projected.dialed_at
+        )
+
+        self.assertIsNone(
+            projected.ringing_at
+        )
+
+        self.assertIsNone(
+            projected.answered_at
+        )
+
+        self.assertIsNone(
+            projected.ended_at
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_answered_at"
+            ],
+            "2026-08-15T09:45:00+00:00",
+        )
+
+
+    def test_raw_observe_call_still_never_persists(
+        self,
+    ):
+        call_service = (
+            FakeCallService()
+        )
+
+        runtime = self._runtime(
+            call_service=call_service,
+            call_clock=lambda: (
+                "2026-08-15T09:50:00+00:00"
+            ),
+        )
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_INBOUND
+                ),
+                provider_call_id="CALL-RAW-001",
+                external_call_key=(
+                    "opaque-raw-001"
+                ),
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone=(
+                    "+34600111222"
+                ),
+                is_video=False,
+                identity_complete=True,
+            )
+        ]
+
+        runtime.observe_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            call_service.snapshots,
+            [],
+        )
+
+
+    def test_unchanged_call_observation_does_not_reconcile_twice(
+        self,
+    ):
+        call_service = (
+            FakeCallService()
+        )
+
+        runtime = self._runtime(
+            call_service=call_service,
+            call_clock=lambda: (
+                "2026-08-15T09:55:00+00:00"
+            ),
+        )
+
+        connector = runtime.start()
+
+        repeated = WhatsAppCallSnapshot(
+            present=True,
+            phase=(
+                WHATSAPP_CALL_PHASE_ACTIVE
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+            provider_call_id="CALL-IDEMP-001",
+            external_call_key=(
+                "opaque-idemp-001"
+            ),
+            participant_lid="remote@lid",
+            participant_phone_id=(
+                "34600111222@c.us"
+            ),
+            participant_phone=(
+                "+34600111222"
+            ),
+            is_video=False,
+            identity_complete=True,
+        )
+
+        connector.call_snapshots = [
+            repeated,
+            repeated,
+        ]
+
+        first = (
+            runtime
+            .observe_and_sync_call(
+                wait_timeout=1,
+            )
+        )
+
+        second = (
+            runtime
+            .observe_and_sync_call(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            first.action,
+            WHATSAPP_CALL_REALTIME_RECONCILED,
+        )
+
+        self.assertEqual(
+            second.action,
+            WHATSAPP_CALL_REALTIME_NOT_ACTIONABLE,
+        )
+
+        self.assertEqual(
+            len(
+                call_service.snapshots
+            ),
+            1,
+        )
+
+
+    def test_observe_and_sync_call_persists_and_advances_same_real_call(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = (
+                Path(temp_dir)
+                / "runtime_call_integration.db"
+            )
+
+            conn = sqlite3.connect(
+                str(db_path)
+            )
+
+            try:
+                conn.executescript(
+                    """
+                    PRAGMA foreign_keys = ON;
+
+                    CREATE TABLE clientes (
+                        id INTEGER PRIMARY KEY,
+                        nombre TEXT NOT NULL
+                    );
+
+                    CREATE TABLE expedientes (
+                        id INTEGER PRIMARY KEY,
+                        cliente_id INTEGER
+                    );
+                    """
+                )
+
+                conn.commit()
+
+            finally:
+                conn.close()
+
+            repository = (
+                SQLiteCommunicationRepository(
+                    db_path
+                )
+            )
+
+            call_service = (
+                CommunicationCallService(
+                    repository=repository
+                )
+            )
+
+            observed_times = iter(
+                (
+                    "2026-08-15T10:00:00+00:00",
+                    "2026-08-15T10:00:05+00:00",
+                )
+            )
+
+            runtime = self._runtime(
+                call_service=call_service,
+                call_clock=lambda: next(
+                    observed_times
+                ),
+            )
+
+            connector = runtime.start()
+
+            ringing_snapshot = WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_INCOMING_RINGING
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_INBOUND
+                ),
+                provider_call_id=(
+                    "CALL-REAL-001"
+                ),
+                external_call_key=(
+                    "opaque-real-001"
+                ),
+                participant_lid=(
+                    "remote@lid"
+                ),
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone=(
+                    "+34600111222"
+                ),
+                participant_display_name=(
+                    "Contacto"
+                ),
+                is_video=False,
+                identity_complete=True,
+            )
+
+            active_snapshot = WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_INBOUND
+                ),
+                provider_call_id=(
+                    "CALL-REAL-001"
+                ),
+                external_call_key=(
+                    "opaque-real-001"
+                ),
+                participant_lid=(
+                    "remote@lid"
+                ),
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone=(
+                    "+34600111222"
+                ),
+                participant_display_name=(
+                    "Contacto"
+                ),
+                is_video=False,
+                identity_complete=True,
+            )
+
+            connector.call_snapshots = [
+                ringing_snapshot,
+                active_snapshot,
+            ]
+
+            first = (
+                runtime
+                .observe_and_sync_call(
+                    wait_timeout=1,
+                )
+            )
+
+            second = (
+                runtime
+                .observe_and_sync_call(
+                    wait_timeout=1,
+                )
+            )
+
+            self.assertEqual(
+                first.action,
+                WHATSAPP_CALL_REALTIME_RECONCILED,
+            )
+
+            self.assertEqual(
+                second.action,
+                WHATSAPP_CALL_REALTIME_RECONCILED,
+            )
+
+            self.assertEqual(
+                first.persisted_call.id,
+                second.persisted_call.id,
+            )
+
+            stored = (
+                repository
+                .get_call_by_provider_identity(
+                    provider="WHATSAPP_WEB",
+                    external_call_key=(
+                        "opaque-real-001"
+                    ),
+                )
+            )
+
+            self.assertIsNotNone(
+                stored
+            )
+
+            self.assertEqual(
+                stored.id,
+                first.persisted_call.id,
+            )
+
+            self.assertEqual(
+                stored.status,
+                "ANSWERED",
+            )
+
+            self.assertEqual(
+                stored.provider_call_id,
+                "CALL-REAL-001",
+            )
+
+            self.assertIsNone(
+                stored.ringing_at
+            )
+
+            self.assertIsNone(
+                stored.answered_at
+            )
+
+            self.assertEqual(
+                stored.metadata[
+                    "crm_observed_ringing_at"
+                ],
+                "2026-08-15T10:00:00+00:00",
+            )
+
+            self.assertEqual(
+                stored.metadata[
+                    "crm_observed_answered_at"
+                ],
+                "2026-08-15T10:00:05+00:00",
+            )
+
+            self.assertEqual(
+                stored.metadata[
+                    "crm_observed_ringing_provider_phase"
+                ],
+                WHATSAPP_CALL_PHASE_INCOMING_RINGING,
+            )
+
+            self.assertEqual(
+                stored.metadata[
+                    "crm_observed_answered_provider_phase"
+                ],
+                WHATSAPP_CALL_PHASE_ACTIVE,
+            )
+
+            self.assertNotIn(
+                "provider_phase",
+                stored.metadata,
+            )
+
+            runtime.close()
+
 
     def test_read_call_snapshot_runs_on_single_runtime_worker(
         self,

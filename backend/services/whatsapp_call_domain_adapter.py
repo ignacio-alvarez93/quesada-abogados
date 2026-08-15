@@ -544,6 +544,45 @@ def project_whatsapp_call_intent_to_provider_snapshot(
         or {}
     )
 
+    # provider_phase describe la fotografía actual.
+    #
+    # No la persistimos bajo una única clave mutable porque
+    # la reconciliación conserva metadata previa ante conflictos.
+    # Una secuencia DIALING -> ACTIVE podría dejar entonces
+    # provider_phase=DIALING con status=ANSWERED.
+    #
+    # Conservamos la evidencia bajo una clave específica
+    # del estado observado, que puede acumularse sin conflicto.
+    provider_phase = (
+        metadata.pop(
+            "provider_phase",
+            None,
+        )
+    )
+
+    phase_key_by_status = {
+        CALL_STATUS_DIALING:
+            "crm_observed_dialing_provider_phase",
+        CALL_STATUS_RINGING:
+            "crm_observed_ringing_provider_phase",
+        CALL_STATUS_ANSWERED:
+            "crm_observed_answered_provider_phase",
+    }
+
+    phase_key = (
+        phase_key_by_status.get(
+            intent.status
+        )
+    )
+
+    if (
+        provider_phase
+        and phase_key
+    ):
+        metadata[
+            phase_key
+        ] = provider_phase
+
     metadata[
         observed_key
     ] = intent.observed_at

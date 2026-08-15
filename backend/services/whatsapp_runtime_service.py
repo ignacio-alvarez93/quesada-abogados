@@ -13,6 +13,7 @@ No conoce Flet.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import threading
 import time
 
@@ -28,12 +29,27 @@ from backend.services.communication_service import (
 from backend.services.whatsapp_call_observation import (
     WhatsAppCallObservationTracker,
 )
+from backend.services.whatsapp_call_realtime_service import (
+    WhatsAppCallRealtimeService,
+)
 from backend.services.whatsapp_outbound_service import (
     WhatsAppOutboundService,
 )
 from backend.services.whatsapp_sync_service import (
     WhatsAppSyncService,
 )
+
+
+def _default_call_clock():
+    """
+    Reloj de observación CRM.
+
+    Devuelve tiempo UTC aware.
+    No representa un timestamp afirmado por WhatsApp.
+    """
+    return datetime.now(
+        timezone.utc
+    )
 
 
 class WhatsAppRuntimeService:
@@ -43,6 +59,8 @@ class WhatsAppRuntimeService:
         profile_key="whatsapp_dev",
         headless=False,
         communication_service=None,
+        call_service=None,
+        call_clock=None,
         connector_factory=None,
     ):
         self.profile_key = str(
@@ -62,6 +80,37 @@ class WhatsAppRuntimeService:
         self.connector_factory = (
             connector_factory
             or WhatsAppConnector
+        )
+
+        if (
+            call_clock is not None
+            and not callable(
+                call_clock
+            )
+        ):
+            raise TypeError(
+                "call_clock debe ser callable o None"
+            )
+
+        self.call_service = (
+            call_service
+        )
+
+        self._call_clock = (
+            call_clock
+            or _default_call_clock
+        )
+
+        # Application service opcional.
+        #
+        # Nunca construye CommunicationCallService ni repository:
+        # la composición productiva debe inyectar la dependencia.
+        self._call_realtime_service = (
+            WhatsAppCallRealtimeService(
+                call_service=(
+                    self.call_service
+                )
+            )
         )
 
         self._connector = None
@@ -1200,6 +1249,91 @@ class WhatsAppRuntimeService:
         """Observación stateful serializada de llamada WhatsApp."""
         return self._run_serialized(
             self._observe_call_impl,
+            wait_timeout=wait_timeout,
+        )
+
+
+    def _call_observed_at(
+        self,
+    ):
+        """
+        Materializa el reloj CRM como ISO-8601.
+
+        La validación definitiva de zona horaria permanece
+        en el adapter puro.
+        """
+        value = (
+            self._call_clock()
+        )
+
+        if isinstance(
+            value,
+            datetime,
+        ):
+            return value.isoformat()
+
+        return str(
+            value
+            or ""
+        ).strip()
+
+
+    def _observe_and_sync_call_impl(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """
+        Observa y reconcilia una llamada actionable.
+
+        read_call_snapshot() y observe_call() siguen siendo
+        rutas pasivas sin persistencia.
+        """
+        observation = (
+            self._observe_call_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        if not (
+            self._call_realtime_service
+            .enabled
+        ):
+            return (
+                self
+                ._call_realtime_service
+                .process_observation(
+                    observation,
+                    observed_at=None,
+                )
+            )
+
+        observed_at = (
+            self._call_observed_at()
+        )
+
+        return (
+            self
+            ._call_realtime_service
+            .process_observation(
+                observation,
+                observed_at=(
+                    observed_at
+                ),
+            )
+        )
+
+
+    def observe_and_sync_call(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """
+        API serializada de incorporación realtime de llamadas.
+        """
+        return self._run_serialized(
+            self._observe_and_sync_call_impl,
             wait_timeout=wait_timeout,
         )
 
