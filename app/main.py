@@ -171,14 +171,37 @@ def main(page: ft.Page):
         ]:
             return False
 
-        whatsapp_runtime_closed[
-            "value"
-        ] = True
-
         try:
-            return whatsapp_runtime.close()
+            result = (
+                whatsapp_runtime.close()
+            )
+
+            # El latch representa ausencia real de ownership,
+            # no simplemente que se haya intentado cerrar.
+            #
+            # close() puede devolver False cuando nunca hubo
+            # connector. Ese caso está igualmente cerrado.
+            #
+            # Si un shutdown falla conservando connector,
+            # mantenemos el latch abierto para permitir retry.
+            whatsapp_runtime_closed[
+                "value"
+            ] = (
+                whatsapp_runtime.connector
+                is None
+            )
+
+            return result
 
         except Exception as exc:
+            # Un cierre excepcional no se declara definitivo.
+            #
+            # El Runtime puede conservar connector/browser/
+            # executor precisamente para permitir otro intento.
+            whatsapp_runtime_closed[
+                "value"
+            ] = False
+
             print(
                 "[WA-CALL] error cerrando "
                 "runtime de sesión:",

@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 import unittest
 
@@ -191,6 +192,268 @@ class WhatsAppProductCompositionTest(
         self.assertIn(
             "whatsapp_runtime.close()",
             self.app_source,
+        )
+
+
+    def test_close_latch_tracks_runtime_ownership(
+        self,
+    ):
+        """
+        El composition root no puede declarar cerrado el
+        runtime antes de conocer el resultado del shutdown.
+
+        El latch definitivo depende de que el Runtime ya no
+        conserve connector.
+        """
+
+        tree = ast.parse(
+            self.app_source
+        )
+
+        helper = None
+
+        for node in ast.walk(
+            tree
+        ):
+            if (
+                isinstance(
+                    node,
+                    ast.FunctionDef,
+                )
+                and node.name
+                == "close_whatsapp_session_services"
+            ):
+                helper = node
+                break
+
+        self.assertIsNotNone(
+            helper
+        )
+
+        close_calls = []
+
+        for node in ast.walk(
+            helper
+        ):
+            if not isinstance(
+                node,
+                ast.Call,
+            ):
+                continue
+
+            function = node.func
+
+            if not isinstance(
+                function,
+                ast.Attribute,
+            ):
+                continue
+
+            if (
+                function.attr == "close"
+                and isinstance(
+                    function.value,
+                    ast.Name,
+                )
+                and function.value.id
+                == "whatsapp_runtime"
+            ):
+                close_calls.append(
+                    node
+                )
+
+        self.assertEqual(
+            len(
+                close_calls
+            ),
+            1,
+        )
+
+        close_line = (
+            close_calls[0].lineno
+        )
+
+        def is_closed_flag_target(
+            target,
+        ):
+            return (
+                isinstance(
+                    target,
+                    ast.Subscript,
+                )
+                and isinstance(
+                    target.value,
+                    ast.Name,
+                )
+                and target.value.id
+                == "whatsapp_runtime_closed"
+                and isinstance(
+                    target.slice,
+                    ast.Constant,
+                )
+                and target.slice.value
+                == "value"
+            )
+
+        assignments = []
+
+        for node in ast.walk(
+            helper
+        ):
+            if not isinstance(
+                node,
+                ast.Assign,
+            ):
+                continue
+
+            if any(
+                is_closed_flag_target(
+                    target
+                )
+                for target in node.targets
+            ):
+                assignments.append(
+                    node
+                )
+
+        self.assertGreaterEqual(
+            len(
+                assignments
+            ),
+            2,
+        )
+
+        # Nunca puede existir un latch=True previo al
+        # shutdown físico.
+        self.assertFalse(
+            any(
+                assignment.lineno
+                < close_line
+                for assignment
+                in assignments
+            )
+        )
+
+        ownership_assignments = []
+
+        for assignment in assignments:
+            value = assignment.value
+
+            if not isinstance(
+                value,
+                ast.Compare,
+            ):
+                continue
+
+            if (
+                len(
+                    value.ops
+                )
+                != 1
+                or not isinstance(
+                    value.ops[0],
+                    ast.Is,
+                )
+            ):
+                continue
+
+            left = value.left
+
+            if not (
+                isinstance(
+                    left,
+                    ast.Attribute,
+                )
+                and left.attr
+                == "connector"
+                and isinstance(
+                    left.value,
+                    ast.Name,
+                )
+                and left.value.id
+                == "whatsapp_runtime"
+            ):
+                continue
+
+            if (
+                len(
+                    value.comparators
+                )
+                == 1
+                and isinstance(
+                    value.comparators[0],
+                    ast.Constant,
+                )
+                and value.comparators[0].value
+                is None
+            ):
+                ownership_assignments.append(
+                    assignment
+                )
+
+        self.assertEqual(
+            len(
+                ownership_assignments
+            ),
+            1,
+        )
+
+        self.assertGreater(
+            ownership_assignments[
+                0
+            ].lineno,
+            close_line,
+        )
+
+        # El camino excepcional debe dejar explícitamente
+        # abierto el latch para permitir retry.
+        exception_resets = []
+
+        for handler in [
+            node
+            for node in ast.walk(
+                helper
+            )
+            if isinstance(
+                node,
+                ast.ExceptHandler,
+            )
+        ]:
+            for node in ast.walk(
+                handler
+            ):
+                if not isinstance(
+                    node,
+                    ast.Assign,
+                ):
+                    continue
+
+                if not any(
+                    is_closed_flag_target(
+                        target
+                    )
+                    for target
+                    in node.targets
+                ):
+                    continue
+
+                if (
+                    isinstance(
+                        node.value,
+                        ast.Constant,
+                    )
+                    and node.value.value
+                    is False
+                ):
+                    exception_resets.append(
+                        node
+                    )
+
+        self.assertEqual(
+            len(
+                exception_resets
+            ),
+            1,
         )
 
 

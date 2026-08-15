@@ -52,6 +52,9 @@ class FakeConnector:
         self.close_calls = 0
         self.dismiss_calls = 0
 
+        self.close_result = True
+        self.close_error = None
+
         self.status = (
             SESSION_STATUS_READY
         )
@@ -121,7 +124,15 @@ class FakeConnector:
         self,
     ):
         self.close_calls += 1
+
+        if self.close_error is not None:
+            raise self.close_error
+
+        if not self.close_result:
+            return False
+
         self.browser = None
+
         return True
 
     def read_call_snapshot(
@@ -1631,6 +1642,195 @@ class WhatsAppRuntimeServiceTest(
                 FakeConnector.instances
             ),
             2,
+        )
+
+
+    def test_close_failure_preserves_connector_services_and_executor(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        executor = runtime._executor
+
+        outbound_service = object()
+        sync_service = object()
+
+        runtime._outbound_service = (
+            outbound_service
+        )
+
+        runtime._sync_service = (
+            sync_service
+        )
+
+        connector.close_result = False
+
+        try:
+            result = runtime.close()
+
+            self.assertFalse(
+                result
+            )
+
+            self.assertEqual(
+                connector.close_calls,
+                1,
+            )
+
+            self.assertIs(
+                runtime.connector,
+                connector,
+            )
+
+            self.assertTrue(
+                runtime.started
+            )
+
+            self.assertIs(
+                runtime._executor,
+                executor,
+            )
+
+            self.assertIs(
+                runtime._outbound_service,
+                outbound_service,
+            )
+
+            self.assertIs(
+                runtime._sync_service,
+                sync_service,
+            )
+
+            # El mismo owner puede volver a intentar el cierre.
+            connector.close_result = True
+
+            self.assertTrue(
+                runtime.close()
+            )
+
+            self.assertEqual(
+                connector.close_calls,
+                2,
+            )
+
+            self.assertIsNone(
+                runtime.connector
+            )
+
+            self.assertIsNone(
+                runtime._executor
+            )
+
+            self.assertIsNone(
+                runtime._outbound_service
+            )
+
+            self.assertIsNone(
+                runtime._sync_service
+            )
+
+        finally:
+            if runtime.connector is not None:
+                connector.close_result = True
+                connector.close_error = None
+                runtime.close()
+
+
+    def test_close_exception_preserves_connector_and_executor(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        executor = runtime._executor
+
+        connector.close_error = RuntimeError(
+            "shutdown simulado"
+        )
+
+        try:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "shutdown simulado",
+            ):
+                runtime.close()
+
+            self.assertEqual(
+                connector.close_calls,
+                1,
+            )
+
+            self.assertIs(
+                runtime.connector,
+                connector,
+            )
+
+            self.assertTrue(
+                runtime.started
+            )
+
+            self.assertIs(
+                runtime._executor,
+                executor,
+            )
+
+            connector.close_error = None
+
+            self.assertTrue(
+                runtime.close()
+            )
+
+            self.assertEqual(
+                connector.close_calls,
+                2,
+            )
+
+            self.assertIsNone(
+                runtime.connector
+            )
+
+            self.assertIsNone(
+                runtime._executor
+            )
+
+        finally:
+            if runtime.connector is not None:
+                connector.close_error = None
+                connector.close_result = True
+                runtime.close()
+
+
+    def test_close_without_connector_still_releases_executor(
+        self,
+    ):
+        runtime = self._runtime()
+
+        # get_status() está serializado y por ello puede crear
+        # el worker aunque nunca llegue a existir connector.
+        self.assertEqual(
+            runtime.get_status(),
+            "NOT_STARTED",
+        )
+
+        executor = runtime._executor
+
+        self.assertIsNotNone(
+            executor
+        )
+
+        self.assertFalse(
+            runtime.close()
+        )
+
+        self.assertIsNone(
+            runtime.connector
+        )
+
+        self.assertIsNone(
+            runtime._executor
         )
 
 

@@ -2630,18 +2630,27 @@ class WhatsAppRuntimeService:
         if connector is None:
             return False
 
-        try:
-            return bool(
-                connector.close()
-            )
+        # El connector conserva BrowserSession/browser cuando
+        # su shutdown no puede completarse.
+        #
+        # El runtime debe respetar ese ownership:
+        # no puede olvidar el único controlador de una sesión
+        # que potencialmente continúa viva.
+        closed = bool(
+            connector.close()
+        )
 
-        finally:
-            self._connector = None
-            self._outbound_service = None
-            self._sync_service = None
-            self._active_chat_fingerprint = None
-            self._sidebar_chat_fingerprint = None
-            self._call_observation_tracker.reset()
+        if not closed:
+            return False
+
+        self._connector = None
+        self._outbound_service = None
+        self._sync_service = None
+        self._active_chat_fingerprint = None
+        self._sidebar_chat_fingerprint = None
+        self._call_observation_tracker.reset()
+
+        return True
 
     def close(
         self,
@@ -2656,6 +2665,18 @@ class WhatsAppRuntimeService:
         result = self._run_serialized(
             self._close_impl
         )
+
+        # Si todavía existe connector después del intento,
+        # el cierre no se completó.
+        #
+        # Conservamos también el executor porque constituye
+        # el único worker autorizado para volver a actuar sobre
+        # esa sesión persistente y permite un retry gobernado.
+        if (
+            self._connector is not None
+            and not result
+        ):
+            return False
 
         with self._executor_lock:
             executor = self._executor
