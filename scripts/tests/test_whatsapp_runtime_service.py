@@ -5,7 +5,12 @@ import unittest
 
 from backend.automation.connectors.whatsapp_connector import (
     SESSION_STATUS_READY,
+    WHATSAPP_CALL_DIRECTION_INBOUND,
+    WHATSAPP_CALL_DIRECTION_UNKNOWN,
+    WHATSAPP_CALL_PHASE_ABSENT,
+    WHATSAPP_CALL_PHASE_INCOMING_RINGING,
     WhatsAppActiveChatFingerprint,
+    WhatsAppCallSnapshot,
 )
 from backend.services.whatsapp_runtime_service import (
     WhatsAppRuntimeService,
@@ -38,6 +43,9 @@ class FakeConnector:
 
         self.active_chat_fingerprints = []
         self.sidebar_chat_fingerprints = []
+
+        self.call_snapshots = []
+        self.call_snapshot_thread_ids = []
 
         self.open_phone_calls = []
         self.routing_result = {
@@ -97,6 +105,29 @@ class FakeConnector:
         self.close_calls += 1
         self.browser = None
         return True
+
+    def read_call_snapshot(
+        self,
+    ):
+        self.call_snapshot_thread_ids.append(
+            threading.get_ident()
+        )
+
+        if self.call_snapshots:
+            return self.call_snapshots.pop(
+                0
+            )
+
+        return WhatsAppCallSnapshot(
+            present=False,
+            phase=(
+                WHATSAPP_CALL_PHASE_ABSENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_UNKNOWN
+            ),
+        )
+
 
     def open_chat_by_phone(
         self,
@@ -362,6 +393,201 @@ class WhatsAppRuntimeServiceTest(
                 FakeConnector
             ),
         )
+
+    def test_read_call_snapshot_runs_on_single_runtime_worker(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        expected = WhatsAppCallSnapshot(
+            present=True,
+            phase=(
+                WHATSAPP_CALL_PHASE_INCOMING_RINGING
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+            provider_call_id="CALL-001",
+            external_call_key=(
+                "false_remote@lid_CALL-001"
+            ),
+            participant_lid="remote@lid",
+            participant_phone_id=(
+                "34600111222@c.us"
+            ),
+            participant_phone="+34600111222",
+            participant_display_name="Contacto",
+            is_video=False,
+            visible_state="Llamada",
+            can_accept=True,
+            can_reject=True,
+            can_hangup=False,
+            identity_complete=True,
+        )
+
+        connector.call_snapshots = [
+            expected
+        ]
+
+        caller_thread_id = (
+            threading.get_ident()
+        )
+
+        observed = (
+            runtime.read_call_snapshot(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertIs(
+            observed,
+            expected,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_snapshot_thread_ids
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            connector
+            .call_snapshot_thread_ids[0],
+            runtime._worker_thread_id,
+        )
+
+        self.assertNotEqual(
+            connector
+            .call_snapshot_thread_ids[0],
+            caller_thread_id,
+        )
+
+        self.assertEqual(
+            len(
+                FakeConnector.instances
+            ),
+            1,
+        )
+
+
+    def test_read_call_snapshot_preserves_absent_provider_snapshot(
+        self,
+    ):
+        runtime = self._runtime()
+
+        observed = (
+            runtime.read_call_snapshot(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertFalse(
+            observed.present
+        )
+
+        self.assertEqual(
+            observed.phase,
+            WHATSAPP_CALL_PHASE_ABSENT,
+        )
+
+        self.assertEqual(
+            observed.direction,
+            WHATSAPP_CALL_DIRECTION_UNKNOWN,
+        )
+
+        self.assertIsNone(
+            observed.provider_call_id
+        )
+
+        self.assertFalse(
+            observed.identity_complete
+        )
+
+
+    def test_read_call_snapshot_does_not_keep_runtime_call_state(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        ringing = WhatsAppCallSnapshot(
+            present=True,
+            phase=(
+                WHATSAPP_CALL_PHASE_INCOMING_RINGING
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+            provider_call_id="CALL-002",
+            external_call_key=(
+                "false_remote@lid_CALL-002"
+            ),
+            participant_lid="remote@lid",
+            participant_phone_id=(
+                "34600111222@c.us"
+            ),
+            participant_phone="+34600111222",
+            participant_display_name="Contacto",
+            can_accept=True,
+            can_reject=True,
+            identity_complete=True,
+        )
+
+        absent = WhatsAppCallSnapshot(
+            present=False,
+            phase=(
+                WHATSAPP_CALL_PHASE_ABSENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_UNKNOWN
+            ),
+        )
+
+        connector.call_snapshots = [
+            ringing,
+            absent,
+        ]
+
+        first = runtime.read_call_snapshot(
+            wait_timeout=1,
+        )
+
+        second = runtime.read_call_snapshot(
+            wait_timeout=1,
+        )
+
+        self.assertIs(
+            first,
+            ringing,
+        )
+
+        self.assertIs(
+            second,
+            absent,
+        )
+
+        # WA-CALL-3A2 es solo transporte serializado.
+        # Todavía no existe máquina de estados runtime.
+        self.assertFalse(
+            hasattr(
+                runtime,
+                "_active_call_snapshot",
+            )
+        )
+
+        self.assertEqual(
+            connector.call_snapshot_thread_ids,
+            [
+                runtime._worker_thread_id,
+                runtime._worker_thread_id,
+            ],
+        )
+
 
     def test_connector_is_lazy(
         self,

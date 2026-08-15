@@ -1127,6 +1127,40 @@ class WhatsAppRuntimeService:
             **kwargs,
         )
 
+    def _read_call_snapshot_impl(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """Lee pasivamente la llamada actual en el worker WhatsApp.
+
+        No persiste.
+        No interpreta lifecycle de dominio.
+        No conoce CommunicationCallService.
+        """
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        return (
+            connector.read_call_snapshot()
+        )
+
+
+    def read_call_snapshot(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """Expone la fotografía VOIP respetando afinidad CDP."""
+        return self._run_serialized(
+            self._read_call_snapshot_impl,
+            wait_timeout=wait_timeout,
+        )
+
+
     def _observe_active_chat_impl(
         self,
         *,
