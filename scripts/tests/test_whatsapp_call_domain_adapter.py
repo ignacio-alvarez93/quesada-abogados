@@ -38,6 +38,7 @@ from backend.services.whatsapp_call_domain_adapter import (
 )
 from backend.services.whatsapp_call_observation import (
     CALL_OBSERVATION_SURFACE_APPEARED,
+    CALL_OBSERVATION_UPDATED,
     WhatsAppCallObservation,
 )
 
@@ -330,12 +331,253 @@ class WhatsAppCallDomainAdapterTest(
         )
 
 
-    def test_disappeared_surface_does_not_emit_domain_event(
+    def test_incoming_ringing_to_ended_transient_maps_to_missed(
+        self,
+    ):
+        ringing = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_INCOMING_RINGING
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+        )
+
+        ended = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+        )
+
+        changed = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                CALL_OBSERVATION_UPDATED
+            ),
+            previous=ringing,
+            current=ended,
+            active=ended,
+            disappeared=None,
+        )
+
+        result = adapt_whatsapp_call_observation(
+            changed,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertTrue(
+            result.ready
+        )
+
+        self.assertEqual(
+            result.reason,
+            WHATSAPP_CALL_ADAPT_READY,
+        )
+
+        self.assertEqual(
+            result.intent.status,
+            "MISSED",
+        )
+
+        self.assertEqual(
+            result.intent.external_call_key,
+            ringing.external_call_key,
+        )
+
+        self.assertEqual(
+            result.intent.provider_call_id,
+            ringing.provider_call_id,
+        )
+
+        self.assertEqual(
+            result.intent.metadata[
+                "crm_terminal_inference"
+            ],
+            "INCOMING_RINGING_TO_ENDED_TRANSIENT",
+        )
+
+        projected = (
+            project_whatsapp_call_intent_to_provider_snapshot(
+                result.intent
+            )
+        )
+
+        self.assertEqual(
+            projected.status,
+            "MISSED",
+        )
+
+        self.assertIsNone(
+            projected.ended_at
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_missed_at"
+            ],
+            OBSERVED_AT,
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_missed_provider_phase"
+            ],
+            WHATSAPP_CALL_PHASE_ENDED_TRANSIENT,
+        )
+
+
+    def test_answered_to_ended_transient_does_not_become_missed(
+        self,
+    ):
+        active = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ACTIVE
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+        )
+
+        ended = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+        )
+
+        changed = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                CALL_OBSERVATION_UPDATED
+            ),
+            previous=active,
+            current=ended,
+            active=ended,
+            disappeared=None,
+        )
+
+        result = adapt_whatsapp_call_observation(
+            changed,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertFalse(
+            result.ready
+        )
+
+        self.assertEqual(
+            result.reason,
+            WHATSAPP_CALL_ADAPT_PHASE_NOT_ACTIONABLE,
+        )
+
+        self.assertIsNone(
+            result.intent
+        )
+
+
+    def test_incoming_ringing_disappearance_maps_to_missed(
         self,
     ):
         snapshot = call_snapshot(
             phase=(
                 WHATSAPP_CALL_PHASE_INCOMING_RINGING
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+        )
+
+        provider_absent = WhatsAppCallSnapshot(
+            present=False,
+            phase="ABSENT",
+            direction=(
+                WHATSAPP_CALL_DIRECTION_UNKNOWN
+            ),
+        )
+
+        disappeared = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                "CALL_SURFACE_DISAPPEARED"
+            ),
+            previous=snapshot,
+            current=provider_absent,
+            active=None,
+            disappeared=snapshot,
+        )
+
+        result = adapt_whatsapp_call_observation(
+            disappeared,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertTrue(
+            result.ready
+        )
+
+        self.assertEqual(
+            result.reason,
+            "READY",
+        )
+
+        self.assertEqual(
+            result.intent.status,
+            "MISSED",
+        )
+
+        self.assertEqual(
+            result.intent.external_call_key,
+            snapshot.external_call_key,
+        )
+
+        self.assertEqual(
+            result.intent.metadata[
+                "crm_terminal_inference"
+            ],
+            "INCOMING_RINGING_SURFACE_DISAPPEARED",
+        )
+
+        projected = (
+            project_whatsapp_call_intent_to_provider_snapshot(
+                result.intent
+            )
+        )
+
+        self.assertEqual(
+            projected.status,
+            "MISSED",
+        )
+
+        self.assertIsNone(
+            projected.ended_at
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_missed_at"
+            ],
+            OBSERVED_AT,
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_missed_provider_phase"
+            ],
+            WHATSAPP_CALL_PHASE_INCOMING_RINGING,
+        )
+
+
+    def test_answered_disappearance_does_not_become_missed(
+        self,
+    ):
+        snapshot = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ACTIVE
             ),
             direction=(
                 WHATSAPP_CALL_DIRECTION_INBOUND
@@ -373,6 +615,10 @@ class WhatsAppCallDomainAdapterTest(
         self.assertEqual(
             result.reason,
             WHATSAPP_CALL_ADAPT_NO_ACTIVE_SURFACE,
+        )
+
+        self.assertIsNone(
+            result.intent
         )
 
 

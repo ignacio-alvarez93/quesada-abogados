@@ -6,6 +6,7 @@ from backend.automation.connectors.whatsapp_connector import (
     WHATSAPP_CALL_DIRECTION_OUTBOUND,
     WHATSAPP_CALL_PHASE_ACTIVE,
     WHATSAPP_CALL_PHASE_CONNECTING,
+    WHATSAPP_CALL_PHASE_ENDED_TRANSIENT,
     WHATSAPP_CALL_PHASE_INCOMING_RINGING,
     WhatsAppCallSnapshot,
 )
@@ -15,6 +16,7 @@ from backend.communications.calls import (
 )
 from backend.services.whatsapp_call_observation import (
     CALL_OBSERVATION_SURFACE_APPEARED,
+    CALL_OBSERVATION_UPDATED,
     WhatsAppCallObservation,
 )
 from backend.services.whatsapp_call_realtime_service import (
@@ -304,6 +306,176 @@ class WhatsAppCallRealtimeServiceTest(
         self.assertNotIn(
             "provider_phase",
             projected.metadata,
+        )
+
+
+    def test_incoming_ringing_to_ended_transient_reconciles_missed(
+        self,
+    ):
+        call_service = FakeCallService()
+
+        service = WhatsAppCallRealtimeService(
+            call_service=call_service
+        )
+
+        ringing = snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_INCOMING_RINGING
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+        )
+
+        ended = snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+        )
+
+        changed = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                CALL_OBSERVATION_UPDATED
+            ),
+            previous=ringing,
+            current=ended,
+            active=ended,
+            disappeared=None,
+        )
+
+        result = service.process_observation(
+            changed,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(
+            result.action,
+            WHATSAPP_CALL_REALTIME_RECONCILED,
+        )
+
+        self.assertEqual(
+            len(
+                call_service.snapshots
+            ),
+            1,
+        )
+
+        projected = (
+            call_service.snapshots[0]
+        )
+
+        self.assertEqual(
+            projected.status,
+            "MISSED",
+        )
+
+        self.assertEqual(
+            projected.external_call_key,
+            ringing.external_call_key,
+        )
+
+        self.assertEqual(
+            projected.provider_call_id,
+            ringing.provider_call_id,
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_terminal_inference"
+            ],
+            "INCOMING_RINGING_TO_ENDED_TRANSIENT",
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_missed_provider_phase"
+            ],
+            WHATSAPP_CALL_PHASE_ENDED_TRANSIENT,
+        )
+
+
+    def test_incoming_ringing_disappearance_reconciles_missed(
+        self,
+    ):
+        call_service = FakeCallService()
+
+        service = WhatsAppCallRealtimeService(
+            call_service=call_service
+        )
+
+        ringing = snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_INCOMING_RINGING
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+        )
+
+        provider_absent = WhatsAppCallSnapshot(
+            present=False,
+            phase="ABSENT",
+            direction="UNKNOWN",
+        )
+
+        disappeared = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                "CALL_SURFACE_DISAPPEARED"
+            ),
+            previous=ringing,
+            current=provider_absent,
+            active=None,
+            disappeared=ringing,
+        )
+
+        result = service.process_observation(
+            disappeared,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(
+            result.action,
+            WHATSAPP_CALL_REALTIME_RECONCILED,
+        )
+
+        self.assertEqual(
+            len(
+                call_service.snapshots
+            ),
+            1,
+        )
+
+        projected = (
+            call_service.snapshots[0]
+        )
+
+        self.assertEqual(
+            projected.status,
+            "MISSED",
+        )
+
+        self.assertEqual(
+            projected.external_call_key,
+            ringing.external_call_key,
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_missed_at"
+            ],
+            OBSERVED_AT,
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_terminal_inference"
+            ],
+            "INCOMING_RINGING_SURFACE_DISAPPEARED",
         )
 
 
