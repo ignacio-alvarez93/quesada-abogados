@@ -236,3 +236,140 @@ def build_whatsapp_history_reconciliation_plan(
                 snapshots
             ),
     }
+
+
+def apply_whatsapp_history_reconciliation_plan(
+    plan,
+    *,
+    call_service,
+    dry_run=True,
+):
+    """
+    Ejecuta un plan histórico previamente validado.
+
+    dry_run=True:
+        no llama reconcile_provider_call().
+
+    dry_run=False:
+        cada ProviderCallSnapshot se entrega al servicio
+        genérico existente de llamadas.
+
+    Este adaptador:
+    - no conoce SQLite;
+    - no conoce repositorios;
+    - no implementa reconciliación propia;
+    - no inventa identidad ni timestamps.
+    """
+    if not isinstance(
+        plan,
+        dict,
+    ):
+        raise TypeError(
+            "plan debe ser dict"
+        )
+
+    snapshots = tuple(
+        plan.get(
+            "snapshots"
+        )
+        or ()
+    )
+
+    existing_errors = list(
+        plan.get(
+            "errors"
+        )
+        or []
+    )
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "source_items":
+                int(
+                    plan.get(
+                        "source_items"
+                    )
+                    or 0
+                ),
+            "planned":
+                len(snapshots),
+            "processed": 0,
+            "reconciled": 0,
+            "errors":
+                existing_errors,
+            "calls":
+                (),
+        }
+
+    reconcile = getattr(
+        call_service,
+        "reconcile_provider_call",
+        None,
+    )
+
+    if not callable(
+        reconcile
+    ):
+        raise TypeError(
+            "call_service debe exponer "
+            "reconcile_provider_call()"
+        )
+
+    calls = []
+    errors = list(
+        existing_errors
+    )
+
+    for index, snapshot in enumerate(
+        snapshots
+    ):
+        try:
+            call = reconcile(
+                snapshot
+            )
+
+        except Exception as exc:
+            errors.append({
+                "index":
+                    index,
+                "external_call_key":
+                    getattr(
+                        snapshot,
+                        "external_call_key",
+                        None,
+                    ),
+                "error_type":
+                    type(exc).__name__,
+                "message":
+                    str(exc),
+            })
+
+            continue
+
+        calls.append(
+            call
+        )
+
+    return {
+        "dry_run": False,
+        "source_items":
+            int(
+                plan.get(
+                    "source_items"
+                )
+                or len(snapshots)
+            ),
+        "planned":
+            len(snapshots),
+        "processed":
+            len(snapshots),
+        "reconciled":
+            len(calls),
+        "errors":
+            errors,
+        "calls":
+            tuple(
+                calls
+            ),
+    }
