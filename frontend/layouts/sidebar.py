@@ -160,6 +160,7 @@ KNOWN_ACTIVE_VIEWS = {
     "Colas de presentación",
     "Notificaciones",
     "WhatsApp",
+    "Llamadas",
     "Cobros",
     "Conciliación",
     "Pérdidas y ganancias",

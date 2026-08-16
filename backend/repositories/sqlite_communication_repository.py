@@ -1093,12 +1093,31 @@ class SQLiteCommunicationRepository:
                             ''
                         )
                     ) LIKE ?
+                    OR LOWER(
+                        TRIM(
+                            COALESCE(
+                                resolved_client.nombre,
+                                ''
+                            )
+                            || ' '
+                            || COALESCE(
+                                resolved_client.primer_apellido,
+                                ''
+                            )
+                            || ' '
+                            || COALESCE(
+                                resolved_client.segundo_apellido,
+                                ''
+                            )
+                        )
+                    ) LIKE ?
                 )
                 """
             )
 
             params.extend(
                 [
+                    token,
                     token,
                     token,
                     token,
@@ -1180,6 +1199,25 @@ class SQLiteCommunicationRepository:
                 COALESCE(
                     NULLIF(
                         TRIM(
+                            COALESCE(
+                                resolved_client.nombre,
+                                ''
+                            )
+                            || ' '
+                            || COALESCE(
+                                resolved_client.primer_apellido,
+                                ''
+                            )
+                            || ' '
+                            || COALESCE(
+                                resolved_client.segundo_apellido,
+                                ''
+                            )
+                        ),
+                        ''
+                    ),
+                    NULLIF(
+                        TRIM(
                             c.display_name_snapshot
                         ),
                         ''
@@ -1246,6 +1284,13 @@ class SQLiteCommunicationRepository:
                AND c.thread_id IS NULL
                AND ut.external_address
                     = c.phone_number
+
+            LEFT JOIN clientes resolved_client
+                ON resolved_client.id = COALESCE(
+                    c.client_id,
+                    direct_thread.client_id,
+                    ut.client_id
+                )
 
             LEFT JOIN
                 communication_call_followups f

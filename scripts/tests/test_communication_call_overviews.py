@@ -53,7 +53,9 @@ class CommunicationCallOverviewTest(
 
                 CREATE TABLE clientes (
                     id INTEGER PRIMARY KEY,
-                    nombre TEXT NOT NULL
+                    nombre TEXT NOT NULL,
+                    primer_apellido TEXT,
+                    segundo_apellido TEXT
                 );
 
                 CREATE TABLE expedientes (
@@ -313,6 +315,90 @@ class CommunicationCallOverviewTest(
         self.assertIsNone(
             item.total_duration_seconds
         )
+
+    def test_linked_client_name_has_priority_over_provider_alias(
+        self,
+    ):
+        conn = sqlite3.connect(
+            str(
+                self.db_path
+            )
+        )
+
+        try:
+            conn.execute(
+                """
+                INSERT INTO clientes (
+                    id,
+                    nombre,
+                    primer_apellido,
+                    segundo_apellido
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    30,
+                    "JEAN PIERRY",
+                    "MUÑOZ",
+                    "VALDEZ",
+                ),
+            )
+
+            conn.commit()
+
+        finally:
+            conn.close()
+
+        call = (
+            self.service
+            .create_inbound_call(
+                channel="WHATSAPP",
+                phone_number=(
+                    "+34639156371"
+                ),
+                client_id=30,
+                display_name_snapshot=(
+                    "Mama"
+                ),
+            )
+        )
+
+        items = (
+            self.service
+            .list_call_overviews(
+                search="JEAN PIERRY",
+            )
+        )
+
+        self.assertEqual(
+            len(
+                items
+            ),
+            1,
+        )
+
+        item = items[0]
+
+        self.assertEqual(
+            item.call_id,
+            call.id,
+        )
+
+        self.assertEqual(
+            item.client_id,
+            30,
+        )
+
+        self.assertEqual(
+            item.display_name,
+            "JEAN PIERRY MUÑOZ VALDEZ",
+        )
+
+        self.assertNotEqual(
+            item.display_name,
+            "Mama",
+        )
+
 
     def test_search_filters_without_frontend_sql(
         self,

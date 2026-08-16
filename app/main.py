@@ -49,6 +49,7 @@ from frontend.views.notifications_view import notifications_view
 from frontend.views.calendar_view import calendar_view
 from frontend.views.document_inbox_view import document_inbox_view
 from frontend.views.communications_view import communications_view
+from frontend.views.calls_view import calls_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
 
@@ -615,6 +616,13 @@ def main(page: ft.Page):
                                 return_context
                             ),
                         )
+                ),
+            )
+        elif view_name == "Llamadas":
+            content = calls_view(
+                page,
+                call_service=(
+                    communication_call_service
                 ),
             )
         elif view_name == "Reporting":
