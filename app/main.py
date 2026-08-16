@@ -1,3 +1,5 @@
+import asyncio
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -22,6 +24,10 @@ from backend.services.communication_call_service import (
 )
 from backend.services.communication_service import (
     CommunicationService,
+)
+from backend.services.call_ui_event_service import (
+    CallUIEvent,
+    CallUIEventService,
 )
 from backend.services.whatsapp_runtime_service import (
     WhatsAppRuntimeService,
@@ -52,6 +58,9 @@ from frontend.views.communications_view import communications_view
 from frontend.views.calls_view import calls_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
+from frontend.components.global_call_ui_coordinator import (
+    GlobalCallUICoordinator,
+)
 
 
 def main(page: ft.Page):
@@ -127,6 +136,90 @@ def main(page: ft.Page):
         "value": False,
     }
 
+    # CALL-UX-4 · presentación global de llamadas.
+    #
+    # El evento es provider-neutral y la UI no conoce
+    # Selenium, SQLite ni WhatsAppConnector.
+    call_ui_event_service = (
+        CallUIEventService(
+            call_service=(
+                communication_call_service
+            ),
+        )
+    )
+
+    def accept_global_call(
+        event,
+    ):
+        return (
+            whatsapp_runtime
+            .accept_incoming_call(
+                event.call_id,
+                expected_provider_call_id=(
+                    event.provider_call_id
+                ),
+                expected_external_call_key=(
+                    event.external_call_key
+                ),
+                wait_timeout=5,
+                confirm_timeout=3,
+            )
+        )
+
+    def reject_global_call(
+        event,
+    ):
+        return (
+            whatsapp_runtime
+            .reject_incoming_call(
+                event.call_id,
+                expected_provider_call_id=(
+                    event.provider_call_id
+                ),
+                expected_external_call_key=(
+                    event.external_call_key
+                ),
+                wait_timeout=5,
+                confirm_timeout=3,
+            )
+        )
+
+    global_call_ui = (
+        GlobalCallUICoordinator(
+            page=page,
+            on_accept=(
+                accept_global_call
+            ),
+            on_reject=(
+                reject_global_call
+            ),
+        )
+    )
+
+    def on_whatsapp_call_watch_change(
+        realtime_result,
+    ):
+        event = (
+            call_ui_event_service
+            .project_whatsapp_realtime_result(
+                realtime_result
+            )
+        )
+
+        if event is None:
+            return False
+
+        return (
+            global_call_ui
+            .handle_event(
+                event
+            )
+        )
+
+    call_ui_smoke_started = {
+        "value": False,
+    }
+
     # Runtime DEHú global y perezoso.
     #
     # Se construye con la sesión ERP pero NO abre Chrome
@@ -154,6 +247,9 @@ def main(page: ft.Page):
             whatsapp_runtime.start_call_watch(
                 interval_seconds=0.25,
                 wait_timeout=5,
+                on_change=(
+                    on_whatsapp_call_watch_change
+                ),
             )
 
             return True
@@ -646,6 +742,189 @@ def main(page: ft.Page):
         )
         page.update()
 
+    async def run_global_call_ui_smoke():
+        """
+        Smoke exclusivamente visual.
+
+        No persiste.
+        No toca WhatsApp.
+        No usa Selenium.
+        """
+
+        await asyncio.sleep(
+            8
+        )
+
+        ringing = CallUIEvent(
+            event_key=(
+                "SMOKE:GLOBAL-CALL-1"
+            ),
+            channel="WHATSAPP",
+            direction="INBOUND",
+            status="RINGING",
+            phone_number=(
+                "+34639156371"
+            ),
+            display_name=(
+                "JEAN PIERRY MUÑOZ VALDEZ"
+            ),
+            client_id=30,
+            provider="WHATSAPP",
+            provider_call_id=(
+                "SMOKE-PROVIDER-1"
+            ),
+            external_call_key=(
+                "SMOKE-EXTERNAL-1"
+            ),
+            # Nunca permitimos que el smoke sintético
+            # ejecute acciones reales de provider.
+            can_accept=False,
+            can_reject=False,
+            can_hangup=False,
+            incoming_ringing=True,
+            terminal=False,
+            source=(
+                "SYNTHETIC_UI_SMOKE"
+            ),
+        )
+
+        print(
+            "[CALL-UI-SMOKE] OPEN",
+            flush=True,
+        )
+
+        page.run_thread(
+            global_call_ui.handle_event,
+            ringing,
+        )
+
+        # El evento entra ahora por la misma frontera
+        # background -> Page.run_task que usará el watcher.
+        await asyncio.sleep(
+            0.5
+        )
+
+        print(
+            "[CALL-UI-SMOKE] AFTER_OPEN:",
+            global_call_ui.debug_state(),
+            flush=True,
+        )
+
+        await asyncio.sleep(
+            2
+        )
+
+        page.run_thread(
+            global_call_ui.handle_event,
+            ringing,
+        )
+
+        # El evento entra ahora por la misma frontera
+        # background -> Page.run_task que usará el watcher.
+        await asyncio.sleep(
+            0.5
+        )
+
+        print(
+            "[CALL-UI-SMOKE] AFTER_DUPLICATE:",
+            global_call_ui.debug_state(),
+            flush=True,
+        )
+
+        await asyncio.sleep(
+            8
+        )
+
+        terminal = CallUIEvent(
+            event_key=(
+                ringing.event_key
+            ),
+            channel=(
+                ringing.channel
+            ),
+            direction=(
+                ringing.direction
+            ),
+            status="MISSED",
+            phone_number=(
+                ringing.phone_number
+            ),
+            display_name=(
+                ringing.display_name
+            ),
+            client_id=(
+                ringing.client_id
+            ),
+            provider=(
+                ringing.provider
+            ),
+            provider_call_id=(
+                ringing.provider_call_id
+            ),
+            external_call_key=(
+                ringing.external_call_key
+            ),
+            incoming_ringing=False,
+            terminal=True,
+            source=(
+                "SYNTHETIC_UI_SMOKE"
+            ),
+        )
+
+        print(
+            "[CALL-UI-SMOKE] TERMINAL",
+            flush=True,
+        )
+
+        page.run_thread(
+            global_call_ui.handle_event,
+            terminal,
+        )
+
+        await asyncio.sleep(
+            0.5
+        )
+
+        print(
+            "[CALL-UI-SMOKE] AFTER_TERMINAL:",
+            global_call_ui.debug_state(),
+            flush=True,
+        )
+
+
+    def maybe_start_global_call_ui_smoke():
+        enabled = str(
+            os.getenv(
+                "QUESADA_CALL_UI_SMOKE",
+                "",
+            )
+            or ""
+        ).strip().lower()
+
+        if enabled not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return False
+
+        if call_ui_smoke_started[
+            "value"
+        ]:
+            return False
+
+        call_ui_smoke_started[
+            "value"
+        ] = True
+
+        page.run_task(
+            run_global_call_ui_smoke
+        )
+
+        return True
+
+
     def on_login_success(user):
         current_user["value"] = user
 
@@ -657,6 +936,8 @@ def main(page: ft.Page):
         navigate("Clientes")
 
         start_whatsapp_session_services()
+
+        maybe_start_global_call_ui_smoke()
 
     def start():
         main_container.content = login_view(page, on_login_success=on_login_success)

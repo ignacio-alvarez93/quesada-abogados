@@ -26,6 +26,11 @@ from backend.automation.connectors.whatsapp_connector import (
 from backend.services.communication_service import (
     CommunicationService,
 )
+from backend.communications.calls import (
+    CALL_DIRECTION_INBOUND,
+    CALL_STATUS_REJECTED,
+    CALL_STATUS_RINGING,
+)
 from backend.automation.connectors.whatsapp_call_observer import (
     WHATSAPP_CALL_PHASE_ACTIVE,
 )
@@ -1495,6 +1500,456 @@ class WhatsAppRuntimeService:
             routing_timeout=routing_timeout,
             call_confirm_timeout=(
                 call_confirm_timeout
+            ),
+        )
+
+
+    def _get_persisted_incoming_ringing_call(
+        self,
+        call_id,
+    ):
+        call_service = getattr(
+            self._call_realtime_service,
+            "call_service",
+            None,
+        )
+
+        if call_service is None:
+            return (
+                None,
+                {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "CALL_PERSISTENCE_DISABLED",
+                },
+            )
+
+        try:
+            normalized_call_id = int(
+                call_id
+            )
+
+        except Exception:
+            return (
+                None,
+                {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "CALL_ID_INVALID",
+                },
+            )
+
+        call = (
+            call_service.get_call(
+                normalized_call_id
+            )
+        )
+
+        if call is None:
+            return (
+                None,
+                {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "CALL_NOT_FOUND",
+                    "call_id":
+                        normalized_call_id,
+                },
+            )
+
+        if (
+            str(
+                getattr(
+                    call,
+                    "direction",
+                    "",
+                )
+                or ""
+            ).strip().upper()
+            != CALL_DIRECTION_INBOUND
+        ):
+            return (
+                None,
+                {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "CALL_NOT_INBOUND",
+                    "call_id":
+                        normalized_call_id,
+                },
+            )
+
+        if (
+            str(
+                getattr(
+                    call,
+                    "status",
+                    "",
+                )
+                or ""
+            ).strip().upper()
+            != CALL_STATUS_RINGING
+        ):
+            return (
+                None,
+                {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "CALL_NOT_RINGING",
+                    "call_id":
+                        normalized_call_id,
+                    "status":
+                        getattr(
+                            call,
+                            "status",
+                            None,
+                        ),
+                },
+            )
+
+        return (
+            call,
+            None,
+        )
+
+
+    def _accept_incoming_call_impl(
+        self,
+        call_id,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        wait_timeout=60,
+        confirm_timeout=2.0,
+    ):
+        call, error = (
+            self
+            ._get_persisted_incoming_ringing_call(
+                call_id
+            )
+        )
+
+        if error is not None:
+            return error
+
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout
+            )
+        )
+
+        raw_result = (
+            connector.accept_incoming_call(
+                expected_provider_call_id=(
+                    expected_provider_call_id
+                ),
+                expected_external_call_key=(
+                    expected_external_call_key
+                ),
+                confirm_timeout=(
+                    confirm_timeout
+                ),
+            )
+        )
+
+        result = (
+            dict(raw_result)
+            if isinstance(
+                raw_result,
+                dict,
+            )
+            else {
+                "ok": False,
+                "uncertain": True,
+                "clicked": True,
+                "reason":
+                    "CALL_ACCEPT_RESULT_INVALID",
+                "raw_result":
+                    raw_result,
+            }
+        )
+
+        snapshot = result.pop(
+            "_snapshot",
+            None,
+        )
+
+        result["call_id"] = int(
+            call.id
+        )
+
+        if (
+            snapshot is not None
+            and bool(
+                getattr(
+                    snapshot,
+                    "present",
+                    False,
+                )
+            )
+        ):
+            observation = (
+                self
+                ._call_observation_tracker
+                .observe(
+                    snapshot
+                )
+            )
+
+            self._maybe_ensure_active_call_microphone(
+                observation
+            )
+
+            observed_at = None
+
+            if (
+                self
+                ._call_realtime_service
+                .enabled
+            ):
+                observed_at = (
+                    self._call_observed_at()
+                )
+
+            realtime_result = (
+                self
+                ._call_realtime_service
+                .process_observation(
+                    observation,
+                    observed_at=(
+                        observed_at
+                    ),
+                )
+            )
+
+            result[
+                "realtime_action"
+            ] = getattr(
+                realtime_result,
+                "action",
+                None,
+            )
+
+            persisted = getattr(
+                realtime_result,
+                "persisted_call",
+                None,
+            )
+
+            if persisted is not None:
+                result[
+                    "persisted_status"
+                ] = getattr(
+                    persisted,
+                    "status",
+                    None,
+                )
+
+        return result
+
+
+    def accept_incoming_call(
+        self,
+        call_id,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        wait_timeout=60,
+        confirm_timeout=2.0,
+    ):
+        """
+        Atiende una llamada entrante desde CRM.
+
+        Toda interacción browser permanece en el worker único.
+        """
+        return self._run_serialized(
+            self._accept_incoming_call_impl,
+            call_id,
+            expected_provider_call_id=(
+                expected_provider_call_id
+            ),
+            expected_external_call_key=(
+                expected_external_call_key
+            ),
+            wait_timeout=wait_timeout,
+            confirm_timeout=(
+                confirm_timeout
+            ),
+        )
+
+
+    def _reject_incoming_call_impl(
+        self,
+        call_id,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        wait_timeout=60,
+        confirm_timeout=2.0,
+    ):
+        call, error = (
+            self
+            ._get_persisted_incoming_ringing_call(
+                call_id
+            )
+        )
+
+        if error is not None:
+            return error
+
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout
+            )
+        )
+
+        raw_result = (
+            connector.reject_incoming_call(
+                expected_provider_call_id=(
+                    expected_provider_call_id
+                ),
+                expected_external_call_key=(
+                    expected_external_call_key
+                ),
+                confirm_timeout=(
+                    confirm_timeout
+                ),
+            )
+        )
+
+        result = (
+            dict(raw_result)
+            if isinstance(
+                raw_result,
+                dict,
+            )
+            else {
+                "ok": False,
+                "uncertain": True,
+                "clicked": True,
+                "reason":
+                    "CALL_REJECT_RESULT_INVALID",
+                "raw_result":
+                    raw_result,
+            }
+        )
+
+        result.pop(
+            "_snapshot",
+            None,
+        )
+
+        result["call_id"] = int(
+            call.id
+        )
+
+        # Solo materializamos REJECTED cuando el provider
+        # confirma inequívocamente el click.
+        if (
+            result.get("ok") is True
+            and result.get("clicked") is True
+            and result.get("uncertain") is False
+        ):
+            call_service = getattr(
+                self._call_realtime_service,
+                "call_service",
+                None,
+            )
+
+            try:
+                rejected = (
+                    call_service
+                    .apply_call_event(
+                        int(call.id),
+                        status=(
+                            CALL_STATUS_REJECTED
+                        ),
+                        event_at=(
+                            self._call_observed_at()
+                        ),
+                    )
+                )
+
+                result[
+                    "crm_persisted"
+                ] = True
+
+                result[
+                    "persisted_status"
+                ] = getattr(
+                    rejected,
+                    "status",
+                    None,
+                )
+
+                # Evita que la posterior desaparición de la
+                # superficie vuelva a inferirse como MISSED.
+                #
+                # La intención explícita del operador ya es un
+                # hecho más fuerte que la mera desaparición DOM.
+                self._call_observation_tracker.reset()
+
+                result[
+                    "observation_tracker_reset"
+                ] = True
+
+            except Exception as exc:
+                # El provider YA pudo haber ejecutado el rechazo.
+                # Nunca convertimos un error posterior de DB
+                # en autorización para volver a pulsar.
+                result[
+                    "crm_persisted"
+                ] = False
+
+                result[
+                    "crm_persistence_error"
+                ] = {
+                    "error_type":
+                        type(exc).__name__,
+                    "message":
+                        str(exc),
+                }
+
+        return result
+
+
+    def reject_incoming_call(
+        self,
+        call_id,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        wait_timeout=60,
+        confirm_timeout=2.0,
+    ):
+        """
+        Rechaza una llamada entrante desde CRM.
+
+        Un rechazo confirmado se persiste explícitamente
+        como REJECTED antes de devolver control al watcher.
+        """
+        return self._run_serialized(
+            self._reject_incoming_call_impl,
+            call_id,
+            expected_provider_call_id=(
+                expected_provider_call_id
+            ),
+            expected_external_call_key=(
+                expected_external_call_key
+            ),
+            wait_timeout=wait_timeout,
+            confirm_timeout=(
+                confirm_timeout
             ),
         )
 

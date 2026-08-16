@@ -105,6 +105,42 @@ WHATSAPP_VOICE_CALL_BUTTON_SELECTOR = (
     '#main header button[aria-label="Llamada"]'
 )
 
+
+# CALL-UX-4 · controles certificados con DOM real
+# WhatsApp Web ES · 2026-08-16.
+#
+# La superficie fue observada realmente como:
+# [data-testid="move_resize_component"]
+#
+# Aceptar:
+# button[aria-label="Aceptar"]
+#
+# Rechazar:
+# button[aria-label="Rechazar"]
+#
+# Nunca se utilizan clases CSS efímeras.
+WHATSAPP_INCOMING_CALL_SURFACE_SELECTOR = (
+    '[data-testid="move_resize_component"]'
+)
+
+WHATSAPP_INCOMING_CALL_ACCEPT_ARIA_LABEL = (
+    "Aceptar"
+)
+
+WHATSAPP_INCOMING_CALL_REJECT_ARIA_LABEL = (
+    "Rechazar"
+)
+
+WHATSAPP_INCOMING_CALL_ACCEPT_SELECTOR = (
+    WHATSAPP_INCOMING_CALL_SURFACE_SELECTOR
+    + ' button[aria-label="Aceptar"]'
+)
+
+WHATSAPP_INCOMING_CALL_REJECT_SELECTOR = (
+    WHATSAPP_INCOMING_CALL_SURFACE_SELECTOR
+    + ' button[aria-label="Rechazar"]'
+)
+
 WHATSAPP_VOICE_CALL_ARIA_LABEL = (
     "Llamada"
 )
@@ -7571,6 +7607,621 @@ class WhatsAppConnector:
             "_snapshot":
                 last_snapshot,
         }
+
+
+    def _act_on_incoming_call(
+        self,
+        *,
+        action,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        confirm_timeout=2.0,
+        poll_interval=0.05,
+    ):
+        """
+        Ejecuta UNA acción sobre una llamada entrante.
+
+        Garantías:
+        - exige superficie INCOMING_RINGING real;
+        - exige dirección INBOUND;
+        - verifica identidad provider opcional;
+        - verifica capability del snapshot;
+        - verifica aria-label exacto;
+        - verifica control habilitado;
+        - realiza un único click;
+        - nunca reintenta el side effect;
+        - después solo observa para confirmar.
+        """
+
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        normalized_action = str(
+            action
+            or ""
+        ).strip().upper()
+
+        action_contracts = {
+            "ACCEPT": {
+                "selector":
+                    WHATSAPP_INCOMING_CALL_ACCEPT_SELECTOR,
+                "aria_label":
+                    WHATSAPP_INCOMING_CALL_ACCEPT_ARIA_LABEL,
+                "capability":
+                    "can_accept",
+                "prefix":
+                    "CALL_ACCEPT",
+            },
+            "REJECT": {
+                "selector":
+                    WHATSAPP_INCOMING_CALL_REJECT_SELECTOR,
+                "aria_label":
+                    WHATSAPP_INCOMING_CALL_REJECT_ARIA_LABEL,
+                "capability":
+                    "can_reject",
+                "prefix":
+                    "CALL_REJECT",
+            },
+        }
+
+        contract = action_contracts.get(
+            normalized_action
+        )
+
+        if contract is None:
+            raise ValueError(
+                "Acción de llamada entrante "
+                "no soportada"
+            )
+
+        selector = contract[
+            "selector"
+        ]
+
+        expected_label = contract[
+            "aria_label"
+        ]
+
+        capability = contract[
+            "capability"
+        ]
+
+        prefix = contract[
+            "prefix"
+        ]
+
+        initial = (
+            self.read_call_snapshot()
+        )
+
+        summary = (
+            self._voice_call_snapshot_summary(
+                initial
+            )
+        )
+
+        if not bool(
+            getattr(
+                initial,
+                "present",
+                False,
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CALL_ABSENT",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        if (
+            getattr(
+                initial,
+                "phase",
+                None,
+            )
+            != WHATSAPP_CALL_PHASE_INCOMING_RINGING
+            or getattr(
+                initial,
+                "direction",
+                None,
+            )
+            != WHATSAPP_CALL_DIRECTION_INBOUND
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_NOT_INCOMING_RINGING",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        clean_expected_provider = str(
+            expected_provider_call_id
+            or ""
+        ).strip()
+
+        clean_expected_external = str(
+            expected_external_call_key
+            or ""
+        ).strip()
+
+        actual_provider = str(
+            getattr(
+                initial,
+                "provider_call_id",
+                None,
+            )
+            or ""
+        ).strip()
+
+        actual_external = str(
+            getattr(
+                initial,
+                "external_call_key",
+                None,
+            )
+            or ""
+        ).strip()
+
+        if (
+            clean_expected_provider
+            and actual_provider
+            != clean_expected_provider
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_IDENTITY_MISMATCH",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        if (
+            clean_expected_external
+            and actual_external
+            != clean_expected_external
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_IDENTITY_MISMATCH",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        if not bool(
+            getattr(
+                initial,
+                capability,
+                False,
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_NOT_AVAILABLE",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        selector_json = json.dumps(
+            selector
+        )
+
+        control = (
+            self.browser.evaluate(
+                f"""
+                (() => {{
+                    const button =
+                        document.querySelector(
+                            {selector_json}
+                        );
+
+                    if (!button) {{
+                        return {{
+                            found: false
+                        }};
+                    }}
+
+                    return {{
+                        found: true,
+                        aria_label:
+                            (
+                                button.getAttribute(
+                                    "aria-label"
+                                )
+                                || ""
+                            ).trim(),
+                        aria_disabled:
+                            (
+                                button.getAttribute(
+                                    "aria-disabled"
+                                )
+                                || ""
+                            ).trim(),
+                        disabled:
+                            !!button.disabled
+                    }};
+                }})()
+                """
+            )
+            or {}
+        )
+
+        if not isinstance(
+            control,
+            dict,
+        ):
+            control = {}
+
+        if not bool(
+            control.get(
+                "found"
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CONTROL_NOT_FOUND",
+                "selector": selector,
+                "control": control,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        aria_label = str(
+            control.get(
+                "aria_label"
+            )
+            or ""
+        ).strip()
+
+        if aria_label != expected_label:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CONTROL_IDENTITY_MISMATCH",
+                "selector": selector,
+                "control": control,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        disabled = bool(
+            control.get(
+                "disabled"
+            )
+        )
+
+        if (
+            str(
+                control.get(
+                    "aria_disabled"
+                )
+                or ""
+            ).strip().lower()
+            == "true"
+        ):
+            disabled = True
+
+        if disabled:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CONTROL_DISABLED",
+                "selector": selector,
+                "control": control,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        try:
+            element = (
+                self.browser.find_element(
+                    selector
+                )
+            )
+
+        except Exception as exc:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CONTROL_NOT_FOUND",
+                "selector": selector,
+                "error_type":
+                    type(exc).__name__,
+                "message":
+                    str(exc),
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        if element is None:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CONTROL_NOT_FOUND",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        click_attempted = False
+
+        try:
+            click_attempted = True
+
+            mouse_click = getattr(
+                element,
+                "mouse_click",
+                None,
+            )
+
+            if callable(
+                mouse_click
+            ):
+                mouse_click()
+
+            else:
+                click = getattr(
+                    element,
+                    "click",
+                    None,
+                )
+
+                if not callable(
+                    click
+                ):
+                    return {
+                        "ok": False,
+                        "uncertain": False,
+                        "clicked": False,
+                        "reason":
+                            f"{prefix}_CONTROL_NOT_CLICKABLE",
+                        "selector": selector,
+                        "snapshot": summary,
+                        "_snapshot": initial,
+                    }
+
+                click()
+
+        except Exception as exc:
+            return {
+                "ok": False,
+                "uncertain": True,
+                "clicked":
+                    bool(
+                        click_attempted
+                    ),
+                "reason":
+                    f"{prefix}_CLICK_UNCERTAIN",
+                "selector": selector,
+                "error_type":
+                    type(exc).__name__,
+                "message":
+                    str(exc),
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        timeout = max(
+            0.0,
+            float(
+                confirm_timeout
+                or 0.0
+            ),
+        )
+
+        interval = max(
+            0.01,
+            float(
+                poll_interval
+                or 0.05
+            ),
+        )
+
+        deadline = (
+            time.monotonic()
+            + timeout
+        )
+
+        last_snapshot = initial
+
+        while True:
+            try:
+                last_snapshot = (
+                    self.read_call_snapshot()
+                )
+
+            except Exception:
+                last_snapshot = None
+
+            if normalized_action == "ACCEPT":
+                if (
+                    last_snapshot is not None
+                    and bool(
+                        getattr(
+                            last_snapshot,
+                            "present",
+                            False,
+                        )
+                    )
+                    and (
+                        getattr(
+                            last_snapshot,
+                            "phase",
+                            None,
+                        )
+                        in {
+                            WHATSAPP_CALL_PHASE_CONNECTING,
+                            WHATSAPP_CALL_PHASE_ACTIVE,
+                        }
+                        or bool(
+                            getattr(
+                                last_snapshot,
+                                "can_hangup",
+                                False,
+                            )
+                        )
+                    )
+                ):
+                    return {
+                        "ok": True,
+                        "uncertain": False,
+                        "clicked": True,
+                        "reason":
+                            "CALL_ACCEPTED",
+                        "selector": selector,
+                        "snapshot":
+                            self._voice_call_snapshot_summary(
+                                last_snapshot
+                            ),
+                        "_snapshot":
+                            last_snapshot,
+                    }
+
+            else:
+                if (
+                    last_snapshot is not None
+                    and (
+                        not bool(
+                            getattr(
+                                last_snapshot,
+                                "present",
+                                False,
+                            )
+                        )
+                        or getattr(
+                            last_snapshot,
+                            "phase",
+                            None,
+                        )
+                        == WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+                    )
+                ):
+                    return {
+                        "ok": True,
+                        "uncertain": False,
+                        "clicked": True,
+                        "reason":
+                            "CALL_REJECTED",
+                        "selector": selector,
+                        "snapshot":
+                            self._voice_call_snapshot_summary(
+                                last_snapshot
+                            ),
+                        "_snapshot":
+                            last_snapshot,
+                    }
+
+            if (
+                time.monotonic()
+                >= deadline
+            ):
+                break
+
+            time.sleep(
+                interval
+            )
+
+        # Side effect ya intentado:
+        # jamás se vuelve a pulsar automáticamente.
+        return {
+            "ok": False,
+            "uncertain": True,
+            "clicked": True,
+            "reason":
+                (
+                    "CALL_ACCEPT_UNCONFIRMED"
+                    if normalized_action
+                    == "ACCEPT"
+                    else
+                    "CALL_REJECT_UNCONFIRMED"
+                ),
+            "selector": selector,
+            "snapshot":
+                (
+                    self._voice_call_snapshot_summary(
+                        last_snapshot
+                    )
+                    if last_snapshot
+                    is not None
+                    else None
+                ),
+            "_snapshot":
+                last_snapshot,
+        }
+
+
+    def accept_incoming_call(
+        self,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        confirm_timeout=2.0,
+    ):
+        return self._act_on_incoming_call(
+            action="ACCEPT",
+            expected_provider_call_id=(
+                expected_provider_call_id
+            ),
+            expected_external_call_key=(
+                expected_external_call_key
+            ),
+            confirm_timeout=(
+                confirm_timeout
+            ),
+        )
+
+
+    def reject_incoming_call(
+        self,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        confirm_timeout=2.0,
+    ):
+        return self._act_on_incoming_call(
+            action="REJECT",
+            expected_provider_call_id=(
+                expected_provider_call_id
+            ),
+            expected_external_call_key=(
+                expected_external_call_key
+            ),
+            confirm_timeout=(
+                confirm_timeout
+            ),
+        )
 
 
     def read_call_snapshot(
