@@ -45,6 +45,10 @@ from backend.communications.phone_normalization import (
 )
 
 
+from backend.automation.connectors.whatsapp_call_history_reader import (
+    read_whatsapp_call_history,
+)
+
 from backend.automation.connectors.whatsapp_call_observer import (
     WHATSAPP_CALL_DIRECTION_INBOUND,
     WHATSAPP_CALL_DIRECTION_OUTBOUND,
@@ -8221,6 +8225,16 @@ class WhatsAppConnector:
             confirm_timeout=(
                 confirm_timeout
             ),
+        )
+
+
+
+    def read_visible_call_history(
+        self,
+    ):
+        """Lee pasivamente el historial visible de llamadas."""
+        return read_whatsapp_call_history(
+            self.browser
         )
 
 
