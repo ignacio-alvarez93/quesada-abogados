@@ -5302,6 +5302,193 @@ def communications_view(
 
         return True
 
+
+    def _start_whatsapp_voice_call(
+        thread_id,
+    ):
+        """Solicita una llamada WhatsApp sin bloquear Flet.
+
+        La vista:
+        - conoce únicamente thread_id;
+        - no toca connector;
+        - no toca Selenium/CDP;
+        - no verifica teléfonos;
+        - no persiste llamadas.
+
+        Toda la operación sensible pertenece al runtime.
+        """
+        if whatsapp_runtime is None:
+            _show_message(
+                (
+                    "El runtime de WhatsApp "
+                    "no está disponible."
+                ),
+                error=True,
+            )
+
+            return False
+
+        try:
+            captured_thread_id = int(
+                thread_id
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            _show_message(
+                (
+                    "No se pudo determinar "
+                    "la conversación WhatsApp."
+                ),
+                error=True,
+            )
+
+            return False
+
+        if captured_thread_id <= 0:
+            _show_message(
+                (
+                    "No se pudo determinar "
+                    "la conversación WhatsApp."
+                ),
+                error=True,
+            )
+
+            return False
+
+        def worker():
+            try:
+                result = (
+                    whatsapp_runtime
+                    .start_voice_call_for_thread(
+                        captured_thread_id,
+                        wait_timeout=30,
+                        routing_timeout=15,
+                        call_confirm_timeout=2.0,
+                    )
+                )
+
+            except Exception as exc:
+                _schedule_ui_message(
+                    (
+                        "No se pudo iniciar la "
+                        "llamada de WhatsApp: "
+                        f"{exc}"
+                    ),
+                    error=True,
+                )
+
+                return
+
+            if not isinstance(
+                result,
+                dict,
+            ):
+                _schedule_ui_message(
+                    (
+                        "WhatsApp devolvió un "
+                        "resultado de llamada "
+                        "no reconocido."
+                    ),
+                    error=True,
+                )
+
+                return
+
+            if bool(
+                result.get(
+                    "ok"
+                )
+            ):
+                _schedule_ui_message(
+                    "Llamada de WhatsApp iniciada."
+                )
+
+                return
+
+            # Una acción externa puede haberse ejecutado
+            # aunque no podamos demostrarlo después.
+            #
+            # En ese caso jamás invitamos al usuario
+            # a repetirla automáticamente.
+            if bool(
+                result.get(
+                    "uncertain"
+                )
+            ):
+                _schedule_ui_message(
+                    (
+                        "Se intentó iniciar la llamada, "
+                        "pero WhatsApp no permitió "
+                        "confirmar su estado. "
+                        "Revisa WhatsApp antes de "
+                        "volver a intentarlo."
+                    ),
+                    error=True,
+                )
+
+                return
+
+            reason = str(
+                result.get(
+                    "reason"
+                )
+                or "VOICE_CALL_FAILED"
+            ).strip()
+
+            messages = {
+                "CALL_ALREADY_PRESENT":
+                    (
+                        "Ya existe una llamada "
+                        "WhatsApp activa."
+                    ),
+                "MICROPHONE_PERMISSION_NOT_READY":
+                    (
+                        "El micrófono de WhatsApp "
+                        "no está preparado."
+                    ),
+                "VOICE_CALL_BUTTON_NOT_FOUND":
+                    (
+                        "WhatsApp no muestra el "
+                        "botón de llamada para "
+                        "esta conversación."
+                    ),
+                "VOICE_CALL_BUTTON_DISABLED":
+                    (
+                        "La llamada no está "
+                        "disponible actualmente "
+                        "para esta conversación."
+                    ),
+                "VOICE_CALL_BUTTON_IDENTITY_MISMATCH":
+                    (
+                        "No se pudo validar con "
+                        "seguridad el control "
+                        "de llamada de WhatsApp."
+                    ),
+            }
+
+            _schedule_ui_message(
+                messages.get(
+                    reason,
+                    (
+                        "No se pudo iniciar la "
+                        "llamada de WhatsApp "
+                        f"({reason})."
+                    ),
+                ),
+                error=True,
+            )
+
+        # Igual que routing y envío:
+        # Selenium/WhatsApp nunca bloquea el loop Flet.
+        _run_background(
+            worker
+        )
+
+        return True
+
+
     async def _dispatch_finish_send_ui(
         thread_id,
         sent_text,
@@ -6022,6 +6209,53 @@ def communications_view(
                             weight=ft.FontWeight.BOLD,
                             color=Q_PRIMARY_DARK,
                             expand=True,
+                        ),
+                        *(
+                            [
+                                ft.IconButton(
+                                    icon=ft.Icons.CALL,
+                                    tooltip=(
+                                        "Llamar por WhatsApp"
+                                    ),
+                                    icon_size=18,
+                                    icon_color=Q_PRIMARY,
+                                    on_click=(
+                                        lambda e,
+                                        thread_id=int(
+                                            getattr(
+                                                item,
+                                                "thread_id",
+                                                0,
+                                            )
+                                            or 0
+                                        ):
+                                            _start_whatsapp_voice_call(
+                                                thread_id
+                                            )
+                                    ),
+                                )
+                            ]
+                            if (
+                                whatsapp_runtime
+                                is not None
+                                and str(
+                                    getattr(
+                                        item,
+                                        "channel",
+                                        "",
+                                    )
+                                    or ""
+                                )
+                                .strip()
+                                .upper()
+                                == "WHATSAPP"
+                                and getattr(
+                                    item,
+                                    "thread_id",
+                                    None,
+                                )
+                            )
+                            else []
                         ),
                         *(
                             [

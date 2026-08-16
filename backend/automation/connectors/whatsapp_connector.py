@@ -101,6 +101,15 @@ WHATSAPP_AUDIO_CALL_SURFACE_SELECTOR = (
     '[data-testid="voip-container-audio-call"]'
 )
 
+WHATSAPP_VOICE_CALL_BUTTON_SELECTOR = (
+    '#main header button[aria-label="Llamada"]'
+)
+
+WHATSAPP_VOICE_CALL_ARIA_LABEL = (
+    "Llamada"
+)
+
+
 SESSION_STATUS_NEEDS_LOGIN = (
     "NEEDS_LOGIN"
 )
@@ -7140,6 +7149,429 @@ class WhatsAppConnector:
             )
 
         return snapshots
+
+    @staticmethod
+    def _voice_call_snapshot_summary(
+        snapshot,
+    ):
+        if snapshot is None:
+            return {
+                "present": False,
+                "phase":
+                    WHATSAPP_CALL_PHASE_ABSENT,
+                "direction":
+                    WHATSAPP_CALL_DIRECTION_UNKNOWN,
+                "provider_call_id":
+                    None,
+                "external_call_key":
+                    None,
+                "participant_phone":
+                    None,
+            }
+
+        return {
+            "present":
+                bool(
+                    getattr(
+                        snapshot,
+                        "present",
+                        False,
+                    )
+                ),
+            "phase":
+                getattr(
+                    snapshot,
+                    "phase",
+                    None,
+                ),
+            "direction":
+                getattr(
+                    snapshot,
+                    "direction",
+                    None,
+                ),
+            "provider_call_id":
+                getattr(
+                    snapshot,
+                    "provider_call_id",
+                    None,
+                ),
+            "external_call_key":
+                getattr(
+                    snapshot,
+                    "external_call_key",
+                    None,
+                ),
+            "participant_phone":
+                getattr(
+                    snapshot,
+                    "participant_phone",
+                    None,
+                ),
+        }
+
+
+    def start_voice_call(
+        self,
+        *,
+        confirm_timeout=1.0,
+        poll_interval=0.05,
+    ):
+        """Inicia UNA llamada de voz sobre el chat ya verificado.
+
+        Responsabilidades:
+        - no navega;
+        - no resuelve destinatarios;
+        - no persiste;
+        - nunca pulsa videollamada;
+        - nunca reintenta un click con efecto externo;
+        - confirma, cuando es posible, que apareció
+          una superficie de llamada.
+
+        El caller debe haber verificado previamente
+        la identidad del chat activo.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        # Nunca iniciamos otra llamada si ya existe
+        # cualquier superficie VOIP activa.
+        existing = (
+            self.read_call_snapshot()
+        )
+
+        if bool(
+            getattr(
+                existing,
+                "present",
+                False,
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "CALL_ALREADY_PRESENT",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "snapshot":
+                    self._voice_call_snapshot_summary(
+                        existing
+                    ),
+                "_snapshot":
+                    existing,
+            }
+
+        control = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const button =
+                        document.querySelector(
+                            '#main header '
+                            + 'button[aria-label="Llamada"]'
+                        );
+
+                    if (!button) {
+                        return {
+                            found: false
+                        };
+                    }
+
+                    return {
+                        found: true,
+                        aria_label:
+                            (
+                                button.getAttribute(
+                                    "aria-label"
+                                )
+                                || ""
+                            ).trim(),
+                        disabled:
+                            !!button.disabled,
+                        aria_disabled:
+                            (
+                                button.getAttribute(
+                                    "aria-disabled"
+                                )
+                                || ""
+                            ).trim()
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        if not isinstance(
+            control,
+            dict,
+        ):
+            control = {}
+
+        if not bool(
+            control.get(
+                "found"
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "VOICE_CALL_BUTTON_NOT_FOUND",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "control":
+                    control,
+            }
+
+        aria_label = str(
+            control.get(
+                "aria_label"
+            )
+            or ""
+        ).strip()
+
+        if (
+            aria_label
+            != WHATSAPP_VOICE_CALL_ARIA_LABEL
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "VOICE_CALL_BUTTON_IDENTITY_MISMATCH",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "control":
+                    control,
+            }
+
+        disabled = bool(
+            control.get(
+                "disabled"
+            )
+        )
+
+        if (
+            str(
+                control.get(
+                    "aria_disabled"
+                )
+                or ""
+            )
+            .strip()
+            .lower()
+            == "true"
+        ):
+            disabled = True
+
+        if disabled:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "VOICE_CALL_BUTTON_DISABLED",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "control":
+                    control,
+            }
+
+        try:
+            element = (
+                self.browser.find_element(
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR
+                )
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "VOICE_CALL_BUTTON_NOT_FOUND",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "error_type":
+                    type(
+                        exc
+                    ).__name__,
+                "message":
+                    str(
+                        exc
+                    ),
+            }
+
+        if element is None:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "VOICE_CALL_BUTTON_NOT_FOUND",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+            }
+
+        # Desde este punto una excepción es potencialmente
+        # incierta: el click podría haber llegado al browser.
+        click_attempted = False
+
+        try:
+            click_attempted = True
+
+            mouse_click = getattr(
+                element,
+                "mouse_click",
+                None,
+            )
+
+            if callable(
+                mouse_click
+            ):
+                mouse_click()
+
+            else:
+                click = getattr(
+                    element,
+                    "click",
+                    None,
+                )
+
+                if not callable(
+                    click
+                ):
+                    return {
+                        "ok": False,
+                        "uncertain": False,
+                        "clicked": False,
+                        "reason":
+                            "VOICE_CALL_BUTTON_NOT_CLICKABLE",
+                        "selector":
+                            WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                    }
+
+                click()
+
+        except Exception as exc:
+            return {
+                "ok": False,
+                "uncertain": True,
+                "clicked":
+                    bool(
+                        click_attempted
+                    ),
+                "reason":
+                    "VOICE_CALL_CLICK_UNCERTAIN",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "error_type":
+                    type(
+                        exc
+                    ).__name__,
+                "message":
+                    str(
+                        exc
+                    ),
+            }
+
+        timeout = max(
+            0.0,
+            float(
+                confirm_timeout
+                or 0.0
+            ),
+        )
+
+        interval = max(
+            0.01,
+            float(
+                poll_interval
+                or 0.05
+            ),
+        )
+
+        deadline = (
+            time.monotonic()
+            + timeout
+        )
+
+        last_snapshot = None
+
+        while True:
+            try:
+                last_snapshot = (
+                    self.read_call_snapshot()
+                )
+            except Exception:
+                last_snapshot = None
+
+            if (
+                last_snapshot is not None
+                and bool(
+                    getattr(
+                        last_snapshot,
+                        "present",
+                        False,
+                    )
+                )
+            ):
+                summary = (
+                    self
+                    ._voice_call_snapshot_summary(
+                        last_snapshot
+                    )
+                )
+
+                return {
+                    "ok": True,
+                    "uncertain": False,
+                    "clicked": True,
+                    "reason":
+                        "VOICE_CALL_SURFACE_STARTED",
+                    "selector":
+                        WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                    "snapshot":
+                        summary,
+                    "_snapshot":
+                        last_snapshot,
+                }
+
+            if (
+                time.monotonic()
+                >= deadline
+            ):
+                break
+
+            time.sleep(
+                interval
+            )
+
+        # Nunca reintentamos el click:
+        # existe una acción externa potencial.
+        return {
+            "ok": False,
+            "uncertain": True,
+            "clicked": True,
+            "reason":
+                "VOICE_CALL_START_UNCONFIRMED",
+            "selector":
+                WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+            "snapshot":
+                self._voice_call_snapshot_summary(
+                    last_snapshot
+                ),
+            "_snapshot":
+                last_snapshot,
+        }
+
 
     def read_call_snapshot(
         self,

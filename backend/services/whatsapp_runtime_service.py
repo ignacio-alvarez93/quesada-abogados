@@ -1218,6 +1218,287 @@ class WhatsAppRuntimeService:
             **kwargs,
         )
 
+    def _start_voice_call_for_thread_impl(
+        self,
+        thread_id,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        call_confirm_timeout=1.0,
+    ):
+        """Inicia llamada de voz hacia un thread CRM.
+
+        Barreras:
+        1. runtime READY;
+        2. ninguna llamada ya presente;
+        3. permiso de micrófono, cuando el connector
+           expone diagnóstico explícito;
+        4. routing + verificación FUERTE del destinatario;
+        5. un único click de llamada de voz;
+        6. nunca retry ciego tras el click.
+        """
+        requested_thread_id = int(
+            thread_id
+        )
+
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        existing_call = (
+            connector
+            .read_call_snapshot()
+        )
+
+        if bool(
+            getattr(
+                existing_call,
+                "present",
+                False,
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "CALL_ALREADY_PRESENT",
+                "thread_id":
+                    requested_thread_id,
+            }
+
+        # CALL-UX-1 dejó el permiso configurado
+        # durante start(). Si existe un diagnóstico
+        # explícitamente negativo, hacemos un único
+        # intento de recuperación antes de marcar.
+        permission = getattr(
+            connector,
+            "call_media_permission_result",
+            None,
+        )
+
+        if (
+            isinstance(
+                permission,
+                dict,
+            )
+            and permission.get(
+                "configured"
+            )
+            is False
+        ):
+            configure = getattr(
+                connector,
+                "configure_call_media_permissions",
+                None,
+            )
+
+            if callable(
+                configure
+            ):
+                permission = (
+                    configure()
+                )
+
+            if (
+                isinstance(
+                    permission,
+                    dict,
+                )
+                and permission.get(
+                    "configured"
+                )
+                is False
+            ):
+                return {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "MICROPHONE_PERMISSION_NOT_READY",
+                    "thread_id":
+                        requested_thread_id,
+                    "permission":
+                        permission,
+                }
+
+        # Acción sensible:
+        # NO usamos open_thread_for_selection().
+        #
+        # Esta ruta exige verificación fuerte del teléfono
+        # antes de que el connector pueda pulsar "Llamada".
+        routing_result = (
+            self._verify_and_open_thread_impl(
+                requested_thread_id,
+                wait_timeout=wait_timeout,
+                routing_timeout=routing_timeout,
+            )
+        )
+
+        thread = (
+            routing_result[
+                "thread"
+            ]
+        )
+
+        call_result = (
+            connector
+            .start_voice_call(
+                confirm_timeout=(
+                    call_confirm_timeout
+                )
+            )
+        )
+
+        if not isinstance(
+            call_result,
+            dict,
+        ):
+            call_result = {
+                "ok": False,
+                "uncertain": True,
+                "clicked": True,
+                "reason":
+                    "VOICE_CALL_RESULT_INVALID",
+                "raw_result":
+                    call_result,
+            }
+
+        result = dict(
+            call_result
+        )
+
+        observed_snapshot = (
+            result.pop(
+                "_snapshot",
+                None,
+            )
+        )
+
+        result[
+            "thread_id"
+        ] = requested_thread_id
+
+        result[
+            "phone"
+        ] = str(
+            getattr(
+                thread,
+                "external_address",
+                "",
+            )
+            or ""
+        ).strip()
+
+        result[
+            "routing"
+        ] = dict(
+            routing_result.get(
+                "routing"
+            )
+            or {}
+        )
+
+        # El snapshot observado por la propia acción no se
+        # desperdicia: lo incorporamos al mismo tracker que
+        # utiliza el watcher global.
+        #
+        # Si todavía es CONNECTING será no-actionable.
+        # Si ya es DIALING podrá reconciliarse inmediatamente.
+        # El watcher continuará después desde ese mismo estado.
+        if (
+            observed_snapshot is not None
+            and bool(
+                getattr(
+                    observed_snapshot,
+                    "present",
+                    False,
+                )
+            )
+        ):
+            observation = (
+                self
+                ._call_observation_tracker
+                .observe(
+                    observed_snapshot
+                )
+            )
+
+            self._maybe_ensure_active_call_microphone(
+                observation
+            )
+
+            observed_at = None
+
+            if (
+                self
+                ._call_realtime_service
+                .enabled
+            ):
+                observed_at = (
+                    self._call_observed_at()
+                )
+
+            realtime_result = (
+                self
+                ._call_realtime_service
+                .process_observation(
+                    observation,
+                    observed_at=(
+                        observed_at
+                    ),
+                )
+            )
+
+            result[
+                "realtime_action"
+            ] = getattr(
+                realtime_result,
+                "action",
+                None,
+            )
+
+            result[
+                "observed_phase"
+            ] = getattr(
+                observed_snapshot,
+                "phase",
+                None,
+            )
+
+            result[
+                "provider_call_id"
+            ] = getattr(
+                observed_snapshot,
+                "provider_call_id",
+                None,
+            )
+
+        return result
+
+
+    def start_voice_call_for_thread(
+        self,
+        thread_id,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        call_confirm_timeout=1.0,
+    ):
+        """API pública serializada de llamada saliente WhatsApp."""
+        return self._run_serialized(
+            self._start_voice_call_for_thread_impl,
+            thread_id,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+            call_confirm_timeout=(
+                call_confirm_timeout
+            ),
+        )
+
+
     def _read_call_snapshot_impl(
         self,
         *,

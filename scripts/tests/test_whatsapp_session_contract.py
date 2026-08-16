@@ -850,6 +850,347 @@ class WhatsAppSessionContractTest(
         )
 
 
+    def test_voice_call_uses_exact_accessible_button_and_clicks_once(
+        self,
+    ):
+        class Snapshot:
+            def __init__(
+                self,
+                *,
+                present,
+                phase,
+                direction,
+                provider_call_id=None,
+            ):
+                self.present = present
+                self.phase = phase
+                self.direction = direction
+                self.provider_call_id = (
+                    provider_call_id
+                )
+                self.external_call_key = None
+                self.participant_phone = None
+
+        class FakeElement:
+            def __init__(
+                self,
+            ):
+                self.mouse_click_calls = 0
+
+            def mouse_click(
+                self,
+            ):
+                self.mouse_click_calls += 1
+
+        class FakeBrowser:
+            def __init__(
+                self,
+            ):
+                self.element = FakeElement()
+                self.find_selectors = []
+
+            def evaluate(
+                self,
+                expression,
+            ):
+                return {
+                    "found": True,
+                    "aria_label":
+                        "Llamada",
+                    "disabled": False,
+                    "aria_disabled":
+                        "false",
+                }
+
+            def find_element(
+                self,
+                selector,
+            ):
+                self.find_selectors.append(
+                    selector
+                )
+
+                return self.element
+
+        browser = FakeBrowser()
+
+        connector = (
+            whatsapp_connector
+            .WhatsAppConnector()
+        )
+
+        connector.browser = browser
+
+        snapshots = iter(
+            [
+                Snapshot(
+                    present=False,
+                    phase=(
+                        whatsapp_connector
+                        .WHATSAPP_CALL_PHASE_ABSENT
+                    ),
+                    direction=(
+                        whatsapp_connector
+                        .WHATSAPP_CALL_DIRECTION_UNKNOWN
+                    ),
+                ),
+                Snapshot(
+                    present=True,
+                    phase=(
+                        whatsapp_connector
+                        .WHATSAPP_CALL_PHASE_CONNECTING
+                    ),
+                    direction=(
+                        whatsapp_connector
+                        .WHATSAPP_CALL_DIRECTION_UNKNOWN
+                    ),
+                ),
+            ]
+        )
+
+        connector.read_call_snapshot = (
+            lambda:
+                next(
+                    snapshots
+                )
+        )
+
+        result = (
+            connector
+            .start_voice_call(
+                confirm_timeout=0.1,
+                poll_interval=0.01,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertFalse(
+            result[
+                "uncertain"
+            ]
+        )
+
+        self.assertTrue(
+            result[
+                "clicked"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "reason"
+            ],
+            "VOICE_CALL_SURFACE_STARTED",
+        )
+
+        self.assertEqual(
+            browser.find_selectors,
+            [
+                whatsapp_connector
+                .WHATSAPP_VOICE_CALL_BUTTON_SELECTOR
+            ],
+        )
+
+        self.assertEqual(
+            browser
+            .element
+            .mouse_click_calls,
+            1,
+        )
+
+
+    def test_voice_call_does_not_click_when_call_already_present(
+        self,
+    ):
+        class Snapshot:
+            present = True
+            phase = (
+                whatsapp_connector
+                .WHATSAPP_CALL_PHASE_ACTIVE
+            )
+            direction = (
+                whatsapp_connector
+                .WHATSAPP_CALL_DIRECTION_OUTBOUND
+            )
+            provider_call_id = "CALL-EXISTING"
+            external_call_key = None
+            participant_phone = None
+
+        class FakeBrowser:
+            def evaluate(
+                self,
+                expression,
+            ):
+                raise AssertionError(
+                    "No debe buscar botón con "
+                    "una llamada ya presente"
+                )
+
+            def find_element(
+                self,
+                selector,
+            ):
+                raise AssertionError(
+                    "No debe hacer click con "
+                    "una llamada ya presente"
+                )
+
+        connector = (
+            whatsapp_connector
+            .WhatsAppConnector()
+        )
+
+        connector.browser = FakeBrowser()
+
+        connector.read_call_snapshot = (
+            lambda:
+                Snapshot()
+        )
+
+        result = (
+            connector
+            .start_voice_call()
+        )
+
+        self.assertFalse(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertFalse(
+            result[
+                "uncertain"
+            ]
+        )
+
+        self.assertFalse(
+            result[
+                "clicked"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "reason"
+            ],
+            "CALL_ALREADY_PRESENT",
+        )
+
+
+    def test_voice_call_never_retries_unconfirmed_click(
+        self,
+    ):
+        class Snapshot:
+            present = False
+            phase = (
+                whatsapp_connector
+                .WHATSAPP_CALL_PHASE_ABSENT
+            )
+            direction = (
+                whatsapp_connector
+                .WHATSAPP_CALL_DIRECTION_UNKNOWN
+            )
+            provider_call_id = None
+            external_call_key = None
+            participant_phone = None
+
+        class FakeElement:
+            def __init__(
+                self,
+            ):
+                self.mouse_click_calls = 0
+
+            def mouse_click(
+                self,
+            ):
+                self.mouse_click_calls += 1
+
+        class FakeBrowser:
+            def __init__(
+                self,
+            ):
+                self.element = FakeElement()
+
+            def evaluate(
+                self,
+                expression,
+            ):
+                return {
+                    "found": True,
+                    "aria_label":
+                        "Llamada",
+                    "disabled": False,
+                    "aria_disabled":
+                        "false",
+                }
+
+            def find_element(
+                self,
+                selector,
+            ):
+                return self.element
+
+        browser = FakeBrowser()
+
+        connector = (
+            whatsapp_connector
+            .WhatsAppConnector()
+        )
+
+        connector.browser = browser
+
+        connector.read_call_snapshot = (
+            lambda:
+                Snapshot()
+        )
+
+        result = (
+            connector
+            .start_voice_call(
+                confirm_timeout=0.02,
+                poll_interval=0.01,
+            )
+        )
+
+        self.assertFalse(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertTrue(
+            result[
+                "uncertain"
+            ]
+        )
+
+        self.assertTrue(
+            result[
+                "clicked"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "reason"
+            ],
+            "VOICE_CALL_START_UNCONFIRMED",
+        )
+
+        self.assertEqual(
+            browser
+            .element
+            .mouse_click_calls,
+            1,
+        )
+
+
     def test_close_delegates_to_governed_session(
         self,
     ):

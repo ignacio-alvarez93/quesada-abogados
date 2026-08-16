@@ -80,6 +80,22 @@ class FakeConnector:
                 "ENABLED",
         }
 
+        self.voice_call_start_calls = []
+        self.voice_call_start_result = {
+            "ok": True,
+            "uncertain": False,
+            "clicked": True,
+            "reason":
+                "VOICE_CALL_SURFACE_STARTED",
+            "snapshot": {
+                "present": True,
+                "phase":
+                    WHATSAPP_CALL_PHASE_CONNECTING,
+                "direction":
+                    WHATSAPP_CALL_DIRECTION_UNKNOWN,
+            },
+        }
+
         self.open_phone_calls = []
         self.routing_result = {
             "opened": True,
@@ -189,6 +205,38 @@ class FakeConnector:
 
         result = (
             self.call_microphone_ensure_result
+        )
+
+        if isinstance(
+            result,
+            BaseException,
+        ):
+            raise result
+
+        return dict(
+            result
+        )
+
+
+    def start_voice_call(
+        self,
+        *,
+        confirm_timeout=1.0,
+        poll_interval=0.05,
+    ):
+        self.voice_call_start_calls.append(
+            {
+                "thread_id":
+                    threading.get_ident(),
+                "confirm_timeout":
+                    confirm_timeout,
+                "poll_interval":
+                    poll_interval,
+            }
+        )
+
+        result = (
+            self.voice_call_start_result
         )
 
         if isinstance(
@@ -510,6 +558,162 @@ class WhatsAppRuntimeServiceTest(
                 FakeConnector
             ),
         )
+
+    def test_start_voice_call_for_thread_strongly_verifies_and_runs_on_worker(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        result = (
+            runtime
+            .start_voice_call_for_thread(
+                7,
+                wait_timeout=1,
+                routing_timeout=1,
+                call_confirm_timeout=0.1,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "thread_id"
+            ],
+            7,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .open_phone_calls
+            ),
+            1,
+        )
+
+        (
+            phone,
+            display_name,
+            verify_identity,
+            timeout,
+        ) = (
+            connector
+            .open_phone_calls[
+                0
+            ]
+        )
+
+        self.assertEqual(
+            phone,
+            "+34 600 111 222",
+        )
+
+        self.assertEqual(
+            display_name,
+            "Test Contact",
+        )
+
+        self.assertTrue(
+            verify_identity
+        )
+
+        self.assertEqual(
+            timeout,
+            1,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .voice_call_start_calls
+            ),
+            1,
+        )
+
+        worker_thread_id = (
+            connector
+            .voice_call_start_calls[
+                0
+            ][
+                "thread_id"
+            ]
+        )
+
+        self.assertNotEqual(
+            worker_thread_id,
+            threading.get_ident(),
+        )
+
+
+    def test_start_voice_call_for_thread_does_not_route_if_call_exists(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id=(
+                    "CALL-EXISTING"
+                ),
+                external_call_key=(
+                    "opaque-existing"
+                ),
+                participant_phone=(
+                    "+34600111222"
+                ),
+                can_hangup=True,
+                identity_complete=True,
+            )
+        ]
+
+        result = (
+            runtime
+            .start_voice_call_for_thread(
+                7,
+                wait_timeout=1,
+            )
+        )
+
+        self.assertFalse(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "reason"
+            ],
+            "CALL_ALREADY_PRESENT",
+        )
+
+        self.assertEqual(
+            connector
+            .open_phone_calls,
+            [],
+        )
+
+        self.assertEqual(
+            connector
+            .voice_call_start_calls,
+            [],
+        )
+
 
     def test_active_call_auto_ensures_microphone_once_on_transition(
         self,
