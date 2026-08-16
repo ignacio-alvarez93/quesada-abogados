@@ -42,3 +42,6 @@ tmp/
 # Holded API secrets
 .env.holded
 *.holded-token
+
+# Local database safety backups
+backups/
