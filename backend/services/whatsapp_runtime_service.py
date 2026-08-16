@@ -1954,6 +1954,44 @@ class WhatsAppRuntimeService:
         )
 
 
+    def _read_visible_call_history_impl(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """
+        Lee pasivamente el historial visible de llamadas.
+
+        No navega.
+        No persiste.
+        Toda interacción CDP permanece en el worker gobernado.
+        """
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        return (
+            connector
+            .read_visible_call_history()
+        )
+
+
+    def read_visible_call_history(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """
+        API pública serializada del historial visible de llamadas.
+        """
+        return self._run_serialized(
+            self._read_visible_call_history_impl,
+            wait_timeout=wait_timeout,
+        )
+
+
     def _read_call_snapshot_impl(
         self,
         *,
