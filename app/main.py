@@ -91,6 +91,16 @@ def main(page: ft.Page):
         pass
 
     current_user = {"value": None}
+
+    # Vista actualmente propietaria de la UI central.
+    #
+    # Los runtimes de sesión pueden continuar vivos al navegar,
+    # pero un callback perteneciente a una vista desmontada jamás
+    # debe volver a tocar sus controles Flet.
+    active_view = {
+        "value": None,
+    }
+
     main_container = ft.Container(expand=True)
 
     # Composition root de Comunicaciones.
@@ -501,6 +511,45 @@ def main(page: ft.Page):
         )
 
     def navigate(view_name, **kwargs):
+        previous_view = (
+            active_view.get(
+                "value"
+            )
+        )
+
+        # El active-chat watcher pertenece a la sesión WhatsApp,
+        # no a la vida visual de communications_view().
+        #
+        # Al abandonar WhatsApp:
+        # - NO detenemos el watcher;
+        # - NO cerramos browser/runtime;
+        # - solo retiramos el consumidor Flet perteneciente
+        #   a la vista que va a ser desmontada.
+        if (
+            previous_view
+            == "WhatsApp"
+            and view_name
+            != "WhatsApp"
+        ):
+            try:
+                whatsapp_runtime.set_active_chat_watch_callback(
+                    None
+                )
+
+            except Exception as exc:
+                print(
+                    "[WA-FLET] view callback detach failed",
+                    repr(exc),
+                    flush=True,
+                )
+
+        # Se publica antes de construir la nueva vista.
+        # De este modo cualquier tarea ya encolada de la vista
+        # anterior se considera obsoleta inmediatamente.
+        active_view[
+            "value"
+        ] = view_name
+
         if view_name == "Clientes":
             return_context = kwargs.get(
                 "return_context"
@@ -676,6 +725,13 @@ def main(page: ft.Page):
                 ),
                 whatsapp_runtime=(
                     whatsapp_runtime
+                ),
+                is_view_active=(
+                    lambda:
+                        active_view.get(
+                            "value"
+                        )
+                        == "WhatsApp"
                 ),
                 current_username=(
                     (

@@ -55,6 +55,7 @@ def communications_view(
     *,
     service=None,
     whatsapp_runtime=None,
+    is_view_active=None,
     current_username=None,
     initial_thread_id=None,
     on_open_cliente=None,
@@ -81,6 +82,28 @@ def communications_view(
         service
         or CommunicationService()
     )
+
+    def _ui_active():
+        """Indica si esta instancia sigue siendo la vista visible.
+
+        El runtime WhatsApp puede sobrevivir a la navegación,
+        pero los controles locales pertenecen exclusivamente
+        a esta instancia de communications_view().
+        """
+        if is_view_active is None:
+            # Compatibilidad con tests y callers aislados.
+            return True
+
+        try:
+            return bool(
+                is_view_active()
+            )
+
+        except Exception:
+            # Un lifecycle desconocido nunca autoriza una
+            # mutación visual sobre controles potencialmente
+            # desmontados.
+            return False
 
     state = {
         "summary": {},
@@ -302,6 +325,10 @@ def communications_view(
             pass
 
     def _safe_update():
+        # WA-FLET-LIFE safe-update guard
+        if not _ui_active():
+            return False
+
         try:
             # Full refresh explícito: sincronizar también
             # el contenido de los hosts persistentes antes
@@ -2024,6 +2051,10 @@ def communications_view(
     async def _dispatch_whatsapp_watch_change(
         result,
     ):
+        # WA-FLET-LIFE dispatch guard
+        if not _ui_active():
+            return False
+
         """Ejecuta el callback realtime dentro del event loop Flet.
 
         El watcher de WhatsApp vive en un hilo de background.
@@ -2047,6 +2078,10 @@ def communications_view(
     def _schedule_whatsapp_watch_change(
         result,
     ):
+        # WA-FLET-LIFE schedule guard
+        if not _ui_active():
+            return False
+
         """Puente thread-safe conceptual watcher → página Flet.
 
         Este callback puede ser invocado desde el hilo supervisor
@@ -2087,6 +2122,10 @@ def communications_view(
     def _on_whatsapp_watch_change(
         result,
     ):
+        # WA-FLET-LIFE consumer guard
+        if not _ui_active():
+            return False
+
 
 
         if not isinstance(
@@ -2526,6 +2565,10 @@ def communications_view(
         message,
         error=False,
     ):
+        # WA-FLET-LIFE message-dispatch guard
+        if not _ui_active():
+            return False
+
         """Muestra una notificación dentro del event loop de Flet."""
         _show_message(
             str(
@@ -2543,6 +2586,10 @@ def communications_view(
         *,
         error=False,
     ):
+        # WA-FLET-LIFE message-schedule guard
+        if not _ui_active():
+            return False
+
         """Programa una notificación UI desde un worker."""
         runner = getattr(
             page,
@@ -3098,6 +3145,10 @@ def communications_view(
 
 
     def _refresh_conversation_list_control():
+        # WA-FLET-LIFE sidebar guard
+        if not _ui_active():
+            return False
+
         visible = (
             _visible_conversation_items()
         )
@@ -4349,6 +4400,10 @@ def communications_view(
 
 
     async def _scroll_message_history_to_bottom():
+        # WA-FLET-LIFE scroll guard
+        if not _ui_active():
+            return False
+
         """Fuerza el historial visible al último mensaje."""
         try:
             if not (
@@ -4374,6 +4429,10 @@ def communications_view(
 
 
     def _force_message_history_bottom():
+        # WA-FLET-LIFE force-scroll guard
+        if not _ui_active():
+            return False
+
         """Programa el salto al final tras actualizar la UI."""
         if not (
             state.get("messages")
@@ -4848,6 +4907,10 @@ def communications_view(
 
 
     def _refresh_message_history_control():
+        # WA-FLET-LIFE history guard
+        if not _ui_active():
+            return False
+
         """Actualiza únicamente el historial ya montado.
 
         Devuelve True si pudo aplicar el refresh ligero.
@@ -5092,6 +5155,10 @@ def communications_view(
         generation,
         verified,
     ):
+        # WA-FLET-LIFE route-finish guard
+        if not _ui_active():
+            return False
+
         """Finaliza visualmente un routing dentro del loop Flet."""
         thread_id = int(
             thread_id
@@ -5156,6 +5223,10 @@ def communications_view(
         generation,
         verified,
     ):
+        # WA-FLET-LIFE route-schedule guard
+        if not _ui_active():
+            return False
+
         runner = getattr(
             page,
             "run_task",
@@ -5495,6 +5566,10 @@ def communications_view(
         result,
         exception,
     ):
+        # WA-FLET-LIFE send-dispatch guard
+        if not _ui_active():
+            return False
+
         """Finaliza un envío dentro del event loop de Flet.
 
         El transporte WhatsApp se ejecuta en background.
@@ -5529,6 +5604,10 @@ def communications_view(
         result=None,
         exception=None,
     ):
+        # WA-FLET-LIFE send-schedule guard
+        if not _ui_active():
+            return False
+
         runner = getattr(
             page,
             "run_task",
@@ -6062,6 +6141,10 @@ def communications_view(
 
 
     def _refresh_chat_panel_control():
+        # WA-FLET-LIFE chat-panel guard
+        if not _ui_active():
+            return False
+
         """Actualiza únicamente el panel central del chat."""
 
         chat_panel_control.content = (
@@ -6088,6 +6171,10 @@ def communications_view(
 
 
     def _refresh_context_panel_control():
+        # WA-FLET-LIFE context-panel guard
+        if not _ui_active():
+            return False
+
         """Actualiza únicamente el panel derecho de contexto."""
 
         context_panel_control.content = (
@@ -6964,5 +7051,32 @@ def communications_view(
     content_area.content = (
         build_content()
     )
+
+    # Si el watcher ya sobrevivía de una visita anterior,
+    # volver a WhatsApp debe transferir la propiedad del
+    # callback UI a ESTA nueva instancia.
+    #
+    # No arrancamos aquí un watcher nuevo: únicamente
+    # re-vinculamos el consumidor si ya existe.
+    if (
+        whatsapp_runtime
+        is not None
+        and _ui_active()
+    ):
+        try:
+            if (
+                whatsapp_runtime
+                .active_chat_watch_running
+            ):
+                whatsapp_runtime.set_active_chat_watch_callback(
+                    _schedule_whatsapp_watch_change
+                )
+
+        except Exception as exc:
+            print(
+                "[WA-FLET] view callback rebind failed",
+                repr(exc),
+                flush=True,
+            )
 
     return content_area
