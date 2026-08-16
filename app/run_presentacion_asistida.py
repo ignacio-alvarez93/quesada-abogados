@@ -1326,35 +1326,6 @@ def click_continuar_presentador(browser, session_dir):
 
 
 
-def disconnect_browser_control(browser, session_dir):
-    """
-    Desconecta SeleniumBase CDP sin cerrar Chrome.
-
-    IMPORTANTE:
-    - NO usa stop()
-    - NO usa quit()
-    - NO usa close()
-    - NO intenta desconectar driver/page internos
-    - Solo usa browser.disconnect() si existe.
-    """
-    write_log(session_dir, "Intentando browser.disconnect() para entregar Chrome al humano")
-
-    method = getattr(browser, "disconnect", None)
-    if callable(method):
-        try:
-            result = method()
-            write_log(session_dir, f"browser.disconnect() ejecutado correctamente: {result}")
-            return True
-        except Exception as exc:
-            write_log(session_dir, f"browser.disconnect() falló: {repr(exc)}")
-            return False
-
-    write_log(session_dir, "browser.disconnect() no existe en esta instancia; no se ejecuta ningún método que pueda cerrar Chrome")
-    return False
-
-
-
-
 def pause_humana_final_presentacion(browser, session_dir):
     """
     Pausa humana final SIN disconnect.
