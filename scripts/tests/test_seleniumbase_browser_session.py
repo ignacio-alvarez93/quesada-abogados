@@ -778,6 +778,165 @@ def test_shutdown_rejects_unimplemented_modes():
             )
 
 
+def test_failed_shutdown_can_retry_with_preserved_browser():
+    browser = GovernedFakeBrowser()
+
+    session = make_session(
+        factory=FactoryProbe(
+            result=browser,
+        )
+    )
+
+    try:
+        session.start()
+
+        original_validate = (
+            session
+            ._validate_shutdown_topology
+        )
+
+        calls = {
+            "count": 0,
+        }
+
+        def flaky_validate(
+            target_browser,
+        ):
+            calls["count"] += 1
+
+            if calls["count"] == 1:
+                raise RuntimeError(
+                    "transient shutdown failure"
+                )
+
+            return original_validate(
+                target_browser
+            )
+
+        session._validate_shutdown_topology = (
+            flaky_validate
+        )
+
+        first = session.shutdown(
+            BrowserShutdownMode.CLOSE
+        )
+
+        assert first.has_error is True
+
+        assert (
+            first.state_after
+            == BrowserSessionState.FAILED
+        )
+
+        assert (
+            session.state
+            == BrowserSessionState.FAILED
+        )
+
+        # Ownership físico debe seguir disponible.
+        assert session.browser is browser
+
+        health = session.health()
+
+        assert health.browser_available is True
+        assert health.control_available is False
+
+        second = session.shutdown(
+            BrowserShutdownMode.CLOSE
+        )
+
+        assert second.has_error is False
+
+        assert (
+            second.state_before
+            == BrowserSessionState.FAILED
+        )
+
+        assert (
+            second.state_after
+            == BrowserSessionState.CLOSED
+        )
+
+        assert second.control_released is True
+        assert second.browser_closed is True
+        assert second.process_terminated is True
+
+        assert (
+            session.state
+            == BrowserSessionState.CLOSED
+        )
+
+        assert session.browser is None
+
+        reasons = [
+            transition.reason
+            for transition
+            in session.transition_history
+        ]
+
+        assert (
+            "shutdown_failed"
+            in reasons
+        )
+
+        assert (
+            "shutdown_retry_requested"
+            in reasons
+        )
+
+        assert (
+            reasons[-1]
+            == "shutdown_completed"
+        )
+
+        assert calls["count"] == 2
+
+    finally:
+        browser.dispose_test_loops()
+
+
+def test_start_failure_is_not_shutdown_retryable():
+    session = make_session(
+        factory=FactoryProbe(
+            error=RuntimeError(
+                "chrome unavailable"
+            )
+        )
+    )
+
+    try:
+        session.start()
+
+    except BrowserSessionLifecycleError:
+        pass
+
+    else:
+        raise AssertionError(
+            "El startup debía fallar"
+        )
+
+    assert (
+        session.state
+        == BrowserSessionState.FAILED
+    )
+
+    assert session.browser is None
+
+    try:
+        session.shutdown(
+            BrowserShutdownMode.CLOSE
+        )
+
+    except BrowserSessionLifecycleError:
+        pass
+
+    else:
+        raise AssertionError(
+            "FAILED por start_failed no debe "
+            "ser shutdown-retryable"
+        )
+
+
 def test_shutdown_topology_rejects_missing_driver():
     class BrowserWithoutDriver:
         pass
@@ -983,6 +1142,8 @@ TESTS = (
     test_shutdown_close_is_idempotent,
     test_shutdown_without_start_closes_logically,
     test_shutdown_rejects_unimplemented_modes,
+    test_failed_shutdown_can_retry_with_preserved_browser,
+    test_start_failure_is_not_shutdown_retryable,
     test_shutdown_topology_rejects_missing_driver,
     test_shutdown_topology_rejects_missing_process_transport,
     test_shutdown_topology_rejects_connection_without_aclose,

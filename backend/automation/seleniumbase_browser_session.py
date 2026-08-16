@@ -807,6 +807,11 @@ class SeleniumBaseBrowserSession:
 
         En esta fase únicamente se implementa CLOSE.
 
+        Si un CLOSE falla conservando el browser bajo
+        ownership, puede reintentarse explícitamente desde
+        FAILED. Un FAILED originado por startup u otra causa
+        no adquiere esta capacidad automáticamente.
+
         Orden probado para sb_cdp.Chrome:
 
         1. cerrar conexiones Page/Tab en su owner loop;
@@ -892,9 +897,31 @@ class SeleniumBaseBrowserSession:
 
             return result
 
+        # Un shutdown fallido conserva deliberadamente
+        # ``browser`` y ownership para permitir un retry
+        # gobernado sobre exactamente la misma sesión.
+        #
+        # FAILED por otros motivos (por ejemplo start_failed)
+        # NO se convierte implícitamente en una sesión cerrable.
+        retrying_failed_shutdown = (
+            self._state
+            == BrowserSessionState.FAILED
+            and self._browser is not None
+            and bool(
+                self._transition_history
+            )
+            and (
+                self._transition_history[
+                    -1
+                ].reason
+                == "shutdown_failed"
+            )
+        )
+
         if (
             self._state
             != BrowserSessionState.READY
+            and not retrying_failed_shutdown
         ):
             raise BrowserSessionLifecycleError(
                 "No se puede cerrar una sesión "
@@ -907,12 +934,16 @@ class SeleniumBaseBrowserSession:
 
         if browser is None:
             raise BrowserSessionLifecycleError(
-                "Sesión READY sin browser asociado"
+                "Sesión cerrable sin browser asociado"
             )
 
         self._transition(
             BrowserSessionState.STOPPING,
-            reason="shutdown_requested",
+            reason=(
+                "shutdown_retry_requested"
+                if retrying_failed_shutdown
+                else "shutdown_requested"
+            ),
         )
 
         try:
