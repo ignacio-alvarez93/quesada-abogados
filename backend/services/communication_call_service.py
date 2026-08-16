@@ -16,6 +16,8 @@ No conoce Enlace móvil.
 No controla directamente proveedores.
 """
 
+from dataclasses import replace
+
 from backend.communications.call_snapshots import (
     materialize_provider_call_snapshot,
     merge_provider_call_snapshot,
@@ -36,6 +38,9 @@ from backend.communications.calls import (
     CALL_STATUS_MISSED,
     CALL_STATUS_REJECTED,
     CommunicationCall,
+    CommunicationCallOverview,
+    get_call_outcome_label,
+    get_call_reason_label,
     transition_call_status_at,
 )
 from backend.repositories.sqlite_communication_repository import (
@@ -80,6 +85,72 @@ class CommunicationCallService:
         return self.repository.get_call(
             int(call_id)
         )
+
+    def list_call_overviews(
+        self,
+        *,
+        channel=None,
+        direction=None,
+        status=None,
+        search=None,
+        limit=500,
+    ):
+        """
+        API de lectura del registro de llamadas.
+
+        El frontend recibe una proyección ya preparada:
+        no necesita SQL, repositories ni catálogos.
+        """
+        items = (
+            self.repository
+            .list_call_overviews(
+                channel=channel,
+                direction=direction,
+                status=status,
+                search=search,
+                limit=max(
+                    1,
+                    min(
+                        5000,
+                        int(
+                            limit
+                            or 500
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        result = []
+
+        for item in items:
+            if not isinstance(
+                item,
+                CommunicationCallOverview,
+            ):
+                raise TypeError(
+                    "El repository debe devolver "
+                    "CommunicationCallOverview"
+                )
+
+            result.append(
+                replace(
+                    item,
+                    reason_label=(
+                        get_call_reason_label(
+                            item.reason_code
+                        )
+                    ),
+                    outcome_label=(
+                        get_call_outcome_label(
+                            item.outcome_code
+                        )
+                    ),
+                )
+            )
+
+        return result
+
 
     @staticmethod
     def _normalize_required_text(
