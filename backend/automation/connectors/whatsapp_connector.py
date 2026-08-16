@@ -109,6 +109,16 @@ WHATSAPP_VOICE_CALL_BUTTON_SELECTOR = (
     '#main header button[aria-label="Llamada"]'
 )
 
+WHATSAPP_CHATS_TAB_SELECTOR = (
+    'button[aria-label="Chats"]'
+)
+
+WHATSAPP_CALLS_TAB_SELECTOR = (
+    'button[aria-label="Llamadas"]'
+)
+
+
+
 
 # CALL-UX-4 · controles certificados con DOM real
 # WhatsApp Web ES · 2026-08-16.
@@ -8227,6 +8237,272 @@ class WhatsAppConnector:
             ),
         )
 
+
+
+    def read_primary_navigation_state(
+        self,
+    ):
+        """Lee pasivamente la pestaña primaria activa."""
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const chats =
+                        document.querySelector(
+                            'button[aria-label="Chats"]'
+                        );
+
+                    const calls =
+                        document.querySelector(
+                            'button[aria-label="Llamadas"]'
+                        );
+
+                    return {
+                        chats_present:
+                            !!chats,
+
+                        calls_present:
+                            !!calls,
+
+                        chats_pressed:
+                            chats
+                            ? chats.getAttribute(
+                                "aria-pressed"
+                            )
+                            : null,
+
+                        calls_pressed:
+                            calls
+                            ? calls.getAttribute(
+                                "aria-pressed"
+                            )
+                            : null,
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        return {
+            "chats_present":
+                bool(
+                    result.get(
+                        "chats_present"
+                    )
+                ),
+
+            "calls_present":
+                bool(
+                    result.get(
+                        "calls_present"
+                    )
+                ),
+
+            "chats_pressed":
+                result.get(
+                    "chats_pressed"
+                ),
+
+            "calls_pressed":
+                result.get(
+                    "calls_pressed"
+                ),
+        }
+
+
+    def _activate_primary_navigation_tab(
+        self,
+        tab,
+        *,
+        timeout=5,
+    ):
+        """
+        Activa exactamente una pestaña primaria.
+
+        Hace como máximo un click.
+        Después solo observa aria-pressed.
+        """
+        import time
+
+        normalized = str(
+            tab
+            or ""
+        ).strip().upper()
+
+        if normalized == "CHATS":
+            selector = (
+                WHATSAPP_CHATS_TAB_SELECTOR
+            )
+            state_key = (
+                "chats_pressed"
+            )
+
+        elif normalized == "CALLS":
+            selector = (
+                WHATSAPP_CALLS_TAB_SELECTOR
+            )
+            state_key = (
+                "calls_pressed"
+            )
+
+        else:
+            raise ValueError(
+                "Pestaña WhatsApp no válida"
+            )
+
+        before = (
+            self
+            .read_primary_navigation_state()
+        )
+
+        if (
+            before.get(
+                state_key
+            )
+            == "true"
+        ):
+            return {
+                "tab":
+                    normalized,
+                "clicked":
+                    False,
+                "already_active":
+                    True,
+                "state":
+                    before,
+            }
+
+        script = f"""
+            (() => {{
+                const button =
+                    document.querySelector(
+                        {selector!r}
+                    );
+
+                if (!button) {{
+                    return {{
+                        clicked: false,
+                        reason:
+                            "BUTTON_NOT_FOUND"
+                    }};
+                }}
+
+                if (
+                    button.disabled
+                    || button.getAttribute(
+                        "aria-disabled"
+                    ) === "true"
+                ) {{
+                    return {{
+                        clicked: false,
+                        reason:
+                            "BUTTON_DISABLED"
+                    }};
+                }}
+
+                button.click();
+
+                return {{
+                    clicked: true,
+                    reason: null
+                }};
+            }})()
+        """
+
+        click_result = (
+            self.browser.evaluate(
+                script
+            )
+            or {}
+        )
+
+        if not click_result.get(
+            "clicked"
+        ):
+            raise RuntimeError(
+                "No se pudo activar "
+                f"{normalized}: "
+                + str(
+                    click_result.get(
+                        "reason"
+                    )
+                    or "UNKNOWN"
+                )
+            )
+
+        deadline = (
+            time.time()
+            + max(
+                0.5,
+                float(timeout),
+            )
+        )
+
+        while time.time() < deadline:
+            current = (
+                self
+                .read_primary_navigation_state()
+            )
+
+            if (
+                current.get(
+                    state_key
+                )
+                == "true"
+            ):
+                return {
+                    "tab":
+                        normalized,
+                    "clicked":
+                        True,
+                    "already_active":
+                        False,
+                    "state":
+                        current,
+                }
+
+            time.sleep(
+                0.1
+            )
+
+        raise TimeoutError(
+            "WhatsApp no confirmó "
+            f"pestaña {normalized}"
+        )
+
+
+    def open_calls_tab(
+        self,
+        *,
+        timeout=5,
+    ):
+        return (
+            self
+            ._activate_primary_navigation_tab(
+                "CALLS",
+                timeout=timeout,
+            )
+        )
+
+
+    def open_chats_tab(
+        self,
+        *,
+        timeout=5,
+    ):
+        return (
+            self
+            ._activate_primary_navigation_tab(
+                "CHATS",
+                timeout=timeout,
+            )
+        )
 
 
     def read_visible_call_history(

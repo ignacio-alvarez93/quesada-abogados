@@ -1954,6 +1954,281 @@ class WhatsAppRuntimeService:
         )
 
 
+    def _sync_call_history_impl(
+        self,
+        *,
+        wait_timeout=60,
+        navigation_timeout=5,
+        dry_run=False,
+    ):
+        """
+        Sincroniza historial WhatsApp en una sola operación
+        gobernada por el worker.
+
+        Secuencia:
+        - verifica READY;
+        - no navega si existe llamada activa;
+        - captura pestaña actual;
+        - abre Llamadas si es necesario;
+        - extrae historial;
+        - proyecta/reconcilia;
+        - restaura Chats si estaba activa inicialmente.
+
+        Ningún watcher puede intercalarse en el cambio temporal
+        porque toda la operación vive dentro de _run_serialized().
+        """
+        from backend.services.whatsapp_call_history_sync_service import (
+            apply_whatsapp_history_reconciliation_plan,
+            build_whatsapp_history_reconciliation_plan,
+        )
+
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        current_call = (
+            connector
+            .read_call_snapshot()
+        )
+
+        if bool(
+            getattr(
+                current_call,
+                "present",
+                False,
+            )
+        ):
+            return {
+                "skipped":
+                    True,
+                "reason":
+                    "ACTIVE_CALL",
+                "dry_run":
+                    bool(dry_run),
+                "history":
+                    None,
+                "plan":
+                    None,
+                "execution":
+                    None,
+                "navigation":
+                    None,
+            }
+
+        before = (
+            connector
+            .read_primary_navigation_state()
+        )
+
+        chats_was_active = (
+            before.get(
+                "chats_pressed"
+            )
+            == "true"
+        )
+
+        calls_was_active = (
+            before.get(
+                "calls_pressed"
+            )
+            == "true"
+        )
+
+        if not (
+            chats_was_active
+            or calls_was_active
+        ):
+            raise RuntimeError(
+                "No se pudo determinar "
+                "la pestaña WhatsApp activa"
+            )
+
+        opened_calls = False
+        restore_result = None
+
+        try:
+            if not calls_was_active:
+                (
+                    connector
+                    .open_calls_tab(
+                        timeout=(
+                            navigation_timeout
+                        ),
+                    )
+                )
+
+                opened_calls = True
+
+            # aria-pressed confirma la navegación primaria,
+            # pero React puede tardar unas décimas adicionales
+            # en materializar las filas del historial.
+            #
+            # No usamos sleep fijo: esperamos evidencia funcional
+            # real del reader (rows_scanned > 0) con timeout.
+            history_deadline = (
+                time.time()
+                + max(
+                    0.5,
+                    float(
+                        navigation_timeout
+                    ),
+                )
+            )
+
+            history = None
+            materialization_attempts = 0
+
+            while True:
+                materialization_attempts += 1
+
+                history = (
+                    connector
+                    .read_visible_call_history()
+                )
+
+                rows_scanned = int(
+                    (
+                        history.get(
+                            "rows_scanned"
+                        )
+                        if isinstance(
+                            history,
+                            dict,
+                        )
+                        else 0
+                    )
+                    or 0
+                )
+
+                if rows_scanned > 0:
+                    break
+
+                if (
+                    time.time()
+                    >= history_deadline
+                ):
+                    raise TimeoutError(
+                        "La pestaña Llamadas está activa "
+                        "pero el historial no llegó a "
+                        "materializar filas visibles"
+                    )
+
+                time.sleep(
+                    0.1
+                )
+
+            plan = (
+                build_whatsapp_history_reconciliation_plan(
+                    history
+                )
+            )
+
+            call_service = getattr(
+                self,
+                "call_service",
+                None,
+            )
+
+            if (
+                not dry_run
+                and call_service is None
+            ):
+                raise RuntimeError(
+                    "CommunicationCallService "
+                    "no está configurado"
+                )
+
+            execution = (
+                apply_whatsapp_history_reconciliation_plan(
+                    plan,
+                    call_service=(
+                        call_service
+                    ),
+                    dry_run=(
+                        dry_run
+                    ),
+                )
+            )
+
+        finally:
+            if (
+                opened_calls
+                and chats_was_active
+            ):
+                restore_result = (
+                    connector
+                    .open_chats_tab(
+                        timeout=(
+                            navigation_timeout
+                        ),
+                    )
+                )
+
+        after = (
+            connector
+            .read_primary_navigation_state()
+        )
+
+        return {
+            "skipped":
+                False,
+
+            "reason":
+                None,
+
+            "dry_run":
+                bool(dry_run),
+
+            "history":
+                history,
+
+            "plan":
+                plan,
+
+            "execution":
+                execution,
+
+            "navigation": {
+                "before":
+                    before,
+
+                "opened_calls":
+                    opened_calls,
+
+                "materialization_attempts":
+                    materialization_attempts,
+
+                "restore_result":
+                    restore_result,
+
+                "after":
+                    after,
+            },
+        }
+
+
+    def sync_call_history(
+        self,
+        *,
+        wait_timeout=60,
+        navigation_timeout=5,
+        dry_run=False,
+    ):
+        """
+        API pública serializada de sincronización histórica.
+        """
+        return self._run_serialized(
+            self._sync_call_history_impl,
+            wait_timeout=wait_timeout,
+            navigation_timeout=(
+                navigation_timeout
+            ),
+            dry_run=dry_run,
+        )
+
+
     def _read_visible_call_history_impl(
         self,
         *,
