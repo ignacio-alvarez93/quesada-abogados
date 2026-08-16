@@ -152,6 +152,122 @@ class CommunicationCallService:
         return result
 
 
+    def list_reason_options(
+        self,
+    ):
+        """
+        Expone el catálogo gobernado de motivos
+        sin obligar a la UI a conocer su implementación.
+        """
+        from backend.communications.calls import (
+            get_call_reason_options,
+        )
+
+        return tuple(
+            get_call_reason_options()
+        )
+
+
+    def save_post_call_details(
+        self,
+        call_id,
+        *,
+        reason_code,
+        notes=None,
+        reason_detail=None,
+    ):
+        """
+        Registra la clasificación humana posterior
+        a una llamada realmente finalizada.
+
+        Este caso de uso NO modifica lifecycle,
+        timestamps ni conocimiento del proveedor.
+        """
+        from dataclasses import replace
+
+        from backend.communications.calls import (
+            CALL_STATUS_ENDED,
+            normalize_call_reason_code,
+        )
+
+        try:
+            normalized_call_id = int(
+                call_id
+            )
+        except Exception as exc:
+            raise ValueError(
+                "call_id no válido"
+            ) from exc
+
+        call = self.repository.get_call(
+            normalized_call_id
+        )
+
+        if call is None:
+            raise ValueError(
+                "Llamada de comunicación "
+                "no encontrada"
+            )
+
+        if (
+            str(
+                call.status
+                or ""
+            ).strip().upper()
+            != CALL_STATUS_ENDED
+        ):
+            raise ValueError(
+                "Los datos post-llamada solo "
+                "pueden registrarse cuando "
+                "la llamada está ENDED"
+            )
+
+        normalized_reason = (
+            normalize_call_reason_code(
+                reason_code
+            )
+        )
+
+        if normalized_reason is None:
+            raise ValueError(
+                "Motivo de llamada no válido"
+            )
+
+        clean_reason_detail = (
+            str(
+                reason_detail
+                or ""
+            ).strip()
+            or None
+        )
+
+        clean_notes = (
+            str(
+                notes
+                or ""
+            ).strip()
+            or None
+        )
+
+        edited = replace(
+            call,
+            reason_code=(
+                normalized_reason
+            ),
+            reason_detail=(
+                clean_reason_detail
+            ),
+            notes=clean_notes,
+        )
+
+        return (
+            self.repository
+            .update_call_details(
+                edited
+            )
+        )
+
+
     @staticmethod
     def _normalize_required_text(
         value,

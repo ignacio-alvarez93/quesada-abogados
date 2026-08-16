@@ -190,3 +190,183 @@ class CallUIEventServiceTest(
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CallUIPostCallSemanticsTest(
+    unittest.TestCase
+):
+    @staticmethod
+    def _result(
+        status,
+        *,
+        reason_code=None,
+        reason_detail=None,
+        notes=None,
+    ):
+        call = persisted(
+            status=status
+        )
+
+        call.reason_code = (
+            reason_code
+        )
+
+        call.reason_detail = (
+            reason_detail
+        )
+
+        call.notes = notes
+
+        return SimpleNamespace(
+            observation=(
+                SimpleNamespace(
+                    active=(
+                        SimpleNamespace(
+                            present=False
+                        )
+                    ),
+                    previous=(
+                        snapshot(
+                            phase="ACTIVE"
+                        )
+                    ),
+                )
+            ),
+            persisted_call=call,
+        )
+
+
+    def test_ended_requires_post_call_form(
+        self,
+    ):
+        service = CallUIEventService()
+
+        event = (
+            service
+            .project_whatsapp_realtime_result(
+                self._result(
+                    "ENDED"
+                )
+            )
+        )
+
+        self.assertTrue(
+            event.terminal
+        )
+
+        self.assertTrue(
+            event.post_call_required
+        )
+
+        self.assertEqual(
+            event.event_key,
+            "CALL:50",
+        )
+
+
+    def test_missed_never_requires_post_call_form(
+        self,
+    ):
+        service = CallUIEventService()
+
+        event = (
+            service
+            .project_whatsapp_realtime_result(
+                self._result(
+                    "MISSED"
+                )
+            )
+        )
+
+        self.assertTrue(
+            event.terminal
+        )
+
+        self.assertFalse(
+            event.post_call_required
+        )
+
+
+    def test_rejected_never_requires_post_call_form(
+        self,
+    ):
+        service = CallUIEventService()
+
+        event = (
+            service
+            .project_whatsapp_realtime_result(
+                self._result(
+                    "REJECTED"
+                )
+            )
+        )
+
+        self.assertTrue(
+            event.terminal
+        )
+
+        self.assertFalse(
+            event.post_call_required
+        )
+
+
+    def test_existing_editorial_data_is_projected(
+        self,
+    ):
+        service = CallUIEventService()
+
+        event = (
+            service
+            .project_whatsapp_realtime_result(
+                self._result(
+                    "ENDED",
+                    reason_code=(
+                        "LEGAL_CONSULTATION"
+                    ),
+                    reason_detail=(
+                        "Renovación"
+                    ),
+                    notes=(
+                        "Cliente informado"
+                    ),
+                )
+            )
+        )
+
+        self.assertEqual(
+            event.reason_code,
+            "LEGAL_CONSULTATION",
+        )
+
+        self.assertEqual(
+            event.reason_detail,
+            "Renovación",
+        )
+
+        self.assertEqual(
+            event.notes,
+            "Cliente informado",
+        )
+
+
+    def test_answered_is_not_terminal_or_post_call(
+        self,
+    ):
+        service = CallUIEventService()
+
+        event = (
+            service
+            .project_whatsapp_realtime_result(
+                self._result(
+                    "ANSWERED"
+                )
+            )
+        )
+
+        self.assertFalse(
+            event.terminal
+        )
+
+        self.assertFalse(
+            event.post_call_required
+        )

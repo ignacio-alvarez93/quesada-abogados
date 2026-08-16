@@ -184,6 +184,47 @@ def main(page: ft.Page):
             )
         )
 
+    call_reason_options = tuple(
+        {
+            "code": option.code,
+            "label": option.label,
+        }
+        for option
+        in communication_call_service
+        .list_reason_options()
+    )
+
+    def save_global_post_call(
+        event,
+        *,
+        reason_code,
+        reason_detail=None,
+        notes=None,
+    ):
+        saved = (
+            communication_call_service
+            .save_post_call_details(
+                event.call_id,
+                reason_code=reason_code,
+                reason_detail=(
+                    reason_detail
+                ),
+                notes=notes,
+            )
+        )
+
+        return {
+            "ok": True,
+            "call_id": saved.id,
+            "reason_code":
+                saved.reason_code,
+            "reason_detail":
+                saved.reason_detail,
+            "notes":
+                saved.notes,
+        }
+
+
     global_call_ui = (
         GlobalCallUICoordinator(
             page=page,
@@ -192,6 +233,12 @@ def main(page: ft.Page):
             ),
             on_reject=(
                 reject_global_call
+            ),
+            on_save_post_call=(
+                save_global_post_call
+            ),
+            reason_options=(
+                call_reason_options
             ),
         )
     )
@@ -217,6 +264,10 @@ def main(page: ft.Page):
         )
 
     call_ui_smoke_started = {
+        "value": False,
+    }
+
+    post_call_ui_smoke_started = {
         "value": False,
     }
 
@@ -925,6 +976,237 @@ def main(page: ft.Page):
         return True
 
 
+    async def run_post_call_ui_smoke():
+        """
+        Smoke visual seguro del formulario post-llamada.
+
+        Garantías:
+        - no crea CommunicationCall;
+        - no persiste;
+        - no toca Selenium;
+        - no toca WhatsApp;
+        - call_id=None mantiene Guardar deshabilitado;
+        - entra por la misma frontera background -> run_task
+          que utilizará un evento realtime productivo.
+        """
+
+        await asyncio.sleep(
+            8
+        )
+
+        ended = CallUIEvent(
+            event_key=(
+                "SMOKE:POST-CALL-1"
+            ),
+
+            # Sin identidad DB deliberadamente.
+            # El smoke jamás podrá ejecutar Guardar.
+            call_id=None,
+
+            channel="WHATSAPP",
+            direction="INBOUND",
+            status="ENDED",
+
+            phone_number=(
+                "+34639156371"
+            ),
+
+            display_name=(
+                "JEAN PIERRY MUÑOZ VALDEZ"
+            ),
+
+            client_id=30,
+
+            provider="WHATSAPP",
+
+            provider_call_id=(
+                "SMOKE-POST-PROVIDER-1"
+            ),
+
+            external_call_key=(
+                "SMOKE-POST-EXTERNAL-1"
+            ),
+
+            incoming_ringing=False,
+            terminal=True,
+
+            post_call_required=True,
+
+            # Verificamos también prefill real
+            # mediante los códigos del catálogo backend.
+            reason_code=(
+                "LEGAL_CONSULTATION"
+            ),
+
+            reason_detail=(
+                "Consulta sobre renovación"
+            ),
+
+            notes=(
+                "Prueba visual del formulario "
+                "post-llamada."
+            ),
+
+            source=(
+                "SYNTHETIC_POST_CALL_UI_SMOKE"
+            ),
+        )
+
+        print(
+            "[POST-CALL-UI-SMOKE] OPEN",
+            flush=True,
+        )
+
+        print(
+            "[POST-CALL-UI-SMOKE] "
+            "REASON_OPTIONS_COUNT:",
+            len(
+                call_reason_options
+            ),
+            flush=True,
+        )
+
+        print(
+            "[POST-CALL-UI-SMOKE] "
+            "NO_DB_WRITE: True",
+            flush=True,
+        )
+
+        # Simula exactamente una entrada procedente
+        # de background/watcher.
+        page.run_thread(
+            global_call_ui.handle_event,
+            ended,
+        )
+
+        await asyncio.sleep(
+            0.5
+        )
+
+        print(
+            "[POST-CALL-UI-SMOKE] AFTER_OPEN:",
+            global_call_ui.debug_state(),
+            flush=True,
+        )
+
+        save_button = (
+            global_call_ui
+            ._post_call_save_button
+        )
+
+        reason_control = (
+            global_call_ui
+            ._post_call_reason
+        )
+
+        detail_control = (
+            global_call_ui
+            ._post_call_reason_detail
+        )
+
+        notes_control = (
+            global_call_ui
+            ._post_call_notes
+        )
+
+        print(
+            "[POST-CALL-UI-SMOKE] FORM_STATE:",
+            {
+                "save_disabled":
+                    (
+                        getattr(
+                            save_button,
+                            "disabled",
+                            None,
+                        )
+                    ),
+                "reason":
+                    (
+                        getattr(
+                            reason_control,
+                            "value",
+                            None,
+                        )
+                    ),
+                "reason_detail":
+                    (
+                        getattr(
+                            detail_control,
+                            "value",
+                            None,
+                        )
+                    ),
+                "notes":
+                    (
+                        getattr(
+                            notes_control,
+                            "value",
+                            None,
+                        )
+                    ),
+            },
+            flush=True,
+        )
+
+        # Tiempo suficiente para abrir el desplegable
+        # y revisar visualmente el formulario.
+        await asyncio.sleep(
+            15
+        )
+
+        print(
+            "[POST-CALL-UI-SMOKE] AUTO_OMIT",
+            flush=True,
+        )
+
+        # Estamos dentro de page.run_task:
+        # la mutación Flet sigue ocurriendo en su contexto.
+        global_call_ui._on_post_call_skip_click()
+
+        await asyncio.sleep(
+            0.25
+        )
+
+        print(
+            "[POST-CALL-UI-SMOKE] AFTER_OMIT:",
+            global_call_ui.debug_state(),
+            flush=True,
+        )
+
+
+    def maybe_start_post_call_ui_smoke():
+        enabled = str(
+            os.getenv(
+                "QUESADA_POST_CALL_UI_SMOKE",
+                "",
+            )
+            or ""
+        ).strip().lower()
+
+        if enabled not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return False
+
+        if post_call_ui_smoke_started[
+            "value"
+        ]:
+            return False
+
+        post_call_ui_smoke_started[
+            "value"
+        ] = True
+
+        page.run_task(
+            run_post_call_ui_smoke
+        )
+
+        return True
+
+
     def on_login_success(user):
         current_user["value"] = user
 
@@ -938,6 +1220,8 @@ def main(page: ft.Page):
         start_whatsapp_session_services()
 
         maybe_start_global_call_ui_smoke()
+
+        maybe_start_post_call_ui_smoke()
 
     def start():
         main_container.content = login_view(page, on_login_success=on_login_success)

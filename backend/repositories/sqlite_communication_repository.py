@@ -1404,6 +1404,85 @@ class SQLiteCommunicationRepository:
             row
         )
 
+    def update_call_details(
+        self,
+        call,
+    ):
+        """
+        Persiste exclusivamente datos editoriales
+        registrados por el operador tras una llamada.
+
+        Modifica:
+        - reason_code;
+        - reason_detail;
+        - notes.
+
+        NO modifica:
+        - lifecycle ni timestamps;
+        - identidad del proveedor;
+        - interlocutor;
+        - vínculos CRM;
+        - outcome_code;
+        - metadata del proveedor.
+
+        La separación evita que una edición humana
+        pueda degradar conocimiento realtime/histórico.
+        """
+        self.ensure_schema()
+
+        if (
+            call is None
+            or call.id in (
+                None,
+                "",
+            )
+        ):
+            raise ValueError(
+                "La llamada debe tener id "
+                "para actualizar sus detalles"
+            )
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE communication_calls
+                SET
+                    reason_code = ?,
+                    reason_detail = ?,
+                    notes = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    call.reason_code,
+                    call.reason_detail,
+                    call.notes,
+                    int(call.id),
+                ),
+            )
+
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    "Llamada de comunicación "
+                    "no encontrada"
+                )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_calls
+                WHERE id = ?
+                """,
+                (
+                    int(call.id),
+                ),
+            ).fetchone()
+
+            return self._call_from_row(
+                row
+            )
+
+
     def update_call_state(
         self,
         call,

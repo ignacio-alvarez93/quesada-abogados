@@ -46,6 +46,17 @@ class CallUIEvent:
     incoming_ringing: bool = False
     terminal: bool = False
 
+    # Una llamada ENDED representa una conversación
+    # realmente atendida y finalizada en el dominio.
+    #
+    # La UI puede solicitar entonces clasificación humana
+    # sin tener que conocer reglas de lifecycle.
+    post_call_required: bool = False
+
+    reason_code: str | None = None
+    reason_detail: str | None = None
+    notes: str | None = None
+
     source: str | None = None
 
 
@@ -386,6 +397,44 @@ class CallUIEventService:
             in CALL_UI_TERMINAL_STATUSES
         )
 
+        # ENDED solo es alcanzable desde ANSWERED
+        # en el dominio de llamadas.
+        #
+        # Por tanto:
+        # - ENDED     -> formulario post-llamada;
+        # - MISSED    -> seguimiento de perdida existente;
+        # - REJECTED  -> no formulario;
+        # - BUSY/...  -> no formulario.
+        post_call_required = bool(
+            normalized_status
+            == "ENDED"
+            and call_id is not None
+        )
+
+        reason_code = self._text(
+            getattr(
+                persisted_call,
+                "reason_code",
+                None,
+            )
+        )
+
+        reason_detail = self._text(
+            getattr(
+                persisted_call,
+                "reason_detail",
+                None,
+            )
+        )
+
+        notes = self._text(
+            getattr(
+                persisted_call,
+                "notes",
+                None,
+            )
+        )
+
         can_accept = bool(
             active_present
             and getattr(
@@ -456,6 +505,12 @@ class CallUIEventService:
                 incoming_ringing
             ),
             terminal=terminal,
+            post_call_required=(
+                post_call_required
+            ),
+            reason_code=reason_code,
+            reason_detail=reason_detail,
+            notes=notes,
             source=(
                 "WHATSAPP_REALTIME"
             ),
