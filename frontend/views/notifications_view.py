@@ -107,6 +107,7 @@ def _status_badge(status):
 def notifications_view(
     page: ft.Page,
     on_open_expediente=None,
+    on_open_dehu_portal=None,
 ):
     state = {
         "items": [],
@@ -459,6 +460,51 @@ def notifications_view(
         state["message"] = control
         safe_update()
 
+    def open_dehu_portal(
+        url,
+    ):
+        """
+        Solicita la apertura de DEHú sin bloquear
+        el hilo de eventos de Flet.
+
+        El worker de esta vista no toca SeleniumBase:
+        únicamente llama al callback de aplicación.
+        DehuRuntimeService realiza después su propia
+        serialización sobre el worker CDP autorizado.
+        """
+
+        if not callable(
+            on_open_dehu_portal
+        ):
+            set_dehu_message(
+                error_alert(
+                    "La apertura gobernada de DEHú "
+                    "no está disponible."
+                )
+            )
+
+            return False
+
+        def worker():
+            try:
+                on_open_dehu_portal(
+                    url
+                )
+
+            except Exception as exc:
+                set_dehu_message(
+                    error_alert(
+                        "No se pudo abrir DEHú: "
+                        f"{exc}"
+                    )
+                )
+
+        start_background_worker(
+            worker
+        )
+
+        return True
+
     def get_dehu_panel():
         panel = state.get("dehu_panel")
 
@@ -467,6 +513,9 @@ def notifications_view(
                 page,
                 on_open_expediente=(
                     open_expediente
+                ),
+                on_open_portal=(
+                    open_dehu_portal
                 ),
                 on_message=(
                     set_dehu_message

@@ -26,6 +26,9 @@ from backend.services.communication_service import (
 from backend.services.whatsapp_runtime_service import (
     WhatsAppRuntimeService,
 )
+from backend.services.dehu_runtime_service import (
+    DehuRuntimeService,
+)
 from database.connection import initialize_database
 from frontend.views.login_view import login_view
 from frontend.views.clients_view import clients_view
@@ -123,6 +126,16 @@ def main(page: ft.Page):
         "value": False,
     }
 
+    # Runtime DEHú global y perezoso.
+    #
+    # Se construye con la sesión ERP pero NO abre Chrome
+    # hasta que un caso de uso solicite realmente DEHú.
+    dehu_runtime = DehuRuntimeService()
+
+    dehu_runtime_closed = {
+        "value": False,
+    }
+
     def start_whatsapp_session_services():
         """
         Activa servicios WhatsApp globales de la sesión ERP.
@@ -214,17 +227,105 @@ def main(page: ft.Page):
             return False
 
 
+    def close_dehu_session_services():
+        """
+        Cierra DEHú únicamente si llegó a adquirir
+        ownership de un connector.
+
+        Un fallo conserva runtime/connector/worker para
+        permitir un retry gobernado.
+        """
+
+        if dehu_runtime_closed[
+            "value"
+        ]:
+            return False
+
+        # Runtime lazy nunca utilizado:
+        # no creamos un executor solo para cerrarlo.
+        if dehu_runtime.connector is None:
+            dehu_runtime_closed[
+                "value"
+            ] = True
+
+            return False
+
+        try:
+            result = (
+                dehu_runtime.close()
+            )
+
+            dehu_runtime_closed[
+                "value"
+            ] = (
+                dehu_runtime.connector
+                is None
+            )
+
+            return result
+
+        except Exception as exc:
+            dehu_runtime_closed[
+                "value"
+            ] = False
+
+            print(
+                "[DEHU] error cerrando "
+                "runtime de sesión:",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
+            return False
+
+
     def on_page_close(
         e=None,
     ):
         """
-        Finaliza WhatsApp antes de que termine la sesión Flet.
+        Cierra independientemente los runtimes globales.
 
-        El helper es idempotente, por lo que futuros caminos
-        explícitos de logout podrán reutilizarlo sin duplicar
-        el cierre del runtime.
+        Un fallo en un provider nunca debe impedir
+        intentar el shutdown gobernado del otro.
         """
-        return close_whatsapp_session_services()
+
+        whatsapp_result = False
+        dehu_result = False
+
+        try:
+            whatsapp_result = (
+                close_whatsapp_session_services()
+            )
+        except Exception as exc:
+            print(
+                "[WA-CALL] error inesperado "
+                "en cierre global:",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
+        try:
+            dehu_result = (
+                close_dehu_session_services()
+            )
+        except Exception as exc:
+            print(
+                "[DEHU] error inesperado "
+                "en cierre global:",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
+        return bool(
+            whatsapp_result
+            or dehu_result
+        )
 
 
     page.on_close = on_page_close
@@ -389,6 +490,12 @@ def main(page: ft.Page):
                 on_open_expediente=lambda expediente_id: navigate(
                     "Expedientes",
                     open_expediente_id=expediente_id,
+                ),
+                on_open_dehu_portal=(
+                    lambda url:
+                        dehu_runtime.open_portal(
+                            url
+                        )
                 ),
             )
         elif view_name == "Trazabilidad Expedientes":

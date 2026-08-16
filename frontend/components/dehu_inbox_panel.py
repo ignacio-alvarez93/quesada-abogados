@@ -234,6 +234,7 @@ def build_dehu_inbox_panel(
     page: ft.Page,
     *,
     on_open_expediente=None,
+    on_open_portal=None,
     on_message=None,
 ):
     state = {
@@ -607,6 +608,77 @@ def build_dehu_inbox_panel(
         load_data()
         rebuild()
 
+    def request_portal_open(
+        url,
+    ):
+        """
+        Delega la navegación DEHú en la capa superior.
+
+        ``None`` representa expresamente la raíz oficial
+        del portal. La URL física continúa siendo
+        responsabilidad del connector/backend.
+        """
+
+        if not callable(
+            on_open_portal
+        ):
+            notify(
+                ft.Container(
+                    padding=12,
+                    bgcolor="#FEF3F2",
+                    border=ft.border.all(
+                        1,
+                        "#FDA29B",
+                    ),
+                    border_radius=10,
+                    content=ft.Text(
+                        "La apertura gobernada de "
+                        "DEHú no está disponible.",
+                        color="#B42318",
+                        size=12,
+                    ),
+                )
+            )
+            safe_page_update()
+            return False
+
+        try:
+            on_open_portal(
+                url
+            )
+
+            return True
+
+        except Exception as exc:
+            notify(
+                ft.Container(
+                    padding=12,
+                    bgcolor="#FEF3F2",
+                    border=ft.border.all(
+                        1,
+                        "#FDA29B",
+                    ),
+                    border_radius=10,
+                    content=ft.Text(
+                        "No se pudo solicitar "
+                        "la apertura de DEHú: "
+                        f"{exc}",
+                        color="#B42318",
+                        size=12,
+                    ),
+                )
+            )
+            safe_page_update()
+
+            return False
+
+    def open_portal_root(
+        e=None,
+    ):
+        return request_portal_open(
+            None
+        )
+
     def open_portal(item):
         url = _text(
             item.get("direct_access_url")
@@ -631,29 +703,11 @@ def build_dehu_inbox_panel(
                 )
             )
             safe_page_update()
-            return
+            return False
 
-        try:
-            page.launch_url(url)
-        except Exception as exc:
-            notify(
-                ft.Container(
-                    padding=12,
-                    bgcolor="#FEF3F2",
-                    border=ft.border.all(
-                        1,
-                        "#FDA29B",
-                    ),
-                    border_radius=10,
-                    content=ft.Text(
-                        "No se pudo abrir DEHú: "
-                        f"{exc}",
-                        color="#B42318",
-                        size=12,
-                    ),
-                )
-            )
-            safe_page_update()
+        return request_portal_open(
+            url
+        )
 
     def open_expedient(item):
         expediente_id = item.get(
@@ -1404,10 +1458,24 @@ def build_dehu_inbox_panel(
                             ),
                         ],
                     ),
-                    ft.OutlinedButton(
-                        "Actualizar",
-                        icon=ft.Icons.REFRESH,
-                        on_click=refresh,
+                    ft.Row(
+                        spacing=8,
+                        controls=[
+                            ft.OutlinedButton(
+                                "Abrir portal DEHú",
+                                icon=(
+                                    ft.Icons.OPEN_IN_NEW
+                                ),
+                                on_click=(
+                                    open_portal_root
+                                ),
+                            ),
+                            ft.OutlinedButton(
+                                "Actualizar",
+                                icon=ft.Icons.REFRESH,
+                                on_click=refresh,
+                            ),
+                        ],
                     ),
                 ],
             ),
