@@ -190,6 +190,666 @@ class WhatsAppSessionContractTest(
             whatsapp_connector.WHATSAPP_WEB_URL,
         )
 
+    def test_start_sets_only_whatsapp_microphone_permission(
+        self,
+    ):
+        class FakeLoop:
+            def __init__(
+                self,
+            ):
+                self.completed = []
+
+            def run_until_complete(
+                self,
+                value,
+            ):
+                self.completed.append(
+                    value
+                )
+
+                return value
+
+        class FakePage:
+            def __init__(
+                self,
+            ):
+                self.commands = []
+
+            def send(
+                self,
+                command,
+            ):
+                payload = next(
+                    command
+                )
+
+                self.commands.append(
+                    payload
+                )
+
+                return payload
+
+        class FakeBrowser:
+            def __init__(
+                self,
+            ):
+                self.loop = FakeLoop()
+                self.page = FakePage()
+
+        class FakeGovernedSession:
+            instances = []
+
+            def __init__(
+                self,
+                *,
+                config,
+                profile_resolver,
+            ):
+                self.config = config
+                self.profile_resolver = (
+                    profile_resolver
+                )
+
+                self.browser = FakeBrowser()
+
+                self.__class__.instances.append(
+                    self
+                )
+
+            def start(
+                self,
+            ):
+                return self.browser
+
+        with patch.object(
+            whatsapp_connector,
+            "open_url",
+        ) as open_url_mock:
+            connector = (
+                whatsapp_connector
+                .WhatsAppConnector(
+                    profile_key="whatsapp_dev",
+                    browser_session_factory=(
+                        FakeGovernedSession
+                    ),
+                )
+            )
+
+            browser = connector.start()
+
+        open_url_mock.assert_called_once_with(
+            browser,
+            whatsapp_connector.WHATSAPP_WEB_URL,
+        )
+
+        self.assertEqual(
+            len(
+                browser.page.commands
+            ),
+            1,
+        )
+
+        command = (
+            browser.page.commands[0]
+        )
+
+        self.assertEqual(
+            command.get(
+                "method"
+            ),
+            "Browser.setPermission",
+        )
+
+        params = (
+            command.get(
+                "params"
+            )
+            or {}
+        )
+
+        self.assertEqual(
+            params.get(
+                "origin"
+            ),
+            whatsapp_connector
+            .WHATSAPP_WEB_ORIGIN,
+        )
+
+        self.assertEqual(
+            params.get(
+                "setting"
+            ),
+            "granted",
+        )
+
+        permission = (
+            params.get(
+                "permission"
+            )
+            or {}
+        )
+
+        self.assertEqual(
+            permission.get(
+                "name"
+            ),
+            "microphone",
+        )
+
+        self.assertEqual(
+            connector
+            .call_media_permission_result[
+                "configured"
+            ],
+            True,
+        )
+
+        self.assertEqual(
+            connector
+            .call_media_permission_result[
+                "permission"
+            ],
+            "microphone",
+        )
+
+        self.assertNotIn(
+            "camera",
+            str(
+                command
+            ).lower(),
+        )
+
+
+    def test_start_preserves_chat_when_cdp_permission_transport_is_missing(
+        self,
+    ):
+        class FakeGovernedSession:
+            instances = []
+
+            def __init__(
+                self,
+                *,
+                config,
+                profile_resolver,
+            ):
+                self.config = config
+                self.profile_resolver = (
+                    profile_resolver
+                )
+                self.browser = object()
+
+                self.__class__.instances.append(
+                    self
+                )
+
+            def start(
+                self,
+            ):
+                return self.browser
+
+        with patch.object(
+            whatsapp_connector,
+            "open_url",
+        ) as open_url_mock:
+            connector = (
+                whatsapp_connector
+                .WhatsAppConnector(
+                    browser_session_factory=(
+                        FakeGovernedSession
+                    ),
+                )
+            )
+
+            browser = connector.start()
+
+        self.assertIs(
+            browser,
+            connector.browser,
+        )
+
+        open_url_mock.assert_called_once_with(
+            browser,
+            whatsapp_connector.WHATSAPP_WEB_URL,
+        )
+
+        result = (
+            connector
+            .call_media_permission_result
+        )
+
+        self.assertFalse(
+            result[
+                "configured"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "reason"
+            ],
+            "CDP_PERMISSION_TRANSPORT_UNAVAILABLE",
+        )
+
+
+    def test_reads_enabled_call_microphone_state(
+        self,
+    ):
+        class FakeBrowser:
+            def evaluate(
+                self,
+                expression,
+            ):
+                return {
+                    "call_present": True,
+                    "mute": {
+                        "testid": "mic-mute",
+                        "aria_label":
+                            "Silenciar micrófono",
+                        "disabled": False,
+                        "aria_disabled":
+                            "false",
+                    },
+                    "unmute": None,
+                    "split": {
+                        "testid":
+                            "mic-split-button",
+                        "aria_label":
+                            "Silenciar micrófono",
+                        "disabled": False,
+                        "aria_disabled":
+                            "",
+                    },
+                }
+
+        connector = (
+            whatsapp_connector
+            .WhatsAppConnector()
+        )
+
+        connector.browser = FakeBrowser()
+
+        result = (
+            connector
+            .read_call_microphone_state()
+        )
+
+        self.assertEqual(
+            result[
+                "state"
+            ],
+            whatsapp_connector
+            .WHATSAPP_CALL_MIC_STATE_ENABLED,
+        )
+
+        self.assertFalse(
+            result[
+                "click_required"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "selector"
+            ],
+            whatsapp_connector
+            .WHATSAPP_CALL_MIC_MUTE_SELECTOR,
+        )
+
+
+    def test_reads_muted_call_microphone_state(
+        self,
+    ):
+        class FakeBrowser:
+            def evaluate(
+                self,
+                expression,
+            ):
+                return {
+                    "call_present": True,
+                    "mute": None,
+                    "unmute": {
+                        "testid": "mic-unmute",
+                        "aria_label":
+                            "Desactivar silencio del micrófono",
+                        "disabled": False,
+                        "aria_disabled":
+                            "false",
+                    },
+                    "split": {
+                        "testid":
+                            "mic-split-button",
+                        "aria_label":
+                            "Desactivar silencio del micrófono",
+                        "disabled": False,
+                        "aria_disabled":
+                            "",
+                    },
+                }
+
+        connector = (
+            whatsapp_connector
+            .WhatsAppConnector()
+        )
+
+        connector.browser = FakeBrowser()
+
+        result = (
+            connector
+            .read_call_microphone_state()
+        )
+
+        self.assertEqual(
+            result[
+                "state"
+            ],
+            whatsapp_connector
+            .WHATSAPP_CALL_MIC_STATE_MUTED,
+        )
+
+        self.assertTrue(
+            result[
+                "click_required"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "selector"
+            ],
+            whatsapp_connector
+            .WHATSAPP_CALL_MIC_UNMUTE_SELECTOR,
+        )
+
+
+    def test_unknown_microphone_state_never_requests_click(
+        self,
+    ):
+        class FakeBrowser:
+            def evaluate(
+                self,
+                expression,
+            ):
+                return {
+                    "call_present": True,
+                    "mute": None,
+                    "unmute": None,
+                    "split": {
+                        "testid":
+                            "mic-split-button",
+                        "aria_label":
+                            "Estado inesperado",
+                        "disabled": False,
+                        "aria_disabled":
+                            "",
+                    },
+                }
+
+        connector = (
+            whatsapp_connector
+            .WhatsAppConnector()
+        )
+
+        connector.browser = FakeBrowser()
+
+        result = (
+            connector
+            .read_call_microphone_state()
+        )
+
+        self.assertEqual(
+            result[
+                "state"
+            ],
+            whatsapp_connector
+            .WHATSAPP_CALL_MIC_STATE_UNKNOWN,
+        )
+
+        self.assertFalse(
+            result[
+                "click_required"
+            ]
+        )
+
+
+    def test_ensure_microphone_enabled_is_idempotent(
+        self,
+    ):
+        class FakeBrowser:
+            find_calls = 0
+
+            def evaluate(
+                self,
+                expression,
+            ):
+                return {
+                    "call_present": True,
+                    "mute": {
+                        "testid": "mic-mute",
+                        "aria_label":
+                            "Silenciar micrófono",
+                        "disabled": False,
+                        "aria_disabled":
+                            "false",
+                    },
+                    "unmute": None,
+                    "split": {
+                        "testid":
+                            "mic-split-button",
+                        "aria_label":
+                            "Silenciar micrófono",
+                        "disabled": False,
+                        "aria_disabled":
+                            "",
+                    },
+                }
+
+            def find_element(
+                self,
+                selector,
+            ):
+                self.find_calls += 1
+
+                raise AssertionError(
+                    "No debe buscar control "
+                    "si el micro ya está activo"
+                )
+
+        browser = FakeBrowser()
+
+        connector = (
+            whatsapp_connector
+            .WhatsAppConnector()
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .ensure_call_microphone_enabled()
+        )
+
+        self.assertTrue(
+            result[
+                "ready"
+            ]
+        )
+
+        self.assertFalse(
+            result[
+                "changed"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "reason"
+            ],
+            "MICROPHONE_ALREADY_ENABLED",
+        )
+
+        self.assertEqual(
+            browser.find_calls,
+            0,
+        )
+
+
+    def test_ensure_microphone_enabled_clicks_unmute_once_and_verifies(
+        self,
+    ):
+        class FakeElement:
+            def __init__(
+                self,
+            ):
+                self.mouse_click_calls = 0
+
+            def mouse_click(
+                self,
+            ):
+                self.mouse_click_calls += 1
+
+        class FakeBrowser:
+            def __init__(
+                self,
+            ):
+                self.read_count = 0
+                self.find_selectors = []
+                self.element = FakeElement()
+
+            def evaluate(
+                self,
+                expression,
+            ):
+                self.read_count += 1
+
+                if self.read_count == 1:
+                    return {
+                        "call_present": True,
+                        "mute": None,
+                        "unmute": {
+                            "testid":
+                                "mic-unmute",
+                            "aria_label":
+                                "Desactivar silencio del micrófono",
+                            "disabled":
+                                False,
+                            "aria_disabled":
+                                "false",
+                        },
+                        "split": {
+                            "testid":
+                                "mic-split-button",
+                            "aria_label":
+                                "Desactivar silencio del micrófono",
+                            "disabled":
+                                False,
+                            "aria_disabled":
+                                "",
+                        },
+                    }
+
+                return {
+                    "call_present": True,
+                    "mute": {
+                        "testid":
+                            "mic-mute",
+                        "aria_label":
+                            "Silenciar micrófono",
+                        "disabled":
+                            False,
+                        "aria_disabled":
+                            "false",
+                    },
+                    "unmute": None,
+                    "split": {
+                        "testid":
+                            "mic-split-button",
+                        "aria_label":
+                            "Silenciar micrófono",
+                        "disabled":
+                            False,
+                        "aria_disabled":
+                            "",
+                    },
+                }
+
+            def find_element(
+                self,
+                selector,
+            ):
+                self.find_selectors.append(
+                    selector
+                )
+
+                return self.element
+
+        browser = FakeBrowser()
+
+        connector = (
+            whatsapp_connector
+            .WhatsAppConnector()
+        )
+
+        connector.browser = browser
+
+        result = (
+            connector
+            .ensure_call_microphone_enabled(
+                verify_timeout=0.1,
+                poll_interval=0.01,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "ready"
+            ]
+        )
+
+        self.assertTrue(
+            result[
+                "changed"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "reason"
+            ],
+            "MICROPHONE_ENABLED",
+        )
+
+        self.assertEqual(
+            result[
+                "initial_state"
+            ],
+            whatsapp_connector
+            .WHATSAPP_CALL_MIC_STATE_MUTED,
+        )
+
+        self.assertEqual(
+            result[
+                "final_state"
+            ],
+            whatsapp_connector
+            .WHATSAPP_CALL_MIC_STATE_ENABLED,
+        )
+
+        self.assertEqual(
+            browser.find_selectors,
+            [
+                whatsapp_connector
+                .WHATSAPP_CALL_MIC_UNMUTE_SELECTOR
+            ],
+        )
+
+        self.assertEqual(
+            browser
+            .element
+            .mouse_click_calls,
+            1,
+        )
+
+
     def test_close_delegates_to_governed_session(
         self,
     ):

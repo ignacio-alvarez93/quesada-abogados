@@ -68,6 +68,18 @@ class FakeConnector:
         self.call_snapshots = []
         self.call_snapshot_thread_ids = []
 
+        self.call_microphone_ensure_calls = []
+        self.call_microphone_ensure_result = {
+            "ready": True,
+            "changed": False,
+            "reason":
+                "MICROPHONE_ALREADY_ENABLED",
+            "initial_state":
+                "ENABLED",
+            "final_state":
+                "ENABLED",
+        }
+
         self.open_phone_calls = []
         self.routing_result = {
             "opened": True,
@@ -155,6 +167,38 @@ class FakeConnector:
             direction=(
                 WHATSAPP_CALL_DIRECTION_UNKNOWN
             ),
+        )
+
+
+    def ensure_call_microphone_enabled(
+        self,
+        *,
+        verify_timeout=2.0,
+        poll_interval=0.10,
+    ):
+        self.call_microphone_ensure_calls.append(
+            {
+                "thread_id":
+                    threading.get_ident(),
+                "verify_timeout":
+                    verify_timeout,
+                "poll_interval":
+                    poll_interval,
+            }
+        )
+
+        result = (
+            self.call_microphone_ensure_result
+        )
+
+        if isinstance(
+            result,
+            BaseException,
+        ):
+            raise result
+
+        return dict(
+            result
         )
 
 
@@ -466,6 +510,442 @@ class WhatsAppRuntimeServiceTest(
                 FakeConnector
             ),
         )
+
+    def test_active_call_auto_ensures_microphone_once_on_transition(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_OUTGOING_DIALING
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-MIC-001",
+                external_call_key="opaque-mic-001",
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                participant_display_name="Contacto",
+                is_video=False,
+                can_hangup=True,
+                identity_complete=True,
+            ),
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-MIC-001",
+                external_call_key="opaque-mic-001",
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                participant_display_name="Contacto",
+                is_video=False,
+                visible_state="0:01",
+                can_hangup=True,
+                identity_complete=True,
+            ),
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-MIC-001",
+                external_call_key="opaque-mic-001",
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                participant_display_name="Contacto",
+                is_video=False,
+                visible_state="0:02",
+                can_hangup=True,
+                identity_complete=True,
+            ),
+        ]
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            connector.call_microphone_ensure_calls,
+            [],
+        )
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_microphone_ensure_calls
+            ),
+            1,
+        )
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_microphone_ensure_calls
+            ),
+            1,
+        )
+
+        ensure_thread_id = (
+            connector
+            .call_microphone_ensure_calls[
+                0
+            ][
+                "thread_id"
+            ]
+        )
+
+        self.assertEqual(
+            ensure_thread_id,
+            connector
+            .call_snapshot_thread_ids[
+                1
+            ],
+        )
+
+        self.assertNotEqual(
+            ensure_thread_id,
+            threading.get_ident(),
+        )
+
+        diagnostic = (
+            runtime
+            .call_microphone_last_result
+        )
+
+        self.assertIsNotNone(
+            diagnostic
+        )
+
+        self.assertTrue(
+            diagnostic[
+                "ready"
+            ]
+        )
+
+        self.assertTrue(
+            diagnostic[
+                "automatic"
+            ]
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "trigger"
+            ],
+            "CALL_ENTERED_ACTIVE",
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "provider_call_id"
+            ],
+            "CALL-MIC-001",
+        )
+
+
+    def test_first_observation_already_active_auto_ensures_microphone(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_INBOUND
+                ),
+                provider_call_id="CALL-MIC-INITIAL",
+                external_call_key=(
+                    "opaque-mic-initial"
+                ),
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                participant_display_name="Contacto",
+                is_video=False,
+                visible_state="0:08",
+                can_hangup=True,
+                identity_complete=True,
+            )
+        ]
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_microphone_ensure_calls
+            ),
+            1,
+        )
+
+        diagnostic = (
+            runtime
+            .call_microphone_last_result
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "provider_call_id"
+            ],
+            "CALL-MIC-INITIAL",
+        )
+
+
+    def test_replaced_active_call_auto_ensures_new_microphone(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-MIC-A",
+                external_call_key="opaque-mic-a",
+                participant_lid="remote-a@lid",
+                participant_phone_id=(
+                    "34600111221@c.us"
+                ),
+                participant_phone="+34600111221",
+                visible_state="0:05",
+                can_hangup=True,
+                identity_complete=True,
+            ),
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_INBOUND
+                ),
+                provider_call_id="CALL-MIC-B",
+                external_call_key="opaque-mic-b",
+                participant_lid="remote-b@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                visible_state="0:01",
+                can_hangup=True,
+                identity_complete=True,
+            ),
+        ]
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_microphone_ensure_calls
+            ),
+            2,
+        )
+
+        diagnostic = (
+            runtime
+            .call_microphone_last_result
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "provider_call_id"
+            ],
+            "CALL-MIC-B",
+        )
+
+
+    def test_microphone_ensure_failure_does_not_break_call_reconciliation(
+        self,
+    ):
+        call_service = (
+            FakeCallService()
+        )
+
+        runtime = self._runtime(
+            call_service=call_service,
+            call_clock=lambda: (
+                "2026-08-16T10:30:00+00:00"
+            ),
+        )
+
+        connector = runtime.start()
+
+        connector.call_microphone_ensure_result = (
+            RuntimeError(
+                "micro test failure"
+            )
+        )
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-MIC-ERROR",
+                external_call_key=(
+                    "opaque-mic-error"
+                ),
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                participant_display_name="Contacto",
+                is_video=False,
+                visible_state="0:01",
+                can_hangup=True,
+                identity_complete=True,
+            )
+        ]
+
+        result = (
+            runtime
+            .observe_and_sync_call(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            result.action,
+            WHATSAPP_CALL_REALTIME_RECONCILED,
+        )
+
+        self.assertEqual(
+            len(
+                call_service.snapshots
+            ),
+            1,
+        )
+
+        diagnostic = (
+            runtime
+            .call_microphone_last_result
+        )
+
+        self.assertFalse(
+            diagnostic[
+                "ready"
+            ]
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "reason"
+            ],
+            "MICROPHONE_ENSURE_ERROR",
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "error_type"
+            ],
+            "RuntimeError",
+        )
+
+
+    def test_public_microphone_ensure_runs_on_runtime_worker(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        result = (
+            runtime
+            .ensure_call_microphone_enabled(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "ready"
+            ]
+        )
+
+        self.assertFalse(
+            result[
+                "automatic"
+            ]
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_microphone_ensure_calls
+            ),
+            1,
+        )
+
+        self.assertNotEqual(
+            connector
+            .call_microphone_ensure_calls[
+                0
+            ][
+                "thread_id"
+            ],
+            threading.get_ident(),
+        )
+
 
     def test_observe_and_sync_call_is_disabled_without_call_service(
         self,

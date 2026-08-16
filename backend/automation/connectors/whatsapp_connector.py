@@ -23,6 +23,7 @@ import re
 import time
 import unicodedata
 
+import mycdp.browser as cdp_browser
 import mycdp.input_ as cdp_input
 
 from backend.automation.browser_actions import (
@@ -62,6 +63,42 @@ from backend.automation.connectors.whatsapp_call_observer import (
 
 WHATSAPP_WEB_URL = (
     "https://web.whatsapp.com/"
+)
+
+WHATSAPP_WEB_ORIGIN = (
+    "https://web.whatsapp.com"
+)
+
+WHATSAPP_CALL_MIC_STATE_ABSENT = (
+    "ABSENT"
+)
+
+WHATSAPP_CALL_MIC_STATE_ENABLED = (
+    "ENABLED"
+)
+
+WHATSAPP_CALL_MIC_STATE_MUTED = (
+    "MUTED"
+)
+
+WHATSAPP_CALL_MIC_STATE_UNKNOWN = (
+    "UNKNOWN"
+)
+
+WHATSAPP_CALL_MIC_MUTE_SELECTOR = (
+    'button[data-testid="mic-mute"]'
+)
+
+WHATSAPP_CALL_MIC_UNMUTE_SELECTOR = (
+    'button[data-testid="mic-unmute"]'
+)
+
+WHATSAPP_CALL_MIC_SPLIT_SELECTOR = (
+    '[data-testid="mic-split-button"]'
+)
+
+WHATSAPP_AUDIO_CALL_SURFACE_SELECTOR = (
+    '[data-testid="voip-container-audio-call"]'
 )
 
 SESSION_STATUS_NEEDS_LOGIN = (
@@ -672,6 +709,14 @@ class WhatsAppConnector:
         self._browser_session = None
         self.browser = None
 
+        # Resultado de la política de medios aplicada
+        # específicamente al origen de WhatsApp Web.
+        #
+        # No forma parte de BrowserSessionConfig:
+        # el permiso pertenece al consumidor WhatsApp,
+        # no a la infraestructura genérica de navegador.
+        self._call_media_permission_result = None
+
     def _build_browser_session(
         self,
     ):
@@ -713,7 +758,737 @@ class WhatsAppConnector:
             WHATSAPP_WEB_URL,
         )
 
+        # Política específica de llamadas WhatsApp.
+        #
+        # Se aplica en cada arranque porque Browser.setPermission
+        # es un override del browser context actual. No mutamos
+        # BrowserSessionConfig ni editamos Preferences a mano.
+        #
+        # Un fallo de permisos no destruye el transporte de chat:
+        # queda diagnosticado y la futura acción de llamada podrá
+        # exigir explícitamente configured=True antes de marcar.
+        try:
+            self.configure_call_media_permissions()
+
+        except Exception as exc:
+            self._call_media_permission_result = {
+                "configured": False,
+                "reason": (
+                    "MICROPHONE_PERMISSION_ERROR"
+                ),
+                "origin": (
+                    WHATSAPP_WEB_ORIGIN
+                ),
+                "permission": (
+                    "microphone"
+                ),
+                "setting": (
+                    "granted"
+                ),
+                "error_type": (
+                    type(exc).__name__
+                ),
+                "message": str(
+                    exc
+                ),
+            }
+
         return self.browser
+
+    @property
+    def call_media_permission_result(
+        self,
+    ):
+        result = (
+            self._call_media_permission_result
+        )
+
+        return (
+            dict(result)
+            if isinstance(
+                result,
+                dict,
+            )
+            else result
+        )
+
+    def configure_call_media_permissions(
+        self,
+    ):
+        """Concede micrófono únicamente a WhatsApp Web.
+
+        Usa Browser.setPermission mediante el transporte CDP
+        ya poseído por sb_cdp.Chrome.
+
+        No:
+        - concede permisos globales;
+        - concede cámara;
+        - modifica BrowserSessionConfig;
+        - escribe manualmente Preferences;
+        - toca el estado mute/unmute de una llamada.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        page = getattr(
+            self.browser,
+            "page",
+            None,
+        )
+
+        loop = getattr(
+            self.browser,
+            "loop",
+            None,
+        )
+
+        send = getattr(
+            page,
+            "send",
+            None,
+        )
+
+        run_until_complete = getattr(
+            loop,
+            "run_until_complete",
+            None,
+        )
+
+        if (
+            not callable(send)
+            or not callable(
+                run_until_complete
+            )
+        ):
+            result = {
+                "configured": False,
+                "reason": (
+                    "CDP_PERMISSION_TRANSPORT_UNAVAILABLE"
+                ),
+                "origin": (
+                    WHATSAPP_WEB_ORIGIN
+                ),
+                "permission": (
+                    "microphone"
+                ),
+                "setting": (
+                    "granted"
+                ),
+            }
+
+            self._call_media_permission_result = (
+                result
+            )
+
+            return dict(
+                result
+            )
+
+        command = (
+            cdp_browser.set_permission(
+                permission=(
+                    cdp_browser
+                    .PermissionDescriptor(
+                        name="microphone"
+                    )
+                ),
+                setting=(
+                    cdp_browser
+                    .PermissionSetting(
+                        "granted"
+                    )
+                ),
+                origin=(
+                    WHATSAPP_WEB_ORIGIN
+                ),
+            )
+        )
+
+        run_until_complete(
+            send(
+                command
+            )
+        )
+
+        result = {
+            "configured": True,
+            "reason": (
+                "MICROPHONE_PERMISSION_GRANTED"
+            ),
+            "origin": (
+                WHATSAPP_WEB_ORIGIN
+            ),
+            "permission": (
+                "microphone"
+            ),
+            "setting": (
+                "granted"
+            ),
+        }
+
+        self._call_media_permission_result = (
+            result
+        )
+
+        return dict(
+            result
+        )
+
+    def read_call_microphone_state(
+        self,
+    ):
+        """Lee pasivamente el estado del micrófono de llamada.
+
+        Contrato observado en WhatsApp Web real:
+
+        ENABLED:
+            button[data-testid="mic-mute"]
+            aria-label="Silenciar micrófono"
+
+        MUTED:
+            button[data-testid="mic-unmute"]
+            aria-label="Desactivar silencio del micrófono"
+
+        Nunca realiza clicks.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        snapshot = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const clean = (value) =>
+                        (value || "")
+                        .replace(/\\s+/g, " ")
+                        .trim();
+
+                    const call =
+                        document.querySelector(
+                            '[data-testid="voip-container-audio-call"]'
+                        );
+
+                    const mute =
+                        document.querySelector(
+                            'button[data-testid="mic-mute"]'
+                        );
+
+                    const unmute =
+                        document.querySelector(
+                            'button[data-testid="mic-unmute"]'
+                        );
+
+                    const split =
+                        document.querySelector(
+                            '[data-testid="mic-split-button"]'
+                        );
+
+                    const describe = (node) => {
+                        if (!node) {
+                            return null;
+                        }
+
+                        return {
+                            testid:
+                                clean(
+                                    node.getAttribute(
+                                        "data-testid"
+                                    )
+                                ),
+                            aria_label:
+                                clean(
+                                    node.getAttribute(
+                                        "aria-label"
+                                    )
+                                ),
+                            disabled:
+                                !!node.disabled,
+                            aria_disabled:
+                                clean(
+                                    node.getAttribute(
+                                        "aria-disabled"
+                                    )
+                                )
+                        };
+                    };
+
+                    return {
+                        call_present:
+                            !!call,
+                        mute:
+                            describe(mute),
+                        unmute:
+                            describe(unmute),
+                        split:
+                            describe(split)
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        if not isinstance(
+            snapshot,
+            dict,
+        ):
+            snapshot = {}
+
+        call_present = bool(
+            snapshot.get(
+                "call_present"
+            )
+        )
+
+        mute = (
+            snapshot.get(
+                "mute"
+            )
+            if isinstance(
+                snapshot.get(
+                    "mute"
+                ),
+                dict,
+            )
+            else None
+        )
+
+        unmute = (
+            snapshot.get(
+                "unmute"
+            )
+            if isinstance(
+                snapshot.get(
+                    "unmute"
+                ),
+                dict,
+            )
+            else None
+        )
+
+        split = (
+            snapshot.get(
+                "split"
+            )
+            if isinstance(
+                snapshot.get(
+                    "split"
+                ),
+                dict,
+            )
+            else None
+        )
+
+        if not call_present:
+            return {
+                "state":
+                    WHATSAPP_CALL_MIC_STATE_ABSENT,
+                "call_present":
+                    False,
+                "selector":
+                    None,
+                "action_label":
+                    "",
+                "click_required":
+                    False,
+                "evidence":
+                    snapshot,
+            }
+
+        mute_label = str(
+            (
+                mute
+                or {}
+            ).get(
+                "aria_label"
+            )
+            or ""
+        ).strip()
+
+        unmute_label = str(
+            (
+                unmute
+                or {}
+            ).get(
+                "aria_label"
+            )
+            or ""
+        ).strip()
+
+        split_label = str(
+            (
+                split
+                or {}
+            ).get(
+                "aria_label"
+            )
+            or ""
+        ).strip()
+
+        normalized_mute_label = (
+            mute_label.lower()
+        )
+
+        normalized_unmute_label = (
+            unmute_label.lower()
+        )
+
+        normalized_split_label = (
+            split_label.lower()
+        )
+
+        enabled_evidence = bool(
+            mute is not None
+            and (
+                normalized_mute_label
+                == "silenciar micrófono"
+                or normalized_split_label
+                == "silenciar micrófono"
+            )
+        )
+
+        muted_evidence = bool(
+            unmute is not None
+            and (
+                normalized_unmute_label
+                == "desactivar silencio del micrófono"
+                or normalized_split_label
+                == "desactivar silencio del micrófono"
+            )
+        )
+
+        # Dos estados simultáneos serían una superficie
+        # inconsistente; nunca hacemos click en ese caso.
+        if (
+            enabled_evidence
+            and not muted_evidence
+        ):
+            return {
+                "state":
+                    WHATSAPP_CALL_MIC_STATE_ENABLED,
+                "call_present":
+                    True,
+                "selector":
+                    WHATSAPP_CALL_MIC_MUTE_SELECTOR,
+                "action_label":
+                    (
+                        mute_label
+                        or split_label
+                    ),
+                "click_required":
+                    False,
+                "evidence":
+                    snapshot,
+            }
+
+        if (
+            muted_evidence
+            and not enabled_evidence
+        ):
+            disabled = bool(
+                (
+                    unmute
+                    or {}
+                ).get(
+                    "disabled"
+                )
+            )
+
+            aria_disabled = str(
+                (
+                    unmute
+                    or {}
+                ).get(
+                    "aria_disabled"
+                )
+                or ""
+            ).strip().lower()
+
+            if aria_disabled == "true":
+                disabled = True
+
+            return {
+                "state":
+                    WHATSAPP_CALL_MIC_STATE_MUTED,
+                "call_present":
+                    True,
+                "selector":
+                    WHATSAPP_CALL_MIC_UNMUTE_SELECTOR,
+                "action_label":
+                    (
+                        unmute_label
+                        or split_label
+                    ),
+                "click_required":
+                    not disabled,
+                "control_disabled":
+                    disabled,
+                "evidence":
+                    snapshot,
+            }
+
+        return {
+            "state":
+                WHATSAPP_CALL_MIC_STATE_UNKNOWN,
+            "call_present":
+                True,
+            "selector":
+                None,
+            "action_label":
+                (
+                    unmute_label
+                    or mute_label
+                    or split_label
+                ),
+            "click_required":
+                False,
+            "evidence":
+                snapshot,
+        }
+
+    def ensure_call_microphone_enabled(
+        self,
+        *,
+        verify_timeout=2.0,
+        poll_interval=0.10,
+    ):
+        """Garantiza micro activo sin toggle ciego.
+
+        Solo pulsa cuando existe evidencia inequívoca
+        de estado MUTED y el target exacto mic-unmute.
+
+        Después exige observar ENABLED.
+        """
+        initial = (
+            self.read_call_microphone_state()
+        )
+
+        initial_state = (
+            initial.get(
+                "state"
+            )
+        )
+
+        if (
+            initial_state
+            == WHATSAPP_CALL_MIC_STATE_ENABLED
+        ):
+            return {
+                "ready": True,
+                "changed": False,
+                "reason":
+                    "MICROPHONE_ALREADY_ENABLED",
+                "initial_state":
+                    initial_state,
+                "final_state":
+                    initial_state,
+                "initial":
+                    initial,
+                "final":
+                    initial,
+            }
+
+        if (
+            initial_state
+            == WHATSAPP_CALL_MIC_STATE_ABSENT
+        ):
+            return {
+                "ready": False,
+                "changed": False,
+                "reason":
+                    "CALL_SURFACE_ABSENT",
+                "initial_state":
+                    initial_state,
+                "final_state":
+                    initial_state,
+                "initial":
+                    initial,
+                "final":
+                    initial,
+            }
+
+        if (
+            initial_state
+            != WHATSAPP_CALL_MIC_STATE_MUTED
+        ):
+            return {
+                "ready": False,
+                "changed": False,
+                "reason":
+                    "MICROPHONE_STATE_UNKNOWN",
+                "initial_state":
+                    initial_state,
+                "final_state":
+                    initial_state,
+                "initial":
+                    initial,
+                "final":
+                    initial,
+            }
+
+        if not bool(
+            initial.get(
+                "click_required"
+            )
+        ):
+            return {
+                "ready": False,
+                "changed": False,
+                "reason":
+                    "MICROPHONE_UNMUTE_CONTROL_DISABLED",
+                "initial_state":
+                    initial_state,
+                "final_state":
+                    initial_state,
+                "initial":
+                    initial,
+                "final":
+                    initial,
+            }
+
+        element = (
+            self.browser.find_element(
+                WHATSAPP_CALL_MIC_UNMUTE_SELECTOR
+            )
+        )
+
+        if element is None:
+            return {
+                "ready": False,
+                "changed": False,
+                "reason":
+                    "MICROPHONE_UNMUTE_CONTROL_NOT_FOUND",
+                "initial_state":
+                    initial_state,
+                "final_state":
+                    initial_state,
+                "initial":
+                    initial,
+                "final":
+                    initial,
+            }
+
+        mouse_click = getattr(
+            element,
+            "mouse_click",
+            None,
+        )
+
+        if callable(
+            mouse_click
+        ):
+            mouse_click()
+
+        else:
+            click = getattr(
+                element,
+                "click",
+                None,
+            )
+
+            if not callable(
+                click
+            ):
+                return {
+                    "ready": False,
+                    "changed": False,
+                    "reason":
+                        "MICROPHONE_UNMUTE_CONTROL_NOT_CLICKABLE",
+                    "initial_state":
+                        initial_state,
+                    "final_state":
+                        initial_state,
+                    "initial":
+                        initial,
+                    "final":
+                        initial,
+                }
+
+            click()
+
+        timeout = max(
+            0.0,
+            float(
+                verify_timeout
+                or 0.0
+            ),
+        )
+
+        interval = max(
+            0.01,
+            float(
+                poll_interval
+                or 0.10
+            ),
+        )
+
+        deadline = (
+            time.monotonic()
+            + timeout
+        )
+
+        final = initial
+
+        while True:
+            final = (
+                self.read_call_microphone_state()
+            )
+
+            final_state = (
+                final.get(
+                    "state"
+                )
+            )
+
+            if (
+                final_state
+                == WHATSAPP_CALL_MIC_STATE_ENABLED
+            ):
+                return {
+                    "ready": True,
+                    "changed": True,
+                    "reason":
+                        "MICROPHONE_ENABLED",
+                    "initial_state":
+                        initial_state,
+                    "final_state":
+                        final_state,
+                    "initial":
+                        initial,
+                    "final":
+                        final,
+                }
+
+            if (
+                time.monotonic()
+                >= deadline
+            ):
+                break
+
+            time.sleep(
+                interval
+            )
+
+        return {
+            "ready": False,
+            "changed": True,
+            "reason":
+                "MICROPHONE_ENABLE_NOT_CONFIRMED",
+            "initial_state":
+                initial_state,
+            "final_state":
+                final.get(
+                    "state"
+                ),
+            "initial":
+                initial,
+            "final":
+                final,
+        }
 
     def _page_text(self):
         if not self.browser:

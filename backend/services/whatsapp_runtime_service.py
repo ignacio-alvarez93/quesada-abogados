@@ -26,7 +26,11 @@ from backend.automation.connectors.whatsapp_connector import (
 from backend.services.communication_service import (
     CommunicationService,
 )
+from backend.automation.connectors.whatsapp_call_observer import (
+    WHATSAPP_CALL_PHASE_ACTIVE,
+)
 from backend.services.whatsapp_call_observation import (
+    CALL_OBSERVATION_REPLACED,
     WhatsAppCallObservationTracker,
 )
 from backend.services.whatsapp_call_realtime_service import (
@@ -183,6 +187,15 @@ class WhatsAppRuntimeService:
         # Diagnóstico del watcher de llamadas.
         self._call_watch_last_error = None
         self._call_watch_last_result = None
+
+        # Último resultado de la política de micrófono
+        # aplicada a una llamada WhatsApp.
+        #
+        # La política automática se ejecuta únicamente
+        # cuando una llamada entra realmente en ACTIVE.
+        # No se re-ejecuta por cambios de temporizador
+        # mientras la llamada permanece ACTIVE.
+        self._call_microphone_last_result = None
 
         # Watcher ligero del chat activo.
         #
@@ -1296,6 +1309,315 @@ class WhatsAppRuntimeService:
         ).strip()
 
 
+    @property
+    def call_microphone_last_result(
+        self,
+    ):
+        with self._call_watch_lock:
+            value = (
+                self._call_microphone_last_result
+            )
+
+            return (
+                dict(value)
+                if isinstance(
+                    value,
+                    dict,
+                )
+                else value
+            )
+
+
+    def _remember_call_microphone_result(
+        self,
+        result,
+    ):
+        value = (
+            dict(result)
+            if isinstance(
+                result,
+                dict,
+            )
+            else result
+        )
+
+        with self._call_watch_lock:
+            self._call_microphone_last_result = (
+                value
+            )
+
+        return value
+
+
+    def _ensure_call_microphone_enabled_impl(
+        self,
+        *,
+        wait_timeout=60,
+        automatic=False,
+    ):
+        """Garantiza micro activo dentro del worker WhatsApp.
+
+        No es un toggle ciego.
+
+        WhatsAppConnector solo pulsa cuando observa
+        inequívocamente mic-unmute y después verifica
+        el estado ENABLED.
+        """
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        result = (
+            connector
+            .ensure_call_microphone_enabled()
+        )
+
+        normalized = (
+            dict(result)
+            if isinstance(
+                result,
+                dict,
+            )
+            else {
+                "ready": False,
+                "changed": False,
+                "reason":
+                    "MICROPHONE_RESULT_INVALID",
+                "raw_result":
+                    result,
+            }
+        )
+
+        normalized[
+            "automatic"
+        ] = bool(
+            automatic
+        )
+
+        return (
+            self
+            ._remember_call_microphone_result(
+                normalized
+            )
+        )
+
+
+    def ensure_call_microphone_enabled(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """API pública serializada para garantizar micro activo."""
+        return self._run_serialized(
+            self._ensure_call_microphone_enabled_impl,
+            wait_timeout=wait_timeout,
+            automatic=False,
+        )
+
+
+    @staticmethod
+    def _call_observation_enters_active(
+        observation,
+    ):
+        """Detecta entrada real en fase ACTIVE.
+
+        Casos admitidos:
+        - primera observación ya ACTIVE;
+        - transición desde cualquier fase no ACTIVE;
+        - CALL_REPLACED cuyo nuevo active ya es ACTIVE.
+
+        Permanecer ACTIVE no vuelve a disparar la política.
+        """
+        if observation is None:
+            return False
+
+        active = getattr(
+            observation,
+            "active",
+            None,
+        )
+
+        if (
+            active is None
+            or not bool(
+                getattr(
+                    active,
+                    "present",
+                    False,
+                )
+            )
+            or getattr(
+                active,
+                "phase",
+                None,
+            )
+            != WHATSAPP_CALL_PHASE_ACTIVE
+        ):
+            return False
+
+        if (
+            getattr(
+                observation,
+                "change_type",
+                None,
+            )
+            == CALL_OBSERVATION_REPLACED
+        ):
+            return True
+
+        previous = getattr(
+            observation,
+            "previous",
+            None,
+        )
+
+        if previous is None:
+            return True
+
+        return (
+            getattr(
+                previous,
+                "phase",
+                None,
+            )
+            != WHATSAPP_CALL_PHASE_ACTIVE
+        )
+
+
+    def _maybe_ensure_active_call_microphone(
+        self,
+        observation,
+    ):
+        """Aplica política default al entrar en ACTIVE.
+
+        Este método se ejecuta ya dentro del worker único.
+        Un fallo de micro nunca bloquea reconciliación ni
+        persistencia del lifecycle de la llamada.
+        """
+        if not (
+            self
+            ._call_observation_enters_active(
+                observation
+            )
+        ):
+            return None
+
+        active = getattr(
+            observation,
+            "active",
+            None,
+        )
+
+        try:
+            connector = self._connector
+
+            if connector is None:
+                raise RuntimeError(
+                    "WhatsAppConnector no disponible"
+                )
+
+            result = (
+                connector
+                .ensure_call_microphone_enabled()
+            )
+
+            normalized = (
+                dict(result)
+                if isinstance(
+                    result,
+                    dict,
+                )
+                else {
+                    "ready": False,
+                    "changed": False,
+                    "reason":
+                        "MICROPHONE_RESULT_INVALID",
+                    "raw_result":
+                        result,
+                }
+            )
+
+            normalized[
+                "automatic"
+            ] = True
+
+            normalized[
+                "trigger"
+            ] = (
+                "CALL_ENTERED_ACTIVE"
+            )
+
+            normalized[
+                "provider_call_id"
+            ] = getattr(
+                active,
+                "provider_call_id",
+                None,
+            )
+
+            normalized[
+                "external_call_key"
+            ] = getattr(
+                active,
+                "external_call_key",
+                None,
+            )
+
+            normalized[
+                "participant_phone"
+            ] = getattr(
+                active,
+                "participant_phone",
+                None,
+            )
+
+        except Exception as exc:
+            normalized = {
+                "ready": False,
+                "changed": False,
+                "automatic": True,
+                "trigger":
+                    "CALL_ENTERED_ACTIVE",
+                "reason":
+                    "MICROPHONE_ENSURE_ERROR",
+                "error_type":
+                    type(
+                        exc
+                    ).__name__,
+                "message":
+                    str(
+                        exc
+                    ),
+                "provider_call_id":
+                    getattr(
+                        active,
+                        "provider_call_id",
+                        None,
+                    ),
+                "external_call_key":
+                    getattr(
+                        active,
+                        "external_call_key",
+                        None,
+                    ),
+                "participant_phone":
+                    getattr(
+                        active,
+                        "participant_phone",
+                        None,
+                    ),
+            }
+
+        return (
+            self
+            ._remember_call_microphone_result(
+                normalized
+            )
+        )
+
+
     def _observe_and_sync_call_impl(
         self,
         *,
@@ -1311,6 +1633,23 @@ class WhatsAppRuntimeService:
             self._observe_call_impl(
                 wait_timeout=wait_timeout,
             )
+        )
+
+        # Política UX independiente de la persistencia:
+        # al entrar realmente en ACTIVE garantizamos una vez
+        # que el micrófono no esté silenciado.
+        #
+        # Si WhatsApp ya lo tiene activo:
+        #     0 clicks.
+        #
+        # Si está MUTED:
+        #     1 click exacto sobre mic-unmute + verificación.
+        #
+        # Si falla:
+        #     queda diagnóstico, pero la llamada continúa
+        #     reconciliándose normalmente.
+        self._maybe_ensure_active_call_microphone(
+            observation
         )
 
         if not (
@@ -2649,6 +2988,9 @@ class WhatsAppRuntimeService:
         self._active_chat_fingerprint = None
         self._sidebar_chat_fingerprint = None
         self._call_observation_tracker.reset()
+
+        with self._call_watch_lock:
+            self._call_microphone_last_result = None
 
         return True
 
