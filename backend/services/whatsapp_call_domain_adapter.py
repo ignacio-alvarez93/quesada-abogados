@@ -38,6 +38,7 @@ from backend.communications.calls import (
     CALL_DIRECTION_OUTBOUND,
     CALL_STATUS_ANSWERED,
     CALL_STATUS_DIALING,
+    CALL_STATUS_ENDED,
     CALL_STATUS_MISSED,
     CALL_STATUS_RINGING,
 )
@@ -297,6 +298,12 @@ def adapt_whatsapp_call_observation(
     ACTIVE
         -> ANSWERED
 
+    ACTIVE -> ENDED_TRANSIENT
+        -> ENDED
+
+    ACTIVE + desaparición directa de superficie
+        -> ENDED
+
     INCOMING_RINGING -> ENDED_TRANSIENT
         -> MISSED
 
@@ -310,7 +317,10 @@ def adapt_whatsapp_call_observation(
     de una llamada INBOUND cuyo último estado previo conocido
     fue INCOMING_RINGING y nunca se observó ACTIVE.
 
-    ENDED_TRANSIENT por sí solo no implica MISSED.
+    ENDED_TRANSIENT por sí solo no implica MISSED ni ENDED.
+
+    ENDED solo se deriva cuando el último estado previo
+    conocido fue ACTIVE.
 
     No se infieren aquí REJECTED / BUSY / CANCELLED / FAILED.
     """
@@ -353,6 +363,28 @@ def adapt_whatsapp_call_observation(
         == WHATSAPP_CALL_DIRECTION_INBOUND
     )
 
+    ended_from_active_ended_transient = (
+        observation.change_type
+        == CALL_OBSERVATION_UPDATED
+        and observation.previous is not None
+        and observation.previous.present
+        and observation.previous.phase
+        == WHATSAPP_CALL_PHASE_ACTIVE
+        and observation.active is not None
+        and observation.active.present
+        and observation.active.phase
+        == WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+    )
+
+    ended_from_active_disappearance = (
+        observation.change_type
+        == CALL_OBSERVATION_SURFACE_DISAPPEARED
+        and observation.disappeared is not None
+        and observation.disappeared.present
+        and observation.disappeared.phase
+        == WHATSAPP_CALL_PHASE_ACTIVE
+    )
+
     missed_from_ringing_disappearance = (
         observation.change_type
         == CALL_OBSERVATION_SURFACE_DISAPPEARED
@@ -369,12 +401,23 @@ def adapt_whatsapp_call_observation(
         or missed_from_ringing_disappearance
     )
 
+    ended_terminal_inference = (
+        ended_from_active_ended_transient
+        or ended_from_active_disappearance
+    )
+
     snapshot = (
         observation.active
-        if missed_from_ended_transient
+        if (
+            missed_from_ended_transient
+            or ended_from_active_ended_transient
+        )
         else (
             observation.disappeared
-            if missed_from_ringing_disappearance
+            if (
+                missed_from_ringing_disappearance
+                or ended_from_active_disappearance
+            )
             else observation.active
         )
     )
@@ -418,6 +461,11 @@ def adapt_whatsapp_call_observation(
     if missed_terminal_inference:
         status = (
             CALL_STATUS_MISSED
+        )
+
+    elif ended_terminal_inference:
+        status = (
+            CALL_STATUS_ENDED
         )
 
     else:
@@ -482,7 +530,29 @@ def adapt_whatsapp_call_observation(
             snapshot.phase,
     }
 
-    if missed_from_ended_transient:
+    if ended_from_active_ended_transient:
+        metadata[
+            "crm_terminal_inference"
+        ] = (
+            "ACTIVE_TO_ENDED_TRANSIENT"
+        )
+
+        metadata[
+            "crm_ended_transient_observed"
+        ] = True
+
+    elif ended_from_active_disappearance:
+        metadata[
+            "crm_terminal_inference"
+        ] = (
+            "ACTIVE_SURFACE_DISAPPEARED"
+        )
+
+        metadata[
+            "crm_surface_disappeared"
+        ] = True
+
+    elif missed_from_ended_transient:
         metadata[
             "crm_terminal_inference"
         ] = (
@@ -606,6 +676,8 @@ def project_whatsapp_call_intent_to_provider_snapshot(
             "crm_observed_ringing_at",
         CALL_STATUS_ANSWERED:
             "crm_observed_answered_at",
+        CALL_STATUS_ENDED:
+            "crm_observed_ended_at",
         CALL_STATUS_MISSED:
             "crm_observed_missed_at",
     }
@@ -650,6 +722,8 @@ def project_whatsapp_call_intent_to_provider_snapshot(
             "crm_observed_ringing_provider_phase",
         CALL_STATUS_ANSWERED:
             "crm_observed_answered_provider_phase",
+        CALL_STATUS_ENDED:
+            "crm_observed_ended_provider_phase",
         CALL_STATUS_MISSED:
             "crm_observed_missed_provider_phase",
     }

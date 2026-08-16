@@ -38,6 +38,7 @@ from backend.services.whatsapp_call_domain_adapter import (
 )
 from backend.services.whatsapp_call_observation import (
     CALL_OBSERVATION_SURFACE_APPEARED,
+    CALL_OBSERVATION_SURFACE_DISAPPEARED,
     CALL_OBSERVATION_UPDATED,
     WhatsAppCallObservation,
 )
@@ -331,6 +332,323 @@ class WhatsAppCallDomainAdapterTest(
         )
 
 
+    def test_active_inbound_to_ended_transient_maps_to_ended(
+        self,
+    ):
+        active = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ACTIVE
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+        )
+
+        ended = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_INBOUND
+            ),
+        )
+
+        changed = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                CALL_OBSERVATION_UPDATED
+            ),
+            previous=active,
+            current=ended,
+            active=ended,
+            disappeared=None,
+        )
+
+        result = adapt_whatsapp_call_observation(
+            changed,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertTrue(
+            result.ready
+        )
+
+        self.assertEqual(
+            result.reason,
+            WHATSAPP_CALL_ADAPT_READY,
+        )
+
+        self.assertEqual(
+            result.intent.status,
+            "ENDED",
+        )
+
+        self.assertEqual(
+            result.intent.direction,
+            CALL_DIRECTION_INBOUND,
+        )
+
+        self.assertEqual(
+            result.intent.external_call_key,
+            active.external_call_key,
+        )
+
+        projected = (
+            project_whatsapp_call_intent_to_provider_snapshot(
+                result.intent
+            )
+        )
+
+        self.assertEqual(
+            projected.status,
+            "ENDED",
+        )
+
+        self.assertIsNone(
+            projected.ended_at
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_terminal_inference"
+            ],
+            "ACTIVE_TO_ENDED_TRANSIENT",
+        )
+
+        self.assertTrue(
+            projected.metadata[
+                "crm_ended_transient_observed"
+            ]
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_ended_at"
+            ],
+            OBSERVED_AT,
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_ended_provider_phase"
+            ],
+            WHATSAPP_CALL_PHASE_ENDED_TRANSIENT,
+        )
+
+
+    def test_active_outbound_to_ended_transient_maps_to_ended(
+        self,
+    ):
+        active = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ACTIVE
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+        )
+
+        ended = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+        )
+
+        changed = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                CALL_OBSERVATION_UPDATED
+            ),
+            previous=active,
+            current=ended,
+            active=ended,
+            disappeared=None,
+        )
+
+        result = adapt_whatsapp_call_observation(
+            changed,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertTrue(
+            result.ready
+        )
+
+        self.assertEqual(
+            result.intent.status,
+            "ENDED",
+        )
+
+        self.assertEqual(
+            result.intent.direction,
+            CALL_DIRECTION_OUTBOUND,
+        )
+
+        self.assertEqual(
+            result.intent.external_call_key,
+            active.external_call_key,
+        )
+
+
+    def test_outgoing_dialing_to_ended_transient_does_not_invent_ended(
+        self,
+    ):
+        dialing = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_OUTGOING_DIALING
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+        )
+
+        ended = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+        )
+
+        changed = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                CALL_OBSERVATION_UPDATED
+            ),
+            previous=dialing,
+            current=ended,
+            active=ended,
+            disappeared=None,
+        )
+
+        result = adapt_whatsapp_call_observation(
+            changed,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertFalse(
+            result.ready
+        )
+
+        self.assertEqual(
+            result.reason,
+            WHATSAPP_CALL_ADAPT_PHASE_NOT_ACTIONABLE,
+        )
+
+        self.assertIsNone(
+            result.intent
+        )
+
+
+    def test_active_outbound_surface_disappearance_maps_to_ended(
+        self,
+    ):
+        active = call_snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ACTIVE
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+        )
+
+        absent = replace(
+            active,
+            present=False,
+        )
+
+        changed = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                CALL_OBSERVATION_SURFACE_DISAPPEARED
+            ),
+            previous=active,
+            current=absent,
+            active=None,
+            disappeared=active,
+        )
+
+        result = adapt_whatsapp_call_observation(
+            changed,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertTrue(
+            result.ready
+        )
+
+        self.assertEqual(
+            result.reason,
+            WHATSAPP_CALL_ADAPT_READY,
+        )
+
+        self.assertEqual(
+            result.intent.status,
+            "ENDED",
+        )
+
+        self.assertEqual(
+            result.intent.direction,
+            CALL_DIRECTION_OUTBOUND,
+        )
+
+        self.assertEqual(
+            result.intent.external_call_key,
+            active.external_call_key,
+        )
+
+        self.assertEqual(
+            result.intent.provider_call_id,
+            active.provider_call_id,
+        )
+
+        self.assertEqual(
+            result.intent.metadata[
+                "crm_terminal_inference"
+            ],
+            "ACTIVE_SURFACE_DISAPPEARED",
+        )
+
+        self.assertTrue(
+            result.intent.metadata[
+                "crm_surface_disappeared"
+            ]
+        )
+
+        projected = (
+            project_whatsapp_call_intent_to_provider_snapshot(
+                result.intent
+            )
+        )
+
+        self.assertEqual(
+            projected.status,
+            "ENDED",
+        )
+
+        self.assertIsNone(
+            projected.ended_at
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_ended_at"
+            ],
+            OBSERVED_AT,
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_ended_provider_phase"
+            ],
+            WHATSAPP_CALL_PHASE_ACTIVE,
+        )
+
+
     def test_incoming_ringing_to_ended_transient_maps_to_missed(
         self,
     ):
@@ -429,7 +747,7 @@ class WhatsAppCallDomainAdapterTest(
         )
 
 
-    def test_answered_to_ended_transient_does_not_become_missed(
+    def test_answered_to_ended_transient_becomes_ended_not_missed(
         self,
     ):
         active = call_snapshot(
@@ -466,17 +784,49 @@ class WhatsAppCallDomainAdapterTest(
             observed_at=OBSERVED_AT,
         )
 
-        self.assertFalse(
+        self.assertTrue(
             result.ready
         )
 
         self.assertEqual(
             result.reason,
-            WHATSAPP_CALL_ADAPT_PHASE_NOT_ACTIONABLE,
+            WHATSAPP_CALL_ADAPT_READY,
         )
 
-        self.assertIsNone(
+        self.assertIsNotNone(
             result.intent
+        )
+
+        self.assertEqual(
+            result.intent.status,
+            "ENDED",
+        )
+
+        self.assertNotEqual(
+            result.intent.status,
+            "MISSED",
+        )
+
+        self.assertEqual(
+            result.intent.direction,
+            CALL_DIRECTION_INBOUND,
+        )
+
+        self.assertEqual(
+            result.intent.external_call_key,
+            active.external_call_key,
+        )
+
+        self.assertEqual(
+            result.intent.provider_call_id,
+            active.provider_call_id,
+        )
+
+        self.assertEqual(
+            result.intent.metadata[
+                "crm_terminal_inference"
+            ],
+            "ACTIVE_TO_ENDED_TRANSIENT",
         )
 
 
@@ -572,7 +922,7 @@ class WhatsAppCallDomainAdapterTest(
         )
 
 
-    def test_answered_disappearance_does_not_become_missed(
+    def test_answered_disappearance_becomes_ended_not_missed(
         self,
     ):
         snapshot = call_snapshot(
@@ -595,7 +945,7 @@ class WhatsAppCallDomainAdapterTest(
         disappeared = WhatsAppCallObservation(
             changed=True,
             change_type=(
-                "CALL_SURFACE_DISAPPEARED"
+                CALL_OBSERVATION_SURFACE_DISAPPEARED
             ),
             previous=snapshot,
             current=provider_absent,
@@ -608,17 +958,55 @@ class WhatsAppCallDomainAdapterTest(
             observed_at=OBSERVED_AT,
         )
 
-        self.assertFalse(
+        self.assertTrue(
             result.ready
         )
 
         self.assertEqual(
             result.reason,
-            WHATSAPP_CALL_ADAPT_NO_ACTIVE_SURFACE,
+            WHATSAPP_CALL_ADAPT_READY,
         )
 
-        self.assertIsNone(
+        self.assertIsNotNone(
             result.intent
+        )
+
+        self.assertEqual(
+            result.intent.status,
+            "ENDED",
+        )
+
+        self.assertNotEqual(
+            result.intent.status,
+            "MISSED",
+        )
+
+        self.assertEqual(
+            result.intent.direction,
+            CALL_DIRECTION_INBOUND,
+        )
+
+        self.assertEqual(
+            result.intent.external_call_key,
+            snapshot.external_call_key,
+        )
+
+        self.assertEqual(
+            result.intent.provider_call_id,
+            snapshot.provider_call_id,
+        )
+
+        self.assertEqual(
+            result.intent.metadata[
+                "crm_terminal_inference"
+            ],
+            "ACTIVE_SURFACE_DISAPPEARED",
+        )
+
+        self.assertTrue(
+            result.intent.metadata[
+                "crm_surface_disappeared"
+            ]
         )
 
 

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 import unittest
 
@@ -16,6 +17,7 @@ from backend.communications.calls import (
 )
 from backend.services.whatsapp_call_observation import (
     CALL_OBSERVATION_SURFACE_APPEARED,
+    CALL_OBSERVATION_SURFACE_DISAPPEARED,
     CALL_OBSERVATION_UPDATED,
     WhatsAppCallObservation,
 )
@@ -306,6 +308,187 @@ class WhatsAppCallRealtimeServiceTest(
         self.assertNotIn(
             "provider_phase",
             projected.metadata,
+        )
+
+
+    def test_active_outbound_to_ended_transient_reconciles_ended(
+        self,
+    ):
+        call_service = FakeCallService()
+
+        service = WhatsAppCallRealtimeService(
+            call_service=call_service
+        )
+
+        active = snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ACTIVE
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+        )
+
+        ended = snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+        )
+
+        changed = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                CALL_OBSERVATION_UPDATED
+            ),
+            previous=active,
+            current=ended,
+            active=ended,
+            disappeared=None,
+        )
+
+        result = service.process_observation(
+            changed,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(
+            result.action,
+            WHATSAPP_CALL_REALTIME_RECONCILED,
+        )
+
+        self.assertEqual(
+            len(
+                call_service.snapshots
+            ),
+            1,
+        )
+
+        projected = (
+            call_service.snapshots[0]
+        )
+
+        self.assertEqual(
+            projected.status,
+            "ENDED",
+        )
+
+        self.assertEqual(
+            projected.direction,
+            "OUTBOUND",
+        )
+
+        self.assertEqual(
+            projected.external_call_key,
+            active.external_call_key,
+        )
+
+        self.assertIsNone(
+            projected.ended_at
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_terminal_inference"
+            ],
+            "ACTIVE_TO_ENDED_TRANSIENT",
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_observed_ended_provider_phase"
+            ],
+            WHATSAPP_CALL_PHASE_ENDED_TRANSIENT,
+        )
+
+
+    def test_active_outbound_surface_disappearance_reconciles_ended(
+        self,
+    ):
+        call_service = FakeCallService()
+
+        service = WhatsAppCallRealtimeService(
+            call_service=call_service
+        )
+
+        active = snapshot(
+            phase=(
+                WHATSAPP_CALL_PHASE_ACTIVE
+            ),
+            direction=(
+                WHATSAPP_CALL_DIRECTION_OUTBOUND
+            ),
+        )
+
+        absent = replace(
+            active,
+            present=False,
+        )
+
+        changed = WhatsAppCallObservation(
+            changed=True,
+            change_type=(
+                CALL_OBSERVATION_SURFACE_DISAPPEARED
+            ),
+            previous=active,
+            current=absent,
+            active=None,
+            disappeared=active,
+        )
+
+        result = service.process_observation(
+            changed,
+            observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(
+            result.action,
+            WHATSAPP_CALL_REALTIME_RECONCILED,
+        )
+
+        self.assertEqual(
+            len(
+                call_service.snapshots
+            ),
+            1,
+        )
+
+        projected = (
+            call_service.snapshots[0]
+        )
+
+        self.assertEqual(
+            projected.status,
+            "ENDED",
+        )
+
+        self.assertEqual(
+            projected.direction,
+            "OUTBOUND",
+        )
+
+        self.assertEqual(
+            projected.external_call_key,
+            active.external_call_key,
+        )
+
+        self.assertIsNone(
+            projected.ended_at
+        )
+
+        self.assertEqual(
+            projected.metadata[
+                "crm_terminal_inference"
+            ],
+            "ACTIVE_SURFACE_DISAPPEARED",
+        )
+
+        self.assertTrue(
+            projected.metadata[
+                "crm_surface_disappeared"
+            ]
         )
 
 
