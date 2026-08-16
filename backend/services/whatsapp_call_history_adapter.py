@@ -104,28 +104,19 @@ def _phone_from_id(value):
 
 def _status(snapshot):
     row_state = (
-        str(
-            snapshot.row_state
-            or ""
-        )
+        str(snapshot.row_state or "")
         .strip()
         .upper()
     )
 
     outcome = (
-        str(
-            snapshot.raw_outcome
-            or ""
-        )
+        str(snapshot.raw_outcome or "")
         .strip()
         .upper()
     )
 
     final = (
-        str(
-            snapshot.raw_final_outcome
-            or ""
-        )
+        str(snapshot.raw_final_outcome or "")
         .strip()
         .upper()
     )
@@ -134,22 +125,32 @@ def _status(snapshot):
         snapshot.external_call_key
     )
 
-    # La semántica visual del grupo es más fuerte
-    # que raw outcome para llamadas entrantes perdidas.
-    if row_state.startswith(
-        "PERDIDA"
+    # La fila visible "Perdida" es la señal
+    # histórica más fuerte para inbound.
+    if (
+        row_state.startswith("PERDIDA")
+        or row_state.startswith("MISSED")
     ):
         return CALL_STATUS_MISSED
 
-    if outcome == "COMPLETED":
+    # Historial ya terminal:
+    # Completed y AcceptedElsewhere implican
+    # llamada atendida/finalizada sin inventar
+    # answered_at ni ended_at.
+    if (
+        outcome == "COMPLETED"
+        or final == "COMPLETED"
+        or outcome == "ACCEPTEDELSEWHERE"
+    ):
         return CALL_STATUS_ENDED
 
     if outcome == "REJECTED":
         return CALL_STATUS_REJECTED
 
+    # Una salida sin respuesta/cancelada termina
+    # como CANCELLED en el dominio CRM.
     if (
-        direction
-        == CALL_DIRECTION_OUTBOUND
+        direction == CALL_DIRECTION_OUTBOUND
         and (
             outcome in {
                 "MISSED",
@@ -164,7 +165,6 @@ def _status(snapshot):
         "Estado histórico WhatsApp "
         "no clasificable de forma segura"
     )
-
 
 def project_whatsapp_history_snapshot(
     snapshot,
