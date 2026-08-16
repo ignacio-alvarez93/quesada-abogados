@@ -1,4 +1,12 @@
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 import flet as ft
+
+CALL_DISPLAY_TIMEZONE = ZoneInfo(
+    "Europe/Madrid"
+)
+
 
 from frontend.components import (
     app_table,
@@ -147,6 +155,15 @@ def _format_duration(
 def _format_timestamp(
     value,
 ):
+    """
+    Presenta timestamps de llamadas en hora Europe/Madrid.
+
+    Contrato temporal del CRM:
+    - SQLite CURRENT_TIMESTAMP se persiste como UTC naive;
+    - timestamps provider con offset conservan su zona;
+    - nunca se modifica el valor persistido;
+    - la conversión ocurre únicamente para presentación.
+    """
     raw = str(
         value
         or ""
@@ -155,33 +172,37 @@ def _format_timestamp(
     if not raw:
         return "—"
 
+    normalized = (
+        raw[:-1] + "+00:00"
+        if raw.endswith("Z")
+        else raw
+    )
+
     try:
-        date_part = raw[:10]
-
-        time_part = (
-            raw[11:16]
-            if len(raw) >= 16
-            else ""
+        parsed = datetime.fromisoformat(
+            normalized
         )
 
-        year, month, day = (
-            date_part.split(
-                "-",
-                2,
-            )
-        )
-
-        return (
-            f"{day}/{month}/{year}"
-            + (
-                f" {time_part}"
-                if time_part
-                else ""
-            )
-        )
-
-    except Exception:
+    except (
+        TypeError,
+        ValueError,
+    ):
         return raw
+
+    if parsed.tzinfo is None:
+        # Los timestamps SQLite sin offset proceden de
+        # CURRENT_TIMESTAMP y por contrato representan UTC.
+        parsed = parsed.replace(
+            tzinfo=timezone.utc
+        )
+
+    local = parsed.astimezone(
+        CALL_DISPLAY_TIMEZONE
+    )
+
+    return local.strftime(
+        "%d/%m/%Y %H:%M"
+    )
 
 
 def _direction_control(
