@@ -7746,11 +7746,22 @@ class WhatsAppConnector:
                     const mainRect =
                         main.getBoundingClientRect();
 
-                    const roots =
+                    const allRoots =
                         Array.from(
                             main.querySelectorAll(
                                 '[data-testid^="conv-msg-"]'
                             )
+                        );
+
+                    // WA-UX-PERF-14C1:
+                    // limitar ANTES de extraer contenido pesado.
+                    //
+                    // Conserva exactamente los últimos N mensajes,
+                    // pero evita recorrer nodos que después serían
+                    // descartados en Python.
+                    const roots =
+                        allRoots.slice(
+                            -__WA_MESSAGE_LIMIT__
                         );
 
                     return roots.map(
@@ -8116,7 +8127,12 @@ class WhatsAppConnector:
                         }
                     );
                 })()
-                """
+                """.replace(
+                    "__WA_MESSAGE_LIMIT__",
+                    str(
+                        effective_limit
+                    ),
+                )
             )
             or []
         )
