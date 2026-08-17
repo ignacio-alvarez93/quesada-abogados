@@ -516,4 +516,3 @@ def test_chat_changed_runs_full_visible_sync_without_db_checkpoint():
         ]
         == "MSG-LAST"
     )
-
