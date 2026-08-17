@@ -2546,7 +2546,10 @@ class WhatsAppRuntimeServiceTest(
             ],
         )
 
-        # La selección visual NO abre/verifica el perfil.
+        # La selección sigue siendo completamente ligera.
+        #
+        # Nunca abre Información del contacto ni ejecuta
+        # verificación telefónica fuerte.
         self.assertEqual(
             connector.active_phone_verification_calls,
             [],
@@ -2568,6 +2571,10 @@ class WhatsAppRuntimeServiceTest(
             ]
         )
 
+        # Sin fingerprint preparado no existe evidencia
+        # suficiente para cachear el destinatario.
+        #
+        # El prewarm se intentó, pero queda fail-closed.
         self.assertFalse(
             result[
                 "routing"
@@ -5851,6 +5858,12 @@ class WhatsAppRuntimeServiceTest(
 
         connector.active_chat_fingerprints = [
             old_chat,
+
+            # Consumida por el guard ligero de la selección.
+            unknown_chat,
+
+            # Consumida después por el watcher para demostrar
+            # CHAT_CHANGED + resolución PHONE + sync.
             unknown_chat,
         ]
 
@@ -5944,6 +5957,25 @@ class WhatsAppRuntimeServiceTest(
         # PASO 2 · selección EXPLÍCITA del usuario
         # ----------------------------------------------------
 
+        # El escenario A7 afirma expresamente que el chat
+        # desconocido se resuelve por PHONE.
+        #
+        # El nuevo fast-path exige que esa identidad observable
+        # resuelva de forma inequívoca al MISMO thread CRM antes
+        # de autorizar reutilización para el primer envío.
+        service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": True,
+                "ambiguous": False,
+                "match_basis": "PHONE",
+                "thread": service.thread,
+                "matches": [
+                    service.thread,
+                ],
+                "identity": identity,
+            }
+        )
+
         selected = (
             runtime
             .open_thread_for_selection(
@@ -5969,7 +6001,10 @@ class WhatsAppRuntimeServiceTest(
             ]
         )
 
-        self.assertFalse(
+        # La búsqueda/navegación sigue siendo ligera y,
+        # tras abrir el destino, el guard identidad→thread
+        # autoriza el fast-path sin abrir el perfil.
+        self.assertTrue(
             selected[
                 "routing"
             ][
@@ -5989,10 +6024,11 @@ class WhatsAppRuntimeServiceTest(
             ],
         )
 
-        # La lectura/selección sigue sin convertirse
-        # en autorización fuerte para envío.
-        self.assertIsNone(
-            runtime._verified_send_thread_id
+        # La selección explícita autorizó el fast-path
+        # seguro para este mismo thread.
+        self.assertEqual(
+            runtime._verified_send_thread_id,
+            77,
         )
 
         # ----------------------------------------------------

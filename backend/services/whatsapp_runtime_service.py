@@ -595,21 +595,22 @@ class WhatsAppRuntimeService:
         wait_timeout=60,
         routing_timeout=15,
     ):
-        """Navega al último thread solicitado sin preverify fuerte.
+        """Abre el último thread solicitado con ruta ligera.
 
-        Esta ruta se utiliza exclusivamente para selección visual
-        desde el CRM.
+        La selección explícita:
+        1. invalida cualquier autorización del chat anterior;
+        2. navega por teléfono con verify_identity=False;
+        3. deja que el connector confirme compositor + cabecera;
+        4. toma fingerprint del chat resultante;
+        5. exige resolución inequívoca de esa identidad al
+           mismo thread CRM.
 
-        Seguridad:
-        - abre el chat por teléfono mediante _open_thread_impl();
-        - _open_thread_impl() usa verify_identity=False;
-        - invalida cualquier cache fuerte de envío anterior;
-        - NO abre el perfil del contacto;
-        - NO autoriza un envío.
+        NO abre Información del contacto.
+        NO ejecuta _verify_active_chat_phone().
+        NO bloquea el worker con un profile-prewarm.
 
-        send_text_message() mantiene su propia barrera fuerte y,
-        al no existir cache válida, ejecutará STRONG_VERIFY antes
-        de alcanzar el transporte.
+        Si el guard ligero no puede certificarse, el envío
+        conserva el fallback telefónico fuerte histórico.
         """
         requested_thread_id = int(
             thread_id
@@ -634,10 +635,8 @@ class WhatsAppRuntimeService:
                     desired_thread_id,
             }
 
-        # Una navegación ligera nunca puede heredar una
-        # autorización fuerte perteneciente al chat anterior.
+        # Nunca heredamos autorización de otro chat.
         self._clear_verified_send_route()
-
 
         result = (
             self._open_thread_impl(
@@ -646,7 +645,6 @@ class WhatsAppRuntimeService:
                 routing_timeout=routing_timeout,
             )
         )
-
 
         with self._desired_thread_lock:
             desired_thread_id = (
@@ -669,7 +667,6 @@ class WhatsAppRuntimeService:
                     desired_thread_id,
             }
 
-        # Explicitamos el contrato para callers/UI.
         routing = dict(
             result.get(
                 "routing"
@@ -681,9 +678,45 @@ class WhatsAppRuntimeService:
             "selection_light"
         ] = True
 
+        thread = (
+            result.get(
+                "thread"
+            )
+            if isinstance(
+                result,
+                dict,
+            )
+            else None
+        )
+
+        connector = self._connector
+
+        remembered = False
+
+        if (
+            thread is not None
+            and connector is not None
+        ):
+            remembered = (
+                self._remember_verified_send_route(
+                    thread=thread,
+                    connector=connector,
+                )
+            )
+
         routing[
             "send_preverified"
-        ] = False
+        ] = bool(
+            remembered
+        )
+
+        routing[
+            "send_route_basis"
+        ] = (
+            "EXPLICIT_SELECTION_IDENTITY"
+            if remembered
+            else None
+        )
 
         result[
             "routing"
@@ -979,6 +1012,19 @@ class WhatsAppRuntimeService:
         thread,
         connector,
     ):
+        """Recuerda una ruta de envío mientras siga siendo inequívoca.
+
+        La autorización puede proceder de:
+        - una verificación telefónica fuerte; o
+        - una selección explícita que acaba de abrir el thread
+          por teléfono y cuya identidad activa resuelve de
+          forma única al mismo thread CRM.
+
+        Esta cache nunca autoriza por sí sola un envío futuro:
+        _can_reuse_verified_send_route() vuelve a comprobar
+        fingerprint + identidad + resolución justo antes del
+        transporte.
+        """
         try:
             fingerprint = (
                 connector
@@ -1017,16 +1063,57 @@ class WhatsAppRuntimeService:
             self._clear_verified_send_route()
             return False
 
-        self._verified_send_thread_id = int(
+        requested_thread_id = int(
             thread.id
+        )
+
+        # El nombre/identidad observable debe resolver de
+        # forma inequívoca al mismo thread que acaba de ser
+        # seleccionado por teléfono.
+        try:
+            resolution = (
+                self.communication_service
+                .resolve_whatsapp_thread_by_identity(
+                    identity
+                )
+            )
+        except Exception:
+            self._clear_verified_send_route()
+            return False
+
+        if (
+            not isinstance(
+                resolution,
+                dict,
+            )
+            or not resolution.get(
+                "matched"
+            )
+            or resolution.get(
+                "ambiguous"
+            )
+            or (
+                self._resolved_thread_id(
+                    resolution
+                )
+                != requested_thread_id
+            )
+        ):
+            self._clear_verified_send_route()
+            return False
+
+        self._verified_send_thread_id = (
+            requested_thread_id
         )
 
         self._verified_send_phone = phone
 
-        self._verified_send_identity = identity
-
+        self._verified_send_identity = (
+            identity
+        )
 
         return True
+
 
     def _can_reuse_verified_send_route(
         self,
