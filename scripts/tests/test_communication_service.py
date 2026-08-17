@@ -94,6 +94,7 @@ class CommunicationServiceTest(
                     id INTEGER PRIMARY KEY,
                     cliente_id INTEGER,
                     numero_expediente TEXT,
+                    box_folder_path TEXT,
                     tipo_expediente_id INTEGER,
                     subtipo_expediente_id INTEGER,
                     estado_documental_id INTEGER,
@@ -189,6 +190,7 @@ class CommunicationServiceTest(
                     id,
                     cliente_id,
                     numero_expediente,
+                    box_folder_path,
                     tipo_expediente_id,
                     subtipo_expediente_id,
                     estado_documental_id,
@@ -199,6 +201,7 @@ class CommunicationServiceTest(
                     20,
                     10,
                     'EXP-TEST-0020',
+                    'C:/Box/DESPACHO/TEST/EXP-TEST-0020',
                     2,
                     3,
                     4,
@@ -1423,6 +1426,11 @@ class CommunicationServiceTest(
         self.assertEqual(
             expedient.expedient_id,
             20,
+        )
+
+        self.assertEqual(
+            expedient.box_folder_path,
+            "C:/Box/DESPACHO/TEST/EXP-TEST-0020",
         )
 
     def test_register_inbound_and_outbound(

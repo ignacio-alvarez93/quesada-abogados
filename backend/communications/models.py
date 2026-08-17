@@ -85,6 +85,7 @@ class CommunicationExpedientContext:
     subtype_name: str | None
     documentary_status: str | None
     administrative_status: str | None
+    box_folder_path: str | None = None
 
 
 @dataclass(frozen=True)

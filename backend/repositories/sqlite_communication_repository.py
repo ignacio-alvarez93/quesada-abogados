@@ -3124,6 +3124,8 @@ class SQLiteCommunicationRepository:
                                 AS expedient_id,
                             e.numero_expediente
                                 AS number,
+                            e.box_folder_path
+                                AS box_folder_path,
                             f.nombre
                                 AS family_name,
                             te.nombre
@@ -3184,6 +3186,12 @@ class SQLiteCommunicationRepository:
                         number=(
                             expedient_row[
                                 "number"
+                            ]
+                            or None
+                        ),
+                        box_folder_path=(
+                            expedient_row[
+                                "box_folder_path"
                             ]
                             or None
                         ),
