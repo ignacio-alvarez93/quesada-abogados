@@ -27,6 +27,7 @@ from backend.communications.models import (
     DIRECTION_INBOUND,
     DIRECTION_OUTBOUND,
     MESSAGE_STATUS_DELIVERED,
+    MESSAGE_TYPE_DOCUMENT,
     MESSAGE_STATUS_PENDING,
     MESSAGE_STATUS_READ,
     MESSAGE_STATUS_RECEIVED,
@@ -1569,9 +1570,44 @@ class CommunicationService:
             or ""
         ).strip()
 
-        if not text:
+        normalized_metadata = dict(
+            metadata
+            or {}
+        )
+
+        message_type = str(
+            normalized_metadata.get(
+                "message_type"
+            )
+            or ""
+        ).strip().upper()
+
+        document_filename = str(
+            normalized_metadata.get(
+                "filename"
+            )
+            or ""
+        ).strip()
+
+        is_document = (
+            message_type
+            == MESSAGE_TYPE_DOCUMENT
+        )
+
+        if (
+            not text
+            and not is_document
+        ):
             raise ValueError(
                 "El mensaje no puede estar vacío"
+            )
+
+        if (
+            is_document
+            and not document_filename
+        ):
+            raise ValueError(
+                "Un mensaje DOCUMENT requiere filename"
             )
 
         thread = (
@@ -1612,7 +1648,10 @@ class CommunicationService:
                         ).strip()
                         or None
                     ),
-                    metadata=metadata,
+                    metadata=(
+                        normalized_metadata
+                        or None
+                    ),
                 )
             )
         )

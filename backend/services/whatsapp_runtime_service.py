@@ -1212,17 +1212,24 @@ class WhatsAppRuntimeService:
 
         return True
 
-    def _send_text_message_impl(
+    def _prepare_verified_outbound_impl(
         self,
         *,
+        thread_id,
         wait_timeout=60,
         routing_timeout=15,
-        **kwargs,
     ):
-        thread_id = kwargs.get(
-            "thread_id"
-        )
+        """Prepara una única ruta inequívoca para cualquier outbound.
 
+        Texto y documentos comparten exactamente estas barreras:
+        - Runtime READY;
+        - thread CRM existente;
+        - teléfono WhatsApp persistido;
+        - cache de ruta todavía válida; o
+        - verificación fuerte antes del transporte.
+
+        No ejecuta el transporte.
+        """
         if thread_id in (
             None,
             "",
@@ -1289,9 +1296,56 @@ class WhatsAppRuntimeService:
                 connector=connector,
             )
 
+            thread = verified_thread
+
+        return thread
+
+
+    def _send_text_message_impl(
+        self,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        **kwargs,
+    ):
+        thread_id = kwargs.get(
+            "thread_id"
+        )
+
+        self._prepare_verified_outbound_impl(
+            thread_id=thread_id,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+        )
+
         return (
             self._get_outbound_service()
             .send_text_message(
+                **kwargs
+            )
+        )
+
+
+    def _send_document_message_impl(
+        self,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        **kwargs,
+    ):
+        thread_id = kwargs.get(
+            "thread_id"
+        )
+
+        self._prepare_verified_outbound_impl(
+            thread_id=thread_id,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+        )
+
+        return (
+            self._get_outbound_service()
+            .send_document_message(
                 **kwargs
             )
         )
@@ -1305,6 +1359,22 @@ class WhatsAppRuntimeService:
     ):
         return self._run_serialized(
             self._send_text_message_impl,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+            **kwargs,
+        )
+
+
+    def send_document_message(
+        self,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        **kwargs,
+    ):
+        """Envía un documento por la ruta serializada gobernada."""
+        return self._run_serialized(
+            self._send_document_message_impl,
             wait_timeout=wait_timeout,
             routing_timeout=routing_timeout,
             **kwargs,

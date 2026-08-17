@@ -30,6 +30,15 @@ MESSAGE_STATUS_RECEIVED = "RECEIVED"
 MESSAGE_STATUS_ERROR = "ERROR"
 MESSAGE_STATUS_CANCELLED = "CANCELLED"
 
+
+# Tipo semántico del contenido.
+#
+# No representa el transporte ni el proveedor.
+# Se persiste actualmente dentro de metadata_json para
+# mantener el núcleo de Comunicaciones portable.
+MESSAGE_TYPE_TEXT = "TEXT"
+MESSAGE_TYPE_DOCUMENT = "DOCUMENT"
+
 THREAD_MATCH_MATCHED = "MATCHED"
 THREAD_MATCH_UNMATCHED = "UNMATCHED"
 

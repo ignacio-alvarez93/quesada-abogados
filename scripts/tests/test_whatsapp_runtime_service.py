@@ -472,6 +472,19 @@ class FakeSuccessfulOutboundService:
         self,
     ):
         self.calls = []
+        self.document_calls = []
+        self.thread_ids = []
+
+    @staticmethod
+    def _result():
+        return {
+            "ok": True,
+            "uncertain": False,
+            "message": None,
+            "attempt": None,
+            "provider_snapshot": None,
+            "error": None,
+        }
 
     def send_text_message(
         self,
@@ -483,14 +496,27 @@ class FakeSuccessfulOutboundService:
             )
         )
 
-        return {
-            "ok": True,
-            "uncertain": False,
-            "message": None,
-            "attempt": None,
-            "provider_snapshot": None,
-            "error": None,
-        }
+        self.thread_ids.append(
+            threading.get_ident()
+        )
+
+        return self._result()
+
+    def send_document_message(
+        self,
+        **kwargs,
+    ):
+        self.document_calls.append(
+            dict(
+                kwargs
+            )
+        )
+
+        self.thread_ids.append(
+            threading.get_ident()
+        )
+
+        return self._result()
 
 
 class FakeCallService:
@@ -3313,6 +3339,418 @@ class WhatsAppRuntimeServiceTest(
 
         self.assertFalse(
             runtime.started
+        )
+
+
+    def test_send_document_message_requires_strong_identity_verification(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        result = (
+            runtime.send_document_message(
+                thread_id=7,
+                file_path=(
+                    "C:/QA/documento-prueba.pdf"
+                ),
+                expedient_id=99,
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    True,
+                    9,
+                )
+            ],
+        )
+
+        self.assertEqual(
+            len(
+                outbound.document_calls
+            ),
+            1,
+        )
+
+        call = (
+            outbound.document_calls[
+                0
+            ]
+        )
+
+        self.assertEqual(
+            call[
+                "thread_id"
+            ],
+            7,
+        )
+
+        self.assertEqual(
+            call[
+                "file_path"
+            ],
+            "C:/QA/documento-prueba.pdf",
+        )
+
+        self.assertEqual(
+            call[
+                "expedient_id"
+            ],
+            99,
+        )
+
+
+    def test_document_and_text_share_verified_send_route(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        fingerprint = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "Test Contact"
+                ),
+                active_identity=(
+                    "test contact"
+                ),
+                visible_message_count=10,
+                last_provider_message_id=(
+                    "MSG-10"
+                ),
+            )
+        )
+
+        # 1. remember después del strong route documental;
+        # 2. validar la misma cache para el posterior texto.
+        connector.active_chat_fingerprints = [
+            fingerprint,
+            fingerprint,
+        ]
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": True,
+                "ambiguous": False,
+                "match_basis":
+                    "DISPLAY_NAME",
+                "thread":
+                    runtime.communication_service.thread,
+                "matches": [
+                    runtime.communication_service.thread,
+                ],
+                "identity":
+                    identity,
+            }
+        )
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        first = (
+            runtime.send_document_message(
+                thread_id=7,
+                file_path=(
+                    "C:/QA/documento.pdf"
+                ),
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        second = (
+            runtime.send_text_message(
+                thread_id=7,
+                body_text=(
+                    "Texto después del documento"
+                ),
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        self.assertTrue(
+            first[
+                "ok"
+            ]
+        )
+
+        self.assertTrue(
+            second[
+                "ok"
+            ]
+        )
+
+        # Una sola verificación fuerte para ambos medios.
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    True,
+                    9,
+                )
+            ],
+        )
+
+        self.assertEqual(
+            len(
+                outbound.document_calls
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            len(
+                outbound.calls
+            ),
+            1,
+        )
+
+
+    def test_send_document_message_rechecks_route_after_manual_chat_change(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        expected = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "Test Contact"
+                ),
+                active_identity=(
+                    "test contact"
+                ),
+                visible_message_count=10,
+                last_provider_message_id=(
+                    "MSG-10"
+                ),
+            )
+        )
+
+        other = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "Other Contact"
+                ),
+                active_identity=(
+                    "other contact"
+                ),
+                visible_message_count=5,
+                last_provider_message_id=(
+                    "OTHER-5"
+                ),
+            )
+        )
+
+        # Primera operación:
+        #   strong route → remember expected.
+        #
+        # Segunda:
+        #   cache ve other → invalida;
+        #   strong route → remember expected otra vez.
+        connector.active_chat_fingerprints = [
+            expected,
+            other,
+            expected,
+        ]
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: (
+                {
+                    "matched": True,
+                    "ambiguous": False,
+                    "thread":
+                        runtime.communication_service.thread,
+                    "matches": [
+                        runtime.communication_service.thread,
+                    ],
+                    "identity":
+                        identity,
+                }
+                if identity
+                == "test contact"
+                else {
+                    "matched": False,
+                    "ambiguous": False,
+                    "thread": None,
+                    "matches": [],
+                    "identity":
+                        identity,
+                }
+            )
+        )
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        runtime.send_document_message(
+            thread_id=7,
+            file_path=(
+                "C:/QA/uno.pdf"
+            ),
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        runtime.send_document_message(
+            thread_id=7,
+            file_path=(
+                "C:/QA/dos.pdf"
+            ),
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        self.assertEqual(
+            len(
+                connector.open_phone_calls
+            ),
+            2,
+        )
+
+        self.assertEqual(
+            len(
+                outbound.document_calls
+            ),
+            2,
+        )
+
+
+    def test_send_document_message_runs_on_runtime_worker(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        caller_thread = (
+            threading.get_ident()
+        )
+
+        result = (
+            runtime.send_document_message(
+                thread_id=7,
+                file_path=(
+                    "C:/QA/documento.pdf"
+                ),
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertEqual(
+            len(
+                outbound.thread_ids
+            ),
+            1,
+        )
+
+        self.assertNotEqual(
+            outbound.thread_ids[
+                0
+            ],
+            caller_thread,
+        )
+
+        self.assertEqual(
+            outbound.thread_ids[
+                0
+            ],
+            runtime._worker_thread_id,
         )
 
 
