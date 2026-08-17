@@ -245,6 +245,12 @@ class WhatsAppSendStateUncertainError(
     """El envío pudo ejecutarse pero no pudo confirmarse."""
 
 
+class WhatsAppAttachmentStageStateUncertainError(
+    RuntimeError
+):
+    """La carga del adjunto pudo ejecutarse pero no pudo confirmarse."""
+
+
 MESSAGE_COMPOSER_SELECTOR = (
     '[data-testid="conversation-compose-box-input"]'
 )
@@ -256,6 +262,43 @@ MESSAGE_SEND_ARIA_LABEL = (
 MESSAGE_SEND_SELECTOR = (
     '#main footer '
     'button[aria-label="Enviar"]'
+)
+
+
+# WA-UX-PERF-12D · selectores observados físicamente
+# en WhatsApp Web 2026-08-17.
+#
+# No dependen de clases CSS efímeras.
+WHATSAPP_ATTACH_BUTTON_SELECTOR = (
+    'button[aria-label="Adjuntar"]'
+)
+
+WHATSAPP_DOCUMENT_ATTACH_SELECTOR = (
+    '[role="menu"] '
+    '[role="menuitem"]'
+    '[aria-label="Documento"]'
+)
+
+WHATSAPP_DOCUMENT_CAPTURE_SELECTOR = (
+    'input[type="file"]'
+    '[data-qa-wa-document-input="1"]'
+)
+
+WHATSAPP_ATTACHMENT_PREVIEW_SELECTOR = (
+    '[data-testid="drawer-middle"]'
+)
+
+WHATSAPP_ATTACHMENT_CAPTION_SELECTOR = (
+    '[data-testid="media-caption-input-container"]'
+)
+
+WHATSAPP_ATTACHMENT_REMOVE_SELECTOR = (
+    '[role="button"]'
+    '[aria-label="Quitar archivo adjunto"]'
+)
+
+WHATSAPP_ATTACHMENT_ADD_SELECTOR = (
+    'button[aria-label="Añadir archivo"]'
 )
 
 
@@ -6085,6 +6128,841 @@ class WhatsAppConnector:
             ),
         }
 
+
+    def get_document_attachment_preview_state(
+        self,
+        *,
+        expected_filename=None,
+    ):
+        """Inspecciona el preview actual de adjuntos.
+
+        No modifica WhatsApp y nunca pulsa Enviar.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        filename = str(
+            expected_filename
+            or ""
+        ).strip()
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const expectedFilename = %s;
+
+                    const root =
+                        document.querySelector(
+                            %s
+                        );
+
+                    if (!root) {
+                        return {
+                            preview_found: false,
+                            filename_present: false,
+                            document_labels: [],
+                            caption_found: false,
+                            remove_found: false,
+                            add_found: false,
+                            send_found: false,
+                            send_aria_label: null,
+                            selected_count: null
+                        };
+                    }
+
+                    const caption =
+                        root.querySelector(
+                            %s
+                        );
+
+                    const remove =
+                        root.querySelector(
+                            %s
+                        );
+
+                    const add =
+                        root.querySelector(
+                            %s
+                        );
+
+                    const documentTabs =
+                        Array.from(
+                            root.querySelectorAll(
+                                '[role="tab"][aria-label]'
+                            )
+                        )
+                        .filter(
+                            node => {
+                                const label =
+                                    String(
+                                        node.getAttribute(
+                                            'aria-label'
+                                        )
+                                        || ''
+                                    );
+
+                                return (
+                                    label.includes(
+                                        'Abrir documento'
+                                    )
+                                );
+                            }
+                        );
+
+                    const documentLabels =
+                        documentTabs.map(
+                            node =>
+                                String(
+                                    node.getAttribute(
+                                        'aria-label'
+                                    )
+                                    || ''
+                                )
+                        );
+
+                    const filenamePresent =
+                        expectedFilename
+                        ? documentLabels.some(
+                            label =>
+                                label.includes(
+                                    expectedFilename
+                                )
+                        )
+                        : Boolean(
+                            documentLabels.length
+                        );
+
+                    let send =
+                        Array.from(
+                            root.querySelectorAll(
+                                '[role="button"][aria-label]'
+                            )
+                        )
+                        .find(
+                            node => {
+                                const label =
+                                    String(
+                                        node.getAttribute(
+                                            'aria-label'
+                                        )
+                                        || ''
+                                    );
+
+                                return (
+                                    /^Enviar\\s+\\d+\\s+seleccionado/
+                                        .test(
+                                            label
+                                        )
+                                );
+                            }
+                        )
+                        || null;
+
+                    if (!send) {
+                        const sendIcon =
+                            root.querySelector(
+                                '[data-testid="wds-ic-send-filled"]'
+                            );
+
+                        send =
+                            sendIcon
+                            ? sendIcon.closest(
+                                '[role="button"]'
+                            )
+                            : null;
+                    }
+
+                    const sendLabel =
+                        send
+                        ? String(
+                            send.getAttribute(
+                                'aria-label'
+                            )
+                            || ''
+                        )
+                        : '';
+
+                    const countMatch =
+                        sendLabel.match(
+                            /^Enviar\\s+(\\d+)/
+                        );
+
+                    const selectedCount =
+                        countMatch
+                        ? Number(
+                            countMatch[1]
+                        )
+                        : null;
+
+                    return {
+                        preview_found:
+                            Boolean(
+                                root
+                                && caption
+                                && remove
+                                && documentTabs.length
+                            ),
+
+                        filename_present:
+                            filenamePresent,
+
+                        document_labels:
+                            documentLabels,
+
+                        caption_found:
+                            Boolean(
+                                caption
+                            ),
+
+                        remove_found:
+                            Boolean(
+                                remove
+                            ),
+
+                        add_found:
+                            Boolean(
+                                add
+                            ),
+
+                        send_found:
+                            Boolean(
+                                send
+                            ),
+
+                        send_aria_label:
+                            sendLabel || null,
+
+                        selected_count:
+                            selectedCount
+                    };
+                })()
+                """
+                % (
+                    json.dumps(
+                        filename,
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        WHATSAPP_ATTACHMENT_PREVIEW_SELECTOR,
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        WHATSAPP_ATTACHMENT_CAPTION_SELECTOR,
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        WHATSAPP_ATTACHMENT_REMOVE_SELECTOR,
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        WHATSAPP_ATTACHMENT_ADD_SELECTOR,
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            or {}
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+            result = {}
+
+        return {
+            "preview_found":
+                bool(
+                    result.get(
+                        "preview_found"
+                    )
+                ),
+
+            "filename_present":
+                bool(
+                    result.get(
+                        "filename_present"
+                    )
+                ),
+
+            "document_labels":
+                list(
+                    result.get(
+                        "document_labels"
+                    )
+                    or []
+                ),
+
+            "caption_found":
+                bool(
+                    result.get(
+                        "caption_found"
+                    )
+                ),
+
+            "remove_found":
+                bool(
+                    result.get(
+                        "remove_found"
+                    )
+                ),
+
+            "add_found":
+                bool(
+                    result.get(
+                        "add_found"
+                    )
+                ),
+
+            "send_found":
+                bool(
+                    result.get(
+                        "send_found"
+                    )
+                ),
+
+            "send_aria_label":
+                (
+                    str(
+                        result.get(
+                            "send_aria_label"
+                        )
+                        or ""
+                    ).strip()
+                    or None
+                ),
+
+            "selected_count":
+                (
+                    int(
+                        result[
+                            "selected_count"
+                        ]
+                    )
+                    if result.get(
+                        "selected_count"
+                    )
+                    is not None
+                    else None
+                ),
+        }
+
+    def _install_document_input_click_interceptor(
+        self,
+    ):
+        """Captura el input documental sin abrir FilePicker nativo.
+
+        El interceptor afecta exclusivamente a:
+            input[type=file][accept="*"][multiple]
+
+        Debe restaurarse inmediatamente después de capturar
+        el input creado por WhatsApp.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    /* QA_WA_ATTACHMENT_INSTALL */
+
+                    if (
+                        window.__qaWaDocumentOriginalClick
+                    ) {
+                        return {
+                            installed: false,
+                            reason:
+                                'INTERCEPTOR_ALREADY_INSTALLED'
+                        };
+                    }
+
+                    window.__qaWaDocumentOriginalClick =
+                        HTMLInputElement.prototype.click;
+
+                    window.__qaWaDocumentCaptured = [];
+
+                    HTMLInputElement.prototype.click =
+                        function(...args) {
+                            const isDocumentInput = (
+                                String(
+                                    this.type
+                                    || ''
+                                ).toLowerCase()
+                                === 'file'
+                                && String(
+                                    this.getAttribute(
+                                        'accept'
+                                    )
+                                    || ''
+                                )
+                                === '*'
+                                && Boolean(
+                                    this.multiple
+                                )
+                            );
+
+                            if (
+                                isDocumentInput
+                            ) {
+                                this.setAttribute(
+                                    'data-qa-wa-document-input',
+                                    '1'
+                                );
+
+                                window
+                                    .__qaWaDocumentCaptured
+                                    .push(
+                                        this
+                                    );
+
+                                // Deliberadamente:
+                                // no abrimos el diálogo del SO.
+                                return;
+                            }
+
+                            return window
+                                .__qaWaDocumentOriginalClick
+                                .apply(
+                                    this,
+                                    args
+                                );
+                        };
+
+                    return {
+                        installed: true,
+                        reason: null
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+            result = {}
+
+        if not result.get(
+            "installed"
+        ):
+            raise RuntimeError(
+                "No se pudo instalar el interceptor "
+                "del input documental de WhatsApp"
+            )
+
+        return True
+
+    def _restore_document_input_click_interceptor(
+        self,
+    ):
+        """Restaura HTMLInputElement.click tras la captura."""
+        if not self.browser:
+            return False
+
+        try:
+            self.browser.evaluate(
+                """
+                (() => {
+                    /* QA_WA_ATTACHMENT_RESTORE */
+
+                    if (
+                        window.__qaWaDocumentOriginalClick
+                    ) {
+                        HTMLInputElement.prototype.click =
+                            window
+                                .__qaWaDocumentOriginalClick;
+                    }
+
+                    delete window
+                        .__qaWaDocumentOriginalClick;
+
+                    return true;
+                })()
+                """
+            )
+
+        except Exception:
+            return False
+
+        return True
+
+    def _get_captured_document_input_count(
+        self,
+    ):
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    /* QA_WA_ATTACHMENT_COUNT */
+
+                    return document.querySelectorAll(
+                        'input[type="file"]'
+                        + '[data-qa-wa-document-input="1"]'
+                    ).length;
+                })()
+                """
+            )
+        )
+
+        return int(
+            result
+            or 0
+        )
+
+    def stage_document_attachment(
+        self,
+        file_path,
+        *,
+        timeout=8,
+    ):
+        """Carga UN documento en el preview del chat activo.
+
+        Esta operación:
+        - valida el fichero local;
+        - abre Adjuntar → Documento;
+        - captura el input efímero de WhatsApp;
+        - usa send_file() directamente sobre CDP;
+        - confirma nombre y preview.
+
+        Esta operación NO:
+        - pulsa Enviar;
+        - persiste información;
+        - reintenta una carga incierta;
+        - depende de automatización GUI del escritorio;
+        - usa el FilePicker nativo del navegador.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        path = Path(
+            file_path
+        ).expanduser()
+
+        try:
+            path = path.resolve(
+                strict=True
+            )
+        except Exception as exc:
+            raise FileNotFoundError(
+                "El archivo adjunto no existe"
+            ) from exc
+
+        if not path.is_file():
+            raise ValueError(
+                "La ruta del adjunto no es un archivo"
+            )
+
+        file_name = (
+            path.name
+        )
+
+        file_size = int(
+            path.stat().st_size
+        )
+
+        active = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active.chat_open:
+            raise RuntimeError(
+                "No hay un chat WhatsApp activo"
+            )
+
+        initial_preview = (
+            self.get_document_attachment_preview_state()
+        )
+
+        if initial_preview[
+            "preview_found"
+        ]:
+            raise RuntimeError(
+                "Ya existe un preview de adjunto "
+                "abierto en WhatsApp"
+            )
+
+        self._install_document_input_click_interceptor()
+
+        captured_element = None
+
+        try:
+            try:
+                attach_button = (
+                    self.browser.find_element(
+                        WHATSAPP_ATTACH_BUTTON_SELECTOR
+                    )
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Botón Adjuntar de WhatsApp "
+                    "no localizado"
+                ) from exc
+
+            if not attach_button:
+                raise RuntimeError(
+                    "Botón Adjuntar de WhatsApp "
+                    "no localizado"
+                )
+
+            attach_click = getattr(
+                attach_button,
+                "mouse_click",
+                None,
+            )
+
+            if not callable(
+                attach_click
+            ):
+                raise RuntimeError(
+                    "Botón Adjuntar de WhatsApp "
+                    "no soporta mouse_click"
+                )
+
+            attach_error = None
+
+            try:
+                attach_click()
+            except Exception as exc:
+                # No repetimos automáticamente:
+                # el menú podría haberse abierto ya.
+                attach_error = exc
+
+            deadline = (
+                time.time()
+                + max(
+                    1.0,
+                    float(timeout),
+                )
+            )
+
+            document_button = None
+
+            while (
+                time.time()
+                < deadline
+            ):
+                try:
+                    document_button = (
+                        self.browser.find_element(
+                            WHATSAPP_DOCUMENT_ATTACH_SELECTOR
+                        )
+                    )
+                except Exception:
+                    document_button = None
+
+                if document_button:
+                    break
+
+                time.sleep(
+                    0.05
+                )
+
+            if not document_button:
+                if attach_error:
+                    raise RuntimeError(
+                        "WhatsApp no confirmó la apertura "
+                        "del menú Adjuntar"
+                    ) from attach_error
+
+                raise RuntimeError(
+                    "Menuitem Documento de WhatsApp "
+                    "no localizado"
+                )
+
+            document_click = getattr(
+                document_button,
+                "mouse_click",
+                None,
+            )
+
+            if not callable(
+                document_click
+            ):
+                raise RuntimeError(
+                    "Menuitem Documento de WhatsApp "
+                    "no soporta mouse_click"
+                )
+
+            document_error = None
+
+            try:
+                document_click()
+            except Exception as exc:
+                # Igual que arriba:
+                # no emitimos un segundo click a ciegas.
+                document_error = exc
+
+            captured_count = 0
+
+            deadline = (
+                time.time()
+                + max(
+                    1.0,
+                    float(timeout),
+                )
+            )
+
+            while (
+                time.time()
+                < deadline
+            ):
+                captured_count = (
+                    self
+                    ._get_captured_document_input_count()
+                )
+
+                if captured_count:
+                    break
+
+                time.sleep(
+                    0.05
+                )
+
+            if captured_count != 1:
+                if document_error:
+                    raise RuntimeError(
+                        "WhatsApp no confirmó la creación "
+                        "del input documental"
+                    ) from document_error
+
+                raise RuntimeError(
+                    "Número ambiguo de inputs "
+                    "documentales de WhatsApp: "
+                    f"{captured_count}"
+                )
+
+            try:
+                captured_element = (
+                    self.browser.find_element(
+                        WHATSAPP_DOCUMENT_CAPTURE_SELECTOR
+                    )
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Input documental capturado "
+                    "no localizado"
+                ) from exc
+
+            if not captured_element:
+                raise RuntimeError(
+                    "Input documental capturado "
+                    "no localizado"
+                )
+
+        finally:
+            # Barrera crítica:
+            # la mutación de prototype nunca debe sobrevivir
+            # a la fase de captura.
+            self._restore_document_input_click_interceptor()
+
+        send_file = getattr(
+            captured_element,
+            "send_file",
+            None,
+        )
+
+        if not callable(
+            send_file
+        ):
+            raise RuntimeError(
+                "El input documental no soporta send_file"
+            )
+
+        load_error = None
+
+        try:
+            send_file(
+                str(
+                    path
+                )
+            )
+
+        except Exception as exc:
+            # send_file pudo llegar a Chrome antes de que
+            # Python recibiera la excepción.
+            #
+            # Nunca cargamos otra vez sin inspeccionar
+            # primero el preview.
+            load_error = exc
+
+        deadline = (
+            time.time()
+            + max(
+                1.0,
+                float(timeout),
+            )
+        )
+
+        preview = {}
+
+        while (
+            time.time()
+            < deadline
+        ):
+            preview = (
+                self
+                .get_document_attachment_preview_state(
+                    expected_filename=file_name,
+                )
+            )
+
+            if (
+                preview[
+                    "preview_found"
+                ]
+                and preview[
+                    "filename_present"
+                ]
+                and preview[
+                    "send_found"
+                ]
+            ):
+                return {
+                    "staged": True,
+                    "filename":
+                        file_name,
+                    "size":
+                        file_size,
+                    "active_display_name":
+                        active.active_display_name,
+                    "preview":
+                        preview,
+                    "load_error_reconciled":
+                        bool(
+                            load_error
+                        ),
+                }
+
+            time.sleep(
+                0.1
+            )
+
+        if load_error:
+            raise WhatsAppAttachmentStageStateUncertainError(
+                "Estado de carga de adjunto incierto: "
+                "send_file produjo una excepción y "
+                "WhatsApp no confirmó el preview"
+            ) from load_error
+
+        raise WhatsAppAttachmentStageStateUncertainError(
+            "Estado de carga de adjunto incierto: "
+            "WhatsApp no confirmó el preview "
+            "del archivo dentro del timeout"
+        )
 
     def send_text_message(
         self,
