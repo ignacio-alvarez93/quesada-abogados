@@ -416,6 +416,67 @@ class CommunicationCall:
     metadata: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class CommunicationCallOverview:
+    """
+    Proyección de lectura para el registro de llamadas.
+
+    No persiste.
+    No conoce SQLite.
+    No conoce Flet.
+    No conoce proveedores concretos.
+
+    thread_id/client_id pueden proceder de una resolución
+    conservadora de lectura cuando la llamada histórica
+    todavía no guardó contexto CRM.
+
+    context_resolution explica de dónde procede ese contexto.
+    """
+
+    call_id: int
+
+    channel: str
+    direction: str
+    phone_number: str
+    display_name: str
+
+    status: str
+
+    thread_id: int | None = None
+    client_id: int | None = None
+    expedient_id: int | None = None
+
+    context_resolution: str | None = None
+
+    reason_code: str | None = None
+    reason_label: str | None = None
+    reason_detail: str | None = None
+
+    outcome_code: str | None = None
+    outcome_label: str | None = None
+
+    provider: str | None = None
+    provider_call_id: str | None = None
+
+    created_at: str | None = None
+    started_at: str | None = None
+    activity_at: str | None = None
+    answered_at: str | None = None
+    ended_at: str | None = None
+
+    ring_duration_seconds: int | None = None
+    talk_duration_seconds: int | None = None
+    total_duration_seconds: int | None = None
+
+    notes: str | None = None
+
+    follow_up_id: int | None = None
+    follow_up_status: str | None = None
+
+    callback_count: int = 0
+    latest_callback_at: str | None = None
+
+
 class InvalidCallTransition(ValueError):
     """Transición de estado de llamada no permitida."""
 

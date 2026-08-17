@@ -12,6 +12,8 @@ No contiene SQL.
 No conoce Flet.
 """
 
+from pathlib import Path
+
 from backend.automation.connectors.whatsapp_connector import (
     WhatsAppSendStateUncertainError,
 )
@@ -19,6 +21,7 @@ from backend.communications.models import (
     ATTEMPT_STATUS_ERROR,
     ATTEMPT_STATUS_SENT,
     MESSAGE_STATUS_ERROR,
+    MESSAGE_TYPE_DOCUMENT,
     MESSAGE_STATUS_SENDING,
     MESSAGE_STATUS_SENT,
 )
@@ -318,6 +321,316 @@ class WhatsAppOutboundService:
 
             # El transporte ya confirmó el envío.
             # No marcar ERROR ni reintentar.
+            return {
+                "ok": False,
+                "uncertain": True,
+                "message": (
+                    self.communication_service
+                    .get_message(
+                        message.id
+                    )
+                ),
+                "attempt":
+                    finished_attempt,
+                "provider_snapshot":
+                    snapshot,
+                "error":
+                    str(exc),
+            }
+
+        return {
+            "ok": True,
+            "uncertain": False,
+            "message":
+                sent_message,
+            "attempt":
+                finished_attempt,
+            "provider_snapshot":
+                snapshot,
+            "error":
+                None,
+        }
+
+    def send_document_message(
+        self,
+        *,
+        thread_id,
+        file_path,
+        expedient_id=None,
+        created_by=None,
+        sent_by=None,
+        metadata=None,
+        timeout=12,
+    ):
+        """Envía y persiste un documento WhatsApp trazable.
+
+        La ruta local es exclusivamente transitoria:
+        nunca se persiste en metadata.
+
+        Igual que send_text_message(), nunca reintenta
+        automáticamente un transporte incierto.
+        """
+        path = Path(
+            file_path
+        ).expanduser()
+
+        try:
+            path = path.resolve(
+                strict=True
+            )
+        except Exception as exc:
+            raise FileNotFoundError(
+                "El archivo adjunto no existe"
+            ) from exc
+
+        if not path.is_file():
+            raise ValueError(
+                "La ruta del adjunto no es un archivo"
+            )
+
+        filename = path.name
+        file_size = int(
+            path.stat().st_size
+        )
+
+        message_metadata = dict(
+            metadata
+            or {}
+        )
+
+        # Campos gobernados:
+        # el caller no puede convertir este transporte
+        # documental en otro tipo semántico.
+        message_metadata[
+            "message_type"
+        ] = MESSAGE_TYPE_DOCUMENT
+
+        message_metadata[
+            "filename"
+        ] = filename
+
+        message_metadata[
+            "file_size_bytes"
+        ] = file_size
+
+        message = (
+            self.communication_service
+            .create_outbound_message(
+                thread_id=thread_id,
+                body_text="",
+                expedient_id=(
+                    expedient_id
+                ),
+                created_by=(
+                    created_by
+                ),
+                metadata=(
+                    message_metadata
+                ),
+            )
+        )
+
+        attempt_metadata = {
+            "source":
+                "whatsapp_outbound_service",
+            "message_type":
+                MESSAGE_TYPE_DOCUMENT,
+            "filename":
+                filename,
+        }
+
+        attempt = (
+            self.communication_service
+            .start_message_attempt(
+                message_id=(
+                    message.id
+                ),
+                transport=(
+                    WHATSAPP_TRANSPORT
+                ),
+                metadata=(
+                    attempt_metadata
+                ),
+            )
+        )
+
+        try:
+            self.communication_service \
+                .update_message_status(
+                    message.id,
+                    MESSAGE_STATUS_SENDING,
+                )
+
+        except Exception as exc:
+            self._finish_attempt_error(
+                attempt,
+                error_code=(
+                    STATE_TRANSITION_ERROR_CODE
+                ),
+                error=exc,
+                metadata={
+                    **attempt_metadata,
+                    "uncertain": False,
+                    "automatic_retry":
+                        False,
+                },
+            )
+
+            raise
+
+        try:
+            snapshot = (
+                self.connector
+                .send_document_attachment(
+                    path,
+                    timeout=timeout,
+                )
+            )
+
+        except WhatsAppSendStateUncertainError as exc:
+            finished_attempt = (
+                self._finish_attempt_error(
+                    attempt,
+                    error_code=(
+                        SEND_STATE_UNCERTAIN_ERROR_CODE
+                    ),
+                    error=exc,
+                    metadata={
+                        **attempt_metadata,
+                        "uncertain": True,
+                        "automatic_retry":
+                            False,
+                    },
+                )
+            )
+
+            # Puede haber llegado realmente a WhatsApp.
+            # Permanece SENDING y jamás se reintenta aquí.
+            return {
+                "ok": False,
+                "uncertain": True,
+                "message": (
+                    self.communication_service
+                    .get_message(
+                        message.id
+                    )
+                ),
+                "attempt":
+                    finished_attempt,
+                "provider_snapshot":
+                    None,
+                "error":
+                    str(exc),
+            }
+
+        except Exception as exc:
+            try:
+                failed_message = (
+                    self.communication_service
+                    .update_message_status(
+                        message.id,
+                        MESSAGE_STATUS_ERROR,
+                    )
+                )
+            finally:
+                finished_attempt = (
+                    self._finish_attempt_error(
+                        attempt,
+                        error_code=(
+                            SEND_ERROR_CODE
+                        ),
+                        error=exc,
+                        metadata={
+                            **attempt_metadata,
+                            "uncertain": False,
+                            "automatic_retry":
+                                False,
+                        },
+                    )
+                )
+
+            return {
+                "ok": False,
+                "uncertain": False,
+                "message":
+                    failed_message,
+                "attempt":
+                    finished_attempt,
+                "provider_snapshot":
+                    None,
+                "error":
+                    str(exc),
+            }
+
+        try:
+            (
+                self.communication_service
+                .attach_message_provider_identity(
+                    message.id,
+                    provider_message_id=(
+                        snapshot
+                        .provider_message_id
+                    ),
+                    provider_timestamp=(
+                        snapshot
+                        .provider_timestamp
+                    ),
+                )
+            )
+
+            sent_message = (
+                self.communication_service
+                .update_message_status(
+                    message.id,
+                    MESSAGE_STATUS_SENT,
+                    sent_by=(
+                        sent_by
+                        or created_by
+                    ),
+                )
+            )
+
+            finished_attempt = (
+                self.communication_service
+                .finish_message_attempt(
+                    attempt.id,
+                    status=(
+                        ATTEMPT_STATUS_SENT
+                    ),
+                    metadata={
+                        **attempt_metadata,
+                        "provider_message_id":
+                            snapshot
+                            .provider_message_id,
+                    },
+                )
+            )
+
+        except Exception as exc:
+            finished_attempt = (
+                self._finish_attempt_error(
+                    attempt,
+                    error_code=(
+                        POST_SEND_PERSISTENCE_ERROR_CODE
+                    ),
+                    error=exc,
+                    metadata={
+                        **attempt_metadata,
+                        "uncertain": True,
+                        "automatic_retry":
+                            False,
+                        "provider_message_id":
+                            getattr(
+                                snapshot,
+                                "provider_message_id",
+                                None,
+                            ),
+                    },
+                )
+            )
+
+            # El Connector ya confirmó físicamente el envío.
+            # No convertirlo en ERROR ni provocar otro envío.
             return {
                 "ok": False,
                 "uncertain": True,

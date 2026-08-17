@@ -68,6 +68,34 @@ class FakeConnector:
         self.call_snapshots = []
         self.call_snapshot_thread_ids = []
 
+        self.call_microphone_ensure_calls = []
+        self.call_microphone_ensure_result = {
+            "ready": True,
+            "changed": False,
+            "reason":
+                "MICROPHONE_ALREADY_ENABLED",
+            "initial_state":
+                "ENABLED",
+            "final_state":
+                "ENABLED",
+        }
+
+        self.voice_call_start_calls = []
+        self.voice_call_start_result = {
+            "ok": True,
+            "uncertain": False,
+            "clicked": True,
+            "reason":
+                "VOICE_CALL_SURFACE_STARTED",
+            "snapshot": {
+                "present": True,
+                "phase":
+                    WHATSAPP_CALL_PHASE_CONNECTING,
+                "direction":
+                    WHATSAPP_CALL_DIRECTION_UNKNOWN,
+            },
+        }
+
         self.open_phone_calls = []
         self.routing_result = {
             "opened": True,
@@ -155,6 +183,70 @@ class FakeConnector:
             direction=(
                 WHATSAPP_CALL_DIRECTION_UNKNOWN
             ),
+        )
+
+
+    def ensure_call_microphone_enabled(
+        self,
+        *,
+        verify_timeout=2.0,
+        poll_interval=0.10,
+    ):
+        self.call_microphone_ensure_calls.append(
+            {
+                "thread_id":
+                    threading.get_ident(),
+                "verify_timeout":
+                    verify_timeout,
+                "poll_interval":
+                    poll_interval,
+            }
+        )
+
+        result = (
+            self.call_microphone_ensure_result
+        )
+
+        if isinstance(
+            result,
+            BaseException,
+        ):
+            raise result
+
+        return dict(
+            result
+        )
+
+
+    def start_voice_call(
+        self,
+        *,
+        confirm_timeout=1.0,
+        poll_interval=0.05,
+    ):
+        self.voice_call_start_calls.append(
+            {
+                "thread_id":
+                    threading.get_ident(),
+                "confirm_timeout":
+                    confirm_timeout,
+                "poll_interval":
+                    poll_interval,
+            }
+        )
+
+        result = (
+            self.voice_call_start_result
+        )
+
+        if isinstance(
+            result,
+            BaseException,
+        ):
+            raise result
+
+        return dict(
+            result
         )
 
 
@@ -380,6 +472,19 @@ class FakeSuccessfulOutboundService:
         self,
     ):
         self.calls = []
+        self.document_calls = []
+        self.thread_ids = []
+
+    @staticmethod
+    def _result():
+        return {
+            "ok": True,
+            "uncertain": False,
+            "message": None,
+            "attempt": None,
+            "provider_snapshot": None,
+            "error": None,
+        }
 
     def send_text_message(
         self,
@@ -391,14 +496,27 @@ class FakeSuccessfulOutboundService:
             )
         )
 
-        return {
-            "ok": True,
-            "uncertain": False,
-            "message": None,
-            "attempt": None,
-            "provider_snapshot": None,
-            "error": None,
-        }
+        self.thread_ids.append(
+            threading.get_ident()
+        )
+
+        return self._result()
+
+    def send_document_message(
+        self,
+        **kwargs,
+    ):
+        self.document_calls.append(
+            dict(
+                kwargs
+            )
+        )
+
+        self.thread_ids.append(
+            threading.get_ident()
+        )
+
+        return self._result()
 
 
 class FakeCallService:
@@ -466,6 +584,598 @@ class WhatsAppRuntimeServiceTest(
                 FakeConnector
             ),
         )
+
+    def test_start_voice_call_for_thread_strongly_verifies_and_runs_on_worker(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        result = (
+            runtime
+            .start_voice_call_for_thread(
+                7,
+                wait_timeout=1,
+                routing_timeout=1,
+                call_confirm_timeout=0.1,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "thread_id"
+            ],
+            7,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .open_phone_calls
+            ),
+            1,
+        )
+
+        (
+            phone,
+            display_name,
+            verify_identity,
+            timeout,
+        ) = (
+            connector
+            .open_phone_calls[
+                0
+            ]
+        )
+
+        self.assertEqual(
+            phone,
+            "+34 600 111 222",
+        )
+
+        self.assertEqual(
+            display_name,
+            "Test Contact",
+        )
+
+        self.assertTrue(
+            verify_identity
+        )
+
+        self.assertEqual(
+            timeout,
+            1,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .voice_call_start_calls
+            ),
+            1,
+        )
+
+        worker_thread_id = (
+            connector
+            .voice_call_start_calls[
+                0
+            ][
+                "thread_id"
+            ]
+        )
+
+        self.assertNotEqual(
+            worker_thread_id,
+            threading.get_ident(),
+        )
+
+
+    def test_start_voice_call_for_thread_does_not_route_if_call_exists(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id=(
+                    "CALL-EXISTING"
+                ),
+                external_call_key=(
+                    "opaque-existing"
+                ),
+                participant_phone=(
+                    "+34600111222"
+                ),
+                can_hangup=True,
+                identity_complete=True,
+            )
+        ]
+
+        result = (
+            runtime
+            .start_voice_call_for_thread(
+                7,
+                wait_timeout=1,
+            )
+        )
+
+        self.assertFalse(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertEqual(
+            result[
+                "reason"
+            ],
+            "CALL_ALREADY_PRESENT",
+        )
+
+        self.assertEqual(
+            connector
+            .open_phone_calls,
+            [],
+        )
+
+        self.assertEqual(
+            connector
+            .voice_call_start_calls,
+            [],
+        )
+
+
+    def test_active_call_auto_ensures_microphone_once_on_transition(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_OUTGOING_DIALING
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-MIC-001",
+                external_call_key="opaque-mic-001",
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                participant_display_name="Contacto",
+                is_video=False,
+                can_hangup=True,
+                identity_complete=True,
+            ),
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-MIC-001",
+                external_call_key="opaque-mic-001",
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                participant_display_name="Contacto",
+                is_video=False,
+                visible_state="0:01",
+                can_hangup=True,
+                identity_complete=True,
+            ),
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-MIC-001",
+                external_call_key="opaque-mic-001",
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                participant_display_name="Contacto",
+                is_video=False,
+                visible_state="0:02",
+                can_hangup=True,
+                identity_complete=True,
+            ),
+        ]
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            connector.call_microphone_ensure_calls,
+            [],
+        )
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_microphone_ensure_calls
+            ),
+            1,
+        )
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_microphone_ensure_calls
+            ),
+            1,
+        )
+
+        ensure_thread_id = (
+            connector
+            .call_microphone_ensure_calls[
+                0
+            ][
+                "thread_id"
+            ]
+        )
+
+        self.assertEqual(
+            ensure_thread_id,
+            connector
+            .call_snapshot_thread_ids[
+                1
+            ],
+        )
+
+        self.assertNotEqual(
+            ensure_thread_id,
+            threading.get_ident(),
+        )
+
+        diagnostic = (
+            runtime
+            .call_microphone_last_result
+        )
+
+        self.assertIsNotNone(
+            diagnostic
+        )
+
+        self.assertTrue(
+            diagnostic[
+                "ready"
+            ]
+        )
+
+        self.assertTrue(
+            diagnostic[
+                "automatic"
+            ]
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "trigger"
+            ],
+            "CALL_ENTERED_ACTIVE",
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "provider_call_id"
+            ],
+            "CALL-MIC-001",
+        )
+
+
+    def test_first_observation_already_active_auto_ensures_microphone(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_INBOUND
+                ),
+                provider_call_id="CALL-MIC-INITIAL",
+                external_call_key=(
+                    "opaque-mic-initial"
+                ),
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                participant_display_name="Contacto",
+                is_video=False,
+                visible_state="0:08",
+                can_hangup=True,
+                identity_complete=True,
+            )
+        ]
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_microphone_ensure_calls
+            ),
+            1,
+        )
+
+        diagnostic = (
+            runtime
+            .call_microphone_last_result
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "provider_call_id"
+            ],
+            "CALL-MIC-INITIAL",
+        )
+
+
+    def test_replaced_active_call_auto_ensures_new_microphone(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-MIC-A",
+                external_call_key="opaque-mic-a",
+                participant_lid="remote-a@lid",
+                participant_phone_id=(
+                    "34600111221@c.us"
+                ),
+                participant_phone="+34600111221",
+                visible_state="0:05",
+                can_hangup=True,
+                identity_complete=True,
+            ),
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_INBOUND
+                ),
+                provider_call_id="CALL-MIC-B",
+                external_call_key="opaque-mic-b",
+                participant_lid="remote-b@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                visible_state="0:01",
+                can_hangup=True,
+                identity_complete=True,
+            ),
+        ]
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        runtime.observe_and_sync_call(
+            wait_timeout=1,
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_microphone_ensure_calls
+            ),
+            2,
+        )
+
+        diagnostic = (
+            runtime
+            .call_microphone_last_result
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "provider_call_id"
+            ],
+            "CALL-MIC-B",
+        )
+
+
+    def test_microphone_ensure_failure_does_not_break_call_reconciliation(
+        self,
+    ):
+        call_service = (
+            FakeCallService()
+        )
+
+        runtime = self._runtime(
+            call_service=call_service,
+            call_clock=lambda: (
+                "2026-08-16T10:30:00+00:00"
+            ),
+        )
+
+        connector = runtime.start()
+
+        connector.call_microphone_ensure_result = (
+            RuntimeError(
+                "micro test failure"
+            )
+        )
+
+        connector.call_snapshots = [
+            WhatsAppCallSnapshot(
+                present=True,
+                phase=(
+                    WHATSAPP_CALL_PHASE_ACTIVE
+                ),
+                direction=(
+                    WHATSAPP_CALL_DIRECTION_OUTBOUND
+                ),
+                provider_call_id="CALL-MIC-ERROR",
+                external_call_key=(
+                    "opaque-mic-error"
+                ),
+                participant_lid="remote@lid",
+                participant_phone_id=(
+                    "34600111222@c.us"
+                ),
+                participant_phone="+34600111222",
+                participant_display_name="Contacto",
+                is_video=False,
+                visible_state="0:01",
+                can_hangup=True,
+                identity_complete=True,
+            )
+        ]
+
+        result = (
+            runtime
+            .observe_and_sync_call(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertEqual(
+            result.action,
+            WHATSAPP_CALL_REALTIME_RECONCILED,
+        )
+
+        self.assertEqual(
+            len(
+                call_service.snapshots
+            ),
+            1,
+        )
+
+        diagnostic = (
+            runtime
+            .call_microphone_last_result
+        )
+
+        self.assertFalse(
+            diagnostic[
+                "ready"
+            ]
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "reason"
+            ],
+            "MICROPHONE_ENSURE_ERROR",
+        )
+
+        self.assertEqual(
+            diagnostic[
+                "error_type"
+            ],
+            "RuntimeError",
+        )
+
+
+    def test_public_microphone_ensure_runs_on_runtime_worker(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        result = (
+            runtime
+            .ensure_call_microphone_enabled(
+                wait_timeout=1,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "ready"
+            ]
+        )
+
+        self.assertFalse(
+            result[
+                "automatic"
+            ]
+        )
+
+        self.assertEqual(
+            len(
+                connector
+                .call_microphone_ensure_calls
+            ),
+            1,
+        )
+
+        self.assertNotEqual(
+            connector
+            .call_microphone_ensure_calls[
+                0
+            ][
+                "thread_id"
+            ],
+            threading.get_ident(),
+        )
+
 
     def test_observe_and_sync_call_is_disabled_without_call_service(
         self,
@@ -1862,7 +2572,10 @@ class WhatsAppRuntimeServiceTest(
             ],
         )
 
-        # La selección visual NO abre/verifica el perfil.
+        # La selección sigue siendo completamente ligera.
+        #
+        # Nunca abre Información del contacto ni ejecuta
+        # verificación telefónica fuerte.
         self.assertEqual(
             connector.active_phone_verification_calls,
             [],
@@ -1884,6 +2597,10 @@ class WhatsAppRuntimeServiceTest(
             ]
         )
 
+        # Sin fingerprint preparado no existe evidencia
+        # suficiente para cachear el destinatario.
+        #
+        # El prewarm se intentó, pero queda fail-closed.
         self.assertFalse(
             result[
                 "routing"
@@ -2622,6 +3339,418 @@ class WhatsAppRuntimeServiceTest(
 
         self.assertFalse(
             runtime.started
+        )
+
+
+    def test_send_document_message_requires_strong_identity_verification(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        result = (
+            runtime.send_document_message(
+                thread_id=7,
+                file_path=(
+                    "C:/QA/documento-prueba.pdf"
+                ),
+                expedient_id=99,
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    True,
+                    9,
+                )
+            ],
+        )
+
+        self.assertEqual(
+            len(
+                outbound.document_calls
+            ),
+            1,
+        )
+
+        call = (
+            outbound.document_calls[
+                0
+            ]
+        )
+
+        self.assertEqual(
+            call[
+                "thread_id"
+            ],
+            7,
+        )
+
+        self.assertEqual(
+            call[
+                "file_path"
+            ],
+            "C:/QA/documento-prueba.pdf",
+        )
+
+        self.assertEqual(
+            call[
+                "expedient_id"
+            ],
+            99,
+        )
+
+
+    def test_document_and_text_share_verified_send_route(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        fingerprint = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "Test Contact"
+                ),
+                active_identity=(
+                    "test contact"
+                ),
+                visible_message_count=10,
+                last_provider_message_id=(
+                    "MSG-10"
+                ),
+            )
+        )
+
+        # 1. remember después del strong route documental;
+        # 2. validar la misma cache para el posterior texto.
+        connector.active_chat_fingerprints = [
+            fingerprint,
+            fingerprint,
+        ]
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": True,
+                "ambiguous": False,
+                "match_basis":
+                    "DISPLAY_NAME",
+                "thread":
+                    runtime.communication_service.thread,
+                "matches": [
+                    runtime.communication_service.thread,
+                ],
+                "identity":
+                    identity,
+            }
+        )
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        first = (
+            runtime.send_document_message(
+                thread_id=7,
+                file_path=(
+                    "C:/QA/documento.pdf"
+                ),
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        second = (
+            runtime.send_text_message(
+                thread_id=7,
+                body_text=(
+                    "Texto después del documento"
+                ),
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        self.assertTrue(
+            first[
+                "ok"
+            ]
+        )
+
+        self.assertTrue(
+            second[
+                "ok"
+            ]
+        )
+
+        # Una sola verificación fuerte para ambos medios.
+        self.assertEqual(
+            connector.open_phone_calls,
+            [
+                (
+                    "+34 600 111 222",
+                    "Test Contact",
+                    True,
+                    9,
+                )
+            ],
+        )
+
+        self.assertEqual(
+            len(
+                outbound.document_calls
+            ),
+            1,
+        )
+
+        self.assertEqual(
+            len(
+                outbound.calls
+            ),
+            1,
+        )
+
+
+    def test_send_document_message_rechecks_route_after_manual_chat_change(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        expected = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "Test Contact"
+                ),
+                active_identity=(
+                    "test contact"
+                ),
+                visible_message_count=10,
+                last_provider_message_id=(
+                    "MSG-10"
+                ),
+            )
+        )
+
+        other = (
+            WhatsAppActiveChatFingerprint(
+                chat_open=True,
+                active_display_name=(
+                    "Other Contact"
+                ),
+                active_identity=(
+                    "other contact"
+                ),
+                visible_message_count=5,
+                last_provider_message_id=(
+                    "OTHER-5"
+                ),
+            )
+        )
+
+        # Primera operación:
+        #   strong route → remember expected.
+        #
+        # Segunda:
+        #   cache ve other → invalida;
+        #   strong route → remember expected otra vez.
+        connector.active_chat_fingerprints = [
+            expected,
+            other,
+            expected,
+        ]
+
+        runtime.communication_service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: (
+                {
+                    "matched": True,
+                    "ambiguous": False,
+                    "thread":
+                        runtime.communication_service.thread,
+                    "matches": [
+                        runtime.communication_service.thread,
+                    ],
+                    "identity":
+                        identity,
+                }
+                if identity
+                == "test contact"
+                else {
+                    "matched": False,
+                    "ambiguous": False,
+                    "thread": None,
+                    "matches": [],
+                    "identity":
+                        identity,
+                }
+            )
+        )
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        runtime.send_document_message(
+            thread_id=7,
+            file_path=(
+                "C:/QA/uno.pdf"
+            ),
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        runtime.send_document_message(
+            thread_id=7,
+            file_path=(
+                "C:/QA/dos.pdf"
+            ),
+            wait_timeout=1,
+            routing_timeout=9,
+        )
+
+        self.assertEqual(
+            len(
+                connector.open_phone_calls
+            ),
+            2,
+        )
+
+        self.assertEqual(
+            len(
+                outbound.document_calls
+            ),
+            2,
+        )
+
+
+    def test_send_document_message_runs_on_runtime_worker(
+        self,
+    ):
+        runtime = self._runtime()
+
+        connector = runtime.start()
+
+        connector.routing_result = {
+            "opened": True,
+            "verified": True,
+            "reason": None,
+            "expected_phone":
+                "+34600111222",
+            "observed_phone":
+                "+34600111222",
+        }
+
+        outbound = (
+            FakeSuccessfulOutboundService()
+        )
+
+        runtime._outbound_service = (
+            outbound
+        )
+
+        caller_thread = (
+            threading.get_ident()
+        )
+
+        result = (
+            runtime.send_document_message(
+                thread_id=7,
+                file_path=(
+                    "C:/QA/documento.pdf"
+                ),
+                wait_timeout=1,
+                routing_timeout=9,
+            )
+        )
+
+        self.assertTrue(
+            result[
+                "ok"
+            ]
+        )
+
+        self.assertEqual(
+            len(
+                outbound.thread_ids
+            ),
+            1,
+        )
+
+        self.assertNotEqual(
+            outbound.thread_ids[
+                0
+            ],
+            caller_thread,
+        )
+
+        self.assertEqual(
+            outbound.thread_ids[
+                0
+            ],
+            runtime._worker_thread_id,
         )
 
 
@@ -4211,11 +5340,17 @@ class WhatsAppRuntimeServiceTest(
             "DENEB-20",
         )
 
-        self.assertEqual(
+        # CHAT_CHANGED recupera deliberadamente la
+        # ventana visible completa.
+        #
+        # El último provider id almacenado en DB no es un
+        # checkpoint seguro al entrar en una conversación:
+        # WhatsApp puede materializar mensajes faltantes ANTES
+        # de ese id.
+        self.assertIsNone(
             sync_calls[0][
                 "after_provider_message_id"
-            ],
-            "DENEB-19",
+            ]
         )
 
         self.assertFalse(
@@ -5161,6 +6296,12 @@ class WhatsAppRuntimeServiceTest(
 
         connector.active_chat_fingerprints = [
             old_chat,
+
+            # Consumida por el guard ligero de la selección.
+            unknown_chat,
+
+            # Consumida después por el watcher para demostrar
+            # CHAT_CHANGED + resolución PHONE + sync.
             unknown_chat,
         ]
 
@@ -5254,6 +6395,25 @@ class WhatsAppRuntimeServiceTest(
         # PASO 2 · selección EXPLÍCITA del usuario
         # ----------------------------------------------------
 
+        # El escenario A7 afirma expresamente que el chat
+        # desconocido se resuelve por PHONE.
+        #
+        # El nuevo fast-path exige que esa identidad observable
+        # resuelva de forma inequívoca al MISMO thread CRM antes
+        # de autorizar reutilización para el primer envío.
+        service.resolve_whatsapp_thread_by_identity = (
+            lambda identity: {
+                "matched": True,
+                "ambiguous": False,
+                "match_basis": "PHONE",
+                "thread": service.thread,
+                "matches": [
+                    service.thread,
+                ],
+                "identity": identity,
+            }
+        )
+
         selected = (
             runtime
             .open_thread_for_selection(
@@ -5279,7 +6439,10 @@ class WhatsAppRuntimeServiceTest(
             ]
         )
 
-        self.assertFalse(
+        # La búsqueda/navegación sigue siendo ligera y,
+        # tras abrir el destino, el guard identidad→thread
+        # autoriza el fast-path sin abrir el perfil.
+        self.assertTrue(
             selected[
                 "routing"
             ][
@@ -5299,10 +6462,11 @@ class WhatsAppRuntimeServiceTest(
             ],
         )
 
-        # La lectura/selección sigue sin convertirse
-        # en autorización fuerte para envío.
-        self.assertIsNone(
-            runtime._verified_send_thread_id
+        # La selección explícita autorizó el fast-path
+        # seguro para este mismo thread.
+        self.assertEqual(
+            runtime._verified_send_thread_id,
+            77,
         )
 
         # ----------------------------------------------------

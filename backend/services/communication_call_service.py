@@ -16,6 +16,8 @@ No conoce Enlace móvil.
 No controla directamente proveedores.
 """
 
+from dataclasses import replace
+
 from backend.communications.call_snapshots import (
     materialize_provider_call_snapshot,
     merge_provider_call_snapshot,
@@ -36,6 +38,9 @@ from backend.communications.calls import (
     CALL_STATUS_MISSED,
     CALL_STATUS_REJECTED,
     CommunicationCall,
+    CommunicationCallOverview,
+    get_call_outcome_label,
+    get_call_reason_label,
     transition_call_status_at,
 )
 from backend.repositories.sqlite_communication_repository import (
@@ -80,6 +85,188 @@ class CommunicationCallService:
         return self.repository.get_call(
             int(call_id)
         )
+
+    def list_call_overviews(
+        self,
+        *,
+        channel=None,
+        direction=None,
+        status=None,
+        search=None,
+        limit=500,
+    ):
+        """
+        API de lectura del registro de llamadas.
+
+        El frontend recibe una proyección ya preparada:
+        no necesita SQL, repositories ni catálogos.
+        """
+        items = (
+            self.repository
+            .list_call_overviews(
+                channel=channel,
+                direction=direction,
+                status=status,
+                search=search,
+                limit=max(
+                    1,
+                    min(
+                        5000,
+                        int(
+                            limit
+                            or 500
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        result = []
+
+        for item in items:
+            if not isinstance(
+                item,
+                CommunicationCallOverview,
+            ):
+                raise TypeError(
+                    "El repository debe devolver "
+                    "CommunicationCallOverview"
+                )
+
+            result.append(
+                replace(
+                    item,
+                    reason_label=(
+                        get_call_reason_label(
+                            item.reason_code
+                        )
+                    ),
+                    outcome_label=(
+                        get_call_outcome_label(
+                            item.outcome_code
+                        )
+                    ),
+                )
+            )
+
+        return result
+
+
+    def list_reason_options(
+        self,
+    ):
+        """
+        Expone el catálogo gobernado de motivos
+        sin obligar a la UI a conocer su implementación.
+        """
+        from backend.communications.calls import (
+            get_call_reason_options,
+        )
+
+        return tuple(
+            get_call_reason_options()
+        )
+
+
+    def save_post_call_details(
+        self,
+        call_id,
+        *,
+        reason_code,
+        notes=None,
+        reason_detail=None,
+    ):
+        """
+        Registra la clasificación humana posterior
+        a una llamada realmente finalizada.
+
+        Este caso de uso NO modifica lifecycle,
+        timestamps ni conocimiento del proveedor.
+        """
+        from dataclasses import replace
+
+        from backend.communications.calls import (
+            CALL_STATUS_ENDED,
+            normalize_call_reason_code,
+        )
+
+        try:
+            normalized_call_id = int(
+                call_id
+            )
+        except Exception as exc:
+            raise ValueError(
+                "call_id no válido"
+            ) from exc
+
+        call = self.repository.get_call(
+            normalized_call_id
+        )
+
+        if call is None:
+            raise ValueError(
+                "Llamada de comunicación "
+                "no encontrada"
+            )
+
+        if (
+            str(
+                call.status
+                or ""
+            ).strip().upper()
+            != CALL_STATUS_ENDED
+        ):
+            raise ValueError(
+                "Los datos post-llamada solo "
+                "pueden registrarse cuando "
+                "la llamada está ENDED"
+            )
+
+        normalized_reason = (
+            normalize_call_reason_code(
+                reason_code
+            )
+        )
+
+        if normalized_reason is None:
+            raise ValueError(
+                "Motivo de llamada no válido"
+            )
+
+        clean_reason_detail = (
+            str(
+                reason_detail
+                or ""
+            ).strip()
+            or None
+        )
+
+        clean_notes = (
+            str(
+                notes
+                or ""
+            ).strip()
+            or None
+        )
+
+        edited = replace(
+            call,
+            reason_code=(
+                normalized_reason
+            ),
+            reason_detail=(
+                clean_reason_detail
+            ),
+            notes=clean_notes,
+        )
+
+        return (
+            self.repository
+            .update_call_details(
+                edited
+            )
+        )
+
 
     @staticmethod
     def _normalize_required_text(

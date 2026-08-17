@@ -13,7 +13,7 @@ No:
 - persiste;
 - conoce CommunicationCallService;
 - crea CommunicationCall;
-- clasifica outcomes terminales;
+- clasifica terminales ambiguos sin evidencia observable;
 - inventa estados intermedios ni timestamps provider.
 """
 
@@ -26,6 +26,7 @@ from backend.automation.connectors.whatsapp_call_observer import (
     WHATSAPP_CALL_DIRECTION_OUTBOUND,
     WHATSAPP_CALL_DIRECTION_UNKNOWN,
     WHATSAPP_CALL_PHASE_ACTIVE,
+    WHATSAPP_CALL_PHASE_ENDED_TRANSIENT,
     WHATSAPP_CALL_PHASE_INCOMING_RINGING,
     WHATSAPP_CALL_PHASE_OUTGOING_DIALING,
 )
@@ -37,12 +38,16 @@ from backend.communications.calls import (
     CALL_DIRECTION_OUTBOUND,
     CALL_STATUS_ANSWERED,
     CALL_STATUS_DIALING,
+    CALL_STATUS_ENDED,
+    CALL_STATUS_MISSED,
     CALL_STATUS_RINGING,
 )
 from backend.communications.models import (
     CHANNEL_WHATSAPP,
 )
 from backend.services.whatsapp_call_observation import (
+    CALL_OBSERVATION_SURFACE_DISAPPEARED,
+    CALL_OBSERVATION_UPDATED,
     WhatsAppCallObservation,
 )
 
@@ -293,12 +298,31 @@ def adapt_whatsapp_call_observation(
     ACTIVE
         -> ANSWERED
 
-    CONNECTING / SURFACE_PRESENT /
-    ENDED_TRANSIENT / ABSENT
+    ACTIVE -> ENDED_TRANSIENT
+        -> ENDED
+
+    ACTIVE + desaparición directa de superficie
+        -> ENDED
+
+    INCOMING_RINGING -> ENDED_TRANSIENT
+        -> MISSED
+
+    INCOMING_RINGING + desaparición directa de superficie
+        -> MISSED
+
+    CONNECTING / SURFACE_PRESENT / ABSENT
         -> sin intent de dominio
 
-    Los estados terminales se resolverán con evidencia
-    adicional del proveedor.
+    MISSED solo se deriva cuando existe evidencia observable
+    de una llamada INBOUND cuyo último estado previo conocido
+    fue INCOMING_RINGING y nunca se observó ACTIVE.
+
+    ENDED_TRANSIENT por sí solo no implica MISSED ni ENDED.
+
+    ENDED solo se deriva cuando el último estado previo
+    conocido fue ACTIVE.
+
+    No se infieren aquí REJECTED / BUSY / CANCELLED / FAILED.
     """
     if not isinstance(
         observation,
@@ -322,8 +346,80 @@ def adapt_whatsapp_call_observation(
             observed_at=clean_observed_at,
         )
 
+    missed_from_ended_transient = (
+        observation.change_type
+        == CALL_OBSERVATION_UPDATED
+        and observation.previous is not None
+        and observation.previous.present
+        and observation.previous.phase
+        == WHATSAPP_CALL_PHASE_INCOMING_RINGING
+        and observation.previous.direction
+        == WHATSAPP_CALL_DIRECTION_INBOUND
+        and observation.active is not None
+        and observation.active.present
+        and observation.active.phase
+        == WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+        and observation.active.direction
+        == WHATSAPP_CALL_DIRECTION_INBOUND
+    )
+
+    ended_from_active_ended_transient = (
+        observation.change_type
+        == CALL_OBSERVATION_UPDATED
+        and observation.previous is not None
+        and observation.previous.present
+        and observation.previous.phase
+        == WHATSAPP_CALL_PHASE_ACTIVE
+        and observation.active is not None
+        and observation.active.present
+        and observation.active.phase
+        == WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+    )
+
+    ended_from_active_disappearance = (
+        observation.change_type
+        == CALL_OBSERVATION_SURFACE_DISAPPEARED
+        and observation.disappeared is not None
+        and observation.disappeared.present
+        and observation.disappeared.phase
+        == WHATSAPP_CALL_PHASE_ACTIVE
+    )
+
+    missed_from_ringing_disappearance = (
+        observation.change_type
+        == CALL_OBSERVATION_SURFACE_DISAPPEARED
+        and observation.disappeared is not None
+        and observation.disappeared.present
+        and observation.disappeared.phase
+        == WHATSAPP_CALL_PHASE_INCOMING_RINGING
+        and observation.disappeared.direction
+        == WHATSAPP_CALL_DIRECTION_INBOUND
+    )
+
+    missed_terminal_inference = (
+        missed_from_ended_transient
+        or missed_from_ringing_disappearance
+    )
+
+    ended_terminal_inference = (
+        ended_from_active_ended_transient
+        or ended_from_active_disappearance
+    )
+
     snapshot = (
         observation.active
+        if (
+            missed_from_ended_transient
+            or ended_from_active_ended_transient
+        )
+        else (
+            observation.disappeared
+            if (
+                missed_from_ringing_disappearance
+                or ended_from_active_disappearance
+            )
+            else observation.active
+        )
     )
 
     if (
@@ -362,19 +458,30 @@ def adapt_whatsapp_call_observation(
             observed_at=clean_observed_at,
         )
 
-    (
-        status,
-        status_error,
-    ) = _domain_status(
-        phase=snapshot.phase,
-        direction=direction,
-    )
-
-    if status is None:
-        return _skip(
-            reason=status_error,
-            observed_at=clean_observed_at,
+    if missed_terminal_inference:
+        status = (
+            CALL_STATUS_MISSED
         )
+
+    elif ended_terminal_inference:
+        status = (
+            CALL_STATUS_ENDED
+        )
+
+    else:
+        (
+            status,
+            status_error,
+        ) = _domain_status(
+            phase=snapshot.phase,
+            direction=direction,
+        )
+
+        if status is None:
+            return _skip(
+                reason=status_error,
+                observed_at=clean_observed_at,
+            )
 
     external_call_key = (
         _clean_optional_text(
@@ -422,6 +529,50 @@ def adapt_whatsapp_call_observation(
         "provider_phase":
             snapshot.phase,
     }
+
+    if ended_from_active_ended_transient:
+        metadata[
+            "crm_terminal_inference"
+        ] = (
+            "ACTIVE_TO_ENDED_TRANSIENT"
+        )
+
+        metadata[
+            "crm_ended_transient_observed"
+        ] = True
+
+    elif ended_from_active_disappearance:
+        metadata[
+            "crm_terminal_inference"
+        ] = (
+            "ACTIVE_SURFACE_DISAPPEARED"
+        )
+
+        metadata[
+            "crm_surface_disappeared"
+        ] = True
+
+    elif missed_from_ended_transient:
+        metadata[
+            "crm_terminal_inference"
+        ] = (
+            "INCOMING_RINGING_TO_ENDED_TRANSIENT"
+        )
+
+        metadata[
+            "crm_ended_transient_observed"
+        ] = True
+
+    elif missed_from_ringing_disappearance:
+        metadata[
+            "crm_terminal_inference"
+        ] = (
+            "INCOMING_RINGING_SURFACE_DISAPPEARED"
+        )
+
+        metadata[
+            "crm_surface_disappeared"
+        ] = True
 
     participant_lid = (
         _clean_optional_text(
@@ -525,6 +676,10 @@ def project_whatsapp_call_intent_to_provider_snapshot(
             "crm_observed_ringing_at",
         CALL_STATUS_ANSWERED:
             "crm_observed_answered_at",
+        CALL_STATUS_ENDED:
+            "crm_observed_ended_at",
+        CALL_STATUS_MISSED:
+            "crm_observed_missed_at",
     }
 
     observed_key = (
@@ -567,6 +722,10 @@ def project_whatsapp_call_intent_to_provider_snapshot(
             "crm_observed_ringing_provider_phase",
         CALL_STATUS_ANSWERED:
             "crm_observed_answered_provider_phase",
+        CALL_STATUS_ENDED:
+            "crm_observed_ended_provider_phase",
+        CALL_STATUS_MISSED:
+            "crm_observed_missed_provider_phase",
     }
 
     phase_key = (

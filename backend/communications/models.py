@@ -30,6 +30,15 @@ MESSAGE_STATUS_RECEIVED = "RECEIVED"
 MESSAGE_STATUS_ERROR = "ERROR"
 MESSAGE_STATUS_CANCELLED = "CANCELLED"
 
+
+# Tipo semántico del contenido.
+#
+# No representa el transporte ni el proveedor.
+# Se persiste actualmente dentro de metadata_json para
+# mantener el núcleo de Comunicaciones portable.
+MESSAGE_TYPE_TEXT = "TEXT"
+MESSAGE_TYPE_DOCUMENT = "DOCUMENT"
+
 THREAD_MATCH_MATCHED = "MATCHED"
 THREAD_MATCH_UNMATCHED = "UNMATCHED"
 
@@ -85,6 +94,7 @@ class CommunicationExpedientContext:
     subtype_name: str | None
     documentary_status: str | None
     administrative_status: str | None
+    box_folder_path: str | None = None
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ from backend.automation.connectors.whatsapp_connector import (
     MESSAGE_STATUS_READ,
     MESSAGE_STATUS_RECEIVED,
     MESSAGE_TYPE_STICKER,
+    MESSAGE_TYPE_DOCUMENT,
     MESSAGE_TYPE_TEXT,
     WhatsAppActiveChatFingerprint,
     WhatsAppChatSnapshot,
@@ -1748,6 +1749,204 @@ class WhatsAppChatExtractorTest(
             ]
         )
 
+
+    def test_document_snapshot_extracts_filename_and_size(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "provider_message_id":
+                        "AC-DOCUMENT-1",
+                    "pre_plain_text":
+                        None,
+                    "body_text":
+                        "",
+                    "meta_text":
+                        "13:36",
+                    "arias":
+                        [
+                            "Tú:",
+                            " Pendiente ",
+                        ],
+                    "testids":
+                        [
+                            "msg-container",
+                            "tail-out",
+                            "document-thumb",
+                            "ms-office-doc",
+                            "loading-spinner",
+                            "msg-meta",
+                        ],
+                    "has_tail_in":
+                        False,
+                    "has_tail_out":
+                        True,
+                    "center_ratio":
+                        0.78,
+                    "has_sticker":
+                        False,
+                    "has_document":
+                        True,
+                    "document_filename":
+                        "documento-prueba.pdf",
+                    "document_size_text":
+                        "123 KB",
+                    "image_info":
+                        [],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        messages = (
+            connector
+            .list_visible_message_snapshots()
+        )
+
+        self.assertEqual(
+            len(messages),
+            1,
+        )
+
+        document = messages[0]
+
+        self.assertEqual(
+            document.provider_message_id,
+            "AC-DOCUMENT-1",
+        )
+
+        self.assertEqual(
+            document.direction,
+            MESSAGE_DIRECTION_OUTBOUND,
+        )
+
+        self.assertEqual(
+            document.message_type,
+            MESSAGE_TYPE_DOCUMENT,
+        )
+
+        self.assertEqual(
+            document.body_text,
+            "",
+        )
+
+        self.assertEqual(
+            document.metadata[
+                "filename"
+            ],
+            "documento-prueba.pdf",
+        )
+
+        self.assertEqual(
+            document.metadata[
+                "file_size_text"
+            ],
+            "123 KB",
+        )
+
+        self.assertEqual(
+            document.metadata[
+                "image_count"
+            ],
+            0,
+        )
+
+    def test_document_with_caption_remains_document(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "provider_message_id":
+                        "AC-DOCUMENT-CAPTION-1",
+                    "pre_plain_text":
+                        "[13:37, 17/8/2026] OPERADOR:",
+                    "body_text":
+                        "Te adjunto la documentación",
+                    "meta_text":
+                        "13:37",
+                    "arias":
+                        [
+                            "Tú:",
+                            " Entregado ",
+                        ],
+                    "testids":
+                        [
+                            "msg-container",
+                            "document-thumb",
+                            "selectable-text",
+                            "msg-meta",
+                        ],
+                    "has_tail_in":
+                        False,
+                    "has_tail_out":
+                        True,
+                    "center_ratio":
+                        0.78,
+                    "has_sticker":
+                        False,
+                    "has_document":
+                        True,
+                    "document_filename":
+                        "expediente.pdf",
+                    "document_size_text":
+                        "2 MB",
+                    "image_info":
+                        [],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        document = (
+            connector
+            .list_visible_message_snapshots()
+        )[0]
+
+        self.assertEqual(
+            document.message_type,
+            MESSAGE_TYPE_DOCUMENT,
+        )
+
+        self.assertEqual(
+            document.body_text,
+            "Te adjunto la documentación",
+        )
+
+        self.assertEqual(
+            document.metadata[
+                "filename"
+            ],
+            "expediente.pdf",
+        )
+
+        self.assertEqual(
+            document.metadata[
+                "file_size_text"
+            ],
+            "2 MB",
+        )
 
     def test_sticker_infers_adjacent_date(
         self,

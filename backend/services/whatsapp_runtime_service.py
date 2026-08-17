@@ -26,7 +26,16 @@ from backend.automation.connectors.whatsapp_connector import (
 from backend.services.communication_service import (
     CommunicationService,
 )
+from backend.communications.calls import (
+    CALL_DIRECTION_INBOUND,
+    CALL_STATUS_REJECTED,
+    CALL_STATUS_RINGING,
+)
+from backend.automation.connectors.whatsapp_call_observer import (
+    WHATSAPP_CALL_PHASE_ACTIVE,
+)
 from backend.services.whatsapp_call_observation import (
+    CALL_OBSERVATION_REPLACED,
     WhatsAppCallObservationTracker,
 )
 from backend.services.whatsapp_call_realtime_service import (
@@ -183,6 +192,15 @@ class WhatsAppRuntimeService:
         # Diagnóstico del watcher de llamadas.
         self._call_watch_last_error = None
         self._call_watch_last_result = None
+
+        # Último resultado de la política de micrófono
+        # aplicada a una llamada WhatsApp.
+        #
+        # La política automática se ejecuta únicamente
+        # cuando una llamada entra realmente en ACTIVE.
+        # No se re-ejecuta por cambios de temporizador
+        # mientras la llamada permanece ACTIVE.
+        self._call_microphone_last_result = None
 
         # Watcher ligero del chat activo.
         #
@@ -577,21 +595,22 @@ class WhatsAppRuntimeService:
         wait_timeout=60,
         routing_timeout=15,
     ):
-        """Navega al último thread solicitado sin preverify fuerte.
+        """Abre el último thread solicitado con ruta ligera.
 
-        Esta ruta se utiliza exclusivamente para selección visual
-        desde el CRM.
+        La selección explícita:
+        1. invalida cualquier autorización del chat anterior;
+        2. navega por teléfono con verify_identity=False;
+        3. deja que el connector confirme compositor + cabecera;
+        4. toma fingerprint del chat resultante;
+        5. exige resolución inequívoca de esa identidad al
+           mismo thread CRM.
 
-        Seguridad:
-        - abre el chat por teléfono mediante _open_thread_impl();
-        - _open_thread_impl() usa verify_identity=False;
-        - invalida cualquier cache fuerte de envío anterior;
-        - NO abre el perfil del contacto;
-        - NO autoriza un envío.
+        NO abre Información del contacto.
+        NO ejecuta _verify_active_chat_phone().
+        NO bloquea el worker con un profile-prewarm.
 
-        send_text_message() mantiene su propia barrera fuerte y,
-        al no existir cache válida, ejecutará STRONG_VERIFY antes
-        de alcanzar el transporte.
+        Si el guard ligero no puede certificarse, el envío
+        conserva el fallback telefónico fuerte histórico.
         """
         requested_thread_id = int(
             thread_id
@@ -616,10 +635,8 @@ class WhatsAppRuntimeService:
                     desired_thread_id,
             }
 
-        # Una navegación ligera nunca puede heredar una
-        # autorización fuerte perteneciente al chat anterior.
+        # Nunca heredamos autorización de otro chat.
         self._clear_verified_send_route()
-
 
         result = (
             self._open_thread_impl(
@@ -628,7 +645,6 @@ class WhatsAppRuntimeService:
                 routing_timeout=routing_timeout,
             )
         )
-
 
         with self._desired_thread_lock:
             desired_thread_id = (
@@ -651,7 +667,6 @@ class WhatsAppRuntimeService:
                     desired_thread_id,
             }
 
-        # Explicitamos el contrato para callers/UI.
         routing = dict(
             result.get(
                 "routing"
@@ -663,9 +678,45 @@ class WhatsAppRuntimeService:
             "selection_light"
         ] = True
 
+        thread = (
+            result.get(
+                "thread"
+            )
+            if isinstance(
+                result,
+                dict,
+            )
+            else None
+        )
+
+        connector = self._connector
+
+        remembered = False
+
+        if (
+            thread is not None
+            and connector is not None
+        ):
+            remembered = (
+                self._remember_verified_send_route(
+                    thread=thread,
+                    connector=connector,
+                )
+            )
+
         routing[
             "send_preverified"
-        ] = False
+        ] = bool(
+            remembered
+        )
+
+        routing[
+            "send_route_basis"
+        ] = (
+            "EXPLICIT_SELECTION_IDENTITY"
+            if remembered
+            else None
+        )
 
         result[
             "routing"
@@ -961,6 +1012,19 @@ class WhatsAppRuntimeService:
         thread,
         connector,
     ):
+        """Recuerda una ruta de envío mientras siga siendo inequívoca.
+
+        La autorización puede proceder de:
+        - una verificación telefónica fuerte; o
+        - una selección explícita que acaba de abrir el thread
+          por teléfono y cuya identidad activa resuelve de
+          forma única al mismo thread CRM.
+
+        Esta cache nunca autoriza por sí sola un envío futuro:
+        _can_reuse_verified_send_route() vuelve a comprobar
+        fingerprint + identidad + resolución justo antes del
+        transporte.
+        """
         try:
             fingerprint = (
                 connector
@@ -999,16 +1063,57 @@ class WhatsAppRuntimeService:
             self._clear_verified_send_route()
             return False
 
-        self._verified_send_thread_id = int(
+        requested_thread_id = int(
             thread.id
+        )
+
+        # El nombre/identidad observable debe resolver de
+        # forma inequívoca al mismo thread que acaba de ser
+        # seleccionado por teléfono.
+        try:
+            resolution = (
+                self.communication_service
+                .resolve_whatsapp_thread_by_identity(
+                    identity
+                )
+            )
+        except Exception:
+            self._clear_verified_send_route()
+            return False
+
+        if (
+            not isinstance(
+                resolution,
+                dict,
+            )
+            or not resolution.get(
+                "matched"
+            )
+            or resolution.get(
+                "ambiguous"
+            )
+            or (
+                self._resolved_thread_id(
+                    resolution
+                )
+                != requested_thread_id
+            )
+        ):
+            self._clear_verified_send_route()
+            return False
+
+        self._verified_send_thread_id = (
+            requested_thread_id
         )
 
         self._verified_send_phone = phone
 
-        self._verified_send_identity = identity
-
+        self._verified_send_identity = (
+            identity
+        )
 
         return True
+
 
     def _can_reuse_verified_send_route(
         self,
@@ -1107,17 +1212,24 @@ class WhatsAppRuntimeService:
 
         return True
 
-    def _send_text_message_impl(
+    def _prepare_verified_outbound_impl(
         self,
         *,
+        thread_id,
         wait_timeout=60,
         routing_timeout=15,
-        **kwargs,
     ):
-        thread_id = kwargs.get(
-            "thread_id"
-        )
+        """Prepara una única ruta inequívoca para cualquier outbound.
 
+        Texto y documentos comparten exactamente estas barreras:
+        - Runtime READY;
+        - thread CRM existente;
+        - teléfono WhatsApp persistido;
+        - cache de ruta todavía válida; o
+        - verificación fuerte antes del transporte.
+
+        No ejecuta el transporte.
+        """
         if thread_id in (
             None,
             "",
@@ -1184,9 +1296,56 @@ class WhatsAppRuntimeService:
                 connector=connector,
             )
 
+            thread = verified_thread
+
+        return thread
+
+
+    def _send_text_message_impl(
+        self,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        **kwargs,
+    ):
+        thread_id = kwargs.get(
+            "thread_id"
+        )
+
+        self._prepare_verified_outbound_impl(
+            thread_id=thread_id,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+        )
+
         return (
             self._get_outbound_service()
             .send_text_message(
+                **kwargs
+            )
+        )
+
+
+    def _send_document_message_impl(
+        self,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        **kwargs,
+    ):
+        thread_id = kwargs.get(
+            "thread_id"
+        )
+
+        self._prepare_verified_outbound_impl(
+            thread_id=thread_id,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+        )
+
+        return (
+            self._get_outbound_service()
+            .send_document_message(
                 **kwargs
             )
         )
@@ -1204,6 +1363,1100 @@ class WhatsAppRuntimeService:
             routing_timeout=routing_timeout,
             **kwargs,
         )
+
+
+    def send_document_message(
+        self,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        **kwargs,
+    ):
+        """Envía un documento por la ruta serializada gobernada."""
+        return self._run_serialized(
+            self._send_document_message_impl,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+            **kwargs,
+        )
+
+    def _start_voice_call_for_thread_impl(
+        self,
+        thread_id,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        call_confirm_timeout=1.0,
+    ):
+        """Inicia llamada de voz hacia un thread CRM.
+
+        Barreras:
+        1. runtime READY;
+        2. ninguna llamada ya presente;
+        3. permiso de micrófono, cuando el connector
+           expone diagnóstico explícito;
+        4. routing + verificación FUERTE del destinatario;
+        5. un único click de llamada de voz;
+        6. nunca retry ciego tras el click.
+        """
+        requested_thread_id = int(
+            thread_id
+        )
+
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        existing_call = (
+            connector
+            .read_call_snapshot()
+        )
+
+        if bool(
+            getattr(
+                existing_call,
+                "present",
+                False,
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "CALL_ALREADY_PRESENT",
+                "thread_id":
+                    requested_thread_id,
+            }
+
+        # CALL-UX-1 dejó el permiso configurado
+        # durante start(). Si existe un diagnóstico
+        # explícitamente negativo, hacemos un único
+        # intento de recuperación antes de marcar.
+        permission = getattr(
+            connector,
+            "call_media_permission_result",
+            None,
+        )
+
+        if (
+            isinstance(
+                permission,
+                dict,
+            )
+            and permission.get(
+                "configured"
+            )
+            is False
+        ):
+            configure = getattr(
+                connector,
+                "configure_call_media_permissions",
+                None,
+            )
+
+            if callable(
+                configure
+            ):
+                permission = (
+                    configure()
+                )
+
+            if (
+                isinstance(
+                    permission,
+                    dict,
+                )
+                and permission.get(
+                    "configured"
+                )
+                is False
+            ):
+                return {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "MICROPHONE_PERMISSION_NOT_READY",
+                    "thread_id":
+                        requested_thread_id,
+                    "permission":
+                        permission,
+                }
+
+        # Acción sensible:
+        # NO usamos open_thread_for_selection().
+        #
+        # Esta ruta exige verificación fuerte del teléfono
+        # antes de que el connector pueda pulsar "Llamada".
+        routing_result = (
+            self._verify_and_open_thread_impl(
+                requested_thread_id,
+                wait_timeout=wait_timeout,
+                routing_timeout=routing_timeout,
+            )
+        )
+
+        thread = (
+            routing_result[
+                "thread"
+            ]
+        )
+
+        call_result = (
+            connector
+            .start_voice_call(
+                confirm_timeout=(
+                    call_confirm_timeout
+                )
+            )
+        )
+
+        if not isinstance(
+            call_result,
+            dict,
+        ):
+            call_result = {
+                "ok": False,
+                "uncertain": True,
+                "clicked": True,
+                "reason":
+                    "VOICE_CALL_RESULT_INVALID",
+                "raw_result":
+                    call_result,
+            }
+
+        result = dict(
+            call_result
+        )
+
+        observed_snapshot = (
+            result.pop(
+                "_snapshot",
+                None,
+            )
+        )
+
+        result[
+            "thread_id"
+        ] = requested_thread_id
+
+        result[
+            "phone"
+        ] = str(
+            getattr(
+                thread,
+                "external_address",
+                "",
+            )
+            or ""
+        ).strip()
+
+        result[
+            "routing"
+        ] = dict(
+            routing_result.get(
+                "routing"
+            )
+            or {}
+        )
+
+        # El snapshot observado por la propia acción no se
+        # desperdicia: lo incorporamos al mismo tracker que
+        # utiliza el watcher global.
+        #
+        # Si todavía es CONNECTING será no-actionable.
+        # Si ya es DIALING podrá reconciliarse inmediatamente.
+        # El watcher continuará después desde ese mismo estado.
+        if (
+            observed_snapshot is not None
+            and bool(
+                getattr(
+                    observed_snapshot,
+                    "present",
+                    False,
+                )
+            )
+        ):
+            observation = (
+                self
+                ._call_observation_tracker
+                .observe(
+                    observed_snapshot
+                )
+            )
+
+            self._maybe_ensure_active_call_microphone(
+                observation
+            )
+
+            observed_at = None
+
+            if (
+                self
+                ._call_realtime_service
+                .enabled
+            ):
+                observed_at = (
+                    self._call_observed_at()
+                )
+
+            realtime_result = (
+                self
+                ._call_realtime_service
+                .process_observation(
+                    observation,
+                    observed_at=(
+                        observed_at
+                    ),
+                )
+            )
+
+            result[
+                "realtime_action"
+            ] = getattr(
+                realtime_result,
+                "action",
+                None,
+            )
+
+            result[
+                "observed_phase"
+            ] = getattr(
+                observed_snapshot,
+                "phase",
+                None,
+            )
+
+            result[
+                "provider_call_id"
+            ] = getattr(
+                observed_snapshot,
+                "provider_call_id",
+                None,
+            )
+
+        return result
+
+
+    def start_voice_call_for_thread(
+        self,
+        thread_id,
+        *,
+        wait_timeout=60,
+        routing_timeout=15,
+        call_confirm_timeout=1.0,
+    ):
+        """API pública serializada de llamada saliente WhatsApp."""
+        return self._run_serialized(
+            self._start_voice_call_for_thread_impl,
+            thread_id,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+            call_confirm_timeout=(
+                call_confirm_timeout
+            ),
+        )
+
+
+    def _get_persisted_incoming_ringing_call(
+        self,
+        call_id,
+    ):
+        call_service = getattr(
+            self._call_realtime_service,
+            "call_service",
+            None,
+        )
+
+        if call_service is None:
+            return (
+                None,
+                {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "CALL_PERSISTENCE_DISABLED",
+                },
+            )
+
+        try:
+            normalized_call_id = int(
+                call_id
+            )
+
+        except Exception:
+            return (
+                None,
+                {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "CALL_ID_INVALID",
+                },
+            )
+
+        call = (
+            call_service.get_call(
+                normalized_call_id
+            )
+        )
+
+        if call is None:
+            return (
+                None,
+                {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "CALL_NOT_FOUND",
+                    "call_id":
+                        normalized_call_id,
+                },
+            )
+
+        if (
+            str(
+                getattr(
+                    call,
+                    "direction",
+                    "",
+                )
+                or ""
+            ).strip().upper()
+            != CALL_DIRECTION_INBOUND
+        ):
+            return (
+                None,
+                {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "CALL_NOT_INBOUND",
+                    "call_id":
+                        normalized_call_id,
+                },
+            )
+
+        if (
+            str(
+                getattr(
+                    call,
+                    "status",
+                    "",
+                )
+                or ""
+            ).strip().upper()
+            != CALL_STATUS_RINGING
+        ):
+            return (
+                None,
+                {
+                    "ok": False,
+                    "uncertain": False,
+                    "clicked": False,
+                    "reason":
+                        "CALL_NOT_RINGING",
+                    "call_id":
+                        normalized_call_id,
+                    "status":
+                        getattr(
+                            call,
+                            "status",
+                            None,
+                        ),
+                },
+            )
+
+        return (
+            call,
+            None,
+        )
+
+
+    def _accept_incoming_call_impl(
+        self,
+        call_id,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        wait_timeout=60,
+        confirm_timeout=2.0,
+    ):
+        call, error = (
+            self
+            ._get_persisted_incoming_ringing_call(
+                call_id
+            )
+        )
+
+        if error is not None:
+            return error
+
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout
+            )
+        )
+
+        raw_result = (
+            connector.accept_incoming_call(
+                expected_provider_call_id=(
+                    expected_provider_call_id
+                ),
+                expected_external_call_key=(
+                    expected_external_call_key
+                ),
+                confirm_timeout=(
+                    confirm_timeout
+                ),
+            )
+        )
+
+        result = (
+            dict(raw_result)
+            if isinstance(
+                raw_result,
+                dict,
+            )
+            else {
+                "ok": False,
+                "uncertain": True,
+                "clicked": True,
+                "reason":
+                    "CALL_ACCEPT_RESULT_INVALID",
+                "raw_result":
+                    raw_result,
+            }
+        )
+
+        snapshot = result.pop(
+            "_snapshot",
+            None,
+        )
+
+        result["call_id"] = int(
+            call.id
+        )
+
+        if (
+            snapshot is not None
+            and bool(
+                getattr(
+                    snapshot,
+                    "present",
+                    False,
+                )
+            )
+        ):
+            observation = (
+                self
+                ._call_observation_tracker
+                .observe(
+                    snapshot
+                )
+            )
+
+            self._maybe_ensure_active_call_microphone(
+                observation
+            )
+
+            observed_at = None
+
+            if (
+                self
+                ._call_realtime_service
+                .enabled
+            ):
+                observed_at = (
+                    self._call_observed_at()
+                )
+
+            realtime_result = (
+                self
+                ._call_realtime_service
+                .process_observation(
+                    observation,
+                    observed_at=(
+                        observed_at
+                    ),
+                )
+            )
+
+            result[
+                "realtime_action"
+            ] = getattr(
+                realtime_result,
+                "action",
+                None,
+            )
+
+            persisted = getattr(
+                realtime_result,
+                "persisted_call",
+                None,
+            )
+
+            if persisted is not None:
+                result[
+                    "persisted_status"
+                ] = getattr(
+                    persisted,
+                    "status",
+                    None,
+                )
+
+        return result
+
+
+    def accept_incoming_call(
+        self,
+        call_id,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        wait_timeout=60,
+        confirm_timeout=2.0,
+    ):
+        """
+        Atiende una llamada entrante desde CRM.
+
+        Toda interacción browser permanece en el worker único.
+        """
+        return self._run_serialized(
+            self._accept_incoming_call_impl,
+            call_id,
+            expected_provider_call_id=(
+                expected_provider_call_id
+            ),
+            expected_external_call_key=(
+                expected_external_call_key
+            ),
+            wait_timeout=wait_timeout,
+            confirm_timeout=(
+                confirm_timeout
+            ),
+        )
+
+
+    def _reject_incoming_call_impl(
+        self,
+        call_id,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        wait_timeout=60,
+        confirm_timeout=2.0,
+    ):
+        call, error = (
+            self
+            ._get_persisted_incoming_ringing_call(
+                call_id
+            )
+        )
+
+        if error is not None:
+            return error
+
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout
+            )
+        )
+
+        raw_result = (
+            connector.reject_incoming_call(
+                expected_provider_call_id=(
+                    expected_provider_call_id
+                ),
+                expected_external_call_key=(
+                    expected_external_call_key
+                ),
+                confirm_timeout=(
+                    confirm_timeout
+                ),
+            )
+        )
+
+        result = (
+            dict(raw_result)
+            if isinstance(
+                raw_result,
+                dict,
+            )
+            else {
+                "ok": False,
+                "uncertain": True,
+                "clicked": True,
+                "reason":
+                    "CALL_REJECT_RESULT_INVALID",
+                "raw_result":
+                    raw_result,
+            }
+        )
+
+        result.pop(
+            "_snapshot",
+            None,
+        )
+
+        result["call_id"] = int(
+            call.id
+        )
+
+        # Solo materializamos REJECTED cuando el provider
+        # confirma inequívocamente el click.
+        if (
+            result.get("ok") is True
+            and result.get("clicked") is True
+            and result.get("uncertain") is False
+        ):
+            call_service = getattr(
+                self._call_realtime_service,
+                "call_service",
+                None,
+            )
+
+            try:
+                rejected = (
+                    call_service
+                    .apply_call_event(
+                        int(call.id),
+                        status=(
+                            CALL_STATUS_REJECTED
+                        ),
+                        event_at=(
+                            self._call_observed_at()
+                        ),
+                    )
+                )
+
+                result[
+                    "crm_persisted"
+                ] = True
+
+                result[
+                    "persisted_status"
+                ] = getattr(
+                    rejected,
+                    "status",
+                    None,
+                )
+
+                # Evita que la posterior desaparición de la
+                # superficie vuelva a inferirse como MISSED.
+                #
+                # La intención explícita del operador ya es un
+                # hecho más fuerte que la mera desaparición DOM.
+                self._call_observation_tracker.reset()
+
+                result[
+                    "observation_tracker_reset"
+                ] = True
+
+            except Exception as exc:
+                # El provider YA pudo haber ejecutado el rechazo.
+                # Nunca convertimos un error posterior de DB
+                # en autorización para volver a pulsar.
+                result[
+                    "crm_persisted"
+                ] = False
+
+                result[
+                    "crm_persistence_error"
+                ] = {
+                    "error_type":
+                        type(exc).__name__,
+                    "message":
+                        str(exc),
+                }
+
+        return result
+
+
+    def reject_incoming_call(
+        self,
+        call_id,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        wait_timeout=60,
+        confirm_timeout=2.0,
+    ):
+        """
+        Rechaza una llamada entrante desde CRM.
+
+        Un rechazo confirmado se persiste explícitamente
+        como REJECTED antes de devolver control al watcher.
+        """
+        return self._run_serialized(
+            self._reject_incoming_call_impl,
+            call_id,
+            expected_provider_call_id=(
+                expected_provider_call_id
+            ),
+            expected_external_call_key=(
+                expected_external_call_key
+            ),
+            wait_timeout=wait_timeout,
+            confirm_timeout=(
+                confirm_timeout
+            ),
+        )
+
+
+    def _sync_call_history_impl(
+        self,
+        *,
+        wait_timeout=60,
+        navigation_timeout=5,
+        dry_run=False,
+    ):
+        """
+        Sincroniza historial WhatsApp en una sola operación
+        gobernada por el worker.
+
+        Secuencia:
+        - verifica READY;
+        - no navega si existe llamada activa;
+        - captura pestaña actual;
+        - abre Llamadas si es necesario;
+        - extrae historial;
+        - proyecta/reconcilia;
+        - restaura Chats si estaba activa inicialmente.
+
+        Ningún watcher puede intercalarse en el cambio temporal
+        porque toda la operación vive dentro de _run_serialized().
+        """
+        from backend.services.whatsapp_call_history_sync_service import (
+            apply_whatsapp_history_reconciliation_plan,
+            build_whatsapp_history_reconciliation_plan,
+        )
+
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        current_call = (
+            connector
+            .read_call_snapshot()
+        )
+
+        if bool(
+            getattr(
+                current_call,
+                "present",
+                False,
+            )
+        ):
+            return {
+                "skipped":
+                    True,
+                "reason":
+                    "ACTIVE_CALL",
+                "dry_run":
+                    bool(dry_run),
+                "history":
+                    None,
+                "plan":
+                    None,
+                "execution":
+                    None,
+                "navigation":
+                    None,
+            }
+
+        before = (
+            connector
+            .read_primary_navigation_state()
+        )
+
+        chats_was_active = (
+            before.get(
+                "chats_pressed"
+            )
+            == "true"
+        )
+
+        calls_was_active = (
+            before.get(
+                "calls_pressed"
+            )
+            == "true"
+        )
+
+        if not (
+            chats_was_active
+            or calls_was_active
+        ):
+            raise RuntimeError(
+                "No se pudo determinar "
+                "la pestaña WhatsApp activa"
+            )
+
+        opened_calls = False
+        restore_result = None
+
+        try:
+            if not calls_was_active:
+                (
+                    connector
+                    .open_calls_tab(
+                        timeout=(
+                            navigation_timeout
+                        ),
+                    )
+                )
+
+                opened_calls = True
+
+            # aria-pressed confirma la navegación primaria,
+            # pero React puede tardar unas décimas adicionales
+            # en materializar las filas del historial.
+            #
+            # No usamos sleep fijo: esperamos evidencia funcional
+            # real del reader (rows_scanned > 0) con timeout.
+            history_deadline = (
+                time.time()
+                + max(
+                    0.5,
+                    float(
+                        navigation_timeout
+                    ),
+                )
+            )
+
+            history = None
+            materialization_attempts = 0
+
+            while True:
+                materialization_attempts += 1
+
+                history = (
+                    connector
+                    .read_visible_call_history()
+                )
+
+                rows_scanned = int(
+                    (
+                        history.get(
+                            "rows_scanned"
+                        )
+                        if isinstance(
+                            history,
+                            dict,
+                        )
+                        else 0
+                    )
+                    or 0
+                )
+
+                if rows_scanned > 0:
+                    break
+
+                if (
+                    time.time()
+                    >= history_deadline
+                ):
+                    raise TimeoutError(
+                        "La pestaña Llamadas está activa "
+                        "pero el historial no llegó a "
+                        "materializar filas visibles"
+                    )
+
+                time.sleep(
+                    0.1
+                )
+
+            plan = (
+                build_whatsapp_history_reconciliation_plan(
+                    history
+                )
+            )
+
+            call_service = getattr(
+                self,
+                "call_service",
+                None,
+            )
+
+            if (
+                not dry_run
+                and call_service is None
+            ):
+                raise RuntimeError(
+                    "CommunicationCallService "
+                    "no está configurado"
+                )
+
+            execution = (
+                apply_whatsapp_history_reconciliation_plan(
+                    plan,
+                    call_service=(
+                        call_service
+                    ),
+                    dry_run=(
+                        dry_run
+                    ),
+                )
+            )
+
+        finally:
+            if (
+                opened_calls
+                and chats_was_active
+            ):
+                restore_result = (
+                    connector
+                    .open_chats_tab(
+                        timeout=(
+                            navigation_timeout
+                        ),
+                    )
+                )
+
+        after = (
+            connector
+            .read_primary_navigation_state()
+        )
+
+        return {
+            "skipped":
+                False,
+
+            "reason":
+                None,
+
+            "dry_run":
+                bool(dry_run),
+
+            "history":
+                history,
+
+            "plan":
+                plan,
+
+            "execution":
+                execution,
+
+            "navigation": {
+                "before":
+                    before,
+
+                "opened_calls":
+                    opened_calls,
+
+                "materialization_attempts":
+                    materialization_attempts,
+
+                "restore_result":
+                    restore_result,
+
+                "after":
+                    after,
+            },
+        }
+
+
+    def submit_call_history_sync(
+        self,
+        *,
+        wait_timeout=60,
+        navigation_timeout=5,
+        dry_run=False,
+    ):
+        """
+        Envía una sincronización histórica al worker único
+        WhatsApp sin bloquear al caller.
+
+        La operación física sigue siendo exactamente
+        _sync_call_history_impl(), por lo que:
+        - conserva serialización CDP;
+        - no crea otro navegador;
+        - no crea otro worker de browser;
+        - queda ordenada respecto al watcher realtime;
+        - close() puede esperar al mismo executor gobernado.
+        """
+        executor = (
+            self._get_executor()
+        )
+
+        return executor.submit(
+            self._execute_on_worker,
+            self._sync_call_history_impl,
+            wait_timeout=wait_timeout,
+            navigation_timeout=(
+                navigation_timeout
+            ),
+            dry_run=dry_run,
+        )
+
+
+    def sync_call_history(
+        self,
+        *,
+        wait_timeout=60,
+        navigation_timeout=5,
+        dry_run=False,
+    ):
+        """
+        API pública serializada de sincronización histórica.
+        """
+        return self._run_serialized(
+            self._sync_call_history_impl,
+            wait_timeout=wait_timeout,
+            navigation_timeout=(
+                navigation_timeout
+            ),
+            dry_run=dry_run,
+        )
+
+
+    def _read_visible_call_history_impl(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """
+        Lee pasivamente el historial visible de llamadas.
+
+        No navega.
+        No persiste.
+        Toda interacción CDP permanece en el worker gobernado.
+        """
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        return (
+            connector
+            .read_visible_call_history()
+        )
+
+
+    def read_visible_call_history(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """
+        API pública serializada del historial visible de llamadas.
+        """
+        return self._run_serialized(
+            self._read_visible_call_history_impl,
+            wait_timeout=wait_timeout,
+        )
+
 
     def _read_call_snapshot_impl(
         self,
@@ -1296,6 +2549,315 @@ class WhatsAppRuntimeService:
         ).strip()
 
 
+    @property
+    def call_microphone_last_result(
+        self,
+    ):
+        with self._call_watch_lock:
+            value = (
+                self._call_microphone_last_result
+            )
+
+            return (
+                dict(value)
+                if isinstance(
+                    value,
+                    dict,
+                )
+                else value
+            )
+
+
+    def _remember_call_microphone_result(
+        self,
+        result,
+    ):
+        value = (
+            dict(result)
+            if isinstance(
+                result,
+                dict,
+            )
+            else result
+        )
+
+        with self._call_watch_lock:
+            self._call_microphone_last_result = (
+                value
+            )
+
+        return value
+
+
+    def _ensure_call_microphone_enabled_impl(
+        self,
+        *,
+        wait_timeout=60,
+        automatic=False,
+    ):
+        """Garantiza micro activo dentro del worker WhatsApp.
+
+        No es un toggle ciego.
+
+        WhatsAppConnector solo pulsa cuando observa
+        inequívocamente mic-unmute y después verifica
+        el estado ENABLED.
+        """
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        result = (
+            connector
+            .ensure_call_microphone_enabled()
+        )
+
+        normalized = (
+            dict(result)
+            if isinstance(
+                result,
+                dict,
+            )
+            else {
+                "ready": False,
+                "changed": False,
+                "reason":
+                    "MICROPHONE_RESULT_INVALID",
+                "raw_result":
+                    result,
+            }
+        )
+
+        normalized[
+            "automatic"
+        ] = bool(
+            automatic
+        )
+
+        return (
+            self
+            ._remember_call_microphone_result(
+                normalized
+            )
+        )
+
+
+    def ensure_call_microphone_enabled(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """API pública serializada para garantizar micro activo."""
+        return self._run_serialized(
+            self._ensure_call_microphone_enabled_impl,
+            wait_timeout=wait_timeout,
+            automatic=False,
+        )
+
+
+    @staticmethod
+    def _call_observation_enters_active(
+        observation,
+    ):
+        """Detecta entrada real en fase ACTIVE.
+
+        Casos admitidos:
+        - primera observación ya ACTIVE;
+        - transición desde cualquier fase no ACTIVE;
+        - CALL_REPLACED cuyo nuevo active ya es ACTIVE.
+
+        Permanecer ACTIVE no vuelve a disparar la política.
+        """
+        if observation is None:
+            return False
+
+        active = getattr(
+            observation,
+            "active",
+            None,
+        )
+
+        if (
+            active is None
+            or not bool(
+                getattr(
+                    active,
+                    "present",
+                    False,
+                )
+            )
+            or getattr(
+                active,
+                "phase",
+                None,
+            )
+            != WHATSAPP_CALL_PHASE_ACTIVE
+        ):
+            return False
+
+        if (
+            getattr(
+                observation,
+                "change_type",
+                None,
+            )
+            == CALL_OBSERVATION_REPLACED
+        ):
+            return True
+
+        previous = getattr(
+            observation,
+            "previous",
+            None,
+        )
+
+        if previous is None:
+            return True
+
+        return (
+            getattr(
+                previous,
+                "phase",
+                None,
+            )
+            != WHATSAPP_CALL_PHASE_ACTIVE
+        )
+
+
+    def _maybe_ensure_active_call_microphone(
+        self,
+        observation,
+    ):
+        """Aplica política default al entrar en ACTIVE.
+
+        Este método se ejecuta ya dentro del worker único.
+        Un fallo de micro nunca bloquea reconciliación ni
+        persistencia del lifecycle de la llamada.
+        """
+        if not (
+            self
+            ._call_observation_enters_active(
+                observation
+            )
+        ):
+            return None
+
+        active = getattr(
+            observation,
+            "active",
+            None,
+        )
+
+        try:
+            connector = self._connector
+
+            if connector is None:
+                raise RuntimeError(
+                    "WhatsAppConnector no disponible"
+                )
+
+            result = (
+                connector
+                .ensure_call_microphone_enabled()
+            )
+
+            normalized = (
+                dict(result)
+                if isinstance(
+                    result,
+                    dict,
+                )
+                else {
+                    "ready": False,
+                    "changed": False,
+                    "reason":
+                        "MICROPHONE_RESULT_INVALID",
+                    "raw_result":
+                        result,
+                }
+            )
+
+            normalized[
+                "automatic"
+            ] = True
+
+            normalized[
+                "trigger"
+            ] = (
+                "CALL_ENTERED_ACTIVE"
+            )
+
+            normalized[
+                "provider_call_id"
+            ] = getattr(
+                active,
+                "provider_call_id",
+                None,
+            )
+
+            normalized[
+                "external_call_key"
+            ] = getattr(
+                active,
+                "external_call_key",
+                None,
+            )
+
+            normalized[
+                "participant_phone"
+            ] = getattr(
+                active,
+                "participant_phone",
+                None,
+            )
+
+        except Exception as exc:
+            normalized = {
+                "ready": False,
+                "changed": False,
+                "automatic": True,
+                "trigger":
+                    "CALL_ENTERED_ACTIVE",
+                "reason":
+                    "MICROPHONE_ENSURE_ERROR",
+                "error_type":
+                    type(
+                        exc
+                    ).__name__,
+                "message":
+                    str(
+                        exc
+                    ),
+                "provider_call_id":
+                    getattr(
+                        active,
+                        "provider_call_id",
+                        None,
+                    ),
+                "external_call_key":
+                    getattr(
+                        active,
+                        "external_call_key",
+                        None,
+                    ),
+                "participant_phone":
+                    getattr(
+                        active,
+                        "participant_phone",
+                        None,
+                    ),
+            }
+
+        return (
+            self
+            ._remember_call_microphone_result(
+                normalized
+            )
+        )
+
+
     def _observe_and_sync_call_impl(
         self,
         *,
@@ -1311,6 +2873,23 @@ class WhatsAppRuntimeService:
             self._observe_call_impl(
                 wait_timeout=wait_timeout,
             )
+        )
+
+        # Política UX independiente de la persistencia:
+        # al entrar realmente en ACTIVE garantizamos una vez
+        # que el micrófono no esté silenciado.
+        #
+        # Si WhatsApp ya lo tiene activo:
+        #     0 clicks.
+        #
+        # Si está MUTED:
+        #     1 click exacto sobre mic-unmute + verificación.
+        #
+        # Si falla:
+        #     queda diagnóstico, pero la llamada continúa
+        #     reconciliándose normalmente.
+        self._maybe_ensure_active_call_microphone(
+            observation
         )
 
         if not (
@@ -1740,6 +3319,47 @@ class WhatsAppRuntimeService:
         )
 
 
+    def _read_sidebar_chat_fingerprint_impl(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """Lee pasivamente el sidebar WhatsApp actual.
+
+        No navega.
+        No hace click.
+        No modifica el baseline del watcher.
+        No persiste.
+
+        Permite que una nueva instancia Flet se hidrate aunque
+        el watcher ya existiera antes de montar la vista.
+        """
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        return (
+            connector
+            .get_sidebar_chat_fingerprint(
+                viewport_only=True,
+            )
+        )
+
+
+    def read_sidebar_chat_fingerprint(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """API pública serializada del snapshot lateral."""
+        return self._run_serialized(
+            self._read_sidebar_chat_fingerprint_impl,
+            wait_timeout=wait_timeout,
+        )
+
+
     def _observe_and_sync_active_chat_impl(
         self,
         *,
@@ -2056,10 +3676,89 @@ class WhatsAppRuntimeService:
             or sidebar_initial_available
         )
 
-        if (
+        active_change_type = str(
             result.get(
                 "change_type"
             )
+            or ""
+        ).strip()
+
+        initial_desired_thread_id = None
+
+        if (
+            active_change_type
+            == "INITIAL"
+        ):
+            # INITIAL continúa siendo baseline por defecto.
+            #
+            # Única excepción:
+            # existe una selección CRM explícita pendiente/
+            # vigente. En ese caso podemos intentar recuperar
+            # la ventana ya materializada, pero únicamente si
+            # la identidad activa resuelve después al mismo
+            # thread solicitado.
+            with self._desired_thread_lock:
+                initial_desired_thread_id = (
+                    self._desired_thread_id
+                )
+
+            if initial_desired_thread_id in (
+                None,
+                "",
+            ):
+                return result
+
+        elif (
+            active_change_type
+            == "MESSAGE_WINDOW_CHANGED"
+        ):
+            previous_window = (
+                result.get(
+                    "previous"
+                )
+            )
+
+            current_window = (
+                result.get(
+                    "current"
+                )
+            )
+
+            # Una contracción puede ser simple
+            # virtualización del DOM y no implica contenido
+            # nuevo.
+            #
+            # Una expansión sí debe recuperar toda la ventana:
+            # los nodos recién materializados pueden estar ANTES
+            # del último provider id ya conocido.
+            if (
+                previous_window is None
+                or current_window is None
+                or int(
+                    getattr(
+                        current_window,
+                        "visible_message_count",
+                        0,
+                    )
+                    or 0
+                )
+                <= int(
+                    getattr(
+                        previous_window,
+                        "visible_message_count",
+                        0,
+                    )
+                    or 0
+                )
+            ):
+                return result
+
+            result[
+                "message_window_expanded"
+            ] = True
+
+        elif (
+            active_change_type
             not in (
                 "MESSAGE_CHANGED",
                 "CHAT_CHANGED",
@@ -2150,6 +3849,41 @@ class WhatsAppRuntimeService:
 
             return result
 
+        if (
+            active_change_type
+            == "INITIAL"
+        ):
+            # La selección puede haber cambiado mientras
+            # resolvíamos la identidad. Revalidamos el destino
+            # bajo el mismo lock utilizado por el routing.
+            with self._desired_thread_lock:
+                current_desired_thread_id = (
+                    self._desired_thread_id
+                )
+
+            try:
+                initial_selection_matches = (
+                    int(thread_id)
+                    == int(
+                        initial_desired_thread_id
+                    )
+                    == int(
+                        current_desired_thread_id
+                    )
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                initial_selection_matches = False
+
+            if not initial_selection_matches:
+                return result
+
+            result[
+                "initial_selection_recovery"
+            ] = True
+
         after_provider_message_id = None
 
         if (
@@ -2168,26 +3902,25 @@ class WhatsAppRuntimeService:
                 ].last_provider_message_id
             )
 
-        elif (
-            result.get(
-                "change_type"
-            )
-            == "CHAT_CHANGED"
-        ):
-            try:
-                after_provider_message_id = (
-                    self.communication_service
-                    .get_latest_thread_provider_message_id(
-                        thread_id
-                    )
-                )
-
-            except Exception:
-                # El checkpoint es exclusivamente una
-                # optimización. Un fallo al obtenerlo
-                # nunca bloquea el sync completo seguro.
-                after_provider_message_id = None
-
+        # CHAT_CHANGED es deliberadamente FULL.
+        #
+        # Al abrir una conversación WhatsApp puede materializar
+        # mensajes que faltan ANTES del último provider id que
+        # ya existe en la base de datos.
+        #
+        # Usar ese último provider id como checkpoint provoca
+        # un hueco irreversible en la ventana:
+        #
+        #   [29 mensajes nuevos/faltantes]
+        #   [último provider ya persistido] <- anchor
+        #
+        # El sync incremental empezaría DESPUÉS del anchor y
+        # nunca vería esos 29 mensajes anteriores.
+        #
+        # La ventana está acotada por sync_limit y la
+        # persistencia por provider_message_id es idempotente,
+        # por lo que FULL es el contrato seguro al cambiar de
+        # conversación.
 
         try:
             result["sync"] = (
@@ -2649,6 +4382,9 @@ class WhatsAppRuntimeService:
         self._active_chat_fingerprint = None
         self._sidebar_chat_fingerprint = None
         self._call_observation_tracker.reset()
+
+        with self._call_watch_lock:
+            self._call_microphone_last_result = None
 
         return True
 

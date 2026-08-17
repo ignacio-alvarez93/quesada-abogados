@@ -23,6 +23,7 @@ import re
 import time
 import unicodedata
 
+import mycdp.browser as cdp_browser
 import mycdp.input_ as cdp_input
 
 from backend.automation.browser_actions import (
@@ -44,6 +45,10 @@ from backend.communications.phone_normalization import (
 )
 
 
+from backend.automation.connectors.whatsapp_call_history_reader import (
+    read_whatsapp_call_history,
+)
+
 from backend.automation.connectors.whatsapp_call_observer import (
     WHATSAPP_CALL_DIRECTION_INBOUND,
     WHATSAPP_CALL_DIRECTION_OUTBOUND,
@@ -63,6 +68,97 @@ from backend.automation.connectors.whatsapp_call_observer import (
 WHATSAPP_WEB_URL = (
     "https://web.whatsapp.com/"
 )
+
+WHATSAPP_WEB_ORIGIN = (
+    "https://web.whatsapp.com"
+)
+
+WHATSAPP_CALL_MIC_STATE_ABSENT = (
+    "ABSENT"
+)
+
+WHATSAPP_CALL_MIC_STATE_ENABLED = (
+    "ENABLED"
+)
+
+WHATSAPP_CALL_MIC_STATE_MUTED = (
+    "MUTED"
+)
+
+WHATSAPP_CALL_MIC_STATE_UNKNOWN = (
+    "UNKNOWN"
+)
+
+WHATSAPP_CALL_MIC_MUTE_SELECTOR = (
+    'button[data-testid="mic-mute"]'
+)
+
+WHATSAPP_CALL_MIC_UNMUTE_SELECTOR = (
+    'button[data-testid="mic-unmute"]'
+)
+
+WHATSAPP_CALL_MIC_SPLIT_SELECTOR = (
+    '[data-testid="mic-split-button"]'
+)
+
+WHATSAPP_AUDIO_CALL_SURFACE_SELECTOR = (
+    '[data-testid="voip-container-audio-call"]'
+)
+
+WHATSAPP_VOICE_CALL_BUTTON_SELECTOR = (
+    '#main header button[aria-label="Llamada"]'
+)
+
+WHATSAPP_CHATS_TAB_SELECTOR = (
+    'button[aria-label="Chats"]'
+)
+
+WHATSAPP_CALLS_TAB_SELECTOR = (
+    'button[aria-label="Llamadas"]'
+)
+
+
+
+
+# CALL-UX-4 · controles certificados con DOM real
+# WhatsApp Web ES · 2026-08-16.
+#
+# La superficie fue observada realmente como:
+# [data-testid="move_resize_component"]
+#
+# Aceptar:
+# button[aria-label="Aceptar"]
+#
+# Rechazar:
+# button[aria-label="Rechazar"]
+#
+# Nunca se utilizan clases CSS efímeras.
+WHATSAPP_INCOMING_CALL_SURFACE_SELECTOR = (
+    '[data-testid="move_resize_component"]'
+)
+
+WHATSAPP_INCOMING_CALL_ACCEPT_ARIA_LABEL = (
+    "Aceptar"
+)
+
+WHATSAPP_INCOMING_CALL_REJECT_ARIA_LABEL = (
+    "Rechazar"
+)
+
+WHATSAPP_INCOMING_CALL_ACCEPT_SELECTOR = (
+    WHATSAPP_INCOMING_CALL_SURFACE_SELECTOR
+    + ' button[aria-label="Aceptar"]'
+)
+
+WHATSAPP_INCOMING_CALL_REJECT_SELECTOR = (
+    WHATSAPP_INCOMING_CALL_SURFACE_SELECTOR
+    + ' button[aria-label="Rechazar"]'
+)
+
+WHATSAPP_VOICE_CALL_ARIA_LABEL = (
+    "Llamada"
+)
+
 
 SESSION_STATUS_NEEDS_LOGIN = (
     "NEEDS_LOGIN"
@@ -116,6 +212,10 @@ MESSAGE_TYPE_STICKER = (
     "STICKER"
 )
 
+MESSAGE_TYPE_DOCUMENT = (
+    "DOCUMENT"
+)
+
 MESSAGE_TYPE_UNKNOWN_MEDIA = (
     "UNKNOWN_MEDIA"
 )
@@ -149,6 +249,12 @@ class WhatsAppSendStateUncertainError(
     """El envío pudo ejecutarse pero no pudo confirmarse."""
 
 
+class WhatsAppAttachmentStageStateUncertainError(
+    RuntimeError
+):
+    """La carga del adjunto pudo ejecutarse pero no pudo confirmarse."""
+
+
 MESSAGE_COMPOSER_SELECTOR = (
     '[data-testid="conversation-compose-box-input"]'
 )
@@ -160,6 +266,50 @@ MESSAGE_SEND_ARIA_LABEL = (
 MESSAGE_SEND_SELECTOR = (
     '#main footer '
     'button[aria-label="Enviar"]'
+)
+
+
+# WA-UX-PERF-12D · selectores observados físicamente
+# en WhatsApp Web 2026-08-17.
+#
+# No dependen de clases CSS efímeras.
+WHATSAPP_ATTACH_BUTTON_SELECTOR = (
+    'button[aria-label="Adjuntar"]'
+)
+
+WHATSAPP_DOCUMENT_ATTACH_SELECTOR = (
+    '[role="menu"] '
+    '[role="menuitem"]'
+    '[aria-label="Documento"]'
+)
+
+WHATSAPP_DOCUMENT_CAPTURE_SELECTOR = (
+    'input[type="file"]'
+    '[data-qa-wa-document-input="1"]'
+)
+
+WHATSAPP_ATTACHMENT_PREVIEW_SELECTOR = (
+    '[data-testid="drawer-middle"]'
+)
+
+WHATSAPP_ATTACHMENT_CAPTION_SELECTOR = (
+    '[data-testid="media-caption-input-container"]'
+)
+
+WHATSAPP_ATTACHMENT_REMOVE_SELECTOR = (
+    '[role="button"]'
+    '[aria-label="Quitar archivo adjunto"]'
+)
+
+WHATSAPP_ATTACHMENT_ADD_SELECTOR = (
+    'button[aria-label="Añadir archivo"]'
+)
+
+
+WHATSAPP_ATTACHMENT_SEND_ONE_SELECTOR = (
+    '[data-testid="drawer-middle"] '
+    '[role="button"]'
+    '[aria-label="Enviar 1 seleccionado"]'
 )
 
 
@@ -672,6 +822,14 @@ class WhatsAppConnector:
         self._browser_session = None
         self.browser = None
 
+        # Resultado de la política de medios aplicada
+        # específicamente al origen de WhatsApp Web.
+        #
+        # No forma parte de BrowserSessionConfig:
+        # el permiso pertenece al consumidor WhatsApp,
+        # no a la infraestructura genérica de navegador.
+        self._call_media_permission_result = None
+
     def _build_browser_session(
         self,
     ):
@@ -713,7 +871,737 @@ class WhatsAppConnector:
             WHATSAPP_WEB_URL,
         )
 
+        # Política específica de llamadas WhatsApp.
+        #
+        # Se aplica en cada arranque porque Browser.setPermission
+        # es un override del browser context actual. No mutamos
+        # BrowserSessionConfig ni editamos Preferences a mano.
+        #
+        # Un fallo de permisos no destruye el transporte de chat:
+        # queda diagnosticado y la futura acción de llamada podrá
+        # exigir explícitamente configured=True antes de marcar.
+        try:
+            self.configure_call_media_permissions()
+
+        except Exception as exc:
+            self._call_media_permission_result = {
+                "configured": False,
+                "reason": (
+                    "MICROPHONE_PERMISSION_ERROR"
+                ),
+                "origin": (
+                    WHATSAPP_WEB_ORIGIN
+                ),
+                "permission": (
+                    "microphone"
+                ),
+                "setting": (
+                    "granted"
+                ),
+                "error_type": (
+                    type(exc).__name__
+                ),
+                "message": str(
+                    exc
+                ),
+            }
+
         return self.browser
+
+    @property
+    def call_media_permission_result(
+        self,
+    ):
+        result = (
+            self._call_media_permission_result
+        )
+
+        return (
+            dict(result)
+            if isinstance(
+                result,
+                dict,
+            )
+            else result
+        )
+
+    def configure_call_media_permissions(
+        self,
+    ):
+        """Concede micrófono únicamente a WhatsApp Web.
+
+        Usa Browser.setPermission mediante el transporte CDP
+        ya poseído por sb_cdp.Chrome.
+
+        No:
+        - concede permisos globales;
+        - concede cámara;
+        - modifica BrowserSessionConfig;
+        - escribe manualmente Preferences;
+        - toca el estado mute/unmute de una llamada.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        page = getattr(
+            self.browser,
+            "page",
+            None,
+        )
+
+        loop = getattr(
+            self.browser,
+            "loop",
+            None,
+        )
+
+        send = getattr(
+            page,
+            "send",
+            None,
+        )
+
+        run_until_complete = getattr(
+            loop,
+            "run_until_complete",
+            None,
+        )
+
+        if (
+            not callable(send)
+            or not callable(
+                run_until_complete
+            )
+        ):
+            result = {
+                "configured": False,
+                "reason": (
+                    "CDP_PERMISSION_TRANSPORT_UNAVAILABLE"
+                ),
+                "origin": (
+                    WHATSAPP_WEB_ORIGIN
+                ),
+                "permission": (
+                    "microphone"
+                ),
+                "setting": (
+                    "granted"
+                ),
+            }
+
+            self._call_media_permission_result = (
+                result
+            )
+
+            return dict(
+                result
+            )
+
+        command = (
+            cdp_browser.set_permission(
+                permission=(
+                    cdp_browser
+                    .PermissionDescriptor(
+                        name="microphone"
+                    )
+                ),
+                setting=(
+                    cdp_browser
+                    .PermissionSetting(
+                        "granted"
+                    )
+                ),
+                origin=(
+                    WHATSAPP_WEB_ORIGIN
+                ),
+            )
+        )
+
+        run_until_complete(
+            send(
+                command
+            )
+        )
+
+        result = {
+            "configured": True,
+            "reason": (
+                "MICROPHONE_PERMISSION_GRANTED"
+            ),
+            "origin": (
+                WHATSAPP_WEB_ORIGIN
+            ),
+            "permission": (
+                "microphone"
+            ),
+            "setting": (
+                "granted"
+            ),
+        }
+
+        self._call_media_permission_result = (
+            result
+        )
+
+        return dict(
+            result
+        )
+
+    def read_call_microphone_state(
+        self,
+    ):
+        """Lee pasivamente el estado del micrófono de llamada.
+
+        Contrato observado en WhatsApp Web real:
+
+        ENABLED:
+            button[data-testid="mic-mute"]
+            aria-label="Silenciar micrófono"
+
+        MUTED:
+            button[data-testid="mic-unmute"]
+            aria-label="Desactivar silencio del micrófono"
+
+        Nunca realiza clicks.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        snapshot = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const clean = (value) =>
+                        (value || "")
+                        .replace(/\\s+/g, " ")
+                        .trim();
+
+                    const call =
+                        document.querySelector(
+                            '[data-testid="voip-container-audio-call"]'
+                        );
+
+                    const mute =
+                        document.querySelector(
+                            'button[data-testid="mic-mute"]'
+                        );
+
+                    const unmute =
+                        document.querySelector(
+                            'button[data-testid="mic-unmute"]'
+                        );
+
+                    const split =
+                        document.querySelector(
+                            '[data-testid="mic-split-button"]'
+                        );
+
+                    const describe = (node) => {
+                        if (!node) {
+                            return null;
+                        }
+
+                        return {
+                            testid:
+                                clean(
+                                    node.getAttribute(
+                                        "data-testid"
+                                    )
+                                ),
+                            aria_label:
+                                clean(
+                                    node.getAttribute(
+                                        "aria-label"
+                                    )
+                                ),
+                            disabled:
+                                !!node.disabled,
+                            aria_disabled:
+                                clean(
+                                    node.getAttribute(
+                                        "aria-disabled"
+                                    )
+                                )
+                        };
+                    };
+
+                    return {
+                        call_present:
+                            !!call,
+                        mute:
+                            describe(mute),
+                        unmute:
+                            describe(unmute),
+                        split:
+                            describe(split)
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        if not isinstance(
+            snapshot,
+            dict,
+        ):
+            snapshot = {}
+
+        call_present = bool(
+            snapshot.get(
+                "call_present"
+            )
+        )
+
+        mute = (
+            snapshot.get(
+                "mute"
+            )
+            if isinstance(
+                snapshot.get(
+                    "mute"
+                ),
+                dict,
+            )
+            else None
+        )
+
+        unmute = (
+            snapshot.get(
+                "unmute"
+            )
+            if isinstance(
+                snapshot.get(
+                    "unmute"
+                ),
+                dict,
+            )
+            else None
+        )
+
+        split = (
+            snapshot.get(
+                "split"
+            )
+            if isinstance(
+                snapshot.get(
+                    "split"
+                ),
+                dict,
+            )
+            else None
+        )
+
+        if not call_present:
+            return {
+                "state":
+                    WHATSAPP_CALL_MIC_STATE_ABSENT,
+                "call_present":
+                    False,
+                "selector":
+                    None,
+                "action_label":
+                    "",
+                "click_required":
+                    False,
+                "evidence":
+                    snapshot,
+            }
+
+        mute_label = str(
+            (
+                mute
+                or {}
+            ).get(
+                "aria_label"
+            )
+            or ""
+        ).strip()
+
+        unmute_label = str(
+            (
+                unmute
+                or {}
+            ).get(
+                "aria_label"
+            )
+            or ""
+        ).strip()
+
+        split_label = str(
+            (
+                split
+                or {}
+            ).get(
+                "aria_label"
+            )
+            or ""
+        ).strip()
+
+        normalized_mute_label = (
+            mute_label.lower()
+        )
+
+        normalized_unmute_label = (
+            unmute_label.lower()
+        )
+
+        normalized_split_label = (
+            split_label.lower()
+        )
+
+        enabled_evidence = bool(
+            mute is not None
+            and (
+                normalized_mute_label
+                == "silenciar micrófono"
+                or normalized_split_label
+                == "silenciar micrófono"
+            )
+        )
+
+        muted_evidence = bool(
+            unmute is not None
+            and (
+                normalized_unmute_label
+                == "desactivar silencio del micrófono"
+                or normalized_split_label
+                == "desactivar silencio del micrófono"
+            )
+        )
+
+        # Dos estados simultáneos serían una superficie
+        # inconsistente; nunca hacemos click en ese caso.
+        if (
+            enabled_evidence
+            and not muted_evidence
+        ):
+            return {
+                "state":
+                    WHATSAPP_CALL_MIC_STATE_ENABLED,
+                "call_present":
+                    True,
+                "selector":
+                    WHATSAPP_CALL_MIC_MUTE_SELECTOR,
+                "action_label":
+                    (
+                        mute_label
+                        or split_label
+                    ),
+                "click_required":
+                    False,
+                "evidence":
+                    snapshot,
+            }
+
+        if (
+            muted_evidence
+            and not enabled_evidence
+        ):
+            disabled = bool(
+                (
+                    unmute
+                    or {}
+                ).get(
+                    "disabled"
+                )
+            )
+
+            aria_disabled = str(
+                (
+                    unmute
+                    or {}
+                ).get(
+                    "aria_disabled"
+                )
+                or ""
+            ).strip().lower()
+
+            if aria_disabled == "true":
+                disabled = True
+
+            return {
+                "state":
+                    WHATSAPP_CALL_MIC_STATE_MUTED,
+                "call_present":
+                    True,
+                "selector":
+                    WHATSAPP_CALL_MIC_UNMUTE_SELECTOR,
+                "action_label":
+                    (
+                        unmute_label
+                        or split_label
+                    ),
+                "click_required":
+                    not disabled,
+                "control_disabled":
+                    disabled,
+                "evidence":
+                    snapshot,
+            }
+
+        return {
+            "state":
+                WHATSAPP_CALL_MIC_STATE_UNKNOWN,
+            "call_present":
+                True,
+            "selector":
+                None,
+            "action_label":
+                (
+                    unmute_label
+                    or mute_label
+                    or split_label
+                ),
+            "click_required":
+                False,
+            "evidence":
+                snapshot,
+        }
+
+    def ensure_call_microphone_enabled(
+        self,
+        *,
+        verify_timeout=2.0,
+        poll_interval=0.10,
+    ):
+        """Garantiza micro activo sin toggle ciego.
+
+        Solo pulsa cuando existe evidencia inequívoca
+        de estado MUTED y el target exacto mic-unmute.
+
+        Después exige observar ENABLED.
+        """
+        initial = (
+            self.read_call_microphone_state()
+        )
+
+        initial_state = (
+            initial.get(
+                "state"
+            )
+        )
+
+        if (
+            initial_state
+            == WHATSAPP_CALL_MIC_STATE_ENABLED
+        ):
+            return {
+                "ready": True,
+                "changed": False,
+                "reason":
+                    "MICROPHONE_ALREADY_ENABLED",
+                "initial_state":
+                    initial_state,
+                "final_state":
+                    initial_state,
+                "initial":
+                    initial,
+                "final":
+                    initial,
+            }
+
+        if (
+            initial_state
+            == WHATSAPP_CALL_MIC_STATE_ABSENT
+        ):
+            return {
+                "ready": False,
+                "changed": False,
+                "reason":
+                    "CALL_SURFACE_ABSENT",
+                "initial_state":
+                    initial_state,
+                "final_state":
+                    initial_state,
+                "initial":
+                    initial,
+                "final":
+                    initial,
+            }
+
+        if (
+            initial_state
+            != WHATSAPP_CALL_MIC_STATE_MUTED
+        ):
+            return {
+                "ready": False,
+                "changed": False,
+                "reason":
+                    "MICROPHONE_STATE_UNKNOWN",
+                "initial_state":
+                    initial_state,
+                "final_state":
+                    initial_state,
+                "initial":
+                    initial,
+                "final":
+                    initial,
+            }
+
+        if not bool(
+            initial.get(
+                "click_required"
+            )
+        ):
+            return {
+                "ready": False,
+                "changed": False,
+                "reason":
+                    "MICROPHONE_UNMUTE_CONTROL_DISABLED",
+                "initial_state":
+                    initial_state,
+                "final_state":
+                    initial_state,
+                "initial":
+                    initial,
+                "final":
+                    initial,
+            }
+
+        element = (
+            self.browser.find_element(
+                WHATSAPP_CALL_MIC_UNMUTE_SELECTOR
+            )
+        )
+
+        if element is None:
+            return {
+                "ready": False,
+                "changed": False,
+                "reason":
+                    "MICROPHONE_UNMUTE_CONTROL_NOT_FOUND",
+                "initial_state":
+                    initial_state,
+                "final_state":
+                    initial_state,
+                "initial":
+                    initial,
+                "final":
+                    initial,
+            }
+
+        mouse_click = getattr(
+            element,
+            "mouse_click",
+            None,
+        )
+
+        if callable(
+            mouse_click
+        ):
+            mouse_click()
+
+        else:
+            click = getattr(
+                element,
+                "click",
+                None,
+            )
+
+            if not callable(
+                click
+            ):
+                return {
+                    "ready": False,
+                    "changed": False,
+                    "reason":
+                        "MICROPHONE_UNMUTE_CONTROL_NOT_CLICKABLE",
+                    "initial_state":
+                        initial_state,
+                    "final_state":
+                        initial_state,
+                    "initial":
+                        initial,
+                    "final":
+                        initial,
+                }
+
+            click()
+
+        timeout = max(
+            0.0,
+            float(
+                verify_timeout
+                or 0.0
+            ),
+        )
+
+        interval = max(
+            0.01,
+            float(
+                poll_interval
+                or 0.10
+            ),
+        )
+
+        deadline = (
+            time.monotonic()
+            + timeout
+        )
+
+        final = initial
+
+        while True:
+            final = (
+                self.read_call_microphone_state()
+            )
+
+            final_state = (
+                final.get(
+                    "state"
+                )
+            )
+
+            if (
+                final_state
+                == WHATSAPP_CALL_MIC_STATE_ENABLED
+            ):
+                return {
+                    "ready": True,
+                    "changed": True,
+                    "reason":
+                        "MICROPHONE_ENABLED",
+                    "initial_state":
+                        initial_state,
+                    "final_state":
+                        final_state,
+                    "initial":
+                        initial,
+                    "final":
+                        final,
+                }
+
+            if (
+                time.monotonic()
+                >= deadline
+            ):
+                break
+
+            time.sleep(
+                interval
+            )
+
+        return {
+            "ready": False,
+            "changed": True,
+            "reason":
+                "MICROPHONE_ENABLE_NOT_CONFIRMED",
+            "initial_state":
+                initial_state,
+            "final_state":
+                final.get(
+                    "state"
+                ),
+            "initial":
+                initial,
+            "final":
+                final,
+        }
 
     def _page_text(self):
         if not self.browser:
@@ -2791,26 +3679,42 @@ class WhatsAppConnector:
             }
 
 
-        cdp_sequential_emitted = False
+        # B7.3S · interacción primaria probada.
+        #
+        # El intento anterior emitía manualmente mousePressed +
+        # mouseReleased mediante CDP. Aunque ambos eventos podían
+        # emitirse correctamente, WhatsApp no siempre procesaba
+        # esa secuencia como activación real de la fila.
+        #
+        # El retry histórico utiliza mouse_click() sobre un
+        # WebElement recién localizado y ha demostrado ser la
+        # interacción más fiable. Lo convertimos también en el
+        # primer intento.
+        #
+        # Seguimos haciendo UN solo click antes de confirmar.
+        # Si WhatsApp no cambia de chat, B8 re-localiza la fila
+        # antes de permitir un segundo intento.
+        primary_click_emitted = False
 
         try:
-            cdp_sequential_emitted = bool(
-                self._dispatch_element_mouse_click_sequential(
-                    result_element
-                )
-            )
-        except Exception:
-            pass
+            mouse_click()
+            primary_click_emitted = True
 
-
-        if not cdp_sequential_emitted:
-            # Todavía NO hacemos un segundo click aquí.
-            #
-            # El bloque de confirmación B8 decidirá que no se
-            # abrió el chat y utilizará el retry histórico,
-            # re-localizando antes la fila.
+        except Exception as exc:
             print(
-                "[WA-SEARCH] B7 CDP sequential click "
+                "[WA-SEARCH] B7 primary mouse_click failed "
+                f"{type(exc).__name__}",
+                flush=True,
+            )
+
+
+        if not primary_click_emitted:
+            # No hacemos un segundo click inmediato.
+            #
+            # La confirmación/retry conserva la barrera
+            # histórica y volverá a localizar el nodo.
+            print(
+                "[WA-SEARCH] B7 primary click "
                 "not emitted; confirmation/fallback required",
                 flush=True,
             )
@@ -5236,6 +6140,1254 @@ class WhatsAppConnector:
         }
 
 
+    def get_document_attachment_preview_state(
+        self,
+        *,
+        expected_filename=None,
+    ):
+        """Inspecciona el preview actual de adjuntos.
+
+        No modifica WhatsApp y nunca pulsa Enviar.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        filename = str(
+            expected_filename
+            or ""
+        ).strip()
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const expectedFilename = %s;
+
+                    const root =
+                        document.querySelector(
+                            %s
+                        );
+
+                    if (!root) {
+                        return {
+                            preview_found: false,
+                            filename_present: false,
+                            document_labels: [],
+                            caption_found: false,
+                            remove_found: false,
+                            add_found: false,
+                            send_found: false,
+                            send_aria_label: null,
+                            selected_count: null
+                        };
+                    }
+
+                    const caption =
+                        root.querySelector(
+                            %s
+                        );
+
+                    const remove =
+                        root.querySelector(
+                            %s
+                        );
+
+                    const add =
+                        root.querySelector(
+                            %s
+                        );
+
+                    const documentTabs =
+                        Array.from(
+                            root.querySelectorAll(
+                                '[role="tab"][aria-label]'
+                            )
+                        )
+                        .filter(
+                            node => {
+                                const label =
+                                    String(
+                                        node.getAttribute(
+                                            'aria-label'
+                                        )
+                                        || ''
+                                    );
+
+                                return (
+                                    label.includes(
+                                        'Abrir documento'
+                                    )
+                                );
+                            }
+                        );
+
+                    const documentLabels =
+                        documentTabs.map(
+                            node =>
+                                String(
+                                    node.getAttribute(
+                                        'aria-label'
+                                    )
+                                    || ''
+                                )
+                        );
+
+                    const filenamePresent =
+                        expectedFilename
+                        ? documentLabels.some(
+                            label =>
+                                label.includes(
+                                    expectedFilename
+                                )
+                        )
+                        : Boolean(
+                            documentLabels.length
+                        );
+
+                    let send =
+                        Array.from(
+                            root.querySelectorAll(
+                                '[role="button"][aria-label]'
+                            )
+                        )
+                        .find(
+                            node => {
+                                const label =
+                                    String(
+                                        node.getAttribute(
+                                            'aria-label'
+                                        )
+                                        || ''
+                                    );
+
+                                return (
+                                    /^Enviar\\s+\\d+\\s+seleccionado/
+                                        .test(
+                                            label
+                                        )
+                                );
+                            }
+                        )
+                        || null;
+
+                    if (!send) {
+                        const sendIcon =
+                            root.querySelector(
+                                '[data-testid="wds-ic-send-filled"]'
+                            );
+
+                        send =
+                            sendIcon
+                            ? sendIcon.closest(
+                                '[role="button"]'
+                            )
+                            : null;
+                    }
+
+                    const sendLabel =
+                        send
+                        ? String(
+                            send.getAttribute(
+                                'aria-label'
+                            )
+                            || ''
+                        )
+                        : '';
+
+                    const countMatch =
+                        sendLabel.match(
+                            /^Enviar\\s+(\\d+)/
+                        );
+
+                    const selectedCount =
+                        countMatch
+                        ? Number(
+                            countMatch[1]
+                        )
+                        : null;
+
+                    return {
+                        preview_found:
+                            Boolean(
+                                root
+                                && caption
+                                && remove
+                                && documentTabs.length
+                            ),
+
+                        filename_present:
+                            filenamePresent,
+
+                        document_labels:
+                            documentLabels,
+
+                        caption_found:
+                            Boolean(
+                                caption
+                            ),
+
+                        remove_found:
+                            Boolean(
+                                remove
+                            ),
+
+                        add_found:
+                            Boolean(
+                                add
+                            ),
+
+                        send_found:
+                            Boolean(
+                                send
+                            ),
+
+                        send_aria_label:
+                            sendLabel || null,
+
+                        selected_count:
+                            selectedCount
+                    };
+                })()
+                """
+                % (
+                    json.dumps(
+                        filename,
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        WHATSAPP_ATTACHMENT_PREVIEW_SELECTOR,
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        WHATSAPP_ATTACHMENT_CAPTION_SELECTOR,
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        WHATSAPP_ATTACHMENT_REMOVE_SELECTOR,
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        WHATSAPP_ATTACHMENT_ADD_SELECTOR,
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            or {}
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+            result = {}
+
+        return {
+            "preview_found":
+                bool(
+                    result.get(
+                        "preview_found"
+                    )
+                ),
+
+            "filename_present":
+                bool(
+                    result.get(
+                        "filename_present"
+                    )
+                ),
+
+            "document_labels":
+                list(
+                    result.get(
+                        "document_labels"
+                    )
+                    or []
+                ),
+
+            "caption_found":
+                bool(
+                    result.get(
+                        "caption_found"
+                    )
+                ),
+
+            "remove_found":
+                bool(
+                    result.get(
+                        "remove_found"
+                    )
+                ),
+
+            "add_found":
+                bool(
+                    result.get(
+                        "add_found"
+                    )
+                ),
+
+            "send_found":
+                bool(
+                    result.get(
+                        "send_found"
+                    )
+                ),
+
+            "send_aria_label":
+                (
+                    str(
+                        result.get(
+                            "send_aria_label"
+                        )
+                        or ""
+                    ).strip()
+                    or None
+                ),
+
+            "selected_count":
+                (
+                    int(
+                        result[
+                            "selected_count"
+                        ]
+                    )
+                    if result.get(
+                        "selected_count"
+                    )
+                    is not None
+                    else None
+                ),
+        }
+
+    def _install_document_input_click_interceptor(
+        self,
+    ):
+        """Captura el input documental sin abrir FilePicker nativo.
+
+        El interceptor afecta exclusivamente a:
+            input[type=file][accept="*"][multiple]
+
+        Debe restaurarse inmediatamente después de capturar
+        el input creado por WhatsApp.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    /* QA_WA_ATTACHMENT_INSTALL */
+
+                    if (
+                        window.__qaWaDocumentOriginalClick
+                    ) {
+                        return {
+                            installed: false,
+                            reason:
+                                'INTERCEPTOR_ALREADY_INSTALLED'
+                        };
+                    }
+
+                    document.querySelectorAll(
+                        'input[type="file"]'
+                        + '[data-qa-wa-document-input="1"]'
+                    ).forEach(
+                        node => {
+                            try {
+                                node.removeAttribute(
+                                    'data-qa-wa-document-input'
+                                );
+                            } catch (_) {
+                                // Cleanup best effort.
+                            }
+                        }
+                    );
+
+                    window.__qaWaDocumentOriginalClick =
+                        HTMLInputElement.prototype.click;
+
+                    window.__qaWaDocumentCaptured = [];
+
+                    HTMLInputElement.prototype.click =
+                        function(...args) {
+                            const isDocumentInput = (
+                                String(
+                                    this.type
+                                    || ''
+                                ).toLowerCase()
+                                === 'file'
+                                && String(
+                                    this.getAttribute(
+                                        'accept'
+                                    )
+                                    || ''
+                                )
+                                === '*'
+                                && Boolean(
+                                    this.multiple
+                                )
+                            );
+
+                            if (
+                                isDocumentInput
+                            ) {
+                                this.setAttribute(
+                                    'data-qa-wa-document-input',
+                                    '1'
+                                );
+
+                                if (
+                                    !window
+                                        .__qaWaDocumentCaptured
+                                        .includes(
+                                            this
+                                        )
+                                ) {
+                                    window
+                                        .__qaWaDocumentCaptured
+                                        .push(
+                                            this
+                                        );
+                                }
+
+                                // Deliberadamente:
+                                // no abrimos el diálogo del SO.
+                                return;
+                            }
+
+                            return window
+                                .__qaWaDocumentOriginalClick
+                                .apply(
+                                    this,
+                                    args
+                                );
+                        };
+
+                    return {
+                        installed: true,
+                        reason: null
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+            result = {}
+
+        if not result.get(
+            "installed"
+        ):
+            raise RuntimeError(
+                "No se pudo instalar el interceptor "
+                "del input documental de WhatsApp"
+            )
+
+        return True
+
+    def _restore_document_input_click_interceptor(
+        self,
+    ):
+        """Restaura HTMLInputElement.click tras la captura."""
+        if not self.browser:
+            return False
+
+        try:
+            self.browser.evaluate(
+                """
+                (() => {
+                    /* QA_WA_ATTACHMENT_RESTORE */
+
+                    if (
+                        window.__qaWaDocumentOriginalClick
+                    ) {
+                        HTMLInputElement.prototype.click =
+                            window
+                                .__qaWaDocumentOriginalClick;
+                    }
+
+                    const captured =
+                        Array.isArray(
+                            window.__qaWaDocumentCaptured
+                        )
+                        ? window
+                            .__qaWaDocumentCaptured
+                        : [];
+
+                    captured.forEach(
+                        node => {
+                            try {
+                                node.removeAttribute(
+                                    'data-qa-wa-document-input'
+                                );
+                            } catch (_) {
+                                // Cleanup best effort.
+                            }
+                        }
+                    );
+
+                    document.querySelectorAll(
+                        'input[type="file"]'
+                        + '[data-qa-wa-document-input="1"]'
+                    ).forEach(
+                        node => {
+                            try {
+                                node.removeAttribute(
+                                    'data-qa-wa-document-input'
+                                );
+                            } catch (_) {
+                                // Cleanup best effort.
+                            }
+                        }
+                    );
+
+                    delete window
+                        .__qaWaDocumentCaptured;
+
+                    delete window
+                        .__qaWaDocumentOriginalClick;
+
+                    return true;
+                })()
+                """
+            )
+
+        except Exception:
+            return False
+
+        return True
+
+    def _get_captured_document_input_count(
+        self,
+    ):
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    /* QA_WA_ATTACHMENT_COUNT */
+
+                    const captured =
+                        Array.isArray(
+                            window.__qaWaDocumentCaptured
+                        )
+                        ? window
+                            .__qaWaDocumentCaptured
+                            .filter(
+                                node => (
+                                    Boolean(
+                                        node
+                                    )
+                                    && Boolean(
+                                        node.isConnected
+                                    )
+                                    && String(
+                                        node.type
+                                        || ''
+                                    ).toLowerCase()
+                                    === 'file'
+                                    && String(
+                                        node.getAttribute(
+                                            'accept'
+                                        )
+                                        || ''
+                                    )
+                                    === '*'
+                                    && Boolean(
+                                        node.multiple
+                                    )
+                                    && node.getAttribute(
+                                        'data-qa-wa-document-input'
+                                    )
+                                    === '1'
+                                )
+                            )
+                        : [];
+
+                    window.__qaWaDocumentCaptured =
+                        captured;
+
+                    return captured.length;
+                })()
+                """
+            )
+        )
+
+        return int(
+            result
+            or 0
+        )
+
+    def stage_document_attachment(
+        self,
+        file_path,
+        *,
+        timeout=8,
+    ):
+        """Carga UN documento en el preview del chat activo.
+
+        Esta operación:
+        - valida el fichero local;
+        - abre Adjuntar → Documento;
+        - captura el input efímero de WhatsApp;
+        - usa send_file() directamente sobre CDP;
+        - confirma nombre y preview.
+
+        Esta operación NO:
+        - pulsa Enviar;
+        - persiste información;
+        - reintenta una carga incierta;
+        - depende de automatización GUI del escritorio;
+        - usa el FilePicker nativo del navegador.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        path = Path(
+            file_path
+        ).expanduser()
+
+        try:
+            path = path.resolve(
+                strict=True
+            )
+        except Exception as exc:
+            raise FileNotFoundError(
+                "El archivo adjunto no existe"
+            ) from exc
+
+        if not path.is_file():
+            raise ValueError(
+                "La ruta del adjunto no es un archivo"
+            )
+
+        file_name = (
+            path.name
+        )
+
+        file_size = int(
+            path.stat().st_size
+        )
+
+        active = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active.chat_open:
+            raise RuntimeError(
+                "No hay un chat WhatsApp activo"
+            )
+
+        initial_preview = (
+            self.get_document_attachment_preview_state()
+        )
+
+        if initial_preview[
+            "preview_found"
+        ]:
+            raise RuntimeError(
+                "Ya existe un preview de adjunto "
+                "abierto en WhatsApp"
+            )
+
+        self._install_document_input_click_interceptor()
+
+        captured_element = None
+
+        try:
+            try:
+                attach_button = (
+                    self.browser.find_element(
+                        WHATSAPP_ATTACH_BUTTON_SELECTOR
+                    )
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Botón Adjuntar de WhatsApp "
+                    "no localizado"
+                ) from exc
+
+            if not attach_button:
+                raise RuntimeError(
+                    "Botón Adjuntar de WhatsApp "
+                    "no localizado"
+                )
+
+            attach_click = getattr(
+                attach_button,
+                "mouse_click",
+                None,
+            )
+
+            if not callable(
+                attach_click
+            ):
+                raise RuntimeError(
+                    "Botón Adjuntar de WhatsApp "
+                    "no soporta mouse_click"
+                )
+
+            attach_error = None
+
+            try:
+                attach_click()
+            except Exception as exc:
+                # No repetimos automáticamente:
+                # el menú podría haberse abierto ya.
+                attach_error = exc
+
+            deadline = (
+                time.time()
+                + max(
+                    1.0,
+                    float(timeout),
+                )
+            )
+
+            document_button = None
+
+            while (
+                time.time()
+                < deadline
+            ):
+                try:
+                    document_button = (
+                        self.browser.find_element(
+                            WHATSAPP_DOCUMENT_ATTACH_SELECTOR
+                        )
+                    )
+                except Exception:
+                    document_button = None
+
+                if document_button:
+                    break
+
+                time.sleep(
+                    0.05
+                )
+
+            if not document_button:
+                if attach_error:
+                    raise RuntimeError(
+                        "WhatsApp no confirmó la apertura "
+                        "del menú Adjuntar"
+                    ) from attach_error
+
+                raise RuntimeError(
+                    "Menuitem Documento de WhatsApp "
+                    "no localizado"
+                )
+
+            document_click = getattr(
+                document_button,
+                "mouse_click",
+                None,
+            )
+
+            if not callable(
+                document_click
+            ):
+                raise RuntimeError(
+                    "Menuitem Documento de WhatsApp "
+                    "no soporta mouse_click"
+                )
+
+            document_error = None
+
+            try:
+                document_click()
+            except Exception as exc:
+                # Igual que arriba:
+                # no emitimos un segundo click a ciegas.
+                document_error = exc
+
+            captured_count = 0
+
+            deadline = (
+                time.time()
+                + max(
+                    1.0,
+                    float(timeout),
+                )
+            )
+
+            while (
+                time.time()
+                < deadline
+            ):
+                captured_count = (
+                    self
+                    ._get_captured_document_input_count()
+                )
+
+                if captured_count:
+                    break
+
+                time.sleep(
+                    0.05
+                )
+
+            if captured_count != 1:
+                if document_error:
+                    raise RuntimeError(
+                        "WhatsApp no confirmó la creación "
+                        "del input documental"
+                    ) from document_error
+
+                raise RuntimeError(
+                    "Número ambiguo de inputs "
+                    "documentales de WhatsApp: "
+                    f"{captured_count}"
+                )
+
+            try:
+                captured_element = (
+                    self.browser.find_element(
+                        WHATSAPP_DOCUMENT_CAPTURE_SELECTOR
+                    )
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Input documental capturado "
+                    "no localizado"
+                ) from exc
+
+            if not captured_element:
+                raise RuntimeError(
+                    "Input documental capturado "
+                    "no localizado"
+                )
+
+        finally:
+            # Barrera crítica:
+            # la mutación de prototype nunca debe sobrevivir
+            # a la fase de captura.
+            self._restore_document_input_click_interceptor()
+
+        send_file = getattr(
+            captured_element,
+            "send_file",
+            None,
+        )
+
+        if not callable(
+            send_file
+        ):
+            raise RuntimeError(
+                "El input documental no soporta send_file"
+            )
+
+        load_error = None
+
+        try:
+            send_file(
+                str(
+                    path
+                )
+            )
+
+        except Exception as exc:
+            # send_file pudo llegar a Chrome antes de que
+            # Python recibiera la excepción.
+            #
+            # Nunca cargamos otra vez sin inspeccionar
+            # primero el preview.
+            load_error = exc
+
+        deadline = (
+            time.time()
+            + max(
+                1.0,
+                float(timeout),
+            )
+        )
+
+        preview = {}
+
+        while (
+            time.time()
+            < deadline
+        ):
+            preview = (
+                self
+                .get_document_attachment_preview_state(
+                    expected_filename=file_name,
+                )
+            )
+
+            if (
+                preview[
+                    "preview_found"
+                ]
+                and preview[
+                    "filename_present"
+                ]
+                and preview[
+                    "send_found"
+                ]
+            ):
+                return {
+                    "staged": True,
+                    "filename":
+                        file_name,
+                    "size":
+                        file_size,
+                    "active_display_name":
+                        active.active_display_name,
+                    "preview":
+                        preview,
+                    "load_error_reconciled":
+                        bool(
+                            load_error
+                        ),
+                }
+
+            time.sleep(
+                0.1
+            )
+
+        if load_error:
+            raise WhatsAppAttachmentStageStateUncertainError(
+                "Estado de carga de adjunto incierto: "
+                "send_file produjo una excepción y "
+                "WhatsApp no confirmó el preview"
+            ) from load_error
+
+        raise WhatsAppAttachmentStageStateUncertainError(
+            "Estado de carga de adjunto incierto: "
+            "WhatsApp no confirmó el preview "
+            "del archivo dentro del timeout"
+        )
+
+    def send_document_attachment(
+        self,
+        file_path,
+        *,
+        timeout=12,
+    ):
+        """Envía UN documento al chat activo con confirmación fuerte.
+
+        Contrato de seguridad:
+        - fija los provider IDs existentes antes del staging;
+        - fija la identidad del chat antes del staging;
+        - reutiliza stage_document_attachment();
+        - exige preview + filename + un único seleccionado;
+        - revalida el destinatario inmediatamente antes del click;
+        - emite exactamente un click de envío;
+        - nunca reintenta el click;
+        - confirma mediante un nuevo snapshot OUTBOUND DOCUMENT
+          cuyo filename coincide exactamente con el solicitado.
+
+        Una vez emitido el click, cualquier resultado no confirmable
+        se considera estado incierto y nunca provoca retry.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        path = Path(
+            file_path
+        ).expanduser()
+
+        try:
+            path = path.resolve(
+                strict=True
+            )
+        except Exception as exc:
+            raise FileNotFoundError(
+                "El archivo adjunto no existe"
+            ) from exc
+
+        if not path.is_file():
+            raise ValueError(
+                "La ruta del adjunto no es un archivo"
+            )
+
+        filename = path.name
+
+        active_before = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active_before.chat_open:
+            raise RuntimeError(
+                "No hay un chat WhatsApp activo"
+            )
+
+        expected_identity = str(
+            active_before.active_identity
+            or ""
+        ).strip()
+
+        if not expected_identity:
+            raise RuntimeError(
+                "No se pudo fijar la identidad "
+                "del destinatario"
+            )
+
+        before = (
+            self.list_visible_message_snapshots(
+                limit=200
+            )
+        )
+
+        before_ids = {
+            item.provider_message_id
+            for item in before
+            if item.provider_message_id
+        }
+
+        staged = (
+            self.stage_document_attachment(
+                path,
+                timeout=timeout,
+            )
+        )
+
+        preview = (
+            staged.get(
+                "preview"
+            )
+            or {}
+        )
+
+        if not staged.get(
+            "staged"
+        ):
+            raise RuntimeError(
+                "WhatsApp no confirmó el staging "
+                "del documento"
+            )
+
+        if (
+            str(
+                staged.get(
+                    "filename"
+                )
+                or ""
+            )
+            != filename
+        ):
+            raise RuntimeError(
+                "El filename staged no coincide "
+                "con el archivo solicitado"
+            )
+
+        if not preview.get(
+            "preview_found"
+        ):
+            raise RuntimeError(
+                "WhatsApp no confirmó el preview "
+                "del documento"
+            )
+
+        if not preview.get(
+            "filename_present"
+        ):
+            raise RuntimeError(
+                "WhatsApp no confirmó el filename "
+                "en el preview"
+            )
+
+        if not preview.get(
+            "send_found"
+        ):
+            raise RuntimeError(
+                "WhatsApp no confirmó el botón "
+                "de envío del preview"
+            )
+
+        if preview.get(
+            "selected_count"
+        ) != 1:
+            raise RuntimeError(
+                "El preview no contiene exactamente "
+                "un documento seleccionado"
+            )
+
+        send_aria_label = str(
+            preview.get(
+                "send_aria_label"
+            )
+            or ""
+        ).strip()
+
+        if (
+            send_aria_label
+            != "Enviar 1 seleccionado"
+        ):
+            raise RuntimeError(
+                "Semántica inesperada del botón "
+                "de envío del preview"
+            )
+
+        try:
+            send_button = (
+                self.browser.find_element(
+                    WHATSAPP_ATTACHMENT_SEND_ONE_SELECTOR
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Botón de envío del documento "
+                "no localizado"
+            ) from exc
+
+        if not send_button:
+            raise RuntimeError(
+                "Botón de envío del documento "
+                "no localizado"
+            )
+
+        send_click = getattr(
+            send_button,
+            "mouse_click",
+            None,
+        )
+
+        if not callable(
+            send_click
+        ):
+            raise RuntimeError(
+                "Botón de envío del documento "
+                "no soporta mouse_click"
+            )
+
+        # Última barrera inmediatamente antes
+        # de cruzar el punto irreversible.
+        active_pre_send = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active_pre_send.chat_open:
+            raise RuntimeError(
+                "No se puede revalidar el chat "
+                "antes de enviar"
+            )
+
+        actual_identity = str(
+            active_pre_send.active_identity
+            or ""
+        ).strip()
+
+        if (
+            not actual_identity
+            or actual_identity
+            != expected_identity
+        ):
+            raise RuntimeError(
+                "El destinatario cambió durante "
+                "el staging; envío cancelado"
+            )
+
+        # ====================================================
+        # PUNTO IRREVERSIBLE
+        #
+        # Este método realiza EXACTAMENTE un intento de click.
+        # Una excepción no autoriza un segundo click porque
+        # el evento pudo haber llegado ya a WhatsApp.
+        # ====================================================
+
+        click_error = None
+
+        try:
+            send_click()
+
+        except Exception as exc:
+            click_error = exc
+
+        deadline = (
+            time.time()
+            + max(
+                0.05,
+                float(
+                    timeout
+                ),
+            )
+        )
+
+        while (
+            time.time()
+            < deadline
+        ):
+            current = (
+                self.list_visible_message_snapshots(
+                    limit=200
+                )
+            )
+
+            matches = [
+                item
+                for item in current
+                if (
+                    item.provider_message_id
+                    and item.provider_message_id
+                    not in before_ids
+                    and item.direction
+                    == MESSAGE_DIRECTION_OUTBOUND
+                    and item.message_type
+                    == MESSAGE_TYPE_DOCUMENT
+                    and str(
+                        (
+                            item.metadata
+                            or {}
+                        ).get(
+                            "filename"
+                        )
+                        or ""
+                    )
+                    == filename
+                )
+            ]
+
+            if len(
+                matches
+            ) == 1:
+                return matches[0]
+
+            if len(
+                matches
+            ) > 1:
+                raise WhatsAppSendStateUncertainError(
+                    "Estado de envío incierto: "
+                    "aparecieron múltiples documentos "
+                    "OUTBOUND nuevos con el mismo filename"
+                )
+
+            time.sleep(
+                0.05
+            )
+
+        if click_error:
+            raise WhatsAppSendStateUncertainError(
+                "Estado de envío incierto: "
+                "el click produjo una excepción y "
+                "WhatsApp no permitió confirmar "
+                "el documento OUTBOUND"
+            ) from click_error
+
+        raise WhatsAppSendStateUncertainError(
+            "Estado de envío incierto: "
+            "el click fue emitido pero WhatsApp "
+            "no permitió confirmar exactamente "
+            "un documento OUTBOUND nuevo"
+        )
+
     def send_text_message(
         self,
         text,
@@ -5594,11 +7746,22 @@ class WhatsAppConnector:
                     const mainRect =
                         main.getBoundingClientRect();
 
-                    const roots =
+                    const allRoots =
                         Array.from(
                             main.querySelectorAll(
                                 '[data-testid^="conv-msg-"]'
                             )
+                        );
+
+                    // WA-UX-PERF-14C1:
+                    // limitar ANTES de extraer contenido pesado.
+                    //
+                    // Conserva exactamente los últimos N mensajes,
+                    // pero evita recorrer nodos que después serían
+                    // descartados en Python.
+                    const roots =
+                        allRoots.slice(
+                            -__WA_MESSAGE_LIMIT__
                         );
 
                     return roots.map(
@@ -5740,6 +7903,71 @@ class WhatsAppConnector:
                                     )
                                 );
 
+                            const documentThumb =
+                                root.querySelector(
+                                    '[data-testid="document-thumb"]'
+                                );
+
+                            const documentFilename =
+                                documentThumb
+                                ? (
+                                    Array.from(
+                                        documentThumb.querySelectorAll(
+                                            'span[dir="auto"]'
+                                        )
+                                    )
+                                    .map(
+                                        node =>
+                                            String(
+                                                node.textContent
+                                                || ''
+                                            ).trim()
+                                    )
+                                    .find(Boolean)
+                                    || ''
+                                )
+                                : '';
+
+                            const documentSizeNode =
+                                documentThumb
+                                ? (
+                                    Array.from(
+                                        documentThumb.querySelectorAll(
+                                            '[title]'
+                                        )
+                                    )
+                                    .find(
+                                        node => {
+                                            const value =
+                                                String(
+                                                    node.getAttribute(
+                                                        'title'
+                                                    )
+                                                    || ''
+                                                ).trim();
+
+                                            return (
+                                                /^\d+(?:[.,]\d+)?\s*(?:B|KB|MB|GB|TB)$/i
+                                                    .test(
+                                                        value
+                                                    )
+                                            );
+                                        }
+                                    )
+                                    || null
+                                )
+                                : null;
+
+                            const documentSizeText =
+                                documentSizeNode
+                                ? String(
+                                    documentSizeNode.getAttribute(
+                                        'title'
+                                    )
+                                    || ''
+                                ).trim()
+                                : '';
+
                             const hasTailIn =
                                 Boolean(
                                     root.querySelector(
@@ -5859,6 +8087,19 @@ class WhatsAppConnector:
                                 has_sticker:
                                     sticker,
 
+                                has_document:
+                                    Boolean(
+                                        documentThumb
+                                    ),
+
+                                document_filename:
+                                    documentFilename
+                                    || null,
+
+                                document_size_text:
+                                    documentSizeText
+                                    || null,
+
                                 image_info:
                                     imageInfo,
 
@@ -5886,7 +8127,12 @@ class WhatsAppConnector:
                         }
                     );
                 })()
-                """
+                """.replace(
+                    "__WA_MESSAGE_LIMIT__",
+                    str(
+                        effective_limit
+                    ),
+                )
             )
             or []
         )
@@ -6244,6 +8490,13 @@ class WhatsAppConnector:
                     MESSAGE_TYPE_STICKER
                 )
 
+            elif raw.get(
+                "has_document"
+            ):
+                message_type = (
+                    MESSAGE_TYPE_DOCUMENT
+                )
+
             elif item.get(
                 "body_text"
             ):
@@ -6300,6 +8553,35 @@ class WhatsAppConnector:
                         or 0
                     ),
             }
+
+            if message_type == MESSAGE_TYPE_DOCUMENT:
+                document_filename = str(
+                    raw.get(
+                        "document_filename"
+                    )
+                    or ""
+                ).strip()
+
+                document_size_text = str(
+                    raw.get(
+                        "document_size_text"
+                    )
+                    or ""
+                ).strip()
+
+                if document_filename:
+                    metadata[
+                        "filename"
+                    ] = (
+                        document_filename
+                    )
+
+                if document_size_text:
+                    metadata[
+                        "file_size_text"
+                    ] = (
+                        document_size_text
+                    )
 
             if bool(
                 raw.get(
@@ -6365,6 +8647,1320 @@ class WhatsAppConnector:
             )
 
         return snapshots
+
+    @staticmethod
+    def _voice_call_snapshot_summary(
+        snapshot,
+    ):
+        if snapshot is None:
+            return {
+                "present": False,
+                "phase":
+                    WHATSAPP_CALL_PHASE_ABSENT,
+                "direction":
+                    WHATSAPP_CALL_DIRECTION_UNKNOWN,
+                "provider_call_id":
+                    None,
+                "external_call_key":
+                    None,
+                "participant_phone":
+                    None,
+            }
+
+        return {
+            "present":
+                bool(
+                    getattr(
+                        snapshot,
+                        "present",
+                        False,
+                    )
+                ),
+            "phase":
+                getattr(
+                    snapshot,
+                    "phase",
+                    None,
+                ),
+            "direction":
+                getattr(
+                    snapshot,
+                    "direction",
+                    None,
+                ),
+            "provider_call_id":
+                getattr(
+                    snapshot,
+                    "provider_call_id",
+                    None,
+                ),
+            "external_call_key":
+                getattr(
+                    snapshot,
+                    "external_call_key",
+                    None,
+                ),
+            "participant_phone":
+                getattr(
+                    snapshot,
+                    "participant_phone",
+                    None,
+                ),
+        }
+
+
+    def start_voice_call(
+        self,
+        *,
+        confirm_timeout=1.0,
+        poll_interval=0.05,
+    ):
+        """Inicia UNA llamada de voz sobre el chat ya verificado.
+
+        Responsabilidades:
+        - no navega;
+        - no resuelve destinatarios;
+        - no persiste;
+        - nunca pulsa videollamada;
+        - nunca reintenta un click con efecto externo;
+        - confirma, cuando es posible, que apareció
+          una superficie de llamada.
+
+        El caller debe haber verificado previamente
+        la identidad del chat activo.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        # Nunca iniciamos otra llamada si ya existe
+        # cualquier superficie VOIP activa.
+        existing = (
+            self.read_call_snapshot()
+        )
+
+        if bool(
+            getattr(
+                existing,
+                "present",
+                False,
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "CALL_ALREADY_PRESENT",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "snapshot":
+                    self._voice_call_snapshot_summary(
+                        existing
+                    ),
+                "_snapshot":
+                    existing,
+            }
+
+        control = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const button =
+                        document.querySelector(
+                            '#main header '
+                            + 'button[aria-label="Llamada"]'
+                        );
+
+                    if (!button) {
+                        return {
+                            found: false
+                        };
+                    }
+
+                    return {
+                        found: true,
+                        aria_label:
+                            (
+                                button.getAttribute(
+                                    "aria-label"
+                                )
+                                || ""
+                            ).trim(),
+                        disabled:
+                            !!button.disabled,
+                        aria_disabled:
+                            (
+                                button.getAttribute(
+                                    "aria-disabled"
+                                )
+                                || ""
+                            ).trim()
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        if not isinstance(
+            control,
+            dict,
+        ):
+            control = {}
+
+        if not bool(
+            control.get(
+                "found"
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "VOICE_CALL_BUTTON_NOT_FOUND",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "control":
+                    control,
+            }
+
+        aria_label = str(
+            control.get(
+                "aria_label"
+            )
+            or ""
+        ).strip()
+
+        if (
+            aria_label
+            != WHATSAPP_VOICE_CALL_ARIA_LABEL
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "VOICE_CALL_BUTTON_IDENTITY_MISMATCH",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "control":
+                    control,
+            }
+
+        disabled = bool(
+            control.get(
+                "disabled"
+            )
+        )
+
+        if (
+            str(
+                control.get(
+                    "aria_disabled"
+                )
+                or ""
+            )
+            .strip()
+            .lower()
+            == "true"
+        ):
+            disabled = True
+
+        if disabled:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "VOICE_CALL_BUTTON_DISABLED",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "control":
+                    control,
+            }
+
+        try:
+            element = (
+                self.browser.find_element(
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR
+                )
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "VOICE_CALL_BUTTON_NOT_FOUND",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "error_type":
+                    type(
+                        exc
+                    ).__name__,
+                "message":
+                    str(
+                        exc
+                    ),
+            }
+
+        if element is None:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    "VOICE_CALL_BUTTON_NOT_FOUND",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+            }
+
+        # Desde este punto una excepción es potencialmente
+        # incierta: el click podría haber llegado al browser.
+        click_attempted = False
+
+        try:
+            click_attempted = True
+
+            mouse_click = getattr(
+                element,
+                "mouse_click",
+                None,
+            )
+
+            if callable(
+                mouse_click
+            ):
+                mouse_click()
+
+            else:
+                click = getattr(
+                    element,
+                    "click",
+                    None,
+                )
+
+                if not callable(
+                    click
+                ):
+                    return {
+                        "ok": False,
+                        "uncertain": False,
+                        "clicked": False,
+                        "reason":
+                            "VOICE_CALL_BUTTON_NOT_CLICKABLE",
+                        "selector":
+                            WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                    }
+
+                click()
+
+        except Exception as exc:
+            return {
+                "ok": False,
+                "uncertain": True,
+                "clicked":
+                    bool(
+                        click_attempted
+                    ),
+                "reason":
+                    "VOICE_CALL_CLICK_UNCERTAIN",
+                "selector":
+                    WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                "error_type":
+                    type(
+                        exc
+                    ).__name__,
+                "message":
+                    str(
+                        exc
+                    ),
+            }
+
+        timeout = max(
+            0.0,
+            float(
+                confirm_timeout
+                or 0.0
+            ),
+        )
+
+        interval = max(
+            0.01,
+            float(
+                poll_interval
+                or 0.05
+            ),
+        )
+
+        deadline = (
+            time.monotonic()
+            + timeout
+        )
+
+        last_snapshot = None
+
+        while True:
+            try:
+                last_snapshot = (
+                    self.read_call_snapshot()
+                )
+            except Exception:
+                last_snapshot = None
+
+            if (
+                last_snapshot is not None
+                and bool(
+                    getattr(
+                        last_snapshot,
+                        "present",
+                        False,
+                    )
+                )
+            ):
+                summary = (
+                    self
+                    ._voice_call_snapshot_summary(
+                        last_snapshot
+                    )
+                )
+
+                return {
+                    "ok": True,
+                    "uncertain": False,
+                    "clicked": True,
+                    "reason":
+                        "VOICE_CALL_SURFACE_STARTED",
+                    "selector":
+                        WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+                    "snapshot":
+                        summary,
+                    "_snapshot":
+                        last_snapshot,
+                }
+
+            if (
+                time.monotonic()
+                >= deadline
+            ):
+                break
+
+            time.sleep(
+                interval
+            )
+
+        # Nunca reintentamos el click:
+        # existe una acción externa potencial.
+        return {
+            "ok": False,
+            "uncertain": True,
+            "clicked": True,
+            "reason":
+                "VOICE_CALL_START_UNCONFIRMED",
+            "selector":
+                WHATSAPP_VOICE_CALL_BUTTON_SELECTOR,
+            "snapshot":
+                self._voice_call_snapshot_summary(
+                    last_snapshot
+                ),
+            "_snapshot":
+                last_snapshot,
+        }
+
+
+    def _act_on_incoming_call(
+        self,
+        *,
+        action,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        confirm_timeout=2.0,
+        poll_interval=0.05,
+    ):
+        """
+        Ejecuta UNA acción sobre una llamada entrante.
+
+        Garantías:
+        - exige superficie INCOMING_RINGING real;
+        - exige dirección INBOUND;
+        - verifica identidad provider opcional;
+        - verifica capability del snapshot;
+        - verifica aria-label exacto;
+        - verifica control habilitado;
+        - realiza un único click;
+        - nunca reintenta el side effect;
+        - después solo observa para confirmar.
+        """
+
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        normalized_action = str(
+            action
+            or ""
+        ).strip().upper()
+
+        action_contracts = {
+            "ACCEPT": {
+                "selector":
+                    WHATSAPP_INCOMING_CALL_ACCEPT_SELECTOR,
+                "aria_label":
+                    WHATSAPP_INCOMING_CALL_ACCEPT_ARIA_LABEL,
+                "capability":
+                    "can_accept",
+                "prefix":
+                    "CALL_ACCEPT",
+            },
+            "REJECT": {
+                "selector":
+                    WHATSAPP_INCOMING_CALL_REJECT_SELECTOR,
+                "aria_label":
+                    WHATSAPP_INCOMING_CALL_REJECT_ARIA_LABEL,
+                "capability":
+                    "can_reject",
+                "prefix":
+                    "CALL_REJECT",
+            },
+        }
+
+        contract = action_contracts.get(
+            normalized_action
+        )
+
+        if contract is None:
+            raise ValueError(
+                "Acción de llamada entrante "
+                "no soportada"
+            )
+
+        selector = contract[
+            "selector"
+        ]
+
+        expected_label = contract[
+            "aria_label"
+        ]
+
+        capability = contract[
+            "capability"
+        ]
+
+        prefix = contract[
+            "prefix"
+        ]
+
+        initial = (
+            self.read_call_snapshot()
+        )
+
+        summary = (
+            self._voice_call_snapshot_summary(
+                initial
+            )
+        )
+
+        if not bool(
+            getattr(
+                initial,
+                "present",
+                False,
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CALL_ABSENT",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        if (
+            getattr(
+                initial,
+                "phase",
+                None,
+            )
+            != WHATSAPP_CALL_PHASE_INCOMING_RINGING
+            or getattr(
+                initial,
+                "direction",
+                None,
+            )
+            != WHATSAPP_CALL_DIRECTION_INBOUND
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_NOT_INCOMING_RINGING",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        clean_expected_provider = str(
+            expected_provider_call_id
+            or ""
+        ).strip()
+
+        clean_expected_external = str(
+            expected_external_call_key
+            or ""
+        ).strip()
+
+        actual_provider = str(
+            getattr(
+                initial,
+                "provider_call_id",
+                None,
+            )
+            or ""
+        ).strip()
+
+        actual_external = str(
+            getattr(
+                initial,
+                "external_call_key",
+                None,
+            )
+            or ""
+        ).strip()
+
+        if (
+            clean_expected_provider
+            and actual_provider
+            != clean_expected_provider
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_IDENTITY_MISMATCH",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        if (
+            clean_expected_external
+            and actual_external
+            != clean_expected_external
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_IDENTITY_MISMATCH",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        if not bool(
+            getattr(
+                initial,
+                capability,
+                False,
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_NOT_AVAILABLE",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        selector_json = json.dumps(
+            selector
+        )
+
+        control = (
+            self.browser.evaluate(
+                f"""
+                (() => {{
+                    const button =
+                        document.querySelector(
+                            {selector_json}
+                        );
+
+                    if (!button) {{
+                        return {{
+                            found: false
+                        }};
+                    }}
+
+                    return {{
+                        found: true,
+                        aria_label:
+                            (
+                                button.getAttribute(
+                                    "aria-label"
+                                )
+                                || ""
+                            ).trim(),
+                        aria_disabled:
+                            (
+                                button.getAttribute(
+                                    "aria-disabled"
+                                )
+                                || ""
+                            ).trim(),
+                        disabled:
+                            !!button.disabled
+                    }};
+                }})()
+                """
+            )
+            or {}
+        )
+
+        if not isinstance(
+            control,
+            dict,
+        ):
+            control = {}
+
+        if not bool(
+            control.get(
+                "found"
+            )
+        ):
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CONTROL_NOT_FOUND",
+                "selector": selector,
+                "control": control,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        aria_label = str(
+            control.get(
+                "aria_label"
+            )
+            or ""
+        ).strip()
+
+        if aria_label != expected_label:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CONTROL_IDENTITY_MISMATCH",
+                "selector": selector,
+                "control": control,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        disabled = bool(
+            control.get(
+                "disabled"
+            )
+        )
+
+        if (
+            str(
+                control.get(
+                    "aria_disabled"
+                )
+                or ""
+            ).strip().lower()
+            == "true"
+        ):
+            disabled = True
+
+        if disabled:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CONTROL_DISABLED",
+                "selector": selector,
+                "control": control,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        try:
+            element = (
+                self.browser.find_element(
+                    selector
+                )
+            )
+
+        except Exception as exc:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CONTROL_NOT_FOUND",
+                "selector": selector,
+                "error_type":
+                    type(exc).__name__,
+                "message":
+                    str(exc),
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        if element is None:
+            return {
+                "ok": False,
+                "uncertain": False,
+                "clicked": False,
+                "reason":
+                    f"{prefix}_CONTROL_NOT_FOUND",
+                "selector": selector,
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        click_attempted = False
+
+        try:
+            click_attempted = True
+
+            mouse_click = getattr(
+                element,
+                "mouse_click",
+                None,
+            )
+
+            if callable(
+                mouse_click
+            ):
+                mouse_click()
+
+            else:
+                click = getattr(
+                    element,
+                    "click",
+                    None,
+                )
+
+                if not callable(
+                    click
+                ):
+                    return {
+                        "ok": False,
+                        "uncertain": False,
+                        "clicked": False,
+                        "reason":
+                            f"{prefix}_CONTROL_NOT_CLICKABLE",
+                        "selector": selector,
+                        "snapshot": summary,
+                        "_snapshot": initial,
+                    }
+
+                click()
+
+        except Exception as exc:
+            return {
+                "ok": False,
+                "uncertain": True,
+                "clicked":
+                    bool(
+                        click_attempted
+                    ),
+                "reason":
+                    f"{prefix}_CLICK_UNCERTAIN",
+                "selector": selector,
+                "error_type":
+                    type(exc).__name__,
+                "message":
+                    str(exc),
+                "snapshot": summary,
+                "_snapshot": initial,
+            }
+
+        timeout = max(
+            0.0,
+            float(
+                confirm_timeout
+                or 0.0
+            ),
+        )
+
+        interval = max(
+            0.01,
+            float(
+                poll_interval
+                or 0.05
+            ),
+        )
+
+        deadline = (
+            time.monotonic()
+            + timeout
+        )
+
+        last_snapshot = initial
+
+        while True:
+            try:
+                last_snapshot = (
+                    self.read_call_snapshot()
+                )
+
+            except Exception:
+                last_snapshot = None
+
+            if normalized_action == "ACCEPT":
+                if (
+                    last_snapshot is not None
+                    and bool(
+                        getattr(
+                            last_snapshot,
+                            "present",
+                            False,
+                        )
+                    )
+                    and (
+                        getattr(
+                            last_snapshot,
+                            "phase",
+                            None,
+                        )
+                        in {
+                            WHATSAPP_CALL_PHASE_CONNECTING,
+                            WHATSAPP_CALL_PHASE_ACTIVE,
+                        }
+                        or bool(
+                            getattr(
+                                last_snapshot,
+                                "can_hangup",
+                                False,
+                            )
+                        )
+                    )
+                ):
+                    return {
+                        "ok": True,
+                        "uncertain": False,
+                        "clicked": True,
+                        "reason":
+                            "CALL_ACCEPTED",
+                        "selector": selector,
+                        "snapshot":
+                            self._voice_call_snapshot_summary(
+                                last_snapshot
+                            ),
+                        "_snapshot":
+                            last_snapshot,
+                    }
+
+            else:
+                if (
+                    last_snapshot is not None
+                    and (
+                        not bool(
+                            getattr(
+                                last_snapshot,
+                                "present",
+                                False,
+                            )
+                        )
+                        or getattr(
+                            last_snapshot,
+                            "phase",
+                            None,
+                        )
+                        == WHATSAPP_CALL_PHASE_ENDED_TRANSIENT
+                    )
+                ):
+                    return {
+                        "ok": True,
+                        "uncertain": False,
+                        "clicked": True,
+                        "reason":
+                            "CALL_REJECTED",
+                        "selector": selector,
+                        "snapshot":
+                            self._voice_call_snapshot_summary(
+                                last_snapshot
+                            ),
+                        "_snapshot":
+                            last_snapshot,
+                    }
+
+            if (
+                time.monotonic()
+                >= deadline
+            ):
+                break
+
+            time.sleep(
+                interval
+            )
+
+        # Side effect ya intentado:
+        # jamás se vuelve a pulsar automáticamente.
+        return {
+            "ok": False,
+            "uncertain": True,
+            "clicked": True,
+            "reason":
+                (
+                    "CALL_ACCEPT_UNCONFIRMED"
+                    if normalized_action
+                    == "ACCEPT"
+                    else
+                    "CALL_REJECT_UNCONFIRMED"
+                ),
+            "selector": selector,
+            "snapshot":
+                (
+                    self._voice_call_snapshot_summary(
+                        last_snapshot
+                    )
+                    if last_snapshot
+                    is not None
+                    else None
+                ),
+            "_snapshot":
+                last_snapshot,
+        }
+
+
+    def accept_incoming_call(
+        self,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        confirm_timeout=2.0,
+    ):
+        return self._act_on_incoming_call(
+            action="ACCEPT",
+            expected_provider_call_id=(
+                expected_provider_call_id
+            ),
+            expected_external_call_key=(
+                expected_external_call_key
+            ),
+            confirm_timeout=(
+                confirm_timeout
+            ),
+        )
+
+
+    def reject_incoming_call(
+        self,
+        *,
+        expected_provider_call_id=None,
+        expected_external_call_key=None,
+        confirm_timeout=2.0,
+    ):
+        return self._act_on_incoming_call(
+            action="REJECT",
+            expected_provider_call_id=(
+                expected_provider_call_id
+            ),
+            expected_external_call_key=(
+                expected_external_call_key
+            ),
+            confirm_timeout=(
+                confirm_timeout
+            ),
+        )
+
+
+
+    def read_primary_navigation_state(
+        self,
+    ):
+        """Lee pasivamente la pestaña primaria activa."""
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const chats =
+                        document.querySelector(
+                            'button[aria-label="Chats"]'
+                        );
+
+                    const calls =
+                        document.querySelector(
+                            'button[aria-label="Llamadas"]'
+                        );
+
+                    return {
+                        chats_present:
+                            !!chats,
+
+                        calls_present:
+                            !!calls,
+
+                        chats_pressed:
+                            chats
+                            ? chats.getAttribute(
+                                "aria-pressed"
+                            )
+                            : null,
+
+                        calls_pressed:
+                            calls
+                            ? calls.getAttribute(
+                                "aria-pressed"
+                            )
+                            : null,
+                    };
+                })()
+                """
+            )
+            or {}
+        )
+
+        return {
+            "chats_present":
+                bool(
+                    result.get(
+                        "chats_present"
+                    )
+                ),
+
+            "calls_present":
+                bool(
+                    result.get(
+                        "calls_present"
+                    )
+                ),
+
+            "chats_pressed":
+                result.get(
+                    "chats_pressed"
+                ),
+
+            "calls_pressed":
+                result.get(
+                    "calls_pressed"
+                ),
+        }
+
+
+    def _activate_primary_navigation_tab(
+        self,
+        tab,
+        *,
+        timeout=5,
+    ):
+        """
+        Activa exactamente una pestaña primaria.
+
+        Hace como máximo un click.
+        Después solo observa aria-pressed.
+        """
+        import time
+
+        normalized = str(
+            tab
+            or ""
+        ).strip().upper()
+
+        if normalized == "CHATS":
+            selector = (
+                WHATSAPP_CHATS_TAB_SELECTOR
+            )
+            state_key = (
+                "chats_pressed"
+            )
+
+        elif normalized == "CALLS":
+            selector = (
+                WHATSAPP_CALLS_TAB_SELECTOR
+            )
+            state_key = (
+                "calls_pressed"
+            )
+
+        else:
+            raise ValueError(
+                "Pestaña WhatsApp no válida"
+            )
+
+        before = (
+            self
+            .read_primary_navigation_state()
+        )
+
+        if (
+            before.get(
+                state_key
+            )
+            == "true"
+        ):
+            return {
+                "tab":
+                    normalized,
+                "clicked":
+                    False,
+                "already_active":
+                    True,
+                "state":
+                    before,
+            }
+
+        script = f"""
+            (() => {{
+                const button =
+                    document.querySelector(
+                        {selector!r}
+                    );
+
+                if (!button) {{
+                    return {{
+                        clicked: false,
+                        reason:
+                            "BUTTON_NOT_FOUND"
+                    }};
+                }}
+
+                if (
+                    button.disabled
+                    || button.getAttribute(
+                        "aria-disabled"
+                    ) === "true"
+                ) {{
+                    return {{
+                        clicked: false,
+                        reason:
+                            "BUTTON_DISABLED"
+                    }};
+                }}
+
+                button.click();
+
+                return {{
+                    clicked: true,
+                    reason: null
+                }};
+            }})()
+        """
+
+        click_result = (
+            self.browser.evaluate(
+                script
+            )
+            or {}
+        )
+
+        if not click_result.get(
+            "clicked"
+        ):
+            raise RuntimeError(
+                "No se pudo activar "
+                f"{normalized}: "
+                + str(
+                    click_result.get(
+                        "reason"
+                    )
+                    or "UNKNOWN"
+                )
+            )
+
+        deadline = (
+            time.time()
+            + max(
+                0.5,
+                float(timeout),
+            )
+        )
+
+        while time.time() < deadline:
+            current = (
+                self
+                .read_primary_navigation_state()
+            )
+
+            if (
+                current.get(
+                    state_key
+                )
+                == "true"
+            ):
+                return {
+                    "tab":
+                        normalized,
+                    "clicked":
+                        True,
+                    "already_active":
+                        False,
+                    "state":
+                        current,
+                }
+
+            time.sleep(
+                0.1
+            )
+
+        raise TimeoutError(
+            "WhatsApp no confirmó "
+            f"pestaña {normalized}"
+        )
+
+
+    def open_calls_tab(
+        self,
+        *,
+        timeout=5,
+    ):
+        return (
+            self
+            ._activate_primary_navigation_tab(
+                "CALLS",
+                timeout=timeout,
+            )
+        )
+
+
+    def open_chats_tab(
+        self,
+        *,
+        timeout=5,
+    ):
+        return (
+            self
+            ._activate_primary_navigation_tab(
+                "CHATS",
+                timeout=timeout,
+            )
+        )
+
+
+    def read_visible_call_history(
+        self,
+    ):
+        """Lee pasivamente el historial visible de llamadas."""
+        return read_whatsapp_call_history(
+            self.browser
+        )
+
 
     def read_call_snapshot(
         self,

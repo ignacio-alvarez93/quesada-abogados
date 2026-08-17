@@ -1,6 +1,7 @@
 import asyncio
 import time
 import math
+from pathlib import Path
 
 import flet as ft
 
@@ -55,6 +56,7 @@ def communications_view(
     *,
     service=None,
     whatsapp_runtime=None,
+    is_view_active=None,
     current_username=None,
     initial_thread_id=None,
     on_open_cliente=None,
@@ -81,6 +83,28 @@ def communications_view(
         service
         or CommunicationService()
     )
+
+    def _ui_active():
+        """Indica si esta instancia sigue siendo la vista visible.
+
+        El runtime WhatsApp puede sobrevivir a la navegación,
+        pero los controles locales pertenecen exclusivamente
+        a esta instancia de communications_view().
+        """
+        if is_view_active is None:
+            # Compatibilidad con tests y callers aislados.
+            return True
+
+        try:
+            return bool(
+                is_view_active()
+            )
+
+        except Exception:
+            # Un lifecycle desconocido nunca autoriza una
+            # mutación visual sobre controles potencialmente
+            # desmontados.
+            return False
 
     state = {
         "summary": {},
@@ -159,6 +183,12 @@ def communications_view(
         "message_history_follow_bottom": True,
 
         "sending": False,
+
+        # WA-UX-PERF-12 · adjuntos todavía no enviados.
+        # Estado exclusivamente efímero del compositor.
+        "pending_attachments": [],
+        "attachment_target_thread_id": None,
+
         "send_blocked_thread_ids": set(),
 
         # Routing WhatsApp actualmente solicitado desde CRM.
@@ -200,6 +230,14 @@ def communications_view(
 
         "search": "",
         "linkage": "ALL",
+
+        # Filtro puramente visual sobre el estado realtime
+        # observado en el sidebar de WhatsApp.
+        #
+        # Es ortogonal a ALL/LINKED/UNLINKED:
+        # permite, por ejemplo, Sin vincular + No leídos.
+        "unread_only": False,
+
         "page": 1,
         "page_size": 20,
         "error": None,
@@ -302,6 +340,10 @@ def communications_view(
             pass
 
     def _safe_update():
+        # WA-FLET-LIFE safe-update guard
+        if not _ui_active():
+            return False
+
         try:
             # Full refresh explícito: sincronizar también
             # el contenido de los hosts persistentes antes
@@ -381,6 +423,34 @@ def communications_view(
             return {}
 
         return value
+
+
+    def _conversation_item_unread_count(
+        item,
+    ):
+        """Devuelve unread realtime conocido para un thread.
+
+        WhatsApp Web continúa siendo la fuente de verdad.
+        El filtro visual no persiste ni inventa unread.
+        """
+        realtime = (
+            _thread_realtime_sidebar_state(
+                item
+            )
+        )
+
+        try:
+            return max(
+                0,
+                int(
+                    realtime.get(
+                        "unread_count"
+                    )
+                    or 0
+                ),
+            )
+        except Exception:
+            return 0
 
 
     def _realtime_unread_badge(
@@ -633,6 +703,9 @@ def communications_view(
             "selected_thread_id"
         )
 
+        if selected_id is None:
+            return None
+
         for item in (
             state.get("items")
             or []
@@ -643,16 +716,11 @@ def communications_view(
             ):
                 return item
 
-        items = (
-            state.get("items")
-            or []
-        )
-
-        return (
-            items[0]
-            if items
-            else None
-        )
+        # Nunca inferimos una selección visual.
+        #
+        # La existencia de conversaciones en el sidebar
+        # no implica que el operador haya abierto alguna.
+        return None
 
     def load_thread_context():
         thread_id = state.get(
@@ -760,6 +828,12 @@ def communications_view(
             previous_thread_id
             != new_thread_id
         ):
+            # Un adjunto pertenece siempre al chat en el
+            # que fue seleccionado. Nunca sobrevive a un
+            # cambio explícito de destinatario.
+            state["pending_attachments"] = []
+            state["attachment_target_thread_id"] = None
+
             # Cada conversación comienza siempre con una
             # ventana reciente limpia de 50 mensajes.
             state[
@@ -909,10 +983,7 @@ def communications_view(
                     linkage=(
                         selected_linkage()
                     ),
-                    search=(
-                        search_input.value
-                        or ""
-                    ),
+                    search="",
                     include_archived=False,
                     limit=5000,
                 )
@@ -970,16 +1041,13 @@ def communications_view(
                     selected_before
                 )
 
-            elif state["items"]:
-                state[
-                    "selected_thread_id"
-                ] = (
-                    state["items"][
-                        0
-                    ].thread_id
-                )
-
             else:
+                # Cargar conversaciones nunca equivale a
+                # seleccionar una conversación.
+                #
+                # Una entrada normal en Comunicaciones queda
+                # deliberadamente sin selección hasta que el
+                # operador haga click en una card.
                 state[
                     "selected_thread_id"
                 ] = None
@@ -1015,11 +1083,11 @@ def communications_view(
             load_thread_context()
             load_thread_messages()
 
-            # load_data() puede seleccionar automáticamente
-            # una conversación después de que el compositor
-            # se haya creado inicialmente como deshabilitado.
-            # Recalcular aquí garantiza que el estado visual
-            # refleje el thread realmente seleccionado.
+            # load_data() preserva únicamente una selección
+            # explícita todavía válida.
+            #
+            # Si no existe selección, compositor e historial
+            # permanecen vacíos/deshabilitados hasta el click.
             try:
                 _refresh_composer_controls()
             except NameError:
@@ -1751,10 +1819,7 @@ def communications_view(
                     linkage=(
                         selected_linkage()
                     ),
-                    search=(
-                        search_input.value
-                        or ""
-                    ),
+                    search="",
                     include_archived=False,
                     limit=5000,
                 )
@@ -2024,6 +2089,10 @@ def communications_view(
     async def _dispatch_whatsapp_watch_change(
         result,
     ):
+        # WA-FLET-LIFE dispatch guard
+        if not _ui_active():
+            return False
+
         """Ejecuta el callback realtime dentro del event loop Flet.
 
         El watcher de WhatsApp vive en un hilo de background.
@@ -2047,6 +2116,10 @@ def communications_view(
     def _schedule_whatsapp_watch_change(
         result,
     ):
+        # WA-FLET-LIFE schedule guard
+        if not _ui_active():
+            return False
+
         """Puente thread-safe conceptual watcher → página Flet.
 
         Este callback puede ser invocado desde el hilo supervisor
@@ -2084,9 +2157,88 @@ def communications_view(
             )
 
 
+    async def _dispatch_whatsapp_sidebar_snapshot(
+        sidebar,
+    ):
+        """Hidrata una instancia Flet desde estado WhatsApp actual."""
+        if not _ui_active():
+            return False
+
+        # Reutilizamos exactamente la misma semántica de
+        # hidratación que SIDEBAR_INITIAL.
+        #
+        # No representa un delta ni actividad nueva.
+        synthetic_initial = {
+            "sidebar_change_type":
+                "SIDEBAR_INITIAL",
+            "sidebar":
+                (
+                    dict(sidebar)
+                    if isinstance(
+                        sidebar,
+                        dict,
+                    )
+                    else {}
+                ),
+        }
+
+        return (
+            _hydrate_whatsapp_sidebar_initial(
+                synthetic_initial
+            )
+        )
+
+
+    def _schedule_whatsapp_sidebar_snapshot(
+        sidebar,
+    ):
+        """Transfiere el snapshot desde background al loop Flet."""
+        if not _ui_active():
+            return False
+
+        runner = getattr(
+            page,
+            "run_task",
+            None,
+        )
+
+        if not callable(
+            runner
+        ):
+            return False
+
+        try:
+            runner(
+                _dispatch_whatsapp_sidebar_snapshot,
+                (
+                    dict(sidebar)
+                    if isinstance(
+                        sidebar,
+                        dict,
+                    )
+                    else {}
+                ),
+            )
+
+            return True
+
+        except Exception as exc:
+            print(
+                "[WA-FLET] sidebar snapshot schedule failed",
+                repr(exc),
+                flush=True,
+            )
+
+            return False
+
+
     def _on_whatsapp_watch_change(
         result,
     ):
+        # WA-FLET-LIFE consumer guard
+        if not _ui_active():
+            return False
+
 
 
         if not isinstance(
@@ -2111,6 +2263,8 @@ def communications_view(
             in (
                 "MESSAGE_CHANGED",
                 "CHAT_CHANGED",
+                "MESSAGE_WINDOW_CHANGED",
+                "INITIAL",
             )
         )
 
@@ -2308,6 +2462,16 @@ def communications_view(
                 or 0
             )
 
+            full_window_recovery = (
+                result.get(
+                    "change_type"
+                )
+                in (
+                    "MESSAGE_WINDOW_CHANGED",
+                    "INITIAL",
+                )
+            )
+
             # Los items pertenecen al resultado profundo
             # del sync, no al envelope general del watcher.
             #
@@ -2414,6 +2578,17 @@ def communications_view(
                 except NameError:
                     light_refreshed = False
 
+
+            elif full_window_recovery:
+                # Tanto MESSAGE_WINDOW_CHANGED como INITIAL
+                # seleccionado ejecutan una recuperación FULL.
+                #
+                # Los mensajes recuperados pueden situarse antes
+                # del último mensaje que ya tenía el CRM, por lo
+                # que no es seguro utilizar append incremental.
+                light_refreshed = (
+                    _refresh_message_history_control()
+                )
 
             elif incremental_candidate:
                 light_refreshed = (
@@ -2526,6 +2701,10 @@ def communications_view(
         message,
         error=False,
     ):
+        # WA-FLET-LIFE message-dispatch guard
+        if not _ui_active():
+            return False
+
         """Muestra una notificación dentro del event loop de Flet."""
         _show_message(
             str(
@@ -2543,6 +2722,10 @@ def communications_view(
         *,
         error=False,
     ):
+        # WA-FLET-LIFE message-schedule guard
+        if not _ui_active():
+            return False
+
         """Programa una notificación UI desde un worker."""
         runner = getattr(
             page,
@@ -2571,6 +2754,87 @@ def communications_view(
 
         except Exception:
             return False
+
+
+    def _ensure_whatsapp_view_watch():
+        """Conecta esta vista al estado realtime de WhatsApp.
+
+        Se ejecuta automáticamente al montar Comunicaciones.
+
+        Contratos:
+        - nunca toca connector desde Flet;
+        - nunca crea un segundo browser;
+        - start_active_chat_watch() es idempotente;
+        - primero hidrata el sidebar visible;
+        - después asegura vigilancia realtime;
+        - todo Selenium/CDP permanece fuera del hilo UI.
+        """
+        if (
+            whatsapp_runtime is None
+            or not _ui_active()
+        ):
+            return False
+
+        runner = getattr(
+            page,
+            "run_thread",
+            None,
+        )
+
+        if not callable(
+            runner
+        ):
+            return False
+
+        def worker():
+            try:
+                # El runtime global puede haber sido iniciado ya
+                # por llamadas/CALL-SYNC. Si no, start() continúa
+                # respetando el propietario único gobernado.
+                if not whatsapp_runtime.started:
+                    whatsapp_runtime.start()
+
+                # CRÍTICO:
+                # una nueva instancia de communications_view()
+                # necesita el estado ACTUAL aunque el watcher
+                # lleve tiempo funcionando sin callback Flet.
+                sidebar = (
+                    whatsapp_runtime
+                    .read_sidebar_chat_fingerprint(
+                        wait_timeout=5,
+                    )
+                )
+
+                _schedule_whatsapp_sidebar_snapshot(
+                    sidebar
+                )
+
+                # Idempotente:
+                # - si ya vive, solo actualiza callback;
+                # - si no existe, lo crea;
+                # - nunca crea un segundo browser/worker CDP.
+                whatsapp_runtime.start_active_chat_watch(
+                    interval_seconds=0.5,
+                    wait_timeout=5,
+                    on_change=(
+                        _schedule_whatsapp_watch_change
+                    ),
+                )
+
+            except Exception as exc:
+                # La disponibilidad de WhatsApp nunca bloquea
+                # la construcción de Comunicaciones.
+                print(
+                    "[WA-FLET] view sidebar hydration failed",
+                    repr(exc),
+                    flush=True,
+                )
+
+        runner(
+            worker
+        )
+
+        return True
 
 
     def open_whatsapp(
@@ -2660,6 +2924,161 @@ def communications_view(
             )
         )
 
+    def _normalize_conversation_search(
+        value,
+    ):
+        import unicodedata
+
+        value = unicodedata.normalize(
+            "NFKD",
+            str(
+                value
+                or ""
+            ).casefold(),
+        )
+
+        value = "".join(
+            char
+            for char in value
+            if not unicodedata.combining(
+                char
+            )
+        )
+
+        return " ".join(
+            value.split()
+        )
+
+
+    def _conversation_search_digits(
+        value,
+    ):
+        return "".join(
+            char
+            for char in str(
+                value
+                or ""
+            )
+            if char.isdigit()
+        )
+
+
+    def _conversation_matches_search(
+        item,
+        query,
+    ):
+        normalized_query = (
+            _normalize_conversation_search(
+                query
+            )
+        )
+
+        if not normalized_query:
+            return True
+
+        realtime = (
+            _thread_realtime_sidebar_state(
+                item
+            )
+        )
+
+        text_haystack = " ".join(
+            [
+                str(
+                    item.client_name
+                    or ""
+                ),
+                str(
+                    item.external_display_name
+                    or ""
+                ),
+                str(
+                    item.external_address
+                    or ""
+                ),
+                str(
+                    item.external_thread_key
+                    or ""
+                ),
+                str(
+                    realtime.get(
+                        "display_name"
+                    )
+                    or ""
+                ),
+            ]
+        )
+
+        if normalized_query in (
+            _normalize_conversation_search(
+                text_haystack
+            )
+        ):
+            return True
+
+        query_digits = (
+            _conversation_search_digits(
+                query
+            )
+        )
+
+        if len(query_digits) < 3:
+            return False
+
+        phone_haystack = (
+            _conversation_search_digits(
+                " ".join(
+                    [
+                        str(
+                            item.external_address
+                            or ""
+                        ),
+                        str(
+                            item.external_thread_key
+                            or ""
+                        ),
+                    ]
+                )
+            )
+        )
+
+        return (
+            query_digits
+            in phone_haystack
+        )
+
+
+    def set_search_filter(
+        e=None,
+    ):
+        control = getattr(
+            e,
+            "control",
+            None,
+        )
+
+        value = (
+            getattr(
+                control,
+                "value",
+                None,
+            )
+            if control is not None
+            else search_input.value
+        )
+
+        state["search"] = str(
+            value
+            or ""
+        )
+
+        state["page"] = 1
+
+        # Igual que Clientes: no recarga la vista ni backend.
+        # Solo cambia el listado lateral, preservando el foco.
+        _refresh_conversation_list_control()
+
+
     def clear_filters(
         e=None,
     ):
@@ -2671,6 +3090,10 @@ def communications_view(
         channel_filter.input.value = (
             "WhatsApp"
         )
+
+        state[
+            "unread_only"
+        ] = False
 
         state["page"] = 1
 
@@ -2687,10 +3110,7 @@ def communications_view(
         e=None,
     ):
         total = len(
-            state.get(
-                "items"
-            )
-            or []
+            _filtered_conversation_items()
         )
 
         pages = max(
@@ -2800,16 +3220,52 @@ def communications_view(
 
         _safe_update()
 
-    def build_linkage_pill(
+    def set_unread_filter(
+        enabled,
+    ):
+        """Activa/desactiva el filtro local de no leídos.
+
+        No consulta backend.
+        No selecciona conversaciones.
+        No navega WhatsApp.
+        """
+        state[
+            "unread_only"
+        ] = bool(
+            enabled
+        )
+
+        state[
+            "page"
+        ] = 1
+
+        _safe_update()
+
+    def build_filter_pill(
         label,
         value,
+        *,
+        selected_override=None,
+        on_select=None,
     ):
+        """Pill compacto de filtros de conversaciones.
+
+        Reutiliza el patrón visual ya existente en esta vista.
+        `selected_override` permite filtros ortogonales como
+        No leídos sin mezclarlos con linkage.
+        """
         selected = (
-            state.get(
-                "linkage",
-                "ALL",
+            (
+                state.get(
+                    "linkage",
+                    "ALL",
+                )
+                == value
             )
-            == value
+            if selected_override is None
+            else bool(
+                selected_override
+            )
         )
 
         if value == "LINKED":
@@ -2822,10 +3278,23 @@ def communications_view(
             inactive_fg = "#B54708"
             inactive_border = "#FEDF89"
 
+        elif value == "UNREAD":
+            inactive_bg = "#ECFDF3"
+            inactive_fg = "#027A48"
+            inactive_border = "#ABEFC6"
+
         else:
             inactive_bg = "#F8FAFC"
             inactive_fg = Q_PRIMARY_DARK
             inactive_border = Q_BORDER
+
+        callback = (
+            on_select
+            if callable(
+                on_select
+            )
+            else set_linkage_filter
+        )
 
         return ft.Container(
             bgcolor=(
@@ -2849,9 +3318,10 @@ def communications_view(
             ink=True,
             on_click=(
                 lambda e,
-                linkage=value:
-                    set_linkage_filter(
-                        linkage
+                filter_value=value,
+                handler=callback:
+                    handler(
+                        filter_value
                     )
             ),
             content=ft.Text(
@@ -2865,6 +3335,7 @@ def communications_view(
                 ),
             ),
         )
+
 
     def build_conversation_card(
         item,
@@ -2906,18 +3377,11 @@ def communications_view(
             or ""
         ).strip()
 
-        try:
-            realtime_unread = max(
-                0,
-                int(
-                    realtime.get(
-                        "unread_count"
-                    )
-                    or 0
-                ),
+        realtime_unread = (
+            _conversation_item_unread_count(
+                item
             )
-        except Exception:
-            realtime_unread = 0
+        )
 
         secondary = _secondary_name(
             item
@@ -3059,12 +3523,52 @@ def communications_view(
     )
 
 
-    def _visible_conversation_items():
+    def _filtered_conversation_items():
+        """Aplica filtros visuales sobre el modelo ya cargado."""
         items = list(
             state.get(
                 "items"
             )
             or []
+        )
+
+        search = str(
+            state.get(
+                "search"
+            )
+            or ""
+        ).strip()
+
+        if search:
+            items = [
+                item
+                for item in items
+                if _conversation_matches_search(
+                    item,
+                    search,
+                )
+            ]
+
+        if state.get(
+            "unread_only"
+        ):
+            items = [
+                item
+                for item in items
+                if (
+                    _conversation_item_unread_count(
+                        item
+                    )
+                    > 0
+                )
+            ]
+
+        return items
+
+
+    def _visible_conversation_items():
+        items = (
+            _filtered_conversation_items()
         )
 
         page_size = max(
@@ -3098,6 +3602,10 @@ def communications_view(
 
 
     def _refresh_conversation_list_control():
+        # WA-FLET-LIFE sidebar guard
+        if not _ui_active():
+            return False
+
         visible = (
             _visible_conversation_items()
         )
@@ -3145,10 +3653,7 @@ def communications_view(
 
     def build_conversation_list():
         items = (
-            state.get(
-                "items"
-            )
-            or []
+            _filtered_conversation_items()
         )
 
         page_size = int(
@@ -3239,17 +3744,34 @@ def communications_view(
                     ),
                     ft.Row(
                         controls=[
-                            build_linkage_pill(
+                            build_filter_pill(
                                 "Todas",
                                 "ALL",
                             ),
-                            build_linkage_pill(
+                            build_filter_pill(
                                 "Vinculadas",
                                 "LINKED",
                             ),
-                            build_linkage_pill(
+                            build_filter_pill(
                                 "Sin vincular",
                                 "UNLINKED",
+                            ),
+                            build_filter_pill(
+                                "No leídos",
+                                "UNREAD",
+                                selected_override=(
+                                    state.get(
+                                        "unread_only"
+                                    )
+                                ),
+                                on_select=(
+                                    lambda _:
+                                        set_unread_filter(
+                                            not state.get(
+                                                "unread_only"
+                                            )
+                                        )
+                                ),
                             ),
                         ],
                         spacing=6,
@@ -4349,6 +4871,10 @@ def communications_view(
 
 
     async def _scroll_message_history_to_bottom():
+        # WA-FLET-LIFE scroll guard
+        if not _ui_active():
+            return False
+
         """Fuerza el historial visible al último mensaje."""
         try:
             if not (
@@ -4374,6 +4900,10 @@ def communications_view(
 
 
     def _force_message_history_bottom():
+        # WA-FLET-LIFE force-scroll guard
+        if not _ui_active():
+            return False
+
         """Programa el salto al final tras actualizar la UI."""
         if not (
             state.get("messages")
@@ -4848,6 +5378,10 @@ def communications_view(
 
 
     def _refresh_message_history_control():
+        # WA-FLET-LIFE history guard
+        if not _ui_active():
+            return False
+
         """Actualiza únicamente el historial ya montado.
 
         Devuelve True si pudo aplicar el refresh ligero.
@@ -5012,6 +5546,13 @@ def communications_view(
         None,
     )
 
+    attachment_button = ft.IconButton(
+        icon=ft.Icons.ATTACH_FILE,
+        tooltip="Adjuntar archivos",
+        icon_size=20,
+        icon_color=Q_PRIMARY,
+    )
+
     def _selected_thread_send_blocked():
         thread_id = state.get(
             "selected_thread_id"
@@ -5057,7 +5598,17 @@ def communications_view(
             or sending
         )
 
+        # 12D8:
+        # una cola documental ya dispone de transporte
+        # Runtime gobernado y por tanto no bloquea Enviar.
         send_button.disabled = (
+            not has_thread
+            or unavailable
+            or blocked
+            or sending
+        )
+
+        attachment_button.disabled = (
             not has_thread
             or unavailable
             or blocked
@@ -5066,6 +5617,488 @@ def communications_view(
 
     def _clear_composer():
         composer_input.value = ""
+
+    def _pending_attachment_path_key(
+        file_path,
+    ):
+        """Identidad local estable para deduplicar selección."""
+        value = str(
+            file_path
+            or ""
+        ).strip()
+
+        if not value:
+            return ""
+
+        return (
+            value
+            .replace("\\", "/")
+            .casefold()
+        )
+
+    def _refresh_pending_attachment_ui():
+        """Actualiza únicamente el panel central/compositor."""
+        _refresh_composer_controls()
+
+        try:
+            return bool(
+                _refresh_chat_panel_control()
+            )
+        except NameError:
+            _safe_update()
+            return False
+
+    def _remove_pending_attachment(
+        path_key,
+    ):
+        path_key = str(
+            path_key
+            or ""
+        ).strip()
+
+        current = list(
+            state.get(
+                "pending_attachments"
+            )
+            or []
+        )
+
+        state[
+            "pending_attachments"
+        ] = [
+            item
+            for item in current
+            if str(
+                item.get(
+                    "path_key"
+                )
+                or ""
+            )
+            != path_key
+        ]
+
+        if not state[
+            "pending_attachments"
+        ]:
+            state[
+                "attachment_target_thread_id"
+            ] = None
+
+        _refresh_pending_attachment_ui()
+
+    def _build_pending_attachments():
+        attachments = list(
+            state.get(
+                "pending_attachments"
+            )
+            or []
+        )
+
+        if not attachments:
+            return ft.Container(
+                height=0,
+            )
+
+        controls = []
+
+        for attachment in attachments:
+            name = str(
+                attachment.get(
+                    "name"
+                )
+                or "Archivo"
+            )
+
+            source = str(
+                attachment.get(
+                    "source"
+                )
+                or "EXPLORER"
+            )
+
+            source_label = (
+                "Expediente"
+                if source == "EXPEDIENT"
+                else "Equipo"
+            )
+
+            path_key = str(
+                attachment.get(
+                    "path_key"
+                )
+                or ""
+            )
+
+            controls.append(
+                ft.Container(
+                    padding=ft.padding.symmetric(
+                        horizontal=8,
+                        vertical=4,
+                    ),
+                    border_radius=8,
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(
+                        1,
+                        "#D0D5DD",
+                    ),
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.ATTACH_FILE,
+                                size=15,
+                                color=Q_PRIMARY,
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        name,
+                                        size=10,
+                                        color=Q_TEXT,
+                                        weight=(
+                                            ft.FontWeight.W_600
+                                        ),
+                                        max_lines=1,
+                                        overflow=(
+                                            ft.TextOverflow
+                                            .ELLIPSIS
+                                        ),
+                                    ),
+                                    ft.Text(
+                                        source_label,
+                                        size=8,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=0,
+                                expand=True,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CLOSE,
+                                tooltip=(
+                                    "Quitar archivo"
+                                ),
+                                icon_size=14,
+                                icon_color=Q_MUTED,
+                                on_click=(
+                                    lambda e,
+                                    captured_key=path_key:
+                                        _remove_pending_attachment(
+                                            captured_key
+                                        )
+                                ),
+                            ),
+                        ],
+                        spacing=5,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
+        return ft.Column(
+            controls=controls,
+            spacing=5,
+        )
+
+    def _append_pending_attachments(
+        files,
+        *,
+        source,
+        target_thread_id,
+        expedient_id=None,
+    ):
+        current_thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if (
+            current_thread_id is None
+            or int(
+                current_thread_id
+            )
+            != int(
+                target_thread_id
+            )
+        ):
+            _show_message(
+                (
+                    "La conversación cambió mientras "
+                    "seleccionabas los archivos. "
+                    "La selección se ha descartado."
+                ),
+                error=True,
+            )
+            return 0
+
+        existing = list(
+            state.get(
+                "pending_attachments"
+            )
+            or []
+        )
+
+        target = state.get(
+            "attachment_target_thread_id"
+        )
+
+        if (
+            target not in (
+                None,
+                "",
+            )
+            and int(target)
+            != int(target_thread_id)
+        ):
+            # Fail closed. En condiciones ordinarias esto queda
+            # prevenido por select_thread(), pero mantenemos la
+            # barrera en el propio compositor.
+            state[
+                "pending_attachments"
+            ] = []
+            existing = []
+
+        existing_keys = {
+            str(
+                item.get(
+                    "path_key"
+                )
+                or ""
+            )
+            for item in existing
+        }
+
+        added = 0
+
+        for selected in (
+            files
+            or []
+        ):
+            file_path = str(
+                getattr(
+                    selected,
+                    "path",
+                    None,
+                )
+                or ""
+            ).strip()
+
+            if not file_path:
+                continue
+
+            path_key = (
+                _pending_attachment_path_key(
+                    file_path
+                )
+            )
+
+            if (
+                not path_key
+                or path_key in existing_keys
+            ):
+                continue
+
+            file_name = str(
+                getattr(
+                    selected,
+                    "name",
+                    None,
+                )
+                or Path(
+                    file_path
+                ).name
+                or "Archivo"
+            )
+
+            existing.append(
+                {
+                    "path":
+                        file_path,
+                    "path_key":
+                        path_key,
+                    "name":
+                        file_name,
+                    "source":
+                        str(
+                            source
+                            or "EXPLORER"
+                        ).strip().upper(),
+                    "expedient_id":
+                        (
+                            int(
+                                expedient_id
+                            )
+                            if expedient_id
+                            else None
+                        ),
+                }
+            )
+
+            existing_keys.add(
+                path_key
+            )
+
+            added += 1
+
+        if added <= 0:
+            return 0
+
+        state[
+            "pending_attachments"
+        ] = existing
+
+        state[
+            "attachment_target_thread_id"
+        ] = int(
+            target_thread_id
+        )
+
+        _refresh_pending_attachment_ui()
+
+        return added
+
+    async def _pick_attachments(
+        *,
+        initial_directory=None,
+        source="EXPLORER",
+        expedient_id=None,
+    ):
+        thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if thread_id is None:
+            _show_message(
+                "Selecciona una conversación.",
+                error=True,
+            )
+            return 0
+
+        captured_thread_id = int(
+            thread_id
+        )
+
+        normalized_directory = (
+            str(
+                initial_directory
+                or ""
+            ).strip()
+            or None
+        )
+
+        if normalized_directory:
+            folder = Path(
+                normalized_directory
+            )
+
+            if not folder.is_dir():
+                _show_message(
+                    (
+                        "La carpeta documental del "
+                        "expediente no está disponible: "
+                        f"{normalized_directory}"
+                    ),
+                    error=True,
+                )
+                return 0
+
+        try:
+            files = await ft.FilePicker().pick_files(
+                dialog_title=(
+                    "Seleccionar archivos para WhatsApp"
+                ),
+                initial_directory=(
+                    normalized_directory
+                ),
+                allow_multiple=True,
+                file_type=(
+                    ft.FilePickerFileType.ANY
+                ),
+            )
+
+        except Exception as exc:
+            _show_message(
+                (
+                    "No se pudo abrir el selector "
+                    f"de archivos: {exc}"
+                ),
+                error=True,
+            )
+            return 0
+
+        if not files:
+            return 0
+
+        # El usuario puede haber cambiado de chat mientras
+        # el selector nativo estaba abierto.
+        current_thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if (
+            current_thread_id is None
+            or int(
+                current_thread_id
+            )
+            != captured_thread_id
+        ):
+            _show_message(
+                (
+                    "La conversación cambió mientras "
+                    "seleccionabas los archivos. "
+                    "La selección se ha descartado."
+                ),
+                error=True,
+            )
+            return 0
+
+        return _append_pending_attachments(
+            files,
+            source=source,
+            target_thread_id=(
+                captured_thread_id
+            ),
+            expedient_id=expedient_id,
+        )
+
+    async def pick_general_attachments(
+        e=None,
+    ):
+        return await _pick_attachments(
+            source="EXPLORER",
+        )
+
+    async def pick_expedient_attachments(
+        expedient_id,
+        box_folder_path,
+    ):
+        return await _pick_attachments(
+            initial_directory=(
+                box_folder_path
+            ),
+            source="EXPEDIENT",
+            expedient_id=(
+                expedient_id
+            ),
+        )
+
+    def _expedient_attachment_handler(
+        expedient_id,
+        box_folder_path,
+    ):
+        async def handler(
+            e=None,
+        ):
+            await pick_expedient_attachments(
+                expedient_id,
+                box_folder_path,
+            )
+
+        return handler
+
+    attachment_button.on_click = (
+        pick_general_attachments
+    )
 
     def _run_background(
         target,
@@ -5078,6 +6111,7 @@ def communications_view(
 
         if callable(runner):
             runner(target)
+
             return
 
         # No ejecutamos el transporte de WhatsApp
@@ -5092,6 +6126,10 @@ def communications_view(
         generation,
         verified,
     ):
+        # WA-FLET-LIFE route-finish guard
+        if not _ui_active():
+            return False
+
         """Finaliza visualmente un routing dentro del loop Flet."""
         thread_id = int(
             thread_id
@@ -5156,6 +6194,10 @@ def communications_view(
         generation,
         verified,
     ):
+        # WA-FLET-LIFE route-schedule guard
+        if not _ui_active():
+            return False
+
         runner = getattr(
             page,
             "run_task",
@@ -5302,12 +6344,203 @@ def communications_view(
 
         return True
 
+
+    def _start_whatsapp_voice_call(
+        thread_id,
+    ):
+        """Solicita una llamada WhatsApp sin bloquear Flet.
+
+        La vista:
+        - conoce únicamente thread_id;
+        - no toca connector;
+        - no toca Selenium/CDP;
+        - no verifica teléfonos;
+        - no persiste llamadas.
+
+        Toda la operación sensible pertenece al runtime.
+        """
+        if whatsapp_runtime is None:
+            _show_message(
+                (
+                    "El runtime de WhatsApp "
+                    "no está disponible."
+                ),
+                error=True,
+            )
+
+            return False
+
+        try:
+            captured_thread_id = int(
+                thread_id
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            _show_message(
+                (
+                    "No se pudo determinar "
+                    "la conversación WhatsApp."
+                ),
+                error=True,
+            )
+
+            return False
+
+        if captured_thread_id <= 0:
+            _show_message(
+                (
+                    "No se pudo determinar "
+                    "la conversación WhatsApp."
+                ),
+                error=True,
+            )
+
+            return False
+
+        def worker():
+            try:
+                result = (
+                    whatsapp_runtime
+                    .start_voice_call_for_thread(
+                        captured_thread_id,
+                        wait_timeout=30,
+                        routing_timeout=15,
+                        call_confirm_timeout=2.0,
+                    )
+                )
+
+            except Exception as exc:
+                _schedule_ui_message(
+                    (
+                        "No se pudo iniciar la "
+                        "llamada de WhatsApp: "
+                        f"{exc}"
+                    ),
+                    error=True,
+                )
+
+                return
+
+            if not isinstance(
+                result,
+                dict,
+            ):
+                _schedule_ui_message(
+                    (
+                        "WhatsApp devolvió un "
+                        "resultado de llamada "
+                        "no reconocido."
+                    ),
+                    error=True,
+                )
+
+                return
+
+            if bool(
+                result.get(
+                    "ok"
+                )
+            ):
+                _schedule_ui_message(
+                    "Llamada de WhatsApp iniciada."
+                )
+
+                return
+
+            # Una acción externa puede haberse ejecutado
+            # aunque no podamos demostrarlo después.
+            #
+            # En ese caso jamás invitamos al usuario
+            # a repetirla automáticamente.
+            if bool(
+                result.get(
+                    "uncertain"
+                )
+            ):
+                _schedule_ui_message(
+                    (
+                        "Se intentó iniciar la llamada, "
+                        "pero WhatsApp no permitió "
+                        "confirmar su estado. "
+                        "Revisa WhatsApp antes de "
+                        "volver a intentarlo."
+                    ),
+                    error=True,
+                )
+
+                return
+
+            reason = str(
+                result.get(
+                    "reason"
+                )
+                or "VOICE_CALL_FAILED"
+            ).strip()
+
+            messages = {
+                "CALL_ALREADY_PRESENT":
+                    (
+                        "Ya existe una llamada "
+                        "WhatsApp activa."
+                    ),
+                "MICROPHONE_PERMISSION_NOT_READY":
+                    (
+                        "El micrófono de WhatsApp "
+                        "no está preparado."
+                    ),
+                "VOICE_CALL_BUTTON_NOT_FOUND":
+                    (
+                        "WhatsApp no muestra el "
+                        "botón de llamada para "
+                        "esta conversación."
+                    ),
+                "VOICE_CALL_BUTTON_DISABLED":
+                    (
+                        "La llamada no está "
+                        "disponible actualmente "
+                        "para esta conversación."
+                    ),
+                "VOICE_CALL_BUTTON_IDENTITY_MISMATCH":
+                    (
+                        "No se pudo validar con "
+                        "seguridad el control "
+                        "de llamada de WhatsApp."
+                    ),
+            }
+
+            _schedule_ui_message(
+                messages.get(
+                    reason,
+                    (
+                        "No se pudo iniciar la "
+                        "llamada de WhatsApp "
+                        f"({reason})."
+                    ),
+                ),
+                error=True,
+            )
+
+        # Igual que routing y envío:
+        # Selenium/WhatsApp nunca bloquea el loop Flet.
+        _run_background(
+            worker
+        )
+
+        return True
+
+
     async def _dispatch_finish_send_ui(
         thread_id,
         sent_text,
         result,
         exception,
     ):
+        # WA-FLET-LIFE send-dispatch guard
+        if not _ui_active():
+            return False
+
         """Finaliza un envío dentro del event loop de Flet.
 
         El transporte WhatsApp se ejecuta en background.
@@ -5342,6 +6575,10 @@ def communications_view(
         result=None,
         exception=None,
     ):
+        # WA-FLET-LIFE send-schedule guard
+        if not _ui_active():
+            return False
+
         runner = getattr(
             page,
             "run_task",
@@ -5393,20 +6630,90 @@ def communications_view(
         result=None,
         exception=None,
     ):
-        uncertain = bool(
+        batch = dict(
             result
-            and result.get(
+            or {}
+        )
+
+        batch_mode = bool(
+            batch.get(
+                "batch_mode",
+                False,
+            )
+        )
+
+        uncertain = bool(
+            batch.get(
                 "uncertain",
                 False,
             )
         )
 
         ok = bool(
-            result
-            and result.get(
+            batch.get(
                 "ok",
                 False,
             )
+        )
+
+        text_sent = (
+            bool(
+                batch.get(
+                    "text_sent",
+                    False,
+                )
+            )
+            if batch_mode
+            else (
+                ok
+                and bool(
+                    str(
+                        sent_text
+                        or ""
+                    ).strip()
+                )
+            )
+        )
+
+        completed_attachment_keys = {
+            str(
+                value
+                or ""
+            ).strip()
+            for value in (
+                batch.get(
+                    "completed_attachment_keys"
+                )
+                or []
+            )
+            if str(
+                value
+                or ""
+            ).strip()
+        }
+
+        attachment_requested_count = int(
+            batch.get(
+                "attachment_requested_count",
+                0,
+            )
+            or 0
+        )
+
+        persisted_message_count = int(
+            batch.get(
+                "persisted_message_count",
+                0,
+            )
+            or 0
+        )
+
+        completed_operation_count = int(
+            batch.get(
+                "completed_operation_count",
+                0,
+            )
+            or 0
         )
 
         if uncertain:
@@ -5426,14 +6733,65 @@ def communications_view(
             == int(thread_id)
         )
 
-        # Actualización ligera de UI tras envío.
+        # ----------------------------------------------------
+        # Limpieza SELECTIVA.
         #
-        # Si el usuario sigue viendo el mismo thread,
-        # no necesitamos recargar sidebar, métricas,
-        # filtros ni contexto.
+        # Solo desaparecen de la cola los documentos cuya
+        # respuesta fue ok=True.
         #
-        # El servicio de envío ya ha persistido el estado
-        # outbound; recuperamos únicamente el historial.
+        # El documento fallido/incierto y todos los posteriores
+        # permanecen para evitar perder el contexto operacional.
+        # ----------------------------------------------------
+
+        if (
+            batch_mode
+            and selected_same_thread
+            and completed_attachment_keys
+        ):
+            current = list(
+                state.get(
+                    "pending_attachments"
+                )
+                or []
+            )
+
+            state[
+                "pending_attachments"
+            ] = [
+                item
+                for item in current
+                if str(
+                    item.get(
+                        "path_key"
+                    )
+                    or ""
+                ).strip()
+                not in completed_attachment_keys
+            ]
+
+            if not state[
+                "pending_attachments"
+            ]:
+                state[
+                    "attachment_target_thread_id"
+                ] = None
+
+        # Un texto confirmado debe desaparecer aunque un
+        # documento posterior del mismo batch falle.
+        if (
+            text_sent
+            and selected_same_thread
+            and str(
+                composer_input.value
+                or ""
+            ).strip()
+            == str(
+                sent_text
+                or ""
+            ).strip()
+        ):
+            _clear_composer()
+
         light_send_refresh = False
 
         if selected_same_thread:
@@ -5445,10 +6803,8 @@ def communications_view(
                     or []
                 )
 
-                # Durante lectura histórica conservamos también
-                # la página expandida al añadir nuestro outbound.
                 if (
-                    ok
+                    persisted_message_count > 0
                     and state.get(
                         "message_history_expanded"
                     )
@@ -5467,29 +6823,34 @@ def communications_view(
                                 or 0
                             ),
                         )
-                        + 1
+                        + persisted_message_count
                     )
-
 
                 load_thread_messages()
 
+                if attachment_requested_count > 0:
+                    # La cola forma parte del compositor central.
+                    # Rehacemos únicamente el host central para
+                    # retirar visualmente los adjuntos completados.
+                    try:
+                        light_send_refresh = bool(
+                            _refresh_chat_panel_control()
+                        )
+                    except Exception:
+                        light_send_refresh = False
 
-
-                # El servicio de envío ya persistió el outbound.
-                # Intentamos exactamente el mismo fast path
-                # demostrado con mensajes entrantes: historial
-                # anterior como prefijo + mensajes nuevos al final.
-                light_send_refresh = (
-                    _append_new_message_history_controls(
-                        previous_messages
-                    )
-                )
-
-                if not light_send_refresh:
+                else:
+                    # Fast path histórico del texto puro.
                     light_send_refresh = (
-                        _refresh_message_history_control()
+                        _append_new_message_history_controls(
+                            previous_messages
+                        )
                     )
 
+                    if not light_send_refresh:
+                        light_send_refresh = (
+                            _refresh_message_history_control()
+                        )
 
             except Exception as exc:
                 print(
@@ -5501,13 +6862,11 @@ def communications_view(
                 light_send_refresh = False
 
         if not light_send_refresh:
-            # Si el usuario cambió de conversación durante
-            # el envío, o el control visible no está montado,
-            # conservamos el refresh completo probado.
             print(
                 "[WA-FLET] send finish fallback full",
                 {
-                    "thread_id": int(thread_id),
+                    "thread_id":
+                        int(thread_id),
                     "selected_thread_id":
                         state.get(
                             "selected_thread_id"
@@ -5524,37 +6883,24 @@ def communications_view(
                 pass
 
         if (
-            ok
+            completed_operation_count > 0
             and selected_same_thread
         ):
-            # Una respuesta confirmada implica que el thread
-            # está siendo atendido desde el CRM.
             _mark_realtime_thread_read(
                 thread_id,
                 refresh_sidebar=False,
             )
 
-        if (
-            ok
-            and selected_same_thread
-            and str(
-                composer_input.value
-                or ""
-            )
-            == sent_text
-        ):
-            _clear_composer()
-
         _refresh_composer_controls()
 
         if light_send_refresh:
-            # El historial ya se actualizó de forma parcial.
-            # Propagamos compositor y sidebar ligero: una
-            # respuesta confirmada debe retirar el badge unread.
             try:
                 _refresh_conversation_list_control()
+
                 composer_input.update()
                 send_button.update()
+                attachment_button.update()
+
             except Exception:
                 try:
                     page.update()
@@ -5569,7 +6915,7 @@ def communications_view(
         if exception is not None:
             _show_message(
                 (
-                    "No se pudo enviar el mensaje: "
+                    "No se pudo completar el envío: "
                     f"{exception}"
                 ),
                 error=True,
@@ -5579,34 +6925,51 @@ def communications_view(
         if uncertain:
             _show_message(
                 (
-                    "El estado del envío no pudo "
-                    "confirmarse con seguridad. "
-                    "No reenvíes este mensaje hasta "
-                    "revisar la conversación."
+                    "El envío se ha detenido porque una "
+                    "operación quedó en estado incierto. "
+                    "No reenvíes este mensaje o archivo "
+                    "hasta revisar la conversación."
                 ),
                 error=True,
             )
             return
 
         if not ok:
-            error = (
-                result.get(
+            error = str(
+                batch.get(
                     "error"
                 )
-                if result
-                else None
-            )
+                or ""
+            ).strip()
+
+            if completed_operation_count > 0:
+                prefix = (
+                    f"Se enviaron {completed_operation_count} "
+                    "elemento(s), pero la cola se detuvo"
+                )
+            else:
+                prefix = (
+                    "No se pudo completar el envío"
+                )
 
             _show_message(
-                (
-                    "No se pudo enviar el mensaje"
-                    + (
-                        f": {error}"
-                        if error
-                        else "."
-                    )
+                prefix
+                + (
+                    f": {error}"
+                    if error
+                    else "."
                 ),
                 error=True,
+            )
+            return
+
+        if attachment_requested_count > 0:
+            _show_message(
+                (
+                    "Envío completado correctamente · "
+                    f"{completed_operation_count} "
+                    "elemento(s)."
+                )
             )
             return
 
@@ -5644,13 +7007,60 @@ def communications_view(
             )
             return
 
+        captured_thread_id = int(
+            thread_id
+        )
+
         text_to_send = str(
             composer_input.value
             or ""
         ).strip()
 
-        if not text_to_send:
+        pending_attachments = [
+            dict(
+                item
+            )
+            for item in (
+                state.get(
+                    "pending_attachments"
+                )
+                or []
+            )
+        ]
+
+        # Texto vacío es válido cuando existen adjuntos.
+        if (
+            not text_to_send
+            and not pending_attachments
+        ):
             return
+
+        # La cola documental está capturada para un destinatario
+        # concreto. Una inconsistencia nunca se corrige adivinando.
+        if pending_attachments:
+            attachment_target = state.get(
+                "attachment_target_thread_id"
+            )
+
+            if (
+                attachment_target in (
+                    None,
+                    "",
+                )
+                or int(
+                    attachment_target
+                )
+                != captured_thread_id
+            ):
+                _show_message(
+                    (
+                        "Los archivos pendientes pertenecen "
+                        "a otra conversación. Vuelve a "
+                        "seleccionarlos antes de enviar."
+                    ),
+                    error=True,
+                )
+                return
 
         if whatsapp_runtime is None:
             _show_message(
@@ -5661,10 +7071,6 @@ def communications_view(
                 error=True,
             )
             return
-
-        captured_thread_id = int(
-            thread_id
-        )
 
         state["sending"] = True
         _refresh_composer_controls()
@@ -5680,20 +7086,317 @@ def communications_view(
         ).strip() or "ERP"
 
         def worker():
-            try:
-                result = (
-                    whatsapp_runtime
-                    .send_text_message(
-                        thread_id=(
-                            captured_thread_id
-                        ),
-                        body_text=(
-                            text_to_send
-                        ),
-                        created_by=username,
-                        sent_by=username,
+            batch_result = {
+                "batch_mode":
+                    True,
+                "ok":
+                    True,
+                "uncertain":
+                    False,
+                "error":
+                    None,
+                "text_requested":
+                    bool(
+                        text_to_send
+                    ),
+                "text_sent":
+                    False,
+                "attachment_requested_count":
+                    len(
+                        pending_attachments
+                    ),
+                "completed_attachment_keys":
+                    [],
+                "completed_operation_count":
+                    0,
+                "persisted_message_count":
+                    0,
+                "stopped_reason":
+                    None,
+            }
+
+            def absorb_result(
+                transport_result,
+                *,
+                attachment=None,
+                is_text=False,
+            ):
+                if not isinstance(
+                    transport_result,
+                    dict,
+                ):
+                    raise RuntimeError(
+                        "WhatsApp devolvió un resultado "
+                        "de envío no reconocido"
+                    )
+
+                if (
+                    transport_result.get(
+                        "message"
+                    )
+                    is not None
+                ):
+                    batch_result[
+                        "persisted_message_count"
+                    ] += 1
+
+                operation_ok = bool(
+                    transport_result.get(
+                        "ok",
+                        False,
                     )
                 )
+
+                operation_uncertain = bool(
+                    transport_result.get(
+                        "uncertain",
+                        False,
+                    )
+                )
+
+                if operation_ok:
+                    batch_result[
+                        "completed_operation_count"
+                    ] += 1
+
+                    if is_text:
+                        batch_result[
+                            "text_sent"
+                        ] = True
+
+                    if attachment is not None:
+                        path_key = str(
+                            attachment.get(
+                                "path_key"
+                            )
+                            or ""
+                        ).strip()
+
+                        if path_key:
+                            batch_result[
+                                "completed_attachment_keys"
+                            ].append(
+                                path_key
+                            )
+
+                    return True
+
+                batch_result["ok"] = False
+                batch_result[
+                    "uncertain"
+                ] = operation_uncertain
+
+                batch_result[
+                    "error"
+                ] = (
+                    transport_result.get(
+                        "error"
+                    )
+                    or (
+                        "Estado de envío incierto"
+                        if operation_uncertain
+                        else "El proveedor rechazó el envío"
+                    )
+                )
+
+                batch_result[
+                    "stopped_reason"
+                ] = (
+                    "UNCERTAIN"
+                    if operation_uncertain
+                    else "SEND_FAILED"
+                )
+
+                return False
+
+            try:
+                # --------------------------------------------
+                # 1. TEXTO
+                #
+                # Se envía primero y como mensaje independiente.
+                # No utilizamos caption documental.
+                # --------------------------------------------
+
+                if text_to_send:
+                    text_result = (
+                        whatsapp_runtime
+                        .send_text_message(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            body_text=(
+                                text_to_send
+                            ),
+                            created_by=username,
+                            sent_by=username,
+                        )
+                    )
+
+                    if not absorb_result(
+                        text_result,
+                        is_text=True,
+                    ):
+                        _schedule_finish_send_ui(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            sent_text=(
+                                text_to_send
+                            ),
+                            result=(
+                                batch_result
+                            ),
+                        )
+                        return
+
+                # --------------------------------------------
+                # 2. DOCUMENTOS
+                #
+                # Una única cola secuencial.
+                # STOP ante cualquier fallo o incertidumbre.
+                # --------------------------------------------
+
+                for attachment in (
+                    pending_attachments
+                ):
+                    # El operador puede cambiar de conversación
+                    # mientras un transporte está en curso.
+                    #
+                    # Nunca iniciamos el SIGUIENTE transporte
+                    # después de ese cambio.
+                    current_thread_id = state.get(
+                        "selected_thread_id"
+                    )
+
+                    if (
+                        current_thread_id is None
+                        or int(
+                            current_thread_id
+                        )
+                        != captured_thread_id
+                    ):
+                        batch_result[
+                            "ok"
+                        ] = False
+
+                        batch_result[
+                            "error"
+                        ] = (
+                            "La conversación cambió durante "
+                            "el envío. La cola se detuvo."
+                        )
+
+                        batch_result[
+                            "stopped_reason"
+                        ] = (
+                            "SELECTION_CHANGED"
+                        )
+
+                        _schedule_finish_send_ui(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            sent_text=(
+                                text_to_send
+                            ),
+                            result=(
+                                batch_result
+                            ),
+                        )
+                        return
+
+                    file_path = str(
+                        attachment.get(
+                            "path"
+                        )
+                        or ""
+                    ).strip()
+
+                    if not file_path:
+                        batch_result[
+                            "ok"
+                        ] = False
+
+                        batch_result[
+                            "error"
+                        ] = (
+                            "Uno de los archivos pendientes "
+                            "no tiene una ruta válida."
+                        )
+
+                        batch_result[
+                            "stopped_reason"
+                        ] = (
+                            "FILE_PATH_MISSING"
+                        )
+
+                        _schedule_finish_send_ui(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            sent_text=(
+                                text_to_send
+                            ),
+                            result=(
+                                batch_result
+                            ),
+                        )
+                        return
+
+                    expedient_id = (
+                        attachment.get(
+                            "expedient_id"
+                        )
+                    )
+
+                    attachment_source = str(
+                        attachment.get(
+                            "source"
+                        )
+                        or "EXPLORER"
+                    ).strip().upper()
+
+                    document_result = (
+                        whatsapp_runtime
+                        .send_document_message(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            file_path=(
+                                file_path
+                            ),
+                            expedient_id=(
+                                expedient_id
+                            ),
+                            created_by=username,
+                            sent_by=username,
+                            metadata={
+                                "source":
+                                    "communications_view_attachment",
+                                "attachment_source":
+                                    attachment_source,
+                            },
+                        )
+                    )
+
+                    if not absorb_result(
+                        document_result,
+                        attachment=(
+                            attachment
+                        ),
+                    ):
+                        _schedule_finish_send_ui(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            sent_text=(
+                                text_to_send
+                            ),
+                            result=(
+                                batch_result
+                            ),
+                        )
+                        return
 
                 _schedule_finish_send_ui(
                     thread_id=(
@@ -5702,7 +7405,9 @@ def communications_view(
                     sent_text=(
                         text_to_send
                     ),
-                    result=result,
+                    result=(
+                        batch_result
+                    ),
                 )
 
             except Exception as exc:
@@ -5712,6 +7417,9 @@ def communications_view(
                     ),
                     sent_text=(
                         text_to_send
+                    ),
+                    result=(
+                        batch_result
                     ),
                     exception=exc,
                 )
@@ -5846,12 +7554,19 @@ def communications_view(
                                 Q_BORDER,
                             )
                         ),
-                        content=ft.Row(
+                        content=ft.Column(
                             controls=[
-                                composer_input,
-                                send_button,
+                                _build_pending_attachments(),
+                                ft.Row(
+                                    controls=[
+                                        composer_input,
+                                        attachment_button,
+                                        send_button,
+                                    ],
+                                    spacing=10,
+                                ),
                             ],
-                            spacing=10,
+                            spacing=8,
                         ),
                     ),
                 ],
@@ -5875,6 +7590,10 @@ def communications_view(
 
 
     def _refresh_chat_panel_control():
+        # WA-FLET-LIFE chat-panel guard
+        if not _ui_active():
+            return False
+
         """Actualiza únicamente el panel central del chat."""
 
         chat_panel_control.content = (
@@ -5901,6 +7620,10 @@ def communications_view(
 
 
     def _refresh_context_panel_control():
+        # WA-FLET-LIFE context-panel guard
+        if not _ui_active():
+            return False
+
         """Actualiza únicamente el panel derecho de contexto."""
 
         context_panel_control.content = (
@@ -6022,6 +7745,53 @@ def communications_view(
                             weight=ft.FontWeight.BOLD,
                             color=Q_PRIMARY_DARK,
                             expand=True,
+                        ),
+                        *(
+                            [
+                                ft.IconButton(
+                                    icon=ft.Icons.CALL,
+                                    tooltip=(
+                                        "Llamar por WhatsApp"
+                                    ),
+                                    icon_size=18,
+                                    icon_color=Q_PRIMARY,
+                                    on_click=(
+                                        lambda e,
+                                        thread_id=int(
+                                            getattr(
+                                                item,
+                                                "thread_id",
+                                                0,
+                                            )
+                                            or 0
+                                        ):
+                                            _start_whatsapp_voice_call(
+                                                thread_id
+                                            )
+                                    ),
+                                )
+                            ]
+                            if (
+                                whatsapp_runtime
+                                is not None
+                                and str(
+                                    getattr(
+                                        item,
+                                        "channel",
+                                        "",
+                                    )
+                                    or ""
+                                )
+                                .strip()
+                                .upper()
+                                == "WHATSAPP"
+                                and getattr(
+                                    item,
+                                    "thread_id",
+                                    None,
+                                )
+                            )
+                            else []
                         ),
                         *(
                             [
@@ -6330,6 +8100,53 @@ def communications_view(
                                         color=Q_PRIMARY_DARK,
                                         expand=True,
                                     ),
+                                    ft.IconButton(
+                                        icon=(
+                                            ft.Icons
+                                            .ATTACH_FILE
+                                        ),
+                                        tooltip=(
+                                            "Adjuntar archivo "
+                                            "desde este expediente"
+                                            if str(
+                                                expedient
+                                                .box_folder_path
+                                                or ""
+                                            ).strip()
+                                            else (
+                                                "Este expediente "
+                                                "no tiene ruta "
+                                                "documental"
+                                            )
+                                        ),
+                                        icon_size=17,
+                                        icon_color=(
+                                            Q_PRIMARY
+                                            if str(
+                                                expedient
+                                                .box_folder_path
+                                                or ""
+                                            ).strip()
+                                            else "#98A2B3"
+                                        ),
+                                        disabled=(
+                                            not bool(
+                                                str(
+                                                    expedient
+                                                    .box_folder_path
+                                                    or ""
+                                                ).strip()
+                                            )
+                                        ),
+                                        on_click=(
+                                            _expedient_attachment_handler(
+                                                expedient
+                                                .expedient_id,
+                                                expedient
+                                                .box_folder_path,
+                                            )
+                                        ),
+                                    ),
                                     *(
                                         [
                                             ft.IconButton(
@@ -6464,6 +8281,33 @@ def communications_view(
                                     height=0,
                                 )
                             ),
+                            (
+                                ft.Text(
+                                    (
+                                        "Ruta: "
+                                        + str(
+                                            expedient
+                                            .box_folder_path
+                                        )
+                                    ),
+                                    size=8,
+                                    color=Q_MUTED,
+                                    max_lines=1,
+                                    overflow=(
+                                        ft.TextOverflow.ELLIPSIS
+                                    ),
+                                )
+                                if str(
+                                    expedient
+                                    .box_folder_path
+                                    or ""
+                                ).strip()
+                                else ft.Text(
+                                    "Sin ruta documental",
+                                    size=8,
+                                    color="#98A2B3",
+                                )
+                            ),
                             *status_controls,
                         ],
                         spacing=3,
@@ -6539,8 +8383,8 @@ def communications_view(
         )
 
     def build_filters():
-        search_input.on_submit = (
-            refresh
+        search_input.on_change = (
+            set_search_filter
         )
 
         channel_filter.on_select = (
@@ -6568,10 +8412,6 @@ def communications_view(
                     search_input,
                     channel_filter.control,
                     linkage_filter.control,
-                    secondary_button(
-                        "Buscar",
-                        refresh,
-                    ),
                     secondary_button(
                         "Limpiar",
                         clear_filters,
@@ -6730,5 +8570,12 @@ def communications_view(
     content_area.content = (
         build_content()
     )
+
+    # Cada instancia de la vista debe recibir inmediatamente
+    # el estado lateral ACTUAL.
+    #
+    # No dependemos de haber pulsado "Abrir WhatsApp" ni de que
+    # ocurra un delta nuevo después de montar esta instancia.
+    _ensure_whatsapp_view_watch()
 
     return content_area

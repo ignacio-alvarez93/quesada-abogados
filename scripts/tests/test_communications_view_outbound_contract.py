@@ -305,13 +305,17 @@ class CommunicationsViewEmptyToFirstContractTests(
             "if empty_to_first_message:"
         )
 
+        next_branch_start = block.index(
+            "elif full_window_recovery:"
+        )
+
         incremental_start = block.index(
             "elif incremental_candidate:"
         )
 
         empty_branch = block[
             empty_branch_start:
-            incremental_start
+            next_branch_start
         ]
 
         # La transición 0 -> 1 nunca debe intentar actualizar
@@ -1554,17 +1558,38 @@ class CommunicationsViewIndividualStatusBubbleTests(
             block,
         )
 
-        individual_pos = block.index(
-            "_update_advanced_message_status_controls("
+        status_only_start = block.index(
+            "status_advanced_count > 0\n"
+            "                and created_count == 0"
         )
 
-        fallback_pos = block.index(
-            "_refresh_message_history_control()"
+        fallback_start = block.index(
+            "if not light_refreshed:",
+            status_only_start,
         )
 
-        self.assertLess(
-            individual_pos,
-            fallback_pos,
+        status_only_branch = block[
+            status_only_start:
+            fallback_start
+        ]
+
+        self.assertIn(
+            "_update_advanced_message_status_controls(",
+            status_only_branch,
+        )
+
+        self.assertNotIn(
+            "_refresh_message_history_control()",
+            status_only_branch,
+        )
+
+        fallback_block = block[
+            fallback_start:
+        ]
+
+        self.assertIn(
+            "_refresh_message_history_control()",
+            fallback_block,
         )
 
     def test_individual_status_path_updates_only_status_control(
@@ -1710,7 +1735,7 @@ class CommunicationsViewWatcherCadenceTests(
             source.count(
                 "interval_seconds=0.5,"
             ),
-            2,
+            3,
         )
 
         self.assertNotIn(

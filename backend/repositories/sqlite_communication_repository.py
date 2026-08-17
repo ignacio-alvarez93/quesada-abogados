@@ -18,6 +18,7 @@ from backend.communications.call_followups import (
 )
 from backend.communications.calls import (
     CommunicationCall,
+    CommunicationCallOverview,
 )
 from backend.communications.models import (
     CommunicationAccount,
@@ -228,6 +229,148 @@ class SQLiteCommunicationRepository:
                 row["metadata_json"]
             ),
         )
+
+    @staticmethod
+    def _call_overview_from_row(
+        row,
+    ):
+        if not row:
+            return None
+
+        return CommunicationCallOverview(
+            call_id=int(
+                row["call_id"]
+            ),
+            thread_id=(
+                int(
+                    row[
+                        "overview_thread_id"
+                    ]
+                )
+                if row[
+                    "overview_thread_id"
+                ] is not None
+                else None
+            ),
+            client_id=(
+                int(
+                    row[
+                        "overview_client_id"
+                    ]
+                )
+                if row[
+                    "overview_client_id"
+                ] is not None
+                else None
+            ),
+            expedient_id=(
+                int(
+                    row["expedient_id"]
+                )
+                if row["expedient_id"]
+                is not None
+                else None
+            ),
+            context_resolution=(
+                row[
+                    "context_resolution"
+                ]
+            ),
+            channel=row["channel"],
+            direction=row["direction"],
+            phone_number=(
+                row["phone_number"]
+            ),
+            display_name=(
+                row["display_name"]
+                or row["phone_number"]
+            ),
+            status=row["status"],
+            reason_code=(
+                row["reason_code"]
+            ),
+            reason_label=None,
+            reason_detail=(
+                row["reason_detail"]
+            ),
+            outcome_code=(
+                row["outcome_code"]
+            ),
+            outcome_label=None,
+            provider=row["provider"],
+            provider_call_id=(
+                row["provider_call_id"]
+            ),
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            activity_at=row["activity_at"],
+            answered_at=(
+                row["answered_at"]
+            ),
+            ended_at=row["ended_at"],
+            ring_duration_seconds=(
+                int(
+                    row[
+                        "ring_duration_seconds"
+                    ]
+                )
+                if row[
+                    "ring_duration_seconds"
+                ] is not None
+                else None
+            ),
+            talk_duration_seconds=(
+                int(
+                    row[
+                        "talk_duration_seconds"
+                    ]
+                )
+                if row[
+                    "talk_duration_seconds"
+                ] is not None
+                else None
+            ),
+            total_duration_seconds=(
+                int(
+                    row[
+                        "total_duration_seconds"
+                    ]
+                )
+                if row[
+                    "total_duration_seconds"
+                ] is not None
+                else None
+            ),
+            notes=row["notes"],
+            follow_up_id=(
+                int(
+                    row[
+                        "follow_up_id"
+                    ]
+                )
+                if row[
+                    "follow_up_id"
+                ] is not None
+                else None
+            ),
+            follow_up_status=(
+                row[
+                    "follow_up_status"
+                ]
+            ),
+            callback_count=int(
+                row[
+                    "callback_count"
+                ]
+                or 0
+            ),
+            latest_callback_at=(
+                row[
+                    "latest_callback_at"
+                ]
+            ),
+        )
+
 
     @staticmethod
     def _call_follow_up_from_row(
@@ -833,6 +976,358 @@ class SQLiteCommunicationRepository:
 
                 raise
 
+    def list_call_overviews(
+        self,
+        *,
+        channel=None,
+        direction=None,
+        status=None,
+        search=None,
+        limit=500,
+    ):
+        """
+        Proyección de lectura del registro de llamadas.
+
+        La resolución de contexto es deliberadamente
+        conservadora:
+
+        1. prevalece contexto ya persistido en la llamada;
+        2. si existe thread_id, puede heredar client_id
+           de ese thread;
+        3. para WhatsApp sin thread_id solo se usa una
+           coincidencia EXACTA de external_address cuando
+           existe un único thread para esa dirección;
+        4. una identidad ambigua nunca se elige.
+
+        No modifica llamadas históricas.
+        """
+        self.ensure_schema()
+
+        normalized_limit = max(
+            1,
+            min(
+                5000,
+                int(
+                    limit
+                    or 500
+                ),
+            ),
+        )
+
+        clauses = [
+            "1 = 1",
+        ]
+
+        params = []
+
+        normalized_channel = str(
+            channel
+            or ""
+        ).strip().upper()
+
+        normalized_direction = str(
+            direction
+            or ""
+        ).strip().upper()
+
+        normalized_status = str(
+            status
+            or ""
+        ).strip().upper()
+
+        normalized_search = str(
+            search
+            or ""
+        ).strip().lower()
+
+        if normalized_channel:
+            clauses.append(
+                "c.channel = ?"
+            )
+            params.append(
+                normalized_channel
+            )
+
+        if normalized_direction:
+            clauses.append(
+                "c.direction = ?"
+            )
+            params.append(
+                normalized_direction
+            )
+
+        if normalized_status:
+            clauses.append(
+                "c.status = ?"
+            )
+            params.append(
+                normalized_status
+            )
+
+        if normalized_search:
+            token = (
+                f"%{normalized_search}%"
+            )
+
+            clauses.append(
+                """
+                (
+                    LOWER(
+                        c.phone_number
+                    ) LIKE ?
+                    OR LOWER(
+                        COALESCE(
+                            c.display_name_snapshot,
+                            ''
+                        )
+                    ) LIKE ?
+                    OR LOWER(
+                        COALESCE(
+                            c.reason_detail,
+                            ''
+                        )
+                    ) LIKE ?
+                    OR LOWER(
+                        COALESCE(
+                            c.notes,
+                            ''
+                        )
+                    ) LIKE ?
+                    OR LOWER(
+                        TRIM(
+                            COALESCE(
+                                resolved_client.nombre,
+                                ''
+                            )
+                            || ' '
+                            || COALESCE(
+                                resolved_client.primer_apellido,
+                                ''
+                            )
+                            || ' '
+                            || COALESCE(
+                                resolved_client.segundo_apellido,
+                                ''
+                            )
+                        )
+                    ) LIKE ?
+                )
+                """
+            )
+
+            params.extend(
+                [
+                    token,
+                    token,
+                    token,
+                    token,
+                    token,
+                ]
+            )
+
+        where_sql = (
+            " AND ".join(
+                clauses
+            )
+        )
+
+        sql = f"""
+            WITH unique_threads AS (
+                SELECT
+                    external_address,
+                    MIN(id) AS thread_id,
+                    MIN(client_id) AS client_id,
+                    MAX(
+                        external_display_name
+                    ) AS external_display_name
+                FROM communication_threads
+                WHERE external_address
+                    IS NOT NULL
+                  AND TRIM(
+                        external_address
+                      ) <> ''
+                GROUP BY
+                    external_address
+                HAVING COUNT(*) = 1
+            ),
+            callback_summary AS (
+                SELECT
+                    source_call_id,
+                    COUNT(*) AS callback_count,
+                    MAX(
+                        created_at
+                    ) AS latest_callback_at
+                FROM communication_call_callbacks
+                GROUP BY
+                    source_call_id
+            )
+            SELECT
+                c.id AS call_id,
+
+                COALESCE(
+                    c.thread_id,
+                    ut.thread_id
+                ) AS overview_thread_id,
+
+                COALESCE(
+                    c.client_id,
+                    direct_thread.client_id,
+                    ut.client_id
+                ) AS overview_client_id,
+
+                c.expedient_id,
+
+                CASE
+                    WHEN
+                        c.thread_id IS NOT NULL
+                        OR c.client_id IS NOT NULL
+                    THEN 'PERSISTED'
+
+                    WHEN
+                        c.channel = 'WHATSAPP'
+                        AND ut.thread_id
+                            IS NOT NULL
+                    THEN 'UNIQUE_THREAD_PHONE'
+
+                    ELSE NULL
+                END AS context_resolution,
+
+                c.channel,
+                c.direction,
+                c.phone_number,
+
+                COALESCE(
+                    NULLIF(
+                        TRIM(
+                            COALESCE(
+                                resolved_client.nombre,
+                                ''
+                            )
+                            || ' '
+                            || COALESCE(
+                                resolved_client.primer_apellido,
+                                ''
+                            )
+                            || ' '
+                            || COALESCE(
+                                resolved_client.segundo_apellido,
+                                ''
+                            )
+                        ),
+                        ''
+                    ),
+                    NULLIF(
+                        TRIM(
+                            c.display_name_snapshot
+                        ),
+                        ''
+                    ),
+                    direct_thread
+                        .external_display_name,
+                    ut.external_display_name,
+                    c.phone_number
+                ) AS display_name,
+
+                c.status,
+
+                c.reason_code,
+                c.reason_detail,
+                c.outcome_code,
+
+                c.provider,
+                c.provider_call_id,
+
+                c.created_at,
+
+                COALESCE(
+                    c.dialed_at,
+                    c.ringing_at,
+                    c.created_at
+                ) AS started_at,
+
+                COALESCE(
+                    c.ended_at,
+                    c.answered_at,
+                    c.ringing_at,
+                    c.dialed_at,
+                    c.created_at
+                ) AS activity_at,
+
+                c.answered_at,
+                c.ended_at,
+
+                c.ring_duration_seconds,
+                c.talk_duration_seconds,
+                c.total_duration_seconds,
+
+                c.notes,
+
+                f.id AS follow_up_id,
+                f.status AS follow_up_status,
+
+                COALESCE(
+                    cb.callback_count,
+                    0
+                ) AS callback_count,
+
+                cb.latest_callback_at
+
+            FROM communication_calls c
+
+            LEFT JOIN communication_threads
+                direct_thread
+                ON direct_thread.id
+                    = c.thread_id
+
+            LEFT JOIN unique_threads ut
+                ON c.channel = 'WHATSAPP'
+               AND c.thread_id IS NULL
+               AND ut.external_address
+                    = c.phone_number
+
+            LEFT JOIN clientes resolved_client
+                ON resolved_client.id = COALESCE(
+                    c.client_id,
+                    direct_thread.client_id,
+                    ut.client_id
+                )
+
+            LEFT JOIN
+                communication_call_followups f
+                ON f.source_call_id
+                    = c.id
+
+            LEFT JOIN callback_summary cb
+                ON cb.source_call_id
+                    = c.id
+
+            WHERE {where_sql}
+
+            ORDER BY
+                c.created_at DESC,
+                c.id DESC
+
+            LIMIT ?
+        """
+
+        params.append(
+            normalized_limit
+        )
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                sql,
+                params,
+            ).fetchall()
+
+        return [
+            self._call_overview_from_row(
+                row
+            )
+            for row in rows
+        ]
+
+
     def get_call(
         self,
         call_id,
@@ -908,6 +1403,85 @@ class SQLiteCommunicationRepository:
         return self._call_from_row(
             row
         )
+
+    def update_call_details(
+        self,
+        call,
+    ):
+        """
+        Persiste exclusivamente datos editoriales
+        registrados por el operador tras una llamada.
+
+        Modifica:
+        - reason_code;
+        - reason_detail;
+        - notes.
+
+        NO modifica:
+        - lifecycle ni timestamps;
+        - identidad del proveedor;
+        - interlocutor;
+        - vínculos CRM;
+        - outcome_code;
+        - metadata del proveedor.
+
+        La separación evita que una edición humana
+        pueda degradar conocimiento realtime/histórico.
+        """
+        self.ensure_schema()
+
+        if (
+            call is None
+            or call.id in (
+                None,
+                "",
+            )
+        ):
+            raise ValueError(
+                "La llamada debe tener id "
+                "para actualizar sus detalles"
+            )
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE communication_calls
+                SET
+                    reason_code = ?,
+                    reason_detail = ?,
+                    notes = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    call.reason_code,
+                    call.reason_detail,
+                    call.notes,
+                    int(call.id),
+                ),
+            )
+
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    "Llamada de comunicación "
+                    "no encontrada"
+                )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_calls
+                WHERE id = ?
+                """,
+                (
+                    int(call.id),
+                ),
+            ).fetchone()
+
+            return self._call_from_row(
+                row
+            )
+
 
     def update_call_state(
         self,
@@ -2550,6 +3124,8 @@ class SQLiteCommunicationRepository:
                                 AS expedient_id,
                             e.numero_expediente
                                 AS number,
+                            e.box_folder_path
+                                AS box_folder_path,
                             f.nombre
                                 AS family_name,
                             te.nombre
@@ -2610,6 +3186,12 @@ class SQLiteCommunicationRepository:
                         number=(
                             expedient_row[
                                 "number"
+                            ]
+                            or None
+                        ),
+                        box_folder_path=(
+                            expedient_row[
+                                "box_folder_path"
                             ]
                             or None
                         ),
