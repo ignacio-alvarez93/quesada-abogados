@@ -306,6 +306,13 @@ WHATSAPP_ATTACHMENT_ADD_SELECTOR = (
 )
 
 
+WHATSAPP_ATTACHMENT_SEND_ONE_SELECTOR = (
+    '[data-testid="drawer-middle"] '
+    '[role="button"]'
+    '[aria-label="Enviar 1 seleccionado"]'
+)
+
+
 @dataclass(frozen=True)
 class WhatsAppMessageSnapshot:
     """Mensaje visible normalizado desde WhatsApp Web."""
@@ -6485,6 +6492,21 @@ class WhatsAppConnector:
                         };
                     }
 
+                    document.querySelectorAll(
+                        'input[type="file"]'
+                        + '[data-qa-wa-document-input="1"]'
+                    ).forEach(
+                        node => {
+                            try {
+                                node.removeAttribute(
+                                    'data-qa-wa-document-input'
+                                );
+                            } catch (_) {
+                                // Cleanup best effort.
+                            }
+                        }
+                    );
+
                     window.__qaWaDocumentOriginalClick =
                         HTMLInputElement.prototype.click;
 
@@ -6518,11 +6540,19 @@ class WhatsAppConnector:
                                     '1'
                                 );
 
-                                window
-                                    .__qaWaDocumentCaptured
-                                    .push(
-                                        this
-                                    );
+                                if (
+                                    !window
+                                        .__qaWaDocumentCaptured
+                                        .includes(
+                                            this
+                                        )
+                                ) {
+                                    window
+                                        .__qaWaDocumentCaptured
+                                        .push(
+                                            this
+                                        );
+                                }
 
                                 // Deliberadamente:
                                 // no abrimos el diálogo del SO.
@@ -6584,6 +6614,44 @@ class WhatsAppConnector:
                                 .__qaWaDocumentOriginalClick;
                     }
 
+                    const captured =
+                        Array.isArray(
+                            window.__qaWaDocumentCaptured
+                        )
+                        ? window
+                            .__qaWaDocumentCaptured
+                        : [];
+
+                    captured.forEach(
+                        node => {
+                            try {
+                                node.removeAttribute(
+                                    'data-qa-wa-document-input'
+                                );
+                            } catch (_) {
+                                // Cleanup best effort.
+                            }
+                        }
+                    );
+
+                    document.querySelectorAll(
+                        'input[type="file"]'
+                        + '[data-qa-wa-document-input="1"]'
+                    ).forEach(
+                        node => {
+                            try {
+                                node.removeAttribute(
+                                    'data-qa-wa-document-input'
+                                );
+                            } catch (_) {
+                                // Cleanup best effort.
+                            }
+                        }
+                    );
+
+                    delete window
+                        .__qaWaDocumentCaptured;
+
                     delete window
                         .__qaWaDocumentOriginalClick;
 
@@ -6611,10 +6679,47 @@ class WhatsAppConnector:
                 (() => {
                     /* QA_WA_ATTACHMENT_COUNT */
 
-                    return document.querySelectorAll(
-                        'input[type="file"]'
-                        + '[data-qa-wa-document-input="1"]'
-                    ).length;
+                    const captured =
+                        Array.isArray(
+                            window.__qaWaDocumentCaptured
+                        )
+                        ? window
+                            .__qaWaDocumentCaptured
+                            .filter(
+                                node => (
+                                    Boolean(
+                                        node
+                                    )
+                                    && Boolean(
+                                        node.isConnected
+                                    )
+                                    && String(
+                                        node.type
+                                        || ''
+                                    ).toLowerCase()
+                                    === 'file'
+                                    && String(
+                                        node.getAttribute(
+                                            'accept'
+                                        )
+                                        || ''
+                                    )
+                                    === '*'
+                                    && Boolean(
+                                        node.multiple
+                                    )
+                                    && node.getAttribute(
+                                        'data-qa-wa-document-input'
+                                    )
+                                    === '1'
+                                )
+                            )
+                        : [];
+
+                    window.__qaWaDocumentCaptured =
+                        captured;
+
+                    return captured.length;
                 })()
                 """
             )
@@ -6966,6 +7071,321 @@ class WhatsAppConnector:
             "Estado de carga de adjunto incierto: "
             "WhatsApp no confirmó el preview "
             "del archivo dentro del timeout"
+        )
+
+    def send_document_attachment(
+        self,
+        file_path,
+        *,
+        timeout=12,
+    ):
+        """Envía UN documento al chat activo con confirmación fuerte.
+
+        Contrato de seguridad:
+        - fija los provider IDs existentes antes del staging;
+        - fija la identidad del chat antes del staging;
+        - reutiliza stage_document_attachment();
+        - exige preview + filename + un único seleccionado;
+        - revalida el destinatario inmediatamente antes del click;
+        - emite exactamente un click de envío;
+        - nunca reintenta el click;
+        - confirma mediante un nuevo snapshot OUTBOUND DOCUMENT
+          cuyo filename coincide exactamente con el solicitado.
+
+        Una vez emitido el click, cualquier resultado no confirmable
+        se considera estado incierto y nunca provoca retry.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        path = Path(
+            file_path
+        ).expanduser()
+
+        try:
+            path = path.resolve(
+                strict=True
+            )
+        except Exception as exc:
+            raise FileNotFoundError(
+                "El archivo adjunto no existe"
+            ) from exc
+
+        if not path.is_file():
+            raise ValueError(
+                "La ruta del adjunto no es un archivo"
+            )
+
+        filename = path.name
+
+        active_before = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active_before.chat_open:
+            raise RuntimeError(
+                "No hay un chat WhatsApp activo"
+            )
+
+        expected_identity = str(
+            active_before.active_identity
+            or ""
+        ).strip()
+
+        if not expected_identity:
+            raise RuntimeError(
+                "No se pudo fijar la identidad "
+                "del destinatario"
+            )
+
+        before = (
+            self.list_visible_message_snapshots(
+                limit=200
+            )
+        )
+
+        before_ids = {
+            item.provider_message_id
+            for item in before
+            if item.provider_message_id
+        }
+
+        staged = (
+            self.stage_document_attachment(
+                path,
+                timeout=timeout,
+            )
+        )
+
+        preview = (
+            staged.get(
+                "preview"
+            )
+            or {}
+        )
+
+        if not staged.get(
+            "staged"
+        ):
+            raise RuntimeError(
+                "WhatsApp no confirmó el staging "
+                "del documento"
+            )
+
+        if (
+            str(
+                staged.get(
+                    "filename"
+                )
+                or ""
+            )
+            != filename
+        ):
+            raise RuntimeError(
+                "El filename staged no coincide "
+                "con el archivo solicitado"
+            )
+
+        if not preview.get(
+            "preview_found"
+        ):
+            raise RuntimeError(
+                "WhatsApp no confirmó el preview "
+                "del documento"
+            )
+
+        if not preview.get(
+            "filename_present"
+        ):
+            raise RuntimeError(
+                "WhatsApp no confirmó el filename "
+                "en el preview"
+            )
+
+        if not preview.get(
+            "send_found"
+        ):
+            raise RuntimeError(
+                "WhatsApp no confirmó el botón "
+                "de envío del preview"
+            )
+
+        if preview.get(
+            "selected_count"
+        ) != 1:
+            raise RuntimeError(
+                "El preview no contiene exactamente "
+                "un documento seleccionado"
+            )
+
+        send_aria_label = str(
+            preview.get(
+                "send_aria_label"
+            )
+            or ""
+        ).strip()
+
+        if (
+            send_aria_label
+            != "Enviar 1 seleccionado"
+        ):
+            raise RuntimeError(
+                "Semántica inesperada del botón "
+                "de envío del preview"
+            )
+
+        try:
+            send_button = (
+                self.browser.find_element(
+                    WHATSAPP_ATTACHMENT_SEND_ONE_SELECTOR
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Botón de envío del documento "
+                "no localizado"
+            ) from exc
+
+        if not send_button:
+            raise RuntimeError(
+                "Botón de envío del documento "
+                "no localizado"
+            )
+
+        send_click = getattr(
+            send_button,
+            "mouse_click",
+            None,
+        )
+
+        if not callable(
+            send_click
+        ):
+            raise RuntimeError(
+                "Botón de envío del documento "
+                "no soporta mouse_click"
+            )
+
+        # Última barrera inmediatamente antes
+        # de cruzar el punto irreversible.
+        active_pre_send = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active_pre_send.chat_open:
+            raise RuntimeError(
+                "No se puede revalidar el chat "
+                "antes de enviar"
+            )
+
+        actual_identity = str(
+            active_pre_send.active_identity
+            or ""
+        ).strip()
+
+        if (
+            not actual_identity
+            or actual_identity
+            != expected_identity
+        ):
+            raise RuntimeError(
+                "El destinatario cambió durante "
+                "el staging; envío cancelado"
+            )
+
+        # ====================================================
+        # PUNTO IRREVERSIBLE
+        #
+        # Este método realiza EXACTAMENTE un intento de click.
+        # Una excepción no autoriza un segundo click porque
+        # el evento pudo haber llegado ya a WhatsApp.
+        # ====================================================
+
+        click_error = None
+
+        try:
+            send_click()
+
+        except Exception as exc:
+            click_error = exc
+
+        deadline = (
+            time.time()
+            + max(
+                0.05,
+                float(
+                    timeout
+                ),
+            )
+        )
+
+        while (
+            time.time()
+            < deadline
+        ):
+            current = (
+                self.list_visible_message_snapshots(
+                    limit=200
+                )
+            )
+
+            matches = [
+                item
+                for item in current
+                if (
+                    item.provider_message_id
+                    and item.provider_message_id
+                    not in before_ids
+                    and item.direction
+                    == MESSAGE_DIRECTION_OUTBOUND
+                    and item.message_type
+                    == MESSAGE_TYPE_DOCUMENT
+                    and str(
+                        (
+                            item.metadata
+                            or {}
+                        ).get(
+                            "filename"
+                        )
+                        or ""
+                    )
+                    == filename
+                )
+            ]
+
+            if len(
+                matches
+            ) == 1:
+                return matches[0]
+
+            if len(
+                matches
+            ) > 1:
+                raise WhatsAppSendStateUncertainError(
+                    "Estado de envío incierto: "
+                    "aparecieron múltiples documentos "
+                    "OUTBOUND nuevos con el mismo filename"
+                )
+
+            time.sleep(
+                0.05
+            )
+
+        if click_error:
+            raise WhatsAppSendStateUncertainError(
+                "Estado de envío incierto: "
+                "el click produjo una excepción y "
+                "WhatsApp no permitió confirmar "
+                "el documento OUTBOUND"
+            ) from click_error
+
+        raise WhatsAppSendStateUncertainError(
+            "Estado de envío incierto: "
+            "el click fue emitido pero WhatsApp "
+            "no permitió confirmar exactamente "
+            "un documento OUTBOUND nuevo"
         )
 
     def send_text_message(
