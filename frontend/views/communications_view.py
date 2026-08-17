@@ -5425,13 +5425,6 @@ def communications_view(
             )
         )
 
-        has_pending_attachments = bool(
-            state.get(
-                "pending_attachments"
-            )
-            or []
-        )
-
         composer_input.disabled = (
             not has_thread
             or unavailable
@@ -5439,15 +5432,14 @@ def communications_view(
             or sending
         )
 
+        # 12D8:
+        # una cola documental ya dispone de transporte
+        # Runtime gobernado y por tanto no bloquea Enviar.
         send_button.disabled = (
             not has_thread
             or unavailable
             or blocked
             or sending
-            # 12C2 todavía no activa transporte físico.
-            # No permitimos que un operador interprete que
-            # los adjuntos se enviaron junto al texto.
-            or has_pending_attachments
         )
 
         attachment_button.disabled = (
@@ -5953,6 +5945,7 @@ def communications_view(
 
         if callable(runner):
             runner(target)
+
             return
 
         # No ejecutamos el transporte de WhatsApp
@@ -6471,20 +6464,90 @@ def communications_view(
         result=None,
         exception=None,
     ):
-        uncertain = bool(
+        batch = dict(
             result
-            and result.get(
+            or {}
+        )
+
+        batch_mode = bool(
+            batch.get(
+                "batch_mode",
+                False,
+            )
+        )
+
+        uncertain = bool(
+            batch.get(
                 "uncertain",
                 False,
             )
         )
 
         ok = bool(
-            result
-            and result.get(
+            batch.get(
                 "ok",
                 False,
             )
+        )
+
+        text_sent = (
+            bool(
+                batch.get(
+                    "text_sent",
+                    False,
+                )
+            )
+            if batch_mode
+            else (
+                ok
+                and bool(
+                    str(
+                        sent_text
+                        or ""
+                    ).strip()
+                )
+            )
+        )
+
+        completed_attachment_keys = {
+            str(
+                value
+                or ""
+            ).strip()
+            for value in (
+                batch.get(
+                    "completed_attachment_keys"
+                )
+                or []
+            )
+            if str(
+                value
+                or ""
+            ).strip()
+        }
+
+        attachment_requested_count = int(
+            batch.get(
+                "attachment_requested_count",
+                0,
+            )
+            or 0
+        )
+
+        persisted_message_count = int(
+            batch.get(
+                "persisted_message_count",
+                0,
+            )
+            or 0
+        )
+
+        completed_operation_count = int(
+            batch.get(
+                "completed_operation_count",
+                0,
+            )
+            or 0
         )
 
         if uncertain:
@@ -6504,14 +6567,65 @@ def communications_view(
             == int(thread_id)
         )
 
-        # Actualización ligera de UI tras envío.
+        # ----------------------------------------------------
+        # Limpieza SELECTIVA.
         #
-        # Si el usuario sigue viendo el mismo thread,
-        # no necesitamos recargar sidebar, métricas,
-        # filtros ni contexto.
+        # Solo desaparecen de la cola los documentos cuya
+        # respuesta fue ok=True.
         #
-        # El servicio de envío ya ha persistido el estado
-        # outbound; recuperamos únicamente el historial.
+        # El documento fallido/incierto y todos los posteriores
+        # permanecen para evitar perder el contexto operacional.
+        # ----------------------------------------------------
+
+        if (
+            batch_mode
+            and selected_same_thread
+            and completed_attachment_keys
+        ):
+            current = list(
+                state.get(
+                    "pending_attachments"
+                )
+                or []
+            )
+
+            state[
+                "pending_attachments"
+            ] = [
+                item
+                for item in current
+                if str(
+                    item.get(
+                        "path_key"
+                    )
+                    or ""
+                ).strip()
+                not in completed_attachment_keys
+            ]
+
+            if not state[
+                "pending_attachments"
+            ]:
+                state[
+                    "attachment_target_thread_id"
+                ] = None
+
+        # Un texto confirmado debe desaparecer aunque un
+        # documento posterior del mismo batch falle.
+        if (
+            text_sent
+            and selected_same_thread
+            and str(
+                composer_input.value
+                or ""
+            ).strip()
+            == str(
+                sent_text
+                or ""
+            ).strip()
+        ):
+            _clear_composer()
+
         light_send_refresh = False
 
         if selected_same_thread:
@@ -6523,10 +6637,8 @@ def communications_view(
                     or []
                 )
 
-                # Durante lectura histórica conservamos también
-                # la página expandida al añadir nuestro outbound.
                 if (
-                    ok
+                    persisted_message_count > 0
                     and state.get(
                         "message_history_expanded"
                     )
@@ -6545,29 +6657,34 @@ def communications_view(
                                 or 0
                             ),
                         )
-                        + 1
+                        + persisted_message_count
                     )
-
 
                 load_thread_messages()
 
+                if attachment_requested_count > 0:
+                    # La cola forma parte del compositor central.
+                    # Rehacemos únicamente el host central para
+                    # retirar visualmente los adjuntos completados.
+                    try:
+                        light_send_refresh = bool(
+                            _refresh_chat_panel_control()
+                        )
+                    except Exception:
+                        light_send_refresh = False
 
-
-                # El servicio de envío ya persistió el outbound.
-                # Intentamos exactamente el mismo fast path
-                # demostrado con mensajes entrantes: historial
-                # anterior como prefijo + mensajes nuevos al final.
-                light_send_refresh = (
-                    _append_new_message_history_controls(
-                        previous_messages
-                    )
-                )
-
-                if not light_send_refresh:
+                else:
+                    # Fast path histórico del texto puro.
                     light_send_refresh = (
-                        _refresh_message_history_control()
+                        _append_new_message_history_controls(
+                            previous_messages
+                        )
                     )
 
+                    if not light_send_refresh:
+                        light_send_refresh = (
+                            _refresh_message_history_control()
+                        )
 
             except Exception as exc:
                 print(
@@ -6579,13 +6696,11 @@ def communications_view(
                 light_send_refresh = False
 
         if not light_send_refresh:
-            # Si el usuario cambió de conversación durante
-            # el envío, o el control visible no está montado,
-            # conservamos el refresh completo probado.
             print(
                 "[WA-FLET] send finish fallback full",
                 {
-                    "thread_id": int(thread_id),
+                    "thread_id":
+                        int(thread_id),
                     "selected_thread_id":
                         state.get(
                             "selected_thread_id"
@@ -6602,37 +6717,24 @@ def communications_view(
                 pass
 
         if (
-            ok
+            completed_operation_count > 0
             and selected_same_thread
         ):
-            # Una respuesta confirmada implica que el thread
-            # está siendo atendido desde el CRM.
             _mark_realtime_thread_read(
                 thread_id,
                 refresh_sidebar=False,
             )
 
-        if (
-            ok
-            and selected_same_thread
-            and str(
-                composer_input.value
-                or ""
-            )
-            == sent_text
-        ):
-            _clear_composer()
-
         _refresh_composer_controls()
 
         if light_send_refresh:
-            # El historial ya se actualizó de forma parcial.
-            # Propagamos compositor y sidebar ligero: una
-            # respuesta confirmada debe retirar el badge unread.
             try:
                 _refresh_conversation_list_control()
+
                 composer_input.update()
                 send_button.update()
+                attachment_button.update()
+
             except Exception:
                 try:
                     page.update()
@@ -6647,7 +6749,7 @@ def communications_view(
         if exception is not None:
             _show_message(
                 (
-                    "No se pudo enviar el mensaje: "
+                    "No se pudo completar el envío: "
                     f"{exception}"
                 ),
                 error=True,
@@ -6657,34 +6759,51 @@ def communications_view(
         if uncertain:
             _show_message(
                 (
-                    "El estado del envío no pudo "
-                    "confirmarse con seguridad. "
-                    "No reenvíes este mensaje hasta "
-                    "revisar la conversación."
+                    "El envío se ha detenido porque una "
+                    "operación quedó en estado incierto. "
+                    "No reenvíes este mensaje o archivo "
+                    "hasta revisar la conversación."
                 ),
                 error=True,
             )
             return
 
         if not ok:
-            error = (
-                result.get(
+            error = str(
+                batch.get(
                     "error"
                 )
-                if result
-                else None
-            )
+                or ""
+            ).strip()
+
+            if completed_operation_count > 0:
+                prefix = (
+                    f"Se enviaron {completed_operation_count} "
+                    "elemento(s), pero la cola se detuvo"
+                )
+            else:
+                prefix = (
+                    "No se pudo completar el envío"
+                )
 
             _show_message(
-                (
-                    "No se pudo enviar el mensaje"
-                    + (
-                        f": {error}"
-                        if error
-                        else "."
-                    )
+                prefix
+                + (
+                    f": {error}"
+                    if error
+                    else "."
                 ),
                 error=True,
+            )
+            return
+
+        if attachment_requested_count > 0:
+            _show_message(
+                (
+                    "Envío completado correctamente · "
+                    f"{completed_operation_count} "
+                    "elemento(s)."
+                )
             )
             return
 
@@ -6722,13 +6841,60 @@ def communications_view(
             )
             return
 
+        captured_thread_id = int(
+            thread_id
+        )
+
         text_to_send = str(
             composer_input.value
             or ""
         ).strip()
 
-        if not text_to_send:
+        pending_attachments = [
+            dict(
+                item
+            )
+            for item in (
+                state.get(
+                    "pending_attachments"
+                )
+                or []
+            )
+        ]
+
+        # Texto vacío es válido cuando existen adjuntos.
+        if (
+            not text_to_send
+            and not pending_attachments
+        ):
             return
+
+        # La cola documental está capturada para un destinatario
+        # concreto. Una inconsistencia nunca se corrige adivinando.
+        if pending_attachments:
+            attachment_target = state.get(
+                "attachment_target_thread_id"
+            )
+
+            if (
+                attachment_target in (
+                    None,
+                    "",
+                )
+                or int(
+                    attachment_target
+                )
+                != captured_thread_id
+            ):
+                _show_message(
+                    (
+                        "Los archivos pendientes pertenecen "
+                        "a otra conversación. Vuelve a "
+                        "seleccionarlos antes de enviar."
+                    ),
+                    error=True,
+                )
+                return
 
         if whatsapp_runtime is None:
             _show_message(
@@ -6739,10 +6905,6 @@ def communications_view(
                 error=True,
             )
             return
-
-        captured_thread_id = int(
-            thread_id
-        )
 
         state["sending"] = True
         _refresh_composer_controls()
@@ -6758,20 +6920,317 @@ def communications_view(
         ).strip() or "ERP"
 
         def worker():
-            try:
-                result = (
-                    whatsapp_runtime
-                    .send_text_message(
-                        thread_id=(
-                            captured_thread_id
-                        ),
-                        body_text=(
-                            text_to_send
-                        ),
-                        created_by=username,
-                        sent_by=username,
+            batch_result = {
+                "batch_mode":
+                    True,
+                "ok":
+                    True,
+                "uncertain":
+                    False,
+                "error":
+                    None,
+                "text_requested":
+                    bool(
+                        text_to_send
+                    ),
+                "text_sent":
+                    False,
+                "attachment_requested_count":
+                    len(
+                        pending_attachments
+                    ),
+                "completed_attachment_keys":
+                    [],
+                "completed_operation_count":
+                    0,
+                "persisted_message_count":
+                    0,
+                "stopped_reason":
+                    None,
+            }
+
+            def absorb_result(
+                transport_result,
+                *,
+                attachment=None,
+                is_text=False,
+            ):
+                if not isinstance(
+                    transport_result,
+                    dict,
+                ):
+                    raise RuntimeError(
+                        "WhatsApp devolvió un resultado "
+                        "de envío no reconocido"
+                    )
+
+                if (
+                    transport_result.get(
+                        "message"
+                    )
+                    is not None
+                ):
+                    batch_result[
+                        "persisted_message_count"
+                    ] += 1
+
+                operation_ok = bool(
+                    transport_result.get(
+                        "ok",
+                        False,
                     )
                 )
+
+                operation_uncertain = bool(
+                    transport_result.get(
+                        "uncertain",
+                        False,
+                    )
+                )
+
+                if operation_ok:
+                    batch_result[
+                        "completed_operation_count"
+                    ] += 1
+
+                    if is_text:
+                        batch_result[
+                            "text_sent"
+                        ] = True
+
+                    if attachment is not None:
+                        path_key = str(
+                            attachment.get(
+                                "path_key"
+                            )
+                            or ""
+                        ).strip()
+
+                        if path_key:
+                            batch_result[
+                                "completed_attachment_keys"
+                            ].append(
+                                path_key
+                            )
+
+                    return True
+
+                batch_result["ok"] = False
+                batch_result[
+                    "uncertain"
+                ] = operation_uncertain
+
+                batch_result[
+                    "error"
+                ] = (
+                    transport_result.get(
+                        "error"
+                    )
+                    or (
+                        "Estado de envío incierto"
+                        if operation_uncertain
+                        else "El proveedor rechazó el envío"
+                    )
+                )
+
+                batch_result[
+                    "stopped_reason"
+                ] = (
+                    "UNCERTAIN"
+                    if operation_uncertain
+                    else "SEND_FAILED"
+                )
+
+                return False
+
+            try:
+                # --------------------------------------------
+                # 1. TEXTO
+                #
+                # Se envía primero y como mensaje independiente.
+                # No utilizamos caption documental.
+                # --------------------------------------------
+
+                if text_to_send:
+                    text_result = (
+                        whatsapp_runtime
+                        .send_text_message(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            body_text=(
+                                text_to_send
+                            ),
+                            created_by=username,
+                            sent_by=username,
+                        )
+                    )
+
+                    if not absorb_result(
+                        text_result,
+                        is_text=True,
+                    ):
+                        _schedule_finish_send_ui(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            sent_text=(
+                                text_to_send
+                            ),
+                            result=(
+                                batch_result
+                            ),
+                        )
+                        return
+
+                # --------------------------------------------
+                # 2. DOCUMENTOS
+                #
+                # Una única cola secuencial.
+                # STOP ante cualquier fallo o incertidumbre.
+                # --------------------------------------------
+
+                for attachment in (
+                    pending_attachments
+                ):
+                    # El operador puede cambiar de conversación
+                    # mientras un transporte está en curso.
+                    #
+                    # Nunca iniciamos el SIGUIENTE transporte
+                    # después de ese cambio.
+                    current_thread_id = state.get(
+                        "selected_thread_id"
+                    )
+
+                    if (
+                        current_thread_id is None
+                        or int(
+                            current_thread_id
+                        )
+                        != captured_thread_id
+                    ):
+                        batch_result[
+                            "ok"
+                        ] = False
+
+                        batch_result[
+                            "error"
+                        ] = (
+                            "La conversación cambió durante "
+                            "el envío. La cola se detuvo."
+                        )
+
+                        batch_result[
+                            "stopped_reason"
+                        ] = (
+                            "SELECTION_CHANGED"
+                        )
+
+                        _schedule_finish_send_ui(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            sent_text=(
+                                text_to_send
+                            ),
+                            result=(
+                                batch_result
+                            ),
+                        )
+                        return
+
+                    file_path = str(
+                        attachment.get(
+                            "path"
+                        )
+                        or ""
+                    ).strip()
+
+                    if not file_path:
+                        batch_result[
+                            "ok"
+                        ] = False
+
+                        batch_result[
+                            "error"
+                        ] = (
+                            "Uno de los archivos pendientes "
+                            "no tiene una ruta válida."
+                        )
+
+                        batch_result[
+                            "stopped_reason"
+                        ] = (
+                            "FILE_PATH_MISSING"
+                        )
+
+                        _schedule_finish_send_ui(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            sent_text=(
+                                text_to_send
+                            ),
+                            result=(
+                                batch_result
+                            ),
+                        )
+                        return
+
+                    expedient_id = (
+                        attachment.get(
+                            "expedient_id"
+                        )
+                    )
+
+                    attachment_source = str(
+                        attachment.get(
+                            "source"
+                        )
+                        or "EXPLORER"
+                    ).strip().upper()
+
+                    document_result = (
+                        whatsapp_runtime
+                        .send_document_message(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            file_path=(
+                                file_path
+                            ),
+                            expedient_id=(
+                                expedient_id
+                            ),
+                            created_by=username,
+                            sent_by=username,
+                            metadata={
+                                "source":
+                                    "communications_view_attachment",
+                                "attachment_source":
+                                    attachment_source,
+                            },
+                        )
+                    )
+
+                    if not absorb_result(
+                        document_result,
+                        attachment=(
+                            attachment
+                        ),
+                    ):
+                        _schedule_finish_send_ui(
+                            thread_id=(
+                                captured_thread_id
+                            ),
+                            sent_text=(
+                                text_to_send
+                            ),
+                            result=(
+                                batch_result
+                            ),
+                        )
+                        return
 
                 _schedule_finish_send_ui(
                     thread_id=(
@@ -6780,7 +7239,9 @@ def communications_view(
                     sent_text=(
                         text_to_send
                     ),
-                    result=result,
+                    result=(
+                        batch_result
+                    ),
                 )
 
             except Exception as exc:
@@ -6790,6 +7251,9 @@ def communications_view(
                     ),
                     sent_text=(
                         text_to_send
+                    ),
+                    result=(
+                        batch_result
                     ),
                     exception=exc,
                 )

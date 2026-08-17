@@ -180,27 +180,33 @@ class CommunicationsAttachmentUIContractTests(
             block,
         )
 
-    def test_send_is_blocked_while_files_are_pending(
+    def test_pending_files_no_longer_block_send(
         self,
     ):
         start = SOURCE.index(
             "    def _refresh_composer_controls("
         )
+
         end = SOURCE.index(
             "    def _clear_composer(",
             start,
         )
 
-        block = SOURCE[start:end]
+        block = SOURCE[
+            start:
+            end
+        ]
 
-        self.assertIn(
-            "has_pending_attachments",
-            block,
-        )
-        self.assertIn(
+        self.assertNotIn(
             "or has_pending_attachments",
             block,
         )
+
+        self.assertNotIn(
+            "12C2 todavía no activa transporte físico",
+            block,
+        )
+
 
 
 if __name__ == "__main__":
