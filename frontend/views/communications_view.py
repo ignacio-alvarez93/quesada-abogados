@@ -223,6 +223,14 @@ def communications_view(
 
         "search": "",
         "linkage": "ALL",
+
+        # Filtro puramente visual sobre el estado realtime
+        # observado en el sidebar de WhatsApp.
+        #
+        # Es ortogonal a ALL/LINKED/UNLINKED:
+        # permite, por ejemplo, Sin vincular + No leídos.
+        "unread_only": False,
+
         "page": 1,
         "page_size": 20,
         "error": None,
@@ -408,6 +416,34 @@ def communications_view(
             return {}
 
         return value
+
+
+    def _conversation_item_unread_count(
+        item,
+    ):
+        """Devuelve unread realtime conocido para un thread.
+
+        WhatsApp Web continúa siendo la fuente de verdad.
+        El filtro visual no persiste ni inventa unread.
+        """
+        realtime = (
+            _thread_realtime_sidebar_state(
+                item
+            )
+        )
+
+        try:
+            return max(
+                0,
+                int(
+                    realtime.get(
+                        "unread_count"
+                    )
+                    or 0
+                ),
+            )
+        except Exception:
+            return 0
 
 
     def _realtime_unread_badge(
@@ -2114,6 +2150,81 @@ def communications_view(
             )
 
 
+    async def _dispatch_whatsapp_sidebar_snapshot(
+        sidebar,
+    ):
+        """Hidrata una instancia Flet desde estado WhatsApp actual."""
+        if not _ui_active():
+            return False
+
+        # Reutilizamos exactamente la misma semántica de
+        # hidratación que SIDEBAR_INITIAL.
+        #
+        # No representa un delta ni actividad nueva.
+        synthetic_initial = {
+            "sidebar_change_type":
+                "SIDEBAR_INITIAL",
+            "sidebar":
+                (
+                    dict(sidebar)
+                    if isinstance(
+                        sidebar,
+                        dict,
+                    )
+                    else {}
+                ),
+        }
+
+        return (
+            _hydrate_whatsapp_sidebar_initial(
+                synthetic_initial
+            )
+        )
+
+
+    def _schedule_whatsapp_sidebar_snapshot(
+        sidebar,
+    ):
+        """Transfiere el snapshot desde background al loop Flet."""
+        if not _ui_active():
+            return False
+
+        runner = getattr(
+            page,
+            "run_task",
+            None,
+        )
+
+        if not callable(
+            runner
+        ):
+            return False
+
+        try:
+            runner(
+                _dispatch_whatsapp_sidebar_snapshot,
+                (
+                    dict(sidebar)
+                    if isinstance(
+                        sidebar,
+                        dict,
+                    )
+                    else {}
+                ),
+            )
+
+            return True
+
+        except Exception as exc:
+            print(
+                "[WA-FLET] sidebar snapshot schedule failed",
+                repr(exc),
+                flush=True,
+            )
+
+            return False
+
+
     def _on_whatsapp_watch_change(
         result,
     ):
@@ -2638,6 +2749,87 @@ def communications_view(
             return False
 
 
+    def _ensure_whatsapp_view_watch():
+        """Conecta esta vista al estado realtime de WhatsApp.
+
+        Se ejecuta automáticamente al montar Comunicaciones.
+
+        Contratos:
+        - nunca toca connector desde Flet;
+        - nunca crea un segundo browser;
+        - start_active_chat_watch() es idempotente;
+        - primero hidrata el sidebar visible;
+        - después asegura vigilancia realtime;
+        - todo Selenium/CDP permanece fuera del hilo UI.
+        """
+        if (
+            whatsapp_runtime is None
+            or not _ui_active()
+        ):
+            return False
+
+        runner = getattr(
+            page,
+            "run_thread",
+            None,
+        )
+
+        if not callable(
+            runner
+        ):
+            return False
+
+        def worker():
+            try:
+                # El runtime global puede haber sido iniciado ya
+                # por llamadas/CALL-SYNC. Si no, start() continúa
+                # respetando el propietario único gobernado.
+                if not whatsapp_runtime.started:
+                    whatsapp_runtime.start()
+
+                # CRÍTICO:
+                # una nueva instancia de communications_view()
+                # necesita el estado ACTUAL aunque el watcher
+                # lleve tiempo funcionando sin callback Flet.
+                sidebar = (
+                    whatsapp_runtime
+                    .read_sidebar_chat_fingerprint(
+                        wait_timeout=5,
+                    )
+                )
+
+                _schedule_whatsapp_sidebar_snapshot(
+                    sidebar
+                )
+
+                # Idempotente:
+                # - si ya vive, solo actualiza callback;
+                # - si no existe, lo crea;
+                # - nunca crea un segundo browser/worker CDP.
+                whatsapp_runtime.start_active_chat_watch(
+                    interval_seconds=0.5,
+                    wait_timeout=5,
+                    on_change=(
+                        _schedule_whatsapp_watch_change
+                    ),
+                )
+
+            except Exception as exc:
+                # La disponibilidad de WhatsApp nunca bloquea
+                # la construcción de Comunicaciones.
+                print(
+                    "[WA-FLET] view sidebar hydration failed",
+                    repr(exc),
+                    flush=True,
+                )
+
+        runner(
+            worker
+        )
+
+        return True
+
+
     def open_whatsapp(
         e=None,
     ):
@@ -2737,6 +2929,10 @@ def communications_view(
             "WhatsApp"
         )
 
+        state[
+            "unread_only"
+        ] = False
+
         state["page"] = 1
 
         refresh()
@@ -2752,10 +2948,7 @@ def communications_view(
         e=None,
     ):
         total = len(
-            state.get(
-                "items"
-            )
-            or []
+            _filtered_conversation_items()
         )
 
         pages = max(
@@ -2865,16 +3058,52 @@ def communications_view(
 
         _safe_update()
 
-    def build_linkage_pill(
+    def set_unread_filter(
+        enabled,
+    ):
+        """Activa/desactiva el filtro local de no leídos.
+
+        No consulta backend.
+        No selecciona conversaciones.
+        No navega WhatsApp.
+        """
+        state[
+            "unread_only"
+        ] = bool(
+            enabled
+        )
+
+        state[
+            "page"
+        ] = 1
+
+        _safe_update()
+
+    def build_filter_pill(
         label,
         value,
+        *,
+        selected_override=None,
+        on_select=None,
     ):
+        """Pill compacto de filtros de conversaciones.
+
+        Reutiliza el patrón visual ya existente en esta vista.
+        `selected_override` permite filtros ortogonales como
+        No leídos sin mezclarlos con linkage.
+        """
         selected = (
-            state.get(
-                "linkage",
-                "ALL",
+            (
+                state.get(
+                    "linkage",
+                    "ALL",
+                )
+                == value
             )
-            == value
+            if selected_override is None
+            else bool(
+                selected_override
+            )
         )
 
         if value == "LINKED":
@@ -2887,10 +3116,23 @@ def communications_view(
             inactive_fg = "#B54708"
             inactive_border = "#FEDF89"
 
+        elif value == "UNREAD":
+            inactive_bg = "#ECFDF3"
+            inactive_fg = "#027A48"
+            inactive_border = "#ABEFC6"
+
         else:
             inactive_bg = "#F8FAFC"
             inactive_fg = Q_PRIMARY_DARK
             inactive_border = Q_BORDER
+
+        callback = (
+            on_select
+            if callable(
+                on_select
+            )
+            else set_linkage_filter
+        )
 
         return ft.Container(
             bgcolor=(
@@ -2914,9 +3156,10 @@ def communications_view(
             ink=True,
             on_click=(
                 lambda e,
-                linkage=value:
-                    set_linkage_filter(
-                        linkage
+                filter_value=value,
+                handler=callback:
+                    handler(
+                        filter_value
                     )
             ),
             content=ft.Text(
@@ -2930,6 +3173,7 @@ def communications_view(
                 ),
             ),
         )
+
 
     def build_conversation_card(
         item,
@@ -2971,18 +3215,11 @@ def communications_view(
             or ""
         ).strip()
 
-        try:
-            realtime_unread = max(
-                0,
-                int(
-                    realtime.get(
-                        "unread_count"
-                    )
-                    or 0
-                ),
+        realtime_unread = (
+            _conversation_item_unread_count(
+                item
             )
-        except Exception:
-            realtime_unread = 0
+        )
 
         secondary = _secondary_name(
             item
@@ -3124,12 +3361,35 @@ def communications_view(
     )
 
 
-    def _visible_conversation_items():
+    def _filtered_conversation_items():
+        """Aplica filtros visuales sobre el modelo ya cargado."""
         items = list(
             state.get(
                 "items"
             )
             or []
+        )
+
+        if state.get(
+            "unread_only"
+        ):
+            items = [
+                item
+                for item in items
+                if (
+                    _conversation_item_unread_count(
+                        item
+                    )
+                    > 0
+                )
+            ]
+
+        return items
+
+
+    def _visible_conversation_items():
+        items = (
+            _filtered_conversation_items()
         )
 
         page_size = max(
@@ -3214,10 +3474,7 @@ def communications_view(
 
     def build_conversation_list():
         items = (
-            state.get(
-                "items"
-            )
-            or []
+            _filtered_conversation_items()
         )
 
         page_size = int(
@@ -3308,17 +3565,34 @@ def communications_view(
                     ),
                     ft.Row(
                         controls=[
-                            build_linkage_pill(
+                            build_filter_pill(
                                 "Todas",
                                 "ALL",
                             ),
-                            build_linkage_pill(
+                            build_filter_pill(
                                 "Vinculadas",
                                 "LINKED",
                             ),
-                            build_linkage_pill(
+                            build_filter_pill(
                                 "Sin vincular",
                                 "UNLINKED",
+                            ),
+                            build_filter_pill(
+                                "No leídos",
+                                "UNREAD",
+                                selected_override=(
+                                    state.get(
+                                        "unread_only"
+                                    )
+                                ),
+                                on_select=(
+                                    lambda _:
+                                        set_unread_filter(
+                                            not state.get(
+                                                "unread_only"
+                                            )
+                                        )
+                                ),
                             ),
                         ],
                         spacing=6,
@@ -7070,31 +7344,11 @@ def communications_view(
         build_content()
     )
 
-    # Si el watcher ya sobrevivía de una visita anterior,
-    # volver a WhatsApp debe transferir la propiedad del
-    # callback UI a ESTA nueva instancia.
+    # Cada instancia de la vista debe recibir inmediatamente
+    # el estado lateral ACTUAL.
     #
-    # No arrancamos aquí un watcher nuevo: únicamente
-    # re-vinculamos el consumidor si ya existe.
-    if (
-        whatsapp_runtime
-        is not None
-        and _ui_active()
-    ):
-        try:
-            if (
-                whatsapp_runtime
-                .active_chat_watch_running
-            ):
-                whatsapp_runtime.set_active_chat_watch_callback(
-                    _schedule_whatsapp_watch_change
-                )
-
-        except Exception as exc:
-            print(
-                "[WA-FLET] view callback rebind failed",
-                repr(exc),
-                flush=True,
-            )
+    # No dependemos de haber pulsado "Abrir WhatsApp" ni de que
+    # ocurra un delta nuevo después de montar esta instancia.
+    _ensure_whatsapp_view_watch()
 
     return content_area

@@ -3249,6 +3249,47 @@ class WhatsAppRuntimeService:
         )
 
 
+    def _read_sidebar_chat_fingerprint_impl(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """Lee pasivamente el sidebar WhatsApp actual.
+
+        No navega.
+        No hace click.
+        No modifica el baseline del watcher.
+        No persiste.
+
+        Permite que una nueva instancia Flet se hidrate aunque
+        el watcher ya existiera antes de montar la vista.
+        """
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        return (
+            connector
+            .get_sidebar_chat_fingerprint(
+                viewport_only=True,
+            )
+        )
+
+
+    def read_sidebar_chat_fingerprint(
+        self,
+        *,
+        wait_timeout=60,
+    ):
+        """API pública serializada del snapshot lateral."""
+        return self._run_serialized(
+            self._read_sidebar_chat_fingerprint_impl,
+            wait_timeout=wait_timeout,
+        )
+
+
     def _observe_and_sync_active_chat_impl(
         self,
         *,

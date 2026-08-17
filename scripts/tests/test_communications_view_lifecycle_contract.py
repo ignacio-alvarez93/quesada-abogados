@@ -103,7 +103,8 @@ def test_stale_watcher_and_scroll_are_guarded_before_flet_mutation():
         assert marker in text
 
 
-def test_returning_to_whatsapp_rebinds_existing_watcher_callback():
+
+def test_entering_whatsapp_hydrates_snapshot_and_ensures_watcher():
     text = (
         ROOT
         / "frontend"
@@ -114,24 +115,61 @@ def test_returning_to_whatsapp_rebinds_existing_watcher_callback():
     )
 
     assert (
-        ".active_chat_watch_running"
+        "def _ensure_whatsapp_view_watch()"
         in text
+    )
+
+    ensure_start = text.index(
+        "    def _ensure_whatsapp_view_watch()"
+    )
+
+    ensure_end = text.index(
+        "    def open_whatsapp(",
+        ensure_start,
+    )
+
+    ensure_block = text[
+        ensure_start:
+        ensure_end
+    ]
+
+    # La nueva instancia recibe una fotografía actual.
+    assert (
+        ".read_sidebar_chat_fingerprint("
+        in ensure_block
+    )
+
+    # Y asegura/reutiliza el watcher idempotente.
+    assert (
+        ".start_active_chat_watch("
+        in ensure_block
     )
 
     assert (
-        "set_active_chat_watch_callback(\n"
-        "                    _schedule_whatsapp_watch_change"
-        in text
+        "_schedule_whatsapp_watch_change"
+        in ensure_block
     )
 
-    # Rebind no debe crear otro watcher.
+    # Frontend nunca toca connector/Selenium directamente.
+    assert (
+        ".connector"
+        not in ensure_block
+    )
+
+    # El montaje de la vista ejecuta la hidratación automática.
     tail = text[
         text.index(
-            "# Si el watcher ya sobrevivía"
+            "# Cada instancia de la vista"
         ):
     ]
 
     assert (
-        "start_active_chat_watch("
+        "_ensure_whatsapp_view_watch()"
+        in tail
+    )
+
+    # Navegar fuera sigue sin apagar el watcher global.
+    assert (
+        "stop_active_chat_watch("
         not in tail
     )
