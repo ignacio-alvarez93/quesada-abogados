@@ -1,6 +1,7 @@
 import asyncio
 import time
 import math
+from pathlib import Path
 
 import flet as ft
 
@@ -182,6 +183,12 @@ def communications_view(
         "message_history_follow_bottom": True,
 
         "sending": False,
+
+        # WA-UX-PERF-12 · adjuntos todavía no enviados.
+        # Estado exclusivamente efímero del compositor.
+        "pending_attachments": [],
+        "attachment_target_thread_id": None,
+
         "send_blocked_thread_ids": set(),
 
         # Routing WhatsApp actualmente solicitado desde CRM.
@@ -821,6 +828,12 @@ def communications_view(
             previous_thread_id
             != new_thread_id
         ):
+            # Un adjunto pertenece siempre al chat en el
+            # que fue seleccionado. Nunca sobrevive a un
+            # cambio explícito de destinatario.
+            state["pending_attachments"] = []
+            state["attachment_target_thread_id"] = None
+
             # Cada conversación comienza siempre con una
             # ventana reciente limpia de 50 mensajes.
             state[
@@ -5367,6 +5380,13 @@ def communications_view(
         None,
     )
 
+    attachment_button = ft.IconButton(
+        icon=ft.Icons.ATTACH_FILE,
+        tooltip="Adjuntar archivos",
+        icon_size=20,
+        icon_color=Q_PRIMARY,
+    )
+
     def _selected_thread_send_blocked():
         thread_id = state.get(
             "selected_thread_id"
@@ -5405,6 +5425,13 @@ def communications_view(
             )
         )
 
+        has_pending_attachments = bool(
+            state.get(
+                "pending_attachments"
+            )
+            or []
+        )
+
         composer_input.disabled = (
             not has_thread
             or unavailable
@@ -5417,10 +5444,503 @@ def communications_view(
             or unavailable
             or blocked
             or sending
+            # 12C2 todavía no activa transporte físico.
+            # No permitimos que un operador interprete que
+            # los adjuntos se enviaron junto al texto.
+            or has_pending_attachments
+        )
+
+        attachment_button.disabled = (
+            not has_thread
+            or unavailable
+            or blocked
+            or sending
         )
 
     def _clear_composer():
         composer_input.value = ""
+
+    def _pending_attachment_path_key(
+        file_path,
+    ):
+        """Identidad local estable para deduplicar selección."""
+        value = str(
+            file_path
+            or ""
+        ).strip()
+
+        if not value:
+            return ""
+
+        return (
+            value
+            .replace("\\", "/")
+            .casefold()
+        )
+
+    def _refresh_pending_attachment_ui():
+        """Actualiza únicamente el panel central/compositor."""
+        _refresh_composer_controls()
+
+        try:
+            return bool(
+                _refresh_chat_panel_control()
+            )
+        except NameError:
+            _safe_update()
+            return False
+
+    def _remove_pending_attachment(
+        path_key,
+    ):
+        path_key = str(
+            path_key
+            or ""
+        ).strip()
+
+        current = list(
+            state.get(
+                "pending_attachments"
+            )
+            or []
+        )
+
+        state[
+            "pending_attachments"
+        ] = [
+            item
+            for item in current
+            if str(
+                item.get(
+                    "path_key"
+                )
+                or ""
+            )
+            != path_key
+        ]
+
+        if not state[
+            "pending_attachments"
+        ]:
+            state[
+                "attachment_target_thread_id"
+            ] = None
+
+        _refresh_pending_attachment_ui()
+
+    def _build_pending_attachments():
+        attachments = list(
+            state.get(
+                "pending_attachments"
+            )
+            or []
+        )
+
+        if not attachments:
+            return ft.Container(
+                height=0,
+            )
+
+        controls = []
+
+        for attachment in attachments:
+            name = str(
+                attachment.get(
+                    "name"
+                )
+                or "Archivo"
+            )
+
+            source = str(
+                attachment.get(
+                    "source"
+                )
+                or "EXPLORER"
+            )
+
+            source_label = (
+                "Expediente"
+                if source == "EXPEDIENT"
+                else "Equipo"
+            )
+
+            path_key = str(
+                attachment.get(
+                    "path_key"
+                )
+                or ""
+            )
+
+            controls.append(
+                ft.Container(
+                    padding=ft.padding.symmetric(
+                        horizontal=8,
+                        vertical=4,
+                    ),
+                    border_radius=8,
+                    bgcolor="#F8FAFC",
+                    border=ft.border.all(
+                        1,
+                        "#D0D5DD",
+                    ),
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.ATTACH_FILE,
+                                size=15,
+                                color=Q_PRIMARY,
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        name,
+                                        size=10,
+                                        color=Q_TEXT,
+                                        weight=(
+                                            ft.FontWeight.W_600
+                                        ),
+                                        max_lines=1,
+                                        overflow=(
+                                            ft.TextOverflow
+                                            .ELLIPSIS
+                                        ),
+                                    ),
+                                    ft.Text(
+                                        source_label,
+                                        size=8,
+                                        color=Q_MUTED,
+                                    ),
+                                ],
+                                spacing=0,
+                                expand=True,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CLOSE,
+                                tooltip=(
+                                    "Quitar archivo"
+                                ),
+                                icon_size=14,
+                                icon_color=Q_MUTED,
+                                on_click=(
+                                    lambda e,
+                                    captured_key=path_key:
+                                        _remove_pending_attachment(
+                                            captured_key
+                                        )
+                                ),
+                            ),
+                        ],
+                        spacing=5,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
+        return ft.Column(
+            controls=controls,
+            spacing=5,
+        )
+
+    def _append_pending_attachments(
+        files,
+        *,
+        source,
+        target_thread_id,
+        expedient_id=None,
+    ):
+        current_thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if (
+            current_thread_id is None
+            or int(
+                current_thread_id
+            )
+            != int(
+                target_thread_id
+            )
+        ):
+            _show_message(
+                (
+                    "La conversación cambió mientras "
+                    "seleccionabas los archivos. "
+                    "La selección se ha descartado."
+                ),
+                error=True,
+            )
+            return 0
+
+        existing = list(
+            state.get(
+                "pending_attachments"
+            )
+            or []
+        )
+
+        target = state.get(
+            "attachment_target_thread_id"
+        )
+
+        if (
+            target not in (
+                None,
+                "",
+            )
+            and int(target)
+            != int(target_thread_id)
+        ):
+            # Fail closed. En condiciones ordinarias esto queda
+            # prevenido por select_thread(), pero mantenemos la
+            # barrera en el propio compositor.
+            state[
+                "pending_attachments"
+            ] = []
+            existing = []
+
+        existing_keys = {
+            str(
+                item.get(
+                    "path_key"
+                )
+                or ""
+            )
+            for item in existing
+        }
+
+        added = 0
+
+        for selected in (
+            files
+            or []
+        ):
+            file_path = str(
+                getattr(
+                    selected,
+                    "path",
+                    None,
+                )
+                or ""
+            ).strip()
+
+            if not file_path:
+                continue
+
+            path_key = (
+                _pending_attachment_path_key(
+                    file_path
+                )
+            )
+
+            if (
+                not path_key
+                or path_key in existing_keys
+            ):
+                continue
+
+            file_name = str(
+                getattr(
+                    selected,
+                    "name",
+                    None,
+                )
+                or Path(
+                    file_path
+                ).name
+                or "Archivo"
+            )
+
+            existing.append(
+                {
+                    "path":
+                        file_path,
+                    "path_key":
+                        path_key,
+                    "name":
+                        file_name,
+                    "source":
+                        str(
+                            source
+                            or "EXPLORER"
+                        ).strip().upper(),
+                    "expedient_id":
+                        (
+                            int(
+                                expedient_id
+                            )
+                            if expedient_id
+                            else None
+                        ),
+                }
+            )
+
+            existing_keys.add(
+                path_key
+            )
+
+            added += 1
+
+        if added <= 0:
+            return 0
+
+        state[
+            "pending_attachments"
+        ] = existing
+
+        state[
+            "attachment_target_thread_id"
+        ] = int(
+            target_thread_id
+        )
+
+        _refresh_pending_attachment_ui()
+
+        return added
+
+    async def _pick_attachments(
+        *,
+        initial_directory=None,
+        source="EXPLORER",
+        expedient_id=None,
+    ):
+        thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if thread_id is None:
+            _show_message(
+                "Selecciona una conversación.",
+                error=True,
+            )
+            return 0
+
+        captured_thread_id = int(
+            thread_id
+        )
+
+        normalized_directory = (
+            str(
+                initial_directory
+                or ""
+            ).strip()
+            or None
+        )
+
+        if normalized_directory:
+            folder = Path(
+                normalized_directory
+            )
+
+            if not folder.is_dir():
+                _show_message(
+                    (
+                        "La carpeta documental del "
+                        "expediente no está disponible: "
+                        f"{normalized_directory}"
+                    ),
+                    error=True,
+                )
+                return 0
+
+        try:
+            files = await ft.FilePicker().pick_files(
+                dialog_title=(
+                    "Seleccionar archivos para WhatsApp"
+                ),
+                initial_directory=(
+                    normalized_directory
+                ),
+                allow_multiple=True,
+                file_type=(
+                    ft.FilePickerFileType.ANY
+                ),
+            )
+
+        except Exception as exc:
+            _show_message(
+                (
+                    "No se pudo abrir el selector "
+                    f"de archivos: {exc}"
+                ),
+                error=True,
+            )
+            return 0
+
+        if not files:
+            return 0
+
+        # El usuario puede haber cambiado de chat mientras
+        # el selector nativo estaba abierto.
+        current_thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if (
+            current_thread_id is None
+            or int(
+                current_thread_id
+            )
+            != captured_thread_id
+        ):
+            _show_message(
+                (
+                    "La conversación cambió mientras "
+                    "seleccionabas los archivos. "
+                    "La selección se ha descartado."
+                ),
+                error=True,
+            )
+            return 0
+
+        return _append_pending_attachments(
+            files,
+            source=source,
+            target_thread_id=(
+                captured_thread_id
+            ),
+            expedient_id=expedient_id,
+        )
+
+    async def pick_general_attachments(
+        e=None,
+    ):
+        return await _pick_attachments(
+            source="EXPLORER",
+        )
+
+    async def pick_expedient_attachments(
+        expedient_id,
+        box_folder_path,
+    ):
+        return await _pick_attachments(
+            initial_directory=(
+                box_folder_path
+            ),
+            source="EXPEDIENT",
+            expedient_id=(
+                expedient_id
+            ),
+        )
+
+    def _expedient_attachment_handler(
+        expedient_id,
+        box_folder_path,
+    ):
+        async def handler(
+            e=None,
+        ):
+            await pick_expedient_attachments(
+                expedient_id,
+                box_folder_path,
+            )
+
+        return handler
+
+    attachment_button.on_click = (
+        pick_general_attachments
+    )
 
     def _run_background(
         target,
@@ -6404,12 +6924,19 @@ def communications_view(
                                 Q_BORDER,
                             )
                         ),
-                        content=ft.Row(
+                        content=ft.Column(
                             controls=[
-                                composer_input,
-                                send_button,
+                                _build_pending_attachments(),
+                                ft.Row(
+                                    controls=[
+                                        composer_input,
+                                        attachment_button,
+                                        send_button,
+                                    ],
+                                    spacing=10,
+                                ),
                             ],
-                            spacing=10,
+                            spacing=8,
                         ),
                     ),
                 ],
@@ -6943,6 +7470,53 @@ def communications_view(
                                         color=Q_PRIMARY_DARK,
                                         expand=True,
                                     ),
+                                    ft.IconButton(
+                                        icon=(
+                                            ft.Icons
+                                            .ATTACH_FILE
+                                        ),
+                                        tooltip=(
+                                            "Adjuntar archivo "
+                                            "desde este expediente"
+                                            if str(
+                                                expedient
+                                                .box_folder_path
+                                                or ""
+                                            ).strip()
+                                            else (
+                                                "Este expediente "
+                                                "no tiene ruta "
+                                                "documental"
+                                            )
+                                        ),
+                                        icon_size=17,
+                                        icon_color=(
+                                            Q_PRIMARY
+                                            if str(
+                                                expedient
+                                                .box_folder_path
+                                                or ""
+                                            ).strip()
+                                            else "#98A2B3"
+                                        ),
+                                        disabled=(
+                                            not bool(
+                                                str(
+                                                    expedient
+                                                    .box_folder_path
+                                                    or ""
+                                                ).strip()
+                                            )
+                                        ),
+                                        on_click=(
+                                            _expedient_attachment_handler(
+                                                expedient
+                                                .expedient_id,
+                                                expedient
+                                                .box_folder_path,
+                                            )
+                                        ),
+                                    ),
                                     *(
                                         [
                                             ft.IconButton(
@@ -7075,6 +7649,33 @@ def communications_view(
                                 if type_text
                                 else ft.Container(
                                     height=0,
+                                )
+                            ),
+                            (
+                                ft.Text(
+                                    (
+                                        "Ruta: "
+                                        + str(
+                                            expedient
+                                            .box_folder_path
+                                        )
+                                    ),
+                                    size=8,
+                                    color=Q_MUTED,
+                                    max_lines=1,
+                                    overflow=(
+                                        ft.TextOverflow.ELLIPSIS
+                                    ),
+                                )
+                                if str(
+                                    expedient
+                                    .box_folder_path
+                                    or ""
+                                ).strip()
+                                else ft.Text(
+                                    "Sin ruta documental",
+                                    size=8,
+                                    color="#98A2B3",
                                 )
                             ),
                             *status_controls,
