@@ -983,10 +983,7 @@ def communications_view(
                     linkage=(
                         selected_linkage()
                     ),
-                    search=(
-                        search_input.value
-                        or ""
-                    ),
+                    search="",
                     include_archived=False,
                     limit=5000,
                 )
@@ -1822,10 +1819,7 @@ def communications_view(
                     linkage=(
                         selected_linkage()
                     ),
-                    search=(
-                        search_input.value
-                        or ""
-                    ),
+                    search="",
                     include_archived=False,
                     limit=5000,
                 )
@@ -2930,6 +2924,161 @@ def communications_view(
             )
         )
 
+    def _normalize_conversation_search(
+        value,
+    ):
+        import unicodedata
+
+        value = unicodedata.normalize(
+            "NFKD",
+            str(
+                value
+                or ""
+            ).casefold(),
+        )
+
+        value = "".join(
+            char
+            for char in value
+            if not unicodedata.combining(
+                char
+            )
+        )
+
+        return " ".join(
+            value.split()
+        )
+
+
+    def _conversation_search_digits(
+        value,
+    ):
+        return "".join(
+            char
+            for char in str(
+                value
+                or ""
+            )
+            if char.isdigit()
+        )
+
+
+    def _conversation_matches_search(
+        item,
+        query,
+    ):
+        normalized_query = (
+            _normalize_conversation_search(
+                query
+            )
+        )
+
+        if not normalized_query:
+            return True
+
+        realtime = (
+            _thread_realtime_sidebar_state(
+                item
+            )
+        )
+
+        text_haystack = " ".join(
+            [
+                str(
+                    item.client_name
+                    or ""
+                ),
+                str(
+                    item.external_display_name
+                    or ""
+                ),
+                str(
+                    item.external_address
+                    or ""
+                ),
+                str(
+                    item.external_thread_key
+                    or ""
+                ),
+                str(
+                    realtime.get(
+                        "display_name"
+                    )
+                    or ""
+                ),
+            ]
+        )
+
+        if normalized_query in (
+            _normalize_conversation_search(
+                text_haystack
+            )
+        ):
+            return True
+
+        query_digits = (
+            _conversation_search_digits(
+                query
+            )
+        )
+
+        if len(query_digits) < 3:
+            return False
+
+        phone_haystack = (
+            _conversation_search_digits(
+                " ".join(
+                    [
+                        str(
+                            item.external_address
+                            or ""
+                        ),
+                        str(
+                            item.external_thread_key
+                            or ""
+                        ),
+                    ]
+                )
+            )
+        )
+
+        return (
+            query_digits
+            in phone_haystack
+        )
+
+
+    def set_search_filter(
+        e=None,
+    ):
+        control = getattr(
+            e,
+            "control",
+            None,
+        )
+
+        value = (
+            getattr(
+                control,
+                "value",
+                None,
+            )
+            if control is not None
+            else search_input.value
+        )
+
+        state["search"] = str(
+            value
+            or ""
+        )
+
+        state["page"] = 1
+
+        # Igual que Clientes: no recarga la vista ni backend.
+        # Solo cambia el listado lateral, preservando el foco.
+        _refresh_conversation_list_control()
+
+
     def clear_filters(
         e=None,
     ):
@@ -3382,6 +3531,23 @@ def communications_view(
             )
             or []
         )
+
+        search = str(
+            state.get(
+                "search"
+            )
+            or ""
+        ).strip()
+
+        if search:
+            items = [
+                item
+                for item in items
+                if _conversation_matches_search(
+                    item,
+                    search,
+                )
+            ]
 
         if state.get(
             "unread_only"
@@ -8217,8 +8383,8 @@ def communications_view(
         )
 
     def build_filters():
-        search_input.on_submit = (
-            refresh
+        search_input.on_change = (
+            set_search_filter
         )
 
         channel_filter.on_select = (
@@ -8246,10 +8412,6 @@ def communications_view(
                     search_input,
                     channel_filter.control,
                     linkage_filter.control,
-                    secondary_button(
-                        "Buscar",
-                        refresh,
-                    ),
                     secondary_button(
                         "Limpiar",
                         clear_filters,
