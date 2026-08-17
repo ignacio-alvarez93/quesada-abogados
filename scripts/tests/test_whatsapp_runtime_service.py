@@ -4895,11 +4895,17 @@ class WhatsAppRuntimeServiceTest(
             "DENEB-20",
         )
 
-        self.assertEqual(
+        # CHAT_CHANGED recupera deliberadamente la
+        # ventana visible completa.
+        #
+        # El último provider id almacenado en DB no es un
+        # checkpoint seguro al entrar en una conversación:
+        # WhatsApp puede materializar mensajes faltantes ANTES
+        # de ese id.
+        self.assertIsNone(
             sync_calls[0][
                 "after_provider_message_id"
-            ],
-            "DENEB-19",
+            ]
         )
 
         self.assertFalse(

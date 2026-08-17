@@ -3478,10 +3478,89 @@ class WhatsAppRuntimeService:
             or sidebar_initial_available
         )
 
-        if (
+        active_change_type = str(
             result.get(
                 "change_type"
             )
+            or ""
+        ).strip()
+
+        initial_desired_thread_id = None
+
+        if (
+            active_change_type
+            == "INITIAL"
+        ):
+            # INITIAL continúa siendo baseline por defecto.
+            #
+            # Única excepción:
+            # existe una selección CRM explícita pendiente/
+            # vigente. En ese caso podemos intentar recuperar
+            # la ventana ya materializada, pero únicamente si
+            # la identidad activa resuelve después al mismo
+            # thread solicitado.
+            with self._desired_thread_lock:
+                initial_desired_thread_id = (
+                    self._desired_thread_id
+                )
+
+            if initial_desired_thread_id in (
+                None,
+                "",
+            ):
+                return result
+
+        elif (
+            active_change_type
+            == "MESSAGE_WINDOW_CHANGED"
+        ):
+            previous_window = (
+                result.get(
+                    "previous"
+                )
+            )
+
+            current_window = (
+                result.get(
+                    "current"
+                )
+            )
+
+            # Una contracción puede ser simple
+            # virtualización del DOM y no implica contenido
+            # nuevo.
+            #
+            # Una expansión sí debe recuperar toda la ventana:
+            # los nodos recién materializados pueden estar ANTES
+            # del último provider id ya conocido.
+            if (
+                previous_window is None
+                or current_window is None
+                or int(
+                    getattr(
+                        current_window,
+                        "visible_message_count",
+                        0,
+                    )
+                    or 0
+                )
+                <= int(
+                    getattr(
+                        previous_window,
+                        "visible_message_count",
+                        0,
+                    )
+                    or 0
+                )
+            ):
+                return result
+
+            result[
+                "message_window_expanded"
+            ] = True
+
+        elif (
+            active_change_type
             not in (
                 "MESSAGE_CHANGED",
                 "CHAT_CHANGED",
@@ -3572,6 +3651,41 @@ class WhatsAppRuntimeService:
 
             return result
 
+        if (
+            active_change_type
+            == "INITIAL"
+        ):
+            # La selección puede haber cambiado mientras
+            # resolvíamos la identidad. Revalidamos el destino
+            # bajo el mismo lock utilizado por el routing.
+            with self._desired_thread_lock:
+                current_desired_thread_id = (
+                    self._desired_thread_id
+                )
+
+            try:
+                initial_selection_matches = (
+                    int(thread_id)
+                    == int(
+                        initial_desired_thread_id
+                    )
+                    == int(
+                        current_desired_thread_id
+                    )
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                initial_selection_matches = False
+
+            if not initial_selection_matches:
+                return result
+
+            result[
+                "initial_selection_recovery"
+            ] = True
+
         after_provider_message_id = None
 
         if (
@@ -3590,26 +3704,25 @@ class WhatsAppRuntimeService:
                 ].last_provider_message_id
             )
 
-        elif (
-            result.get(
-                "change_type"
-            )
-            == "CHAT_CHANGED"
-        ):
-            try:
-                after_provider_message_id = (
-                    self.communication_service
-                    .get_latest_thread_provider_message_id(
-                        thread_id
-                    )
-                )
-
-            except Exception:
-                # El checkpoint es exclusivamente una
-                # optimización. Un fallo al obtenerlo
-                # nunca bloquea el sync completo seguro.
-                after_provider_message_id = None
-
+        # CHAT_CHANGED es deliberadamente FULL.
+        #
+        # Al abrir una conversación WhatsApp puede materializar
+        # mensajes que faltan ANTES del último provider id que
+        # ya existe en la base de datos.
+        #
+        # Usar ese último provider id como checkpoint provoca
+        # un hueco irreversible en la ventana:
+        #
+        #   [29 mensajes nuevos/faltantes]
+        #   [último provider ya persistido] <- anchor
+        #
+        # El sync incremental empezaría DESPUÉS del anchor y
+        # nunca vería esos 29 mensajes anteriores.
+        #
+        # La ventana está acotada por sync_limit y la
+        # persistencia por provider_message_id es idempotente,
+        # por lo que FULL es el contrato seguro al cambiar de
+        # conversación.
 
         try:
             result["sync"] = (

@@ -2150,6 +2150,8 @@ def communications_view(
             in (
                 "MESSAGE_CHANGED",
                 "CHAT_CHANGED",
+                "MESSAGE_WINDOW_CHANGED",
+                "INITIAL",
             )
         )
 
@@ -2347,6 +2349,16 @@ def communications_view(
                 or 0
             )
 
+            full_window_recovery = (
+                result.get(
+                    "change_type"
+                )
+                in (
+                    "MESSAGE_WINDOW_CHANGED",
+                    "INITIAL",
+                )
+            )
+
             # Los items pertenecen al resultado profundo
             # del sync, no al envelope general del watcher.
             #
@@ -2453,6 +2465,17 @@ def communications_view(
                 except NameError:
                     light_refreshed = False
 
+
+            elif full_window_recovery:
+                # Tanto MESSAGE_WINDOW_CHANGED como INITIAL
+                # seleccionado ejecutan una recuperación FULL.
+                #
+                # Los mensajes recuperados pueden situarse antes
+                # del último mensaje que ya tenía el CRM, por lo
+                # que no es seguro utilizar append incremental.
+                light_refreshed = (
+                    _refresh_message_history_control()
+                )
 
             elif incremental_candidate:
                 light_refreshed = (
