@@ -2209,6 +2209,40 @@ class WhatsAppRuntimeService:
         }
 
 
+    def submit_call_history_sync(
+        self,
+        *,
+        wait_timeout=60,
+        navigation_timeout=5,
+        dry_run=False,
+    ):
+        """
+        Envía una sincronización histórica al worker único
+        WhatsApp sin bloquear al caller.
+
+        La operación física sigue siendo exactamente
+        _sync_call_history_impl(), por lo que:
+        - conserva serialización CDP;
+        - no crea otro navegador;
+        - no crea otro worker de browser;
+        - queda ordenada respecto al watcher realtime;
+        - close() puede esperar al mismo executor gobernado.
+        """
+        executor = (
+            self._get_executor()
+        )
+
+        return executor.submit(
+            self._execute_on_worker,
+            self._sync_call_history_impl,
+            wait_timeout=wait_timeout,
+            navigation_timeout=(
+                navigation_timeout
+            ),
+            dry_run=dry_run,
+        )
+
+
     def sync_call_history(
         self,
         *,

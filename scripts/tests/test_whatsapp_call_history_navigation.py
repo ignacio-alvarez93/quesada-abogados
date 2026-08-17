@@ -1,4 +1,5 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 from backend.services.whatsapp_runtime_service import (
@@ -188,6 +189,27 @@ class RuntimeProbe:
         )
 
         self.serialized_calls = []
+        self.executor = (
+            ThreadPoolExecutor(
+                max_workers=1
+            )
+        )
+
+    def _get_executor(
+        self,
+    ):
+        return self.executor
+
+    def _execute_on_worker(
+        self,
+        callable_,
+        *args,
+        **kwargs,
+    ):
+        return callable_(
+            *args,
+            **kwargs,
+        )
 
     def _ensure_ready_impl(
         self,
@@ -571,6 +593,64 @@ class WhatsAppCallHistoryMaterializationTest(
         self.assertEqual(
             connector.active_tab,
             "CHATS",
+        )
+
+
+
+
+class WhatsAppCallHistoryAsyncSubmissionTest(
+    unittest.TestCase
+):
+    def test_submit_uses_governed_executor(
+        self,
+    ):
+        connector = FakeConnector(
+            active_tab="CALLS"
+        )
+
+        runtime = RuntimeProbe(
+            connector
+        )
+
+        try:
+            future = (
+                WhatsAppRuntimeService
+                .submit_call_history_sync(
+                    runtime,
+                    dry_run=True,
+                )
+            )
+
+            result = future.result(
+                timeout=2
+            )
+
+        finally:
+            runtime.executor.shutdown(
+                wait=True
+            )
+
+        self.assertFalse(
+            result["skipped"]
+        )
+
+        self.assertEqual(
+            result["execution"][
+                "planned"
+            ],
+            1,
+        )
+
+        self.assertEqual(
+            result["execution"][
+                "reconciled"
+            ],
+            0,
+        )
+
+        self.assertEqual(
+            connector.open_calls_count,
+            0,
         )
 
 

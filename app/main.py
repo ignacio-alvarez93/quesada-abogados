@@ -281,6 +281,18 @@ def main(page: ft.Page):
         "value": False,
     }
 
+    # CALL-SYNC-10 · recuperación histórica única por sesión.
+    #
+    # Se envía al executor gobernado de WhatsApp y nunca usa
+    # un thread/browser alternativo.
+    call_history_startup_sync_started = {
+        "value": False,
+    }
+
+    call_history_startup_sync_future = {
+        "value": None,
+    }
+
     # Runtime DEHú global y perezoso.
     #
     # Se construye con la sesión ERP pero NO abre Chrome
@@ -290,6 +302,163 @@ def main(page: ft.Page):
     dehu_runtime_closed = {
         "value": False,
     }
+
+    def on_whatsapp_startup_history_done(
+        future,
+    ):
+        """
+        Observa únicamente el resultado del Future.
+
+        Nunca toca browser, connector ni controles Flet.
+        """
+        try:
+            result = future.result()
+
+        except Exception as exc:
+            print(
+                "[WA-CALL-SYNC] recuperación histórica "
+                "de inicio falló:",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
+            return False
+
+        if result.get(
+            "skipped"
+        ):
+            print(
+                "[WA-CALL-SYNC] recuperación histórica "
+                "omitida:",
+                result.get(
+                    "reason"
+                ),
+                flush=True,
+            )
+
+            return False
+
+        history = (
+            result.get(
+                "history"
+            )
+            or {}
+        )
+
+        plan = (
+            result.get(
+                "plan"
+            )
+            or {}
+        )
+
+        execution = (
+            result.get(
+                "execution"
+            )
+            or {}
+        )
+
+        history_items = len(
+            history.get(
+                "items"
+            )
+            or []
+        )
+
+        plan_errors = len(
+            plan.get(
+                "errors"
+            )
+            or []
+        )
+
+        execution_errors = len(
+            execution.get(
+                "errors"
+            )
+            or []
+        )
+
+        print(
+            "[WA-CALL-SYNC] recuperación histórica "
+            "de inicio completada:",
+            "items=",
+            history_items,
+            "planned=",
+            plan.get(
+                "planned"
+            ),
+            "reconciled=",
+            execution.get(
+                "reconciled"
+            ),
+            "errors=",
+            (
+                plan_errors
+                + execution_errors
+            ),
+            flush=True,
+        )
+
+        return True
+
+
+    def start_whatsapp_call_history_recovery():
+        """
+        Programa como máximo una recuperación histórica
+        automática durante esta sesión ERP.
+
+        La llamada es no bloqueante para Flet.
+        """
+        if whatsapp_runtime_closed[
+            "value"
+        ]:
+            return False
+
+        if call_history_startup_sync_started[
+            "value"
+        ]:
+            return False
+
+        try:
+            future = (
+                whatsapp_runtime
+                .submit_call_history_sync(
+                    wait_timeout=60,
+                    navigation_timeout=5,
+                    dry_run=False,
+                )
+            )
+
+            future.add_done_callback(
+                on_whatsapp_startup_history_done
+            )
+
+        except Exception as exc:
+            print(
+                "[WA-CALL-SYNC] no se pudo programar "
+                "la recuperación histórica de inicio:",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
+            return False
+
+        call_history_startup_sync_started[
+            "value"
+        ] = True
+
+        call_history_startup_sync_future[
+            "value"
+        ] = future
+
+        return True
+
 
     def start_whatsapp_session_services():
         """
@@ -312,6 +481,11 @@ def main(page: ft.Page):
                     on_whatsapp_call_watch_change
                 ),
             )
+
+            # Realtime queda activo primero.
+            # Después se encola una única recuperación
+            # histórica en el mismo worker gobernado.
+            start_whatsapp_call_history_recovery()
 
             return True
 
