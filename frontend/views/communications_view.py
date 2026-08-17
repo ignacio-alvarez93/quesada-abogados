@@ -189,6 +189,10 @@ def communications_view(
         "pending_attachments": [],
         "attachment_target_thread_id": None,
 
+        # Documentos WhatsApp cuya descarga está en curso.
+        # Estado exclusivamente visual para impedir doble click.
+        "downloading_document_provider_ids": set(),
+
         "send_blocked_thread_ids": set(),
 
         # Routing WhatsApp actualmente solicitado desde CRM.
@@ -3833,6 +3837,282 @@ def communications_view(
         ).strip().upper()
 
 
+    def _message_document_metadata(
+        message,
+    ):
+        metadata = (
+            message.metadata
+            or {}
+        )
+
+        if not isinstance(
+            metadata,
+            dict,
+        ):
+            metadata = {}
+
+        filename = str(
+            metadata.get(
+                "filename"
+            )
+            or ""
+        ).strip()
+
+        size_text = str(
+            metadata.get(
+                "file_size_text"
+            )
+            or ""
+        ).strip()
+
+        return {
+            "filename": (
+                filename
+                or "Documento"
+            ),
+            "file_size_text": (
+                size_text
+                or None
+            ),
+        }
+
+
+    async def _finish_document_download_ui(
+        provider_message_id,
+        control=None,
+        result=None,
+        error=None,
+    ):
+        if not _ui_active():
+            return False
+
+        state[
+            "downloading_document_provider_ids"
+        ].discard(
+            provider_message_id
+        )
+
+        if control is not None:
+            try:
+                control.disabled = False
+                control.update()
+            except Exception:
+                pass
+
+        if error is not None:
+            _show_message(
+                (
+                    "No se pudo descargar "
+                    "el documento: "
+                    f"{error}"
+                ),
+                error=True,
+            )
+
+            return False
+
+        watch_name = str(
+            (
+                result
+                or {}
+            ).get(
+                "watch_folder_name"
+            )
+            or "carpeta vigilada"
+        ).strip()
+
+        filename = str(
+            (
+                result
+                or {}
+            ).get(
+                "filename"
+            )
+            or "Documento"
+        ).strip()
+
+        _show_message(
+            (
+                f"{filename} descargado en "
+                f"{watch_name}."
+            )
+        )
+
+        return True
+
+
+    def _schedule_document_download_finish(
+        *,
+        provider_message_id,
+        control=None,
+        result=None,
+        error=None,
+    ):
+        runner = getattr(
+            page,
+            "run_task",
+            None,
+        )
+
+        if not callable(
+            runner
+        ):
+            return False
+
+        try:
+            runner(
+                _finish_document_download_ui,
+                provider_message_id,
+                control,
+                result,
+                error,
+            )
+
+            return True
+
+        except Exception:
+            return False
+
+
+    def _document_download_handler(
+        message,
+    ):
+        provider_message_id = str(
+            getattr(
+                message,
+                "provider_message_id",
+                None,
+            )
+            or ""
+        ).strip()
+
+        thread_id = getattr(
+            message,
+            "thread_id",
+            None,
+        )
+
+        def handler(
+            event=None,
+        ):
+            if whatsapp_runtime is None:
+                _show_message(
+                    (
+                        "El runtime de WhatsApp "
+                        "no está disponible."
+                    ),
+                    error=True,
+                )
+                return
+
+            if not provider_message_id:
+                _show_message(
+                    (
+                        "El documento no tiene "
+                        "identidad WhatsApp descargable."
+                    ),
+                    error=True,
+                )
+                return
+
+            if thread_id in (
+                None,
+                "",
+            ):
+                _show_message(
+                    (
+                        "No se pudo determinar "
+                        "la conversación del documento."
+                    ),
+                    error=True,
+                )
+                return
+
+            active_downloads = state[
+                "downloading_document_provider_ids"
+            ]
+
+            if (
+                provider_message_id
+                in active_downloads
+            ):
+                return
+
+            active_downloads.add(
+                provider_message_id
+            )
+
+            control = getattr(
+                event,
+                "control",
+                None,
+            )
+
+            if control is not None:
+                try:
+                    control.disabled = True
+                    control.update()
+                except Exception:
+                    pass
+
+            def worker():
+                try:
+                    result = (
+                        whatsapp_runtime
+                        .download_document(
+                            thread_id=int(
+                                thread_id
+                            ),
+                            provider_message_id=(
+                                provider_message_id
+                            ),
+                        )
+                    )
+
+                    _schedule_document_download_finish(
+                        provider_message_id=(
+                            provider_message_id
+                        ),
+                        control=control,
+                        result=result,
+                    )
+
+                except Exception as exc:
+                    _schedule_document_download_finish(
+                        provider_message_id=(
+                            provider_message_id
+                        ),
+                        control=control,
+                        error=exc,
+                    )
+
+            try:
+                _run_background(
+                    worker
+                )
+
+            except Exception as exc:
+                active_downloads.discard(
+                    provider_message_id
+                )
+
+                if control is not None:
+                    try:
+                        control.disabled = False
+                        control.update()
+                    except Exception:
+                        pass
+
+                _show_message(
+                    str(
+                        exc
+                    ),
+                    error=True,
+                )
+
+        return handler
+
+
     def _message_body(message):
         body = str(
             message.body_text
@@ -4129,16 +4409,128 @@ def communications_view(
                 )
             )
 
-        content_controls.append(
-            ft.Text(
-                _message_body(
-                    message
-                ),
-                size=12,
-                color=Q_TEXT,
-                selectable=True,
+        message_type = (
+            _message_type(
+                message
             )
         )
+
+        if message_type == "DOCUMENT":
+            document = (
+                _message_document_metadata(
+                    message
+                )
+            )
+
+            provider_message_id = str(
+                getattr(
+                    message,
+                    "provider_message_id",
+                    None,
+                )
+                or ""
+            ).strip()
+
+            document_details = [
+                ft.Text(
+                    document[
+                        "filename"
+                    ],
+                    size=12,
+                    weight=(
+                        ft.FontWeight.W_600
+                    ),
+                    color=Q_TEXT,
+                    selectable=True,
+                    expand=True,
+                ),
+            ]
+
+            if document.get(
+                "file_size_text"
+            ):
+                document_details.append(
+                    ft.Text(
+                        document[
+                            "file_size_text"
+                        ],
+                        size=9,
+                        color=Q_MUTED,
+                    )
+                )
+
+            download_button = (
+                ft.IconButton(
+                    icon=ft.Icons.DOWNLOAD,
+                    tooltip=(
+                        "Descargar en carpeta "
+                        "vigilada por Bandeja Documental"
+                    ),
+                    icon_size=19,
+                    icon_color=Q_PRIMARY,
+                    disabled=(
+                        not provider_message_id
+                        or (
+                            provider_message_id
+                            in state[
+                                "downloading_document_provider_ids"
+                            ]
+                        )
+                    ),
+                    on_click=(
+                        _document_download_handler(
+                            message
+                        )
+                    ),
+                )
+            )
+
+            content_controls.append(
+                ft.Container(
+                    padding=ft.padding.symmetric(
+                        horizontal=8,
+                        vertical=6,
+                    ),
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=8,
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.DESCRIPTION_OUTLINED,
+                                size=20,
+                                color=Q_PRIMARY,
+                            ),
+                            ft.Column(
+                                controls=(
+                                    document_details
+                                ),
+                                spacing=2,
+                                expand=True,
+                            ),
+                            download_button,
+                        ],
+                        spacing=7,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                    ),
+                )
+            )
+
+        else:
+            content_controls.append(
+                ft.Text(
+                    _message_body(
+                        message
+                    ),
+                    size=12,
+                    color=Q_TEXT,
+                    selectable=True,
+                )
+            )
 
         content_controls.append(
             ft.Row(
