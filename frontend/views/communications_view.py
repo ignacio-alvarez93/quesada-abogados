@@ -660,6 +660,9 @@ def communications_view(
             "selected_thread_id"
         )
 
+        if selected_id is None:
+            return None
+
         for item in (
             state.get("items")
             or []
@@ -670,16 +673,11 @@ def communications_view(
             ):
                 return item
 
-        items = (
-            state.get("items")
-            or []
-        )
-
-        return (
-            items[0]
-            if items
-            else None
-        )
+        # Nunca inferimos una selección visual.
+        #
+        # La existencia de conversaciones en el sidebar
+        # no implica que el operador haya abierto alguna.
+        return None
 
     def load_thread_context():
         thread_id = state.get(
@@ -997,16 +995,13 @@ def communications_view(
                     selected_before
                 )
 
-            elif state["items"]:
-                state[
-                    "selected_thread_id"
-                ] = (
-                    state["items"][
-                        0
-                    ].thread_id
-                )
-
             else:
+                # Cargar conversaciones nunca equivale a
+                # seleccionar una conversación.
+                #
+                # Una entrada normal en Comunicaciones queda
+                # deliberadamente sin selección hasta que el
+                # operador haga click en una card.
                 state[
                     "selected_thread_id"
                 ] = None
@@ -1042,11 +1037,11 @@ def communications_view(
             load_thread_context()
             load_thread_messages()
 
-            # load_data() puede seleccionar automáticamente
-            # una conversación después de que el compositor
-            # se haya creado inicialmente como deshabilitado.
-            # Recalcular aquí garantiza que el estado visual
-            # refleje el thread realmente seleccionado.
+            # load_data() preserva únicamente una selección
+            # explícita todavía válida.
+            #
+            # Si no existe selección, compositor e historial
+            # permanecen vacíos/deshabilitados hasta el click.
             try:
                 _refresh_composer_controls()
             except NameError:
