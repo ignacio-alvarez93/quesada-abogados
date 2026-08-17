@@ -3625,26 +3625,42 @@ class WhatsAppConnector:
             }
 
 
-        cdp_sequential_emitted = False
+        # B7.3S · interacción primaria probada.
+        #
+        # El intento anterior emitía manualmente mousePressed +
+        # mouseReleased mediante CDP. Aunque ambos eventos podían
+        # emitirse correctamente, WhatsApp no siempre procesaba
+        # esa secuencia como activación real de la fila.
+        #
+        # El retry histórico utiliza mouse_click() sobre un
+        # WebElement recién localizado y ha demostrado ser la
+        # interacción más fiable. Lo convertimos también en el
+        # primer intento.
+        #
+        # Seguimos haciendo UN solo click antes de confirmar.
+        # Si WhatsApp no cambia de chat, B8 re-localiza la fila
+        # antes de permitir un segundo intento.
+        primary_click_emitted = False
 
         try:
-            cdp_sequential_emitted = bool(
-                self._dispatch_element_mouse_click_sequential(
-                    result_element
-                )
-            )
-        except Exception:
-            pass
+            mouse_click()
+            primary_click_emitted = True
 
-
-        if not cdp_sequential_emitted:
-            # Todavía NO hacemos un segundo click aquí.
-            #
-            # El bloque de confirmación B8 decidirá que no se
-            # abrió el chat y utilizará el retry histórico,
-            # re-localizando antes la fila.
+        except Exception as exc:
             print(
-                "[WA-SEARCH] B7 CDP sequential click "
+                "[WA-SEARCH] B7 primary mouse_click failed "
+                f"{type(exc).__name__}",
+                flush=True,
+            )
+
+
+        if not primary_click_emitted:
+            # No hacemos un segundo click inmediato.
+            #
+            # La confirmación/retry conserva la barrera
+            # histórica y volverá a localizar el nodo.
+            print(
+                "[WA-SEARCH] B7 primary click "
                 "not emitted; confirmation/fallback required",
                 flush=True,
             )

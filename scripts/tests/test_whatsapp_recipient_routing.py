@@ -680,8 +680,28 @@ class WhatsAppRecipientRoutingTest(
             search_end
         ]
 
-        self.assertIn(
+        # El helper CDP secuencial sigue disponible y
+        # probado de forma aislada, pero ya no gobierna el
+        # primer click del routing por teléfono.
+        self.assertNotIn(
             "_dispatch_element_mouse_click_sequential(",
+            search_block,
+        )
+
+        self.assertIn(
+            "primary_click_emitted = False",
+            search_block,
+        )
+
+        self.assertIn(
+            "mouse_click()",
+            search_block,
+        )
+
+        # El retry histórico continúa relocalizando el nodo
+        # antes de permitir un segundo click.
+        self.assertIn(
+            "retry_click()",
             search_block,
         )
 
@@ -749,4 +769,78 @@ class WhatsAppRecipientRoutingTest(
         self.assertLess(
             fallback_guard_pos,
             safe_clear_pos,
+        )
+
+
+class WhatsAppPrimaryRoutingClickContractTest(
+    unittest.TestCase
+):
+    def test_phone_search_uses_proven_mouse_click_first(
+        self,
+    ):
+        source = Path(
+            "backend/automation/connectors/"
+            "whatsapp_connector.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        start = source.index(
+            "    def search_and_open_chat_by_phone("
+        )
+
+        end = source.index(
+            "\n    def _verify_active_chat_phone(",
+            start,
+        )
+
+        block = source[
+            start:
+            end
+        ]
+
+        primary_start = block.index(
+            "primary_click_emitted = False"
+        )
+
+        confirmation_start = block.index(
+            "def wait_for_expected_chat(",
+            primary_start,
+        )
+
+        primary_block = block[
+            primary_start:
+            confirmation_start
+        ]
+
+        self.assertIn(
+            "mouse_click()",
+            primary_block,
+        )
+
+        self.assertNotIn(
+            "_dispatch_element_mouse_click_sequential(",
+            primary_block,
+        )
+
+        self.assertIn(
+            "retry_click()",
+            block,
+        )
+
+        # Seguridad: la interacción física nunca sustituye
+        # la confirmación real del destinatario.
+        self.assertIn(
+            "conversation-info-header-chat-title",
+            block,
+        )
+
+        self.assertIn(
+            "conversation-compose-box-input",
+            block,
+        )
+
+        self.assertIn(
+            "wait_for_expected_chat(",
+            block,
         )
