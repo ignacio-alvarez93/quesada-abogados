@@ -212,6 +212,10 @@ MESSAGE_TYPE_STICKER = (
     "STICKER"
 )
 
+MESSAGE_TYPE_DOCUMENT = (
+    "DOCUMENT"
+)
+
 MESSAGE_TYPE_UNKNOWN_MEDIA = (
     "UNKNOWN_MEDIA"
 )
@@ -7468,6 +7472,71 @@ class WhatsAppConnector:
                                     )
                                 );
 
+                            const documentThumb =
+                                root.querySelector(
+                                    '[data-testid="document-thumb"]'
+                                );
+
+                            const documentFilename =
+                                documentThumb
+                                ? (
+                                    Array.from(
+                                        documentThumb.querySelectorAll(
+                                            'span[dir="auto"]'
+                                        )
+                                    )
+                                    .map(
+                                        node =>
+                                            String(
+                                                node.textContent
+                                                || ''
+                                            ).trim()
+                                    )
+                                    .find(Boolean)
+                                    || ''
+                                )
+                                : '';
+
+                            const documentSizeNode =
+                                documentThumb
+                                ? (
+                                    Array.from(
+                                        documentThumb.querySelectorAll(
+                                            '[title]'
+                                        )
+                                    )
+                                    .find(
+                                        node => {
+                                            const value =
+                                                String(
+                                                    node.getAttribute(
+                                                        'title'
+                                                    )
+                                                    || ''
+                                                ).trim();
+
+                                            return (
+                                                /^\d+(?:[.,]\d+)?\s*(?:B|KB|MB|GB|TB)$/i
+                                                    .test(
+                                                        value
+                                                    )
+                                            );
+                                        }
+                                    )
+                                    || null
+                                )
+                                : null;
+
+                            const documentSizeText =
+                                documentSizeNode
+                                ? String(
+                                    documentSizeNode.getAttribute(
+                                        'title'
+                                    )
+                                    || ''
+                                ).trim()
+                                : '';
+
                             const hasTailIn =
                                 Boolean(
                                     root.querySelector(
@@ -7586,6 +7655,19 @@ class WhatsAppConnector:
 
                                 has_sticker:
                                     sticker,
+
+                                has_document:
+                                    Boolean(
+                                        documentThumb
+                                    ),
+
+                                document_filename:
+                                    documentFilename
+                                    || null,
+
+                                document_size_text:
+                                    documentSizeText
+                                    || null,
 
                                 image_info:
                                     imageInfo,
@@ -7972,6 +8054,13 @@ class WhatsAppConnector:
                     MESSAGE_TYPE_STICKER
                 )
 
+            elif raw.get(
+                "has_document"
+            ):
+                message_type = (
+                    MESSAGE_TYPE_DOCUMENT
+                )
+
             elif item.get(
                 "body_text"
             ):
@@ -8028,6 +8117,35 @@ class WhatsAppConnector:
                         or 0
                     ),
             }
+
+            if message_type == MESSAGE_TYPE_DOCUMENT:
+                document_filename = str(
+                    raw.get(
+                        "document_filename"
+                    )
+                    or ""
+                ).strip()
+
+                document_size_text = str(
+                    raw.get(
+                        "document_size_text"
+                    )
+                    or ""
+                ).strip()
+
+                if document_filename:
+                    metadata[
+                        "filename"
+                    ] = (
+                        document_filename
+                    )
+
+                if document_size_text:
+                    metadata[
+                        "file_size_text"
+                    ] = (
+                        document_size_text
+                    )
 
             if bool(
                 raw.get(
