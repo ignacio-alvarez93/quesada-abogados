@@ -193,6 +193,10 @@ def communications_view(
         # Estado exclusivamente visual para impedir doble click.
         "downloading_document_provider_ids": set(),
 
+        # Descarga batch del Media Hub de WhatsApp.
+        # Impide dobles ejecuciones desde la UI.
+        "downloading_today_documents": False,
+
         "send_blocked_thread_ids": set(),
 
         # Routing WhatsApp actualmente solicitado desde CRM.
@@ -4113,6 +4117,234 @@ def communications_view(
         return handler
 
 
+    async def _finish_today_documents_download_ui(
+        control=None,
+        result=None,
+        error=None,
+    ):
+        if not _ui_active():
+            return False
+
+        state[
+            "downloading_today_documents"
+        ] = False
+
+        if control is not None:
+            try:
+                control.disabled = False
+                control.update()
+            except Exception:
+                pass
+
+        if error is not None:
+            _show_message(
+                (
+                    "No se pudieron descargar "
+                    "los documentos de hoy: "
+                    f"{error}"
+                ),
+                error=True,
+            )
+
+            return False
+
+        batch = dict(
+            result
+            or {}
+        )
+
+        try:
+            downloaded = max(
+                0,
+                int(
+                    batch.get(
+                        "downloaded"
+                    )
+                    or 0
+                ),
+            )
+        except Exception:
+            downloaded = 0
+
+        errors = list(
+            batch.get(
+                "errors"
+            )
+            or []
+        )
+
+        watch_name = str(
+            batch.get(
+                "watch_folder_name"
+            )
+            or "carpeta vigilada"
+        ).strip()
+
+        if (
+            downloaded <= 0
+            and not errors
+        ):
+            _show_message(
+                "No hay documentos de hoy."
+            )
+
+            return True
+
+        if errors:
+            if downloaded > 0:
+                _show_message(
+                    (
+                        f"{downloaded} documento"
+                        f"{'' if downloaded == 1 else 's'} "
+                        f"descargado"
+                        f"{'' if downloaded == 1 else 's'} "
+                        f"en {watch_name}. "
+                        f"{len(errors)} "
+                        f"{'no se pudo' if len(errors) == 1 else 'no se pudieron'} "
+                        "descargar."
+                    ),
+                    error=True,
+                )
+
+            else:
+                _show_message(
+                    (
+                        "No se pudo descargar ninguno "
+                        "de los documentos de hoy. "
+                        f"Errores: {len(errors)}."
+                    ),
+                    error=True,
+                )
+
+            return False
+
+        _show_message(
+            (
+                f"{downloaded} documento"
+                f"{'' if downloaded == 1 else 's'} "
+                f"descargado"
+                f"{'' if downloaded == 1 else 's'} "
+                f"en {watch_name}."
+            )
+        )
+
+        return True
+
+
+    def _schedule_today_documents_download_finish(
+        *,
+        control=None,
+        result=None,
+        error=None,
+    ):
+        runner = getattr(
+            page,
+            "run_task",
+            None,
+        )
+
+        if not callable(
+            runner
+        ):
+            return False
+
+        try:
+            runner(
+                _finish_today_documents_download_ui,
+                control,
+                result,
+                error,
+            )
+
+            return True
+
+        except Exception:
+            return False
+
+
+    def _download_today_documents(
+        event=None,
+    ):
+        if whatsapp_runtime is None:
+            _show_message(
+                (
+                    "El runtime de WhatsApp "
+                    "no está disponible."
+                ),
+                error=True,
+            )
+
+            return False
+
+        if state.get(
+            "downloading_today_documents"
+        ):
+            return False
+
+        state[
+            "downloading_today_documents"
+        ] = True
+
+        control = getattr(
+            event,
+            "control",
+            None,
+        )
+
+        if control is not None:
+            try:
+                control.disabled = True
+                control.update()
+            except Exception:
+                pass
+
+        def worker():
+            try:
+                result = (
+                    whatsapp_runtime
+                    .download_today_documents()
+                )
+
+                _schedule_today_documents_download_finish(
+                    control=control,
+                    result=result,
+                )
+
+            except Exception as exc:
+                _schedule_today_documents_download_finish(
+                    control=control,
+                    error=exc,
+                )
+
+        try:
+            _run_background(
+                worker
+            )
+
+        except Exception as exc:
+            state[
+                "downloading_today_documents"
+            ] = False
+
+            if control is not None:
+                try:
+                    control.disabled = False
+                    control.update()
+                except Exception:
+                    pass
+
+            _show_message(
+                str(
+                    exc
+                ),
+                error=True,
+            )
+
+            return False
+
+        return True
+
+
     def _message_body(message):
         body = str(
             message.body_text
@@ -7925,6 +8157,43 @@ def communications_view(
                                     ],
                                     spacing=3,
                                     expand=True,
+                                ),
+                                *(
+                                    [
+                                        ft.IconButton(
+                                            icon=ft.Icons.DOWNLOAD,
+                                            tooltip=(
+                                                "Descargar documentos de hoy "
+                                                "de todos los chats"
+                                            ),
+                                            icon_size=20,
+                                            icon_color=Q_PRIMARY,
+                                            disabled=bool(
+                                                state.get(
+                                                    "downloading_today_documents"
+                                                )
+                                            ),
+                                            on_click=(
+                                                _download_today_documents
+                                            ),
+                                        )
+                                    ]
+                                    if (
+                                        whatsapp_runtime
+                                        is not None
+                                        and str(
+                                            getattr(
+                                                item,
+                                                "channel",
+                                                "",
+                                            )
+                                            or ""
+                                        )
+                                        .strip()
+                                        .upper()
+                                        == "WHATSAPP"
+                                    )
+                                    else []
                                 ),
                             ],
                             spacing=10,

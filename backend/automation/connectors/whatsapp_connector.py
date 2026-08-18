@@ -9159,14 +9159,14 @@ class WhatsAppConnector:
                 pass
 
 
-    def download_today_sent_documents_from_media_hub(
+    def download_today_documents_from_media_hub(
         self,
         *,
         download_dir,
         timeout=30,
         max_documents=100,
     ):
-        """Descarga los documentos enviados HOY por esta cuenta.
+        """Descarga todos los documentos de HOY del Media Hub global.
 
         Fuente:
         - Media Hub global de WhatsApp;
@@ -9175,7 +9175,8 @@ class WhatsAppConnector:
 
         Selección:
         - fecha visible = Hoy;
-        - columna Enviado por = Tú.
+        - cualquier remitente;
+        - cualquier conversación del Media Hub.
 
         No persiste información.
         El destino debe ser resuelto por Runtime.
@@ -9622,12 +9623,6 @@ class WhatsAppConnector:
 
                                         today:
                                             /(^|\\s)Hoy(\\s|$)/i
-                                            .test(
-                                                text
-                                            ),
-
-                                        sent_by_me:
-                                            /(^|\\s)Tú(\\s|$)/i
                                             .test(
                                                 text
                                             ),
@@ -10404,7 +10399,7 @@ class WhatsAppConnector:
                         "TODAY",
 
                     "direction_scope":
-                        "OUTBOUND",
+                        "ALL",
 
                     "scanned": 0,
                     "matched": 0,
@@ -10430,7 +10425,7 @@ class WhatsAppConnector:
                         "TODAY",
 
                     "direction_scope":
-                        "OUTBOUND",
+                        "ALL",
 
                     "scanned": 0,
                     "matched": 0,
@@ -10441,7 +10436,7 @@ class WhatsAppConnector:
                 }
 
             # ==============================================
-            # 3. HOY + TÚ · VENTANA VIRTUAL
+            # 3. TODOS LOS DOCUMENTOS DE HOY · VENTANA VIRTUAL
             # ==============================================
 
             while True:
@@ -10491,26 +10486,6 @@ class WhatsAppConnector:
                     )
 
                     scanned += 1
-
-                    if not bool(
-                        row.get(
-                            "sent_by_me"
-                        )
-                    ):
-                        skipped_items.append(
-                            {
-                                "row_key":
-                                    row_key,
-                                "reason":
-                                    "TODAY_NOT_SENT_BY_ME",
-                                "row_text":
-                                    row.get(
-                                        "text"
-                                    ),
-                            }
-                        )
-
-                        continue
 
                     matched += 1
 
@@ -10664,7 +10639,7 @@ class WhatsAppConnector:
                     "TODAY",
 
                 "direction_scope":
-                    "OUTBOUND",
+                    "ALL",
 
                 "scanned":
                     int(

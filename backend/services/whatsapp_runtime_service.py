@@ -4507,7 +4507,7 @@ class WhatsAppRuntimeService:
             ),
         )
 
-    def _download_today_sent_documents_impl(
+    def _download_today_documents_impl(
         self,
         *,
         watch_folder_id=None,
@@ -4568,7 +4568,7 @@ class WhatsAppRuntimeService:
 
         result = (
             connector
-            .download_today_sent_documents_from_media_hub(
+            .download_today_documents_from_media_hub(
                 download_dir=target_dir,
                 timeout=download_timeout,
                 max_documents=max_documents,
@@ -4603,7 +4603,7 @@ class WhatsAppRuntimeService:
         }
 
 
-    def download_today_sent_documents(
+    def download_today_documents(
         self,
         *,
         watch_folder_id=None,
@@ -4612,7 +4612,7 @@ class WhatsAppRuntimeService:
         max_documents=100,
     ):
         return self._run_serialized(
-            self._download_today_sent_documents_impl,
+            self._download_today_documents_impl,
             watch_folder_id=watch_folder_id,
             wait_timeout=wait_timeout,
             download_timeout=download_timeout,

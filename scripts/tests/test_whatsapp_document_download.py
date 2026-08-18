@@ -172,7 +172,7 @@ class _RuntimeConnector:
                 123,
         }
 
-    def download_today_sent_documents_from_media_hub(
+    def download_today_documents_from_media_hub(
         self,
         *,
         download_dir,
@@ -206,7 +206,7 @@ class _RuntimeConnector:
             result = {
                 "scope": "MEDIA_HUB",
                 "date_scope": "TODAY",
-                "direction_scope": "OUTBOUND",
+                "direction_scope": "ALL",
                 "scanned": 0,
                 "matched": 0,
                 "downloaded": 0,
@@ -628,7 +628,7 @@ class WhatsAppDocumentDownloadTest(
                 ) as ensure_watch:
                     result = (
                         runtime
-                        .download_today_sent_documents(
+                        .download_today_documents(
                             download_timeout=13,
                             max_documents=17,
                         )
@@ -701,7 +701,7 @@ class WhatsAppDocumentDownloadTest(
                     result[
                         "direction_scope"
                     ],
-                    "OUTBOUND",
+                    "ALL",
                 )
 
                 self.assertEqual(
@@ -757,7 +757,7 @@ class WhatsAppDocumentDownloadTest(
                 ) as get_watch:
                     result = (
                         runtime
-                        .download_today_sent_documents(
+                        .download_today_documents(
                             watch_folder_id=8,
                         )
                     )
@@ -824,7 +824,7 @@ class WhatsAppDocumentDownloadTest(
                         ValueError,
                         "inactiva",
                     ):
-                        runtime.download_today_sent_documents(
+                        runtime.download_today_documents(
                             watch_folder_id=9,
                         )
 
@@ -841,12 +841,12 @@ class WhatsAppDocumentDownloadTest(
             finally:
                 runtime.close()
 
-    def test_batch_connector_source_keeps_today_sent_by_me_contract(
+    def test_batch_connector_source_keeps_all_today_documents_contract(
         self,
     ):
         source = inspect.getsource(
             WhatsAppConnector
-            .download_today_sent_documents_from_media_hub
+            .download_today_documents_from_media_hub
         )
 
         self.assertIn(
@@ -855,7 +855,7 @@ class WhatsAppDocumentDownloadTest(
         )
 
         self.assertIn(
-            '"OUTBOUND"',
+            '"ALL"',
             source,
         )
 
@@ -864,27 +864,28 @@ class WhatsAppDocumentDownloadTest(
             source,
         )
 
-        self.assertIn(
+        self.assertNotIn(
             '"sent_by_me"',
             source,
         )
 
-        self.assertIn(
+        self.assertNotIn(
             "TODAY_NOT_SENT_BY_ME",
             source,
         )
+
 
     def test_batch_source_never_scans_or_imports_document_inbox(
         self,
     ):
         connector_source = inspect.getsource(
             WhatsAppConnector
-            .download_today_sent_documents_from_media_hub
+            .download_today_documents_from_media_hub
         )
 
         runtime_source = inspect.getsource(
             WhatsAppRuntimeService
-            ._download_today_sent_documents_impl
+            ._download_today_documents_impl
         )
 
         combined = (
