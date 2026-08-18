@@ -8648,6 +8648,2093 @@ class WhatsAppConnector:
 
         return snapshots
 
+    def download_visible_document(
+        self,
+        provider_message_id,
+        *,
+        download_dir,
+        timeout=30,
+    ):
+        """Descarga UN documento visible del chat activo.
+
+        Contrato:
+        - localiza el mensaje por provider_message_id;
+        - rechaza documentos fallidos o todavía cargando;
+        - abre el visor documental;
+        - configura la carpeta de descarga gobernada;
+        - pulsa Descargar exactamente una vez;
+        - espera al archivo final, nunca devuelve .tmp;
+        - restaura la política de descarga del navegador;
+        - no persiste información.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        normalized_provider_id = str(
+            provider_message_id
+            or ""
+        ).strip()
+
+        if not normalized_provider_id:
+            raise ValueError(
+                "provider_message_id es obligatorio"
+            )
+
+        target_dir = Path(
+            download_dir
+        ).expanduser()
+
+        target_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        target_dir = target_dir.resolve()
+
+        page = getattr(
+            self.browser,
+            "page",
+            None,
+        )
+
+        loop = getattr(
+            self.browser,
+            "loop",
+            None,
+        )
+
+        send = getattr(
+            page,
+            "send",
+            None,
+        )
+
+        run_until_complete = getattr(
+            loop,
+            "run_until_complete",
+            None,
+        )
+
+        if (
+            not callable(send)
+            or not callable(
+                run_until_complete
+            )
+        ):
+            raise RuntimeError(
+                "Transporte CDP de descarga "
+                "no disponible"
+            )
+
+        active = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active.chat_open:
+            raise RuntimeError(
+                "No hay un chat WhatsApp activo"
+            )
+
+        before = {}
+
+        for file_path in target_dir.iterdir():
+            if not file_path.is_file():
+                continue
+
+            try:
+                stat = file_path.stat()
+            except OSError:
+                continue
+
+            before[str(file_path)] = (
+                int(stat.st_size),
+                int(stat.st_mtime_ns),
+            )
+
+        run_until_complete(
+            send(
+                cdp_browser
+                .set_download_behavior(
+                    behavior="allow",
+                    download_path=str(
+                        target_dir
+                    ),
+                    events_enabled=True,
+                )
+            )
+        )
+
+        viewer_opened = False
+
+        try:
+            provider_js = repr(
+                normalized_provider_id
+            )
+
+            open_result = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const providerId = %s;
+
+                        const root =
+                            Array.from(
+                                document
+                                .querySelectorAll(
+                                    '#main '
+                                    + '[data-testid^="conv-msg-"]'
+                                )
+                            )
+                            .find(
+                                node =>
+                                    node.getAttribute(
+                                        'data-testid'
+                                    )
+                                    === (
+                                        'conv-msg-'
+                                        + providerId
+                                    )
+                            );
+
+                        if (!root) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'MESSAGE_NOT_VISIBLE'
+                            };
+                        }
+
+                        if (
+                            root.querySelector(
+                                '[data-testid="fail-container"]'
+                            )
+                        ) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'DOCUMENT_FAILED'
+                            };
+                        }
+
+                        if (
+                            root.querySelector(
+                                '[data-testid="loading-spinner"]'
+                            )
+                        ) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'DOCUMENT_LOADING'
+                            };
+                        }
+
+                        const thumb =
+                            root.querySelector(
+                                '[data-testid="document-thumb"]'
+                            );
+
+                        if (!thumb) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'DOCUMENT_NOT_FOUND'
+                            };
+                        }
+
+                        const title =
+                            String(
+                                thumb.getAttribute(
+                                    'title'
+                                )
+                                || ''
+                            ).trim();
+
+                        if (
+                            !title.startsWith(
+                                'Ver '
+                            )
+                        ) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'DOCUMENT_NOT_READY',
+                                title
+                            };
+                        }
+
+                        let filename = title;
+
+                        const match =
+                            title.match(
+                                /^Ver\\s+"([\\s\\S]*)"$/
+                            );
+
+                        if (
+                            match
+                            && match[1]
+                        ) {
+                            filename =
+                                match[1];
+                        }
+
+                        thumb.click();
+
+                        return {
+                            opened: true,
+                            reason: null,
+                            filename
+                        };
+                    })()
+                    """
+                    % provider_js
+                )
+                or {}
+            )
+
+            if not open_result.get(
+                "opened"
+            ):
+                reason = str(
+                    open_result.get(
+                        "reason"
+                    )
+                    or "DOCUMENT_OPEN_FAILED"
+                )
+
+                raise RuntimeError(
+                    "No se pudo abrir el "
+                    "documento WhatsApp "
+                    f"({reason})"
+                )
+
+            viewer_opened = True
+
+            expected_filename = str(
+                open_result.get(
+                    "filename"
+                )
+                or ""
+            ).strip()
+
+            deadline = (
+                time.time()
+                + max(
+                    1,
+                    float(
+                        timeout
+                    ),
+                )
+            )
+
+            while (
+                time.time()
+                < deadline
+            ):
+                ready = (
+                    self.browser.evaluate(
+                        """
+                        (() => Boolean(
+                            document.querySelector(
+                                'button'
+                                + '[aria-label="Descargar"]'
+                            )
+                        ))()
+                        """
+                    )
+                )
+
+                if ready:
+                    break
+
+                time.sleep(
+                    0.1
+                )
+            else:
+                raise RuntimeError(
+                    "El visor de WhatsApp "
+                    "no mostró Descargar"
+                )
+
+            clicked = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const button =
+                            document.querySelector(
+                                'button'
+                                + '[aria-label="Descargar"]'
+                            );
+
+                        if (!button) {
+                            return false;
+                        }
+
+                        button.click();
+
+                        return true;
+                    })()
+                    """
+                )
+            )
+
+            if not clicked:
+                raise RuntimeError(
+                    "No se pudo pulsar "
+                    "Descargar en WhatsApp"
+                )
+
+            downloaded = None
+
+            deadline = (
+                time.time()
+                + max(
+                    1,
+                    float(
+                        timeout
+                    ),
+                )
+            )
+
+            while (
+                time.time()
+                < deadline
+            ):
+                candidates = []
+
+                for file_path in (
+                    target_dir.iterdir()
+                ):
+                    if not file_path.is_file():
+                        continue
+
+                    if (
+                        file_path.suffix.lower()
+                        in (
+                            ".tmp",
+                            ".crdownload",
+                        )
+                    ):
+                        continue
+
+                    try:
+                        stat = (
+                            file_path.stat()
+                        )
+                    except OSError:
+                        continue
+
+                    current = (
+                        int(
+                            stat.st_size
+                        ),
+                        int(
+                            stat.st_mtime_ns
+                        ),
+                    )
+
+                    if (
+                        before.get(
+                            str(
+                                file_path
+                            )
+                        )
+                        == current
+                    ):
+                        continue
+
+                    if (
+                        current[0]
+                        <= 0
+                    ):
+                        continue
+
+                    candidates.append(
+                        (
+                            current[1],
+                            file_path,
+                            current[0],
+                        )
+                    )
+
+                if candidates:
+                    candidates.sort(
+                        key=lambda item:
+                            item[0],
+                        reverse=True,
+                    )
+
+                    _, candidate, size_1 = (
+                        candidates[0]
+                    )
+
+                    time.sleep(
+                        0.2
+                    )
+
+                    try:
+                        size_2 = int(
+                            candidate.stat()
+                            .st_size
+                        )
+                    except OSError:
+                        size_2 = -1
+
+                    if (
+                        size_1 > 0
+                        and size_1
+                        == size_2
+                    ):
+                        downloaded = (
+                            candidate
+                        )
+                        break
+
+                time.sleep(
+                    0.1
+                )
+
+            if downloaded is None:
+                raise RuntimeError(
+                    "La descarga WhatsApp "
+                    "no alcanzó un archivo final"
+                )
+
+            return {
+                "provider_message_id": (
+                    normalized_provider_id
+                ),
+                "expected_filename": (
+                    expected_filename
+                    or None
+                ),
+                "filename": (
+                    downloaded.name
+                ),
+                "file_path": str(
+                    downloaded
+                ),
+                "size_bytes": int(
+                    downloaded.stat()
+                    .st_size
+                ),
+            }
+
+        finally:
+            if viewer_opened:
+                try:
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const button =
+                                document.querySelector(
+                                    'button'
+                                    + '[aria-label="Cerrar"]'
+                                );
+
+                            if (!button) {
+                                return false;
+                            }
+
+                            button.click();
+
+                            return true;
+                        })()
+                        """
+                    )
+                except Exception:
+                    pass
+
+            try:
+                run_until_complete(
+                    send(
+                        cdp_browser
+                        .set_download_behavior(
+                            behavior="default",
+                        )
+                    )
+                )
+            except Exception:
+                pass
+
+
+    def download_today_documents_from_media_hub(
+        self,
+        *,
+        download_dir,
+        timeout=30,
+        max_documents=100,
+    ):
+        """Descarga todos los documentos de HOY del Media Hub global.
+
+        Fuente:
+        - Media Hub global de WhatsApp;
+        - pestaña Documentos;
+        - filas cronológicas más recientes.
+
+        Selección:
+        - fecha visible = Hoy;
+        - cualquier remitente;
+        - cualquier conversación del Media Hub.
+
+        No persiste información.
+        El destino debe ser resuelto por Runtime.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        limit = max(
+            1,
+            int(
+                max_documents
+            ),
+        )
+
+        per_document_timeout = max(
+            1.0,
+            float(
+                timeout
+            ),
+        )
+
+        target_dir = Path(
+            download_dir
+        ).expanduser()
+
+        target_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        target_dir = (
+            target_dir.resolve()
+        )
+
+        page = getattr(
+            self.browser,
+            "page",
+            None,
+        )
+
+        loop = getattr(
+            self.browser,
+            "loop",
+            None,
+        )
+
+        send = getattr(
+            page,
+            "send",
+            None,
+        )
+
+        run_until_complete = getattr(
+            loop,
+            "run_until_complete",
+            None,
+        )
+
+        if (
+            not callable(
+                send
+            )
+            or not callable(
+                run_until_complete
+            )
+        ):
+            raise RuntimeError(
+                "Transporte CDP de descarga "
+                "no disponible"
+            )
+
+        active = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active.chat_open:
+            prepared = (
+                self.prepare_chat_interface()
+            )
+
+            if (
+                isinstance(
+                    prepared,
+                    dict,
+                )
+                and not prepared.get(
+                    "ready",
+                    True,
+                )
+            ):
+                raise RuntimeError(
+                    "La lista de chats WhatsApp "
+                    "no está disponible"
+                )
+
+            snapshots = (
+                self.list_visible_chat_snapshots(
+                    viewport_only=True,
+                )
+            )
+
+            if not snapshots:
+                snapshots = (
+                    self.list_visible_chat_snapshots(
+                        viewport_only=False,
+                    )
+                )
+
+            if not snapshots:
+                raise RuntimeError(
+                    "No hay conversaciones WhatsApp "
+                    "disponibles para abrir "
+                    "Contenido multimedia"
+                )
+
+            fallback = snapshots[0]
+
+            if (
+                fallback.virtual_offset
+                is not None
+            ):
+                routing = (
+                    self.open_chat_by_virtual_offset(
+                        fallback.virtual_offset,
+                        expected_display_name=(
+                            fallback.display_name
+                        ),
+                        timeout=min(
+                            15,
+                            max(
+                                1,
+                                int(
+                                    per_document_timeout
+                                ),
+                            ),
+                        ),
+                    )
+                )
+
+            else:
+                routing = (
+                    self.open_chat(
+                        fallback.position,
+                        expected_display_name=(
+                            fallback.display_name
+                        ),
+                        timeout=min(
+                            15,
+                            max(
+                                1,
+                                int(
+                                    per_document_timeout
+                                ),
+                            ),
+                        ),
+                    )
+                )
+
+            if not routing.get(
+                "opened"
+            ):
+                raise RuntimeError(
+                    "No se pudo abrir una conversación "
+                    "WhatsApp para acceder al Media Hub "
+                    f"({routing.get('reason') or 'CHAT_OPEN_FAILED'})"
+                )
+
+            active = (
+                self.get_active_chat_fingerprint()
+            )
+
+            if not active.chat_open:
+                raise RuntimeError(
+                    "WhatsApp no confirmó el chat "
+                    "abierto para acceder al Media Hub"
+                )
+
+        downloaded_items = []
+        skipped_items = []
+        errors = []
+
+        scanned = 0
+        matched = 0
+
+        processed_keys = set()
+
+        hub_open = False
+        download_behavior_enabled = False
+
+
+        def snapshot_files():
+            snapshot = {}
+
+            for file_path in (
+                target_dir.iterdir()
+            ):
+                if not file_path.is_file():
+                    continue
+
+                try:
+                    stat = (
+                        file_path.stat()
+                    )
+                except OSError:
+                    continue
+
+                snapshot[
+                    str(
+                        file_path
+                    )
+                ] = (
+                    int(
+                        stat.st_size
+                    ),
+                    int(
+                        stat.st_mtime_ns
+                    ),
+                )
+
+            return snapshot
+
+
+        def changed_final_file(
+            before,
+        ):
+            candidates = []
+
+            for file_path in (
+                target_dir.iterdir()
+            ):
+                if not file_path.is_file():
+                    continue
+
+                if (
+                    file_path.suffix.lower()
+                    in (
+                        ".tmp",
+                        ".crdownload",
+                    )
+                ):
+                    continue
+
+                try:
+                    stat = (
+                        file_path.stat()
+                    )
+                except OSError:
+                    continue
+
+                current = (
+                    int(
+                        stat.st_size
+                    ),
+                    int(
+                        stat.st_mtime_ns
+                    ),
+                )
+
+                if (
+                    before.get(
+                        str(
+                            file_path
+                        )
+                    )
+                    == current
+                ):
+                    continue
+
+                if current[0] <= 0:
+                    continue
+
+                candidates.append(
+                    (
+                        current[1],
+                        file_path,
+                        current[0],
+                    )
+                )
+
+            if not candidates:
+                return None
+
+            candidates.sort(
+                key=lambda item:
+                    item[0],
+                reverse=True,
+            )
+
+            _, candidate, size_1 = (
+                candidates[0]
+            )
+
+            time.sleep(
+                0.2
+            )
+
+            try:
+                size_2 = int(
+                    candidate.stat()
+                    .st_size
+                )
+            except OSError:
+                return None
+
+            if (
+                size_1 <= 0
+                or size_1
+                != size_2
+            ):
+                return None
+
+            return candidate
+
+
+        def close_document_viewer():
+            try:
+                return bool(
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const download =
+                                document.querySelector(
+                                    'button'
+                                    + '[aria-label="Descargar"]'
+                                );
+
+                            if (!download) {
+                                return false;
+                            }
+
+                            const dialog =
+                                download.closest(
+                                    '[role="dialog"]'
+                                );
+
+                            const close =
+                                dialog
+                                ? dialog.querySelector(
+                                    'button'
+                                    + '[aria-label="Cerrar"]'
+                                  )
+                                : null;
+
+                            if (!close) {
+                                return false;
+                            }
+
+                            close.click();
+
+                            return true;
+                        })()
+                        """
+                    )
+                )
+            except Exception:
+                return False
+
+
+        def read_rows():
+            return (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const clean = value =>
+                            String(
+                                value || ''
+                            )
+                            .replace(
+                                /\\s+/g,
+                                ' '
+                            )
+                            .trim();
+
+                        const mediaRows =
+                            Array.from(
+                                document
+                                .querySelectorAll(
+                                    '[data-testid='
+                                    + '"media-hub-list-row"]'
+                                )
+                            );
+
+                        const rows =
+                            mediaRows.map(
+                                mediaRow => {
+                                    const item =
+                                        mediaRow.closest(
+                                            '[role="listitem"]'
+                                        );
+
+                                    const text =
+                                        clean(
+                                            (
+                                                item
+                                                || mediaRow
+                                            ).innerText
+                                        );
+
+                                    const itemId =
+                                        clean(
+                                            item
+                                            ?.getAttribute(
+                                                'data-testid'
+                                            )
+                                        );
+
+                                    const viewer =
+                                        mediaRow
+                                        .querySelector(
+                                            '[role="button"]'
+                                            + '[title^="Ver "]'
+                                        );
+
+                                    const title =
+                                        clean(
+                                            viewer
+                                            ?.getAttribute(
+                                                'title'
+                                            )
+                                        );
+
+                                    let filename = '';
+
+                                    const match =
+                                        title.match(
+                                            /^Ver\\s+"([\\s\\S]*)"$/
+                                        );
+
+                                    if (
+                                        match
+                                        && match[1]
+                                    ) {
+                                        filename =
+                                            match[1];
+                                    }
+
+                                    return {
+                                        key:
+                                            itemId,
+
+                                        text,
+
+                                        today:
+                                            /(^|\\s)Hoy(\\s|$)/i
+                                            .test(
+                                                text
+                                            ),
+
+                                        expected_filename:
+                                            filename
+                                            || null,
+                                    };
+                                }
+                            );
+
+                        const first =
+                            mediaRows[0]
+                            || null;
+
+                        let scroller =
+                            first;
+
+                        while (scroller) {
+                            const style =
+                                getComputedStyle(
+                                    scroller
+                                );
+
+                            if (
+                                scroller.scrollHeight
+                                > (
+                                    scroller.clientHeight
+                                    + 5
+                                )
+                                && (
+                                    style.overflowY
+                                    === 'auto'
+                                    || style.overflowY
+                                    === 'scroll'
+                                )
+                            ) {
+                                break;
+                            }
+
+                            scroller =
+                                scroller.parentElement;
+                        }
+
+                        return {
+                            rows,
+
+                            scroll_top:
+                                scroller
+                                ? scroller.scrollTop
+                                : null,
+
+                            scroll_height:
+                                scroller
+                                ? scroller.scrollHeight
+                                : null,
+
+                            client_height:
+                                scroller
+                                ? scroller.clientHeight
+                                : null,
+                        };
+                    })()
+                    """
+                )
+                or {}
+            )
+
+
+        def scroll_next_page():
+            return (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const first =
+                            document.querySelector(
+                                '[data-testid='
+                                + '"media-hub-list-row"]'
+                            );
+
+                        if (!first) {
+                            return {
+                                moved: false,
+                                reason:
+                                    'ROW_MISSING'
+                            };
+                        }
+
+                        let scroller =
+                            first;
+
+                        while (scroller) {
+                            const style =
+                                getComputedStyle(
+                                    scroller
+                                );
+
+                            if (
+                                scroller.scrollHeight
+                                > (
+                                    scroller.clientHeight
+                                    + 5
+                                )
+                                && (
+                                    style.overflowY
+                                    === 'auto'
+                                    || style.overflowY
+                                    === 'scroll'
+                                )
+                            ) {
+                                break;
+                            }
+
+                            scroller =
+                                scroller.parentElement;
+                        }
+
+                        if (!scroller) {
+                            return {
+                                moved: false,
+                                reason:
+                                    'SCROLLER_MISSING'
+                            };
+                        }
+
+                        const before =
+                            scroller.scrollTop;
+
+                        const step =
+                            Math.max(
+                                300,
+                                Math.floor(
+                                    scroller.clientHeight
+                                    * 0.8
+                                )
+                            );
+
+                        scroller.scrollTop =
+                            Math.min(
+                                scroller.scrollHeight
+                                - scroller.clientHeight,
+                                before + step
+                            );
+
+                        return {
+                            moved:
+                                scroller.scrollTop
+                                > before + 1,
+
+                            before,
+
+                            after:
+                                scroller.scrollTop,
+                        };
+                    })()
+                    """
+                )
+                or {}
+            )
+
+
+        def open_and_download_row(
+            row,
+        ):
+            nonlocal download_behavior_enabled
+
+            row_key = str(
+                row.get(
+                    "key"
+                )
+                or ""
+            ).strip()
+
+            if not row_key:
+                raise RuntimeError(
+                    "MEDIA_ROW_ID_MISSING"
+                )
+
+            if not download_behavior_enabled:
+                run_until_complete(
+                    send(
+                        cdp_browser
+                        .set_download_behavior(
+                            behavior="allow",
+                            download_path=str(
+                                target_dir
+                            ),
+                            events_enabled=True,
+                        )
+                    )
+                )
+
+                download_behavior_enabled = True
+
+            before = (
+                snapshot_files()
+            )
+
+            row_key_js = repr(
+                row_key
+            )
+
+            opened = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const itemId = %s;
+
+                        const item =
+                            Array.from(
+                                document
+                                .querySelectorAll(
+                                    '[role="listitem"]'
+                                )
+                            )
+                            .find(
+                                node =>
+                                    node.getAttribute(
+                                        'data-testid'
+                                    )
+                                    === itemId
+                            );
+
+                        if (!item) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'ROW_NOT_RENDERED'
+                            };
+                        }
+
+                        const mediaRow =
+                            item.querySelector(
+                                '[data-testid='
+                                + '"media-hub-list-row"]'
+                            );
+
+                        if (!mediaRow) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'MEDIA_ROW_MISSING'
+                            };
+                        }
+
+                        const titled =
+                            mediaRow.querySelector(
+                                '[role="button"]'
+                                + '[title^="Ver "]'
+                            );
+
+                        const childButton =
+                            mediaRow.querySelector(
+                                '[role="button"]'
+                            );
+
+                        const parentButton =
+                            mediaRow.closest(
+                                '[role="button"]'
+                            );
+
+                        const target =
+                            titled
+                            || childButton
+                            || parentButton
+                            || mediaRow;
+
+                        target.click();
+
+                        return {
+                            opened: true
+                        };
+                    })()
+                    """
+                    % row_key_js
+                )
+                or {}
+            )
+
+            if not opened.get(
+                "opened"
+            ):
+                raise RuntimeError(
+                    str(
+                        opened.get(
+                            "reason"
+                        )
+                        or "MEDIA_ROW_OPEN_FAILED"
+                    )
+                )
+
+            deadline = (
+                time.time()
+                + per_document_timeout
+            )
+
+            viewer_ready = False
+            downloaded = None
+
+            # Algunos tipos podrían descargar directamente.
+            # Otros abren primero el visor documental.
+            while time.time() < deadline:
+                downloaded = (
+                    changed_final_file(
+                        before
+                    )
+                )
+
+                if downloaded is not None:
+                    break
+
+                viewer_ready = bool(
+                    self.browser.evaluate(
+                        """
+                        (() => Boolean(
+                            document.querySelector(
+                                'button'
+                                + '[aria-label="Descargar"]'
+                            )
+                        ))()
+                        """
+                    )
+                )
+
+                if viewer_ready:
+                    break
+
+                time.sleep(
+                    0.1
+                )
+
+            if (
+                downloaded is None
+                and not viewer_ready
+            ):
+                raise RuntimeError(
+                    "MEDIA_DOCUMENT_VIEWER_TIMEOUT"
+                )
+
+            if (
+                downloaded is None
+                and viewer_ready
+            ):
+                clicked = bool(
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const button =
+                                document.querySelector(
+                                    'button'
+                                    + '[aria-label="Descargar"]'
+                                );
+
+                            if (!button) {
+                                return false;
+                            }
+
+                            button.click();
+
+                            return true;
+                        })()
+                        """
+                    )
+                )
+
+                if not clicked:
+                    raise RuntimeError(
+                        "MEDIA_DOCUMENT_DOWNLOAD_CLICK_FAILED"
+                    )
+
+                deadline = (
+                    time.time()
+                    + per_document_timeout
+                )
+
+                while time.time() < deadline:
+                    downloaded = (
+                        changed_final_file(
+                            before
+                        )
+                    )
+
+                    if downloaded is not None:
+                        break
+
+                    time.sleep(
+                        0.1
+                    )
+
+            if downloaded is None:
+                raise RuntimeError(
+                    "MEDIA_DOCUMENT_DOWNLOAD_TIMEOUT"
+                )
+
+            return {
+                "row_key": row_key,
+                "expected_filename": (
+                    row.get(
+                        "expected_filename"
+                    )
+                ),
+                "filename": (
+                    downloaded.name
+                ),
+                "file_path": str(
+                    downloaded
+                ),
+                "size_bytes": int(
+                    downloaded.stat()
+                    .st_size
+                ),
+                "row_text": (
+                    row.get(
+                        "text"
+                    )
+                ),
+            }
+
+
+        try:
+            # ==============================================
+            # 1. ABRIR MEDIA HUB
+            # ==============================================
+
+            existing_hub = bool(
+                self.browser.evaluate(
+                    """
+                    (() => Boolean(
+                        document.querySelector(
+                            '[data-testid='
+                            + '"media-hub-modal"]'
+                        )
+                    ))()
+                    """
+                )
+            )
+
+            if not existing_hub:
+                entry = (
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const visible = el => {
+                                if (!el) {
+                                    return false;
+                                }
+
+                                const style =
+                                    getComputedStyle(
+                                        el
+                                    );
+
+                                const rect =
+                                    el
+                                    .getBoundingClientRect();
+
+                                return (
+                                    style.display
+                                    !== 'none'
+                                    && style.visibility
+                                    !== 'hidden'
+                                    && rect.width > 0
+                                    && rect.height > 0
+                                );
+                            };
+
+                            const media =
+                                Array.from(
+                                    document
+                                    .querySelectorAll(
+                                        '[aria-label='
+                                        + '"Contenido multimedia"]'
+                                    )
+                                )
+                                .find(
+                                    visible
+                                );
+
+                            if (media) {
+                                media.click();
+
+                                return {
+                                    clicked: true,
+                                    strategy:
+                                        'DIRECT_MEDIA'
+                                };
+                            }
+
+                            const info =
+                                document.querySelector(
+                                    '[data-testid='
+                                    + '"conversation-info-header"]'
+                                )
+                                || document.querySelector(
+                                    '[aria-label='
+                                    + '"Información del perfil"]'
+                                );
+
+                            if (!info) {
+                                return {
+                                    clicked: false,
+                                    reason:
+                                        'INFO_ENTRY_MISSING'
+                                };
+                            }
+
+                            info.click();
+
+                            return {
+                                clicked: true,
+                                strategy:
+                                    'OPEN_INFO'
+                            };
+                        })()
+                        """
+                    )
+                    or {}
+                )
+
+                if not entry.get(
+                    "clicked"
+                ):
+                    raise RuntimeError(
+                        "No se pudo abrir "
+                        "Contenido multimedia "
+                        f"({entry.get('reason')})"
+                    )
+
+                if (
+                    entry.get(
+                        "strategy"
+                    )
+                    == "OPEN_INFO"
+                ):
+                    deadline = (
+                        time.time()
+                        + min(
+                            15.0,
+                            per_document_timeout,
+                        )
+                    )
+
+                    media_visible = False
+
+                    while time.time() < deadline:
+                        media_visible = bool(
+                            self.browser.evaluate(
+                                """
+                                (() => {
+                                    const visible = el => {
+                                        if (!el) {
+                                            return false;
+                                        }
+
+                                        const style =
+                                            getComputedStyle(
+                                                el
+                                            );
+
+                                        const rect =
+                                            el
+                                            .getBoundingClientRect();
+
+                                        return (
+                                            style.display
+                                            !== 'none'
+                                            && style.visibility
+                                            !== 'hidden'
+                                            && rect.width > 0
+                                            && rect.height > 0
+                                        );
+                                    };
+
+                                    return Array.from(
+                                        document
+                                        .querySelectorAll(
+                                            '[aria-label='
+                                            + '"Contenido multimedia"]'
+                                        )
+                                    ).some(
+                                        visible
+                                    );
+                                })()
+                                """
+                            )
+                        )
+
+                        if media_visible:
+                            break
+
+                        time.sleep(
+                            0.1
+                        )
+
+                    if not media_visible:
+                        raise RuntimeError(
+                            "Contenido multimedia "
+                            "no apareció"
+                        )
+
+                    clicked = bool(
+                        self.browser.evaluate(
+                            """
+                            (() => {
+                                const visible = el => {
+                                    if (!el) {
+                                        return false;
+                                    }
+
+                                    const style =
+                                        getComputedStyle(
+                                            el
+                                        );
+
+                                    const rect =
+                                        el
+                                        .getBoundingClientRect();
+
+                                    return (
+                                        style.display
+                                        !== 'none'
+                                        && style.visibility
+                                        !== 'hidden'
+                                        && rect.width > 0
+                                        && rect.height > 0
+                                    );
+                                };
+
+                                const media =
+                                    Array.from(
+                                        document
+                                        .querySelectorAll(
+                                            '[aria-label='
+                                            + '"Contenido multimedia"]'
+                                        )
+                                    )
+                                    .find(
+                                        visible
+                                    );
+
+                                if (!media) {
+                                    return false;
+                                }
+
+                                media.click();
+
+                                return true;
+                            })()
+                            """
+                        )
+                    )
+
+                    if not clicked:
+                        raise RuntimeError(
+                            "No se pudo pulsar "
+                            "Contenido multimedia"
+                        )
+
+            deadline = (
+                time.time()
+                + min(
+                    15.0,
+                    per_document_timeout,
+                )
+            )
+
+            while time.time() < deadline:
+                hub_open = bool(
+                    self.browser.evaluate(
+                        """
+                        (() => Boolean(
+                            document.querySelector(
+                                '[data-testid='
+                                + '"media-hub-modal"]'
+                            )
+                        ))()
+                        """
+                    )
+                )
+
+                if hub_open:
+                    break
+
+                time.sleep(
+                    0.1
+                )
+
+            if not hub_open:
+                raise RuntimeError(
+                    "Media Hub no apareció"
+                )
+
+            # ==============================================
+            # 2. PESTAÑA DOCUMENTOS
+            # ==============================================
+
+            docs_clicked = bool(
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const tab =
+                            document.querySelector(
+                                '[data-testid='
+                                + '"tab-docs"]'
+                            );
+
+                        if (!tab) {
+                            return false;
+                        }
+
+                        if (
+                            tab.getAttribute(
+                                'aria-selected'
+                            )
+                            !== 'true'
+                        ) {
+                            tab.click();
+                        }
+
+                        return true;
+                    })()
+                    """
+                )
+            )
+
+            if not docs_clicked:
+                raise RuntimeError(
+                    "Pestaña Documentos "
+                    "no disponible"
+                )
+
+            # La selección de tab precede a la carga
+            # de filas virtualizadas aproximadamente 1 s.
+            deadline = (
+                time.time()
+                + min(
+                    15.0,
+                    per_document_timeout,
+                )
+            )
+
+            initial_state = {}
+
+            while time.time() < deadline:
+                initial_state = (
+                    read_rows()
+                )
+
+                if (
+                    initial_state.get(
+                        "rows"
+                    )
+                ):
+                    break
+
+                time.sleep(
+                    0.2
+                )
+
+            rows = (
+                initial_state.get(
+                    "rows"
+                )
+                or []
+            )
+
+            # Cuenta sin documentación o sin filas recientes.
+            if not rows:
+                return {
+                    "scope":
+                        "MEDIA_HUB",
+
+                    "date_scope":
+                        "TODAY",
+
+                    "direction_scope":
+                        "ALL",
+
+                    "scanned": 0,
+                    "matched": 0,
+                    "downloaded": 0,
+                    "skipped": [],
+                    "errors": [],
+                    "items": [],
+                }
+
+            # Orden descendente: si la primera fila
+            # no es Hoy, no existe ningún documento
+            # de Hoy más abajo.
+            if not bool(
+                rows[0].get(
+                    "today"
+                )
+            ):
+                return {
+                    "scope":
+                        "MEDIA_HUB",
+
+                    "date_scope":
+                        "TODAY",
+
+                    "direction_scope":
+                        "ALL",
+
+                    "scanned": 0,
+                    "matched": 0,
+                    "downloaded": 0,
+                    "skipped": [],
+                    "errors": [],
+                    "items": [],
+                }
+
+            # ==============================================
+            # 3. TODOS LOS DOCUMENTOS DE HOY · VENTANA VIRTUAL
+            # ==============================================
+
+            while True:
+                state = (
+                    read_rows()
+                )
+
+                rows = (
+                    state.get(
+                        "rows"
+                    )
+                    or []
+                )
+
+                if not rows:
+                    break
+
+                reached_older_day = False
+
+                for row in rows:
+                    row_key = str(
+                        row.get(
+                            "key"
+                        )
+                        or ""
+                    ).strip()
+
+                    if not row_key:
+                        continue
+
+                    if (
+                        row_key
+                        in processed_keys
+                    ):
+                        continue
+
+                    if not bool(
+                        row.get(
+                            "today"
+                        )
+                    ):
+                        reached_older_day = True
+                        break
+
+                    processed_keys.add(
+                        row_key
+                    )
+
+                    scanned += 1
+
+                    matched += 1
+
+                    if (
+                        len(
+                            downloaded_items
+                        )
+                        >= limit
+                    ):
+                        skipped_items.append(
+                            {
+                                "row_key":
+                                    row_key,
+                                "reason":
+                                    "MAX_DOCUMENTS_REACHED",
+                                "row_text":
+                                    row.get(
+                                        "text"
+                                    ),
+                            }
+                        )
+
+                        reached_older_day = True
+                        break
+
+                    try:
+                        item = (
+                            open_and_download_row(
+                                row
+                            )
+                        )
+
+                        downloaded_items.append(
+                            item
+                        )
+
+                    except Exception as exc:
+                        errors.append(
+                            {
+                                "row_key":
+                                    row_key,
+                                "row_text":
+                                    row.get(
+                                        "text"
+                                    ),
+                                "error":
+                                    str(
+                                        exc
+                                    ),
+                            }
+                        )
+
+                    finally:
+                        close_document_viewer()
+
+                        # Visor y Media Hub son overlays
+                        # distintos. Esperamos únicamente
+                        # a que desaparezca Descargar.
+                        viewer_deadline = (
+                            time.time()
+                            + 3.0
+                        )
+
+                        while (
+                            time.time()
+                            < viewer_deadline
+                        ):
+                            viewer_open = bool(
+                                self.browser.evaluate(
+                                    """
+                                    (() => Boolean(
+                                        document.querySelector(
+                                            'button'
+                                            + '[aria-label="Descargar"]'
+                                        )
+                                    ))()
+                                    """
+                                )
+                            )
+
+                            if not viewer_open:
+                                break
+
+                            time.sleep(
+                                0.1
+                            )
+
+                if reached_older_day:
+                    break
+
+                movement = (
+                    scroll_next_page()
+                )
+
+                if not movement.get(
+                    "moved"
+                ):
+                    break
+
+                # Esperar a que cambie la ventana virtual.
+                previous_keys = {
+                    str(
+                        row.get(
+                            "key"
+                        )
+                        or ""
+                    )
+                    for row in rows
+                }
+
+                refresh_deadline = (
+                    time.time()
+                    + 3.0
+                )
+
+                while time.time() < refresh_deadline:
+                    refreshed = (
+                        read_rows()
+                    )
+
+                    current_keys = {
+                        str(
+                            row.get(
+                                "key"
+                            )
+                            or ""
+                        )
+                        for row in (
+                            refreshed.get(
+                                "rows"
+                            )
+                            or []
+                        )
+                    }
+
+                    if (
+                        current_keys
+                        != previous_keys
+                    ):
+                        break
+
+                    time.sleep(
+                        0.1
+                    )
+
+            return {
+                "scope":
+                    "MEDIA_HUB",
+
+                "date_scope":
+                    "TODAY",
+
+                "direction_scope":
+                    "ALL",
+
+                "scanned":
+                    int(
+                        scanned
+                    ),
+
+                "matched":
+                    int(
+                        matched
+                    ),
+
+                "downloaded":
+                    len(
+                        downloaded_items
+                    ),
+
+                "skipped":
+                    skipped_items,
+
+                "errors":
+                    errors,
+
+                "items":
+                    downloaded_items,
+            }
+
+        finally:
+            # Cerrar un visor residual antes de tocar
+            # el propio Media Hub.
+            close_document_viewer()
+
+            if hub_open:
+                try:
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const hub =
+                                document.querySelector(
+                                    '[data-testid='
+                                    + '"media-hub-modal"]'
+                                );
+
+                            if (!hub) {
+                                return false;
+                            }
+
+                            const dialog =
+                                hub.closest(
+                                    '[role="dialog"]'
+                                );
+
+                            const close =
+                                (
+                                    hub.querySelector(
+                                        'button'
+                                        + '[aria-label="Cerrar"]'
+                                    )
+                                    || (
+                                        dialog
+                                        ? dialog.querySelector(
+                                            'button'
+                                            + '[aria-label="Cerrar"]'
+                                          )
+                                        : null
+                                    )
+                                );
+
+                            if (!close) {
+                                return false;
+                            }
+
+                            close.click();
+
+                            return true;
+                        })()
+                        """
+                    )
+
+                except Exception:
+                    pass
+
+            if download_behavior_enabled:
+                try:
+                    run_until_complete(
+                        send(
+                            cdp_browser
+                            .set_download_behavior(
+                                behavior="default",
+                            )
+                        )
+                    )
+                except Exception:
+                    pass
+
+
     @staticmethod
     def _voice_call_snapshot_summary(
         snapshot,
