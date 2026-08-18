@@ -21,6 +21,9 @@ from frontend.components.app_card import (
 from frontend.components.app_empty_state import (
     empty_state,
 )
+from frontend.components.app_snackbar import (
+    show_snackbar,
+)
 
 
 Q_PRIMARY = "#0057B8"
@@ -336,24 +339,23 @@ def communications_view(
         message,
         *,
         error=False,
+        severity=None,
     ):
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text(
-                str(message),
+        return show_snackbar(
+            page,
+            str(
+                message
+                or ""
             ),
-            bgcolor=(
-                "#FEE4E2"
-                if error
-                else "#ECFDF3"
+            severity=(
+                severity
+                or (
+                    "error"
+                    if error
+                    else "success"
+                )
             ),
         )
-
-        page.snack_bar.open = True
-
-        try:
-            page.update()
-        except Exception:
-            pass
 
     def _safe_update():
         # WA-FLET-LIFE safe-update guard
