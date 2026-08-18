@@ -1,3 +1,4 @@
+import inspect
 import tempfile
 import threading
 import unittest
@@ -105,6 +106,7 @@ class _FakeDownloadBrowser:
 
 class _RuntimeConnector:
     instances = []
+    batch_result = None
 
     def __init__(
         self,
@@ -118,6 +120,9 @@ class _RuntimeConnector:
 
         self.download_calls = []
         self.download_thread_ids = []
+
+        self.batch_calls = []
+        self.batch_thread_ids = []
 
         self.__class__.instances.append(
             self
@@ -167,6 +172,53 @@ class _RuntimeConnector:
                 123,
         }
 
+    def download_today_sent_documents_from_media_hub(
+        self,
+        *,
+        download_dir,
+        timeout,
+        max_documents,
+    ):
+        self.batch_thread_ids.append(
+            threading.get_ident()
+        )
+
+        self.batch_calls.append(
+            {
+                "download_dir":
+                    str(
+                        Path(
+                            download_dir
+                        ).resolve()
+                    ),
+                "timeout":
+                    timeout,
+                "max_documents":
+                    max_documents,
+            }
+        )
+
+        result = (
+            self.__class__.batch_result
+        )
+
+        if result is None:
+            result = {
+                "scope": "MEDIA_HUB",
+                "date_scope": "TODAY",
+                "direction_scope": "OUTBOUND",
+                "scanned": 0,
+                "matched": 0,
+                "downloaded": 0,
+                "skipped": [],
+                "errors": [],
+                "items": [],
+            }
+
+        return dict(
+            result
+        )
+
     def close(self):
         self.browser = None
         return True
@@ -211,6 +263,7 @@ class WhatsAppDocumentDownloadTest(
 
     def _runtime(self):
         _RuntimeConnector.instances = []
+        _RuntimeConnector.batch_result = None
 
         runtime = WhatsAppRuntimeService(
             profile_key="test_profile",
@@ -227,6 +280,11 @@ class WhatsAppDocumentDownloadTest(
                     id=7,
                     client_id=30,
                 )
+        )
+
+        runtime._ensure_ready_impl = (
+            lambda **kwargs:
+                runtime._build_connector()
         )
 
         return runtime
@@ -545,6 +603,320 @@ class WhatsAppDocumentDownloadTest(
 
             finally:
                 runtime.close()
+
+
+    def test_runtime_batch_uses_default_watched_folder_and_empty_result(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = self._runtime()
+
+            watch = {
+                "id": 1,
+                "name": "Descargas",
+                "folder_path": temp,
+                "is_active": 1,
+            }
+
+            try:
+                with patch(
+                    "backend.services."
+                    "whatsapp_runtime_service."
+                    "document_inbox_watch_service."
+                    "ensure_default_downloads_watch_folder",
+                    return_value=watch,
+                ) as ensure_watch:
+                    result = (
+                        runtime
+                        .download_today_sent_documents(
+                            download_timeout=13,
+                            max_documents=17,
+                        )
+                    )
+
+                ensure_watch.assert_called_once_with()
+
+                connector = (
+                    _RuntimeConnector
+                    .instances[0]
+                )
+
+                self.assertEqual(
+                    len(
+                        connector.batch_calls
+                    ),
+                    1,
+                )
+
+                self.assertEqual(
+                    Path(
+                        connector.batch_calls[
+                            0
+                        ][
+                            "download_dir"
+                        ]
+                    ).resolve(),
+                    Path(temp).resolve(),
+                )
+
+                self.assertEqual(
+                    connector.batch_calls[
+                        0
+                    ][
+                        "timeout"
+                    ],
+                    13,
+                )
+
+                self.assertEqual(
+                    connector.batch_calls[
+                        0
+                    ][
+                        "max_documents"
+                    ],
+                    17,
+                )
+
+                self.assertNotEqual(
+                    connector
+                    .batch_thread_ids[0],
+                    threading.get_ident(),
+                )
+
+                self.assertEqual(
+                    result[
+                        "scope"
+                    ],
+                    "MEDIA_HUB",
+                )
+
+                self.assertEqual(
+                    result[
+                        "date_scope"
+                    ],
+                    "TODAY",
+                )
+
+                self.assertEqual(
+                    result[
+                        "direction_scope"
+                    ],
+                    "OUTBOUND",
+                )
+
+                self.assertEqual(
+                    result[
+                        "downloaded"
+                    ],
+                    0,
+                )
+
+                self.assertEqual(
+                    result[
+                        "errors"
+                    ],
+                    [],
+                )
+
+                self.assertEqual(
+                    result[
+                        "watch_folder_id"
+                    ],
+                    1,
+                )
+
+                self.assertTrue(
+                    result[
+                        "document_inbox_watch"
+                    ]
+                )
+
+            finally:
+                runtime.close()
+
+    def test_runtime_batch_accepts_active_selected_watch_folder(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = self._runtime()
+
+            watch = {
+                "id": 8,
+                "name": "WhatsApp",
+                "folder_path": temp,
+                "is_active": 1,
+            }
+
+            try:
+                with patch(
+                    "backend.services."
+                    "whatsapp_runtime_service."
+                    "document_inbox_watch_service."
+                    "get_watch_folder",
+                    return_value=watch,
+                ) as get_watch:
+                    result = (
+                        runtime
+                        .download_today_sent_documents(
+                            watch_folder_id=8,
+                        )
+                    )
+
+                get_watch.assert_called_once_with(
+                    8
+                )
+
+                connector = (
+                    _RuntimeConnector
+                    .instances[0]
+                )
+
+                self.assertEqual(
+                    Path(
+                        connector.batch_calls[
+                            0
+                        ][
+                            "download_dir"
+                        ]
+                    ).resolve(),
+                    Path(temp).resolve(),
+                )
+
+                self.assertEqual(
+                    result[
+                        "watch_folder_id"
+                    ],
+                    8,
+                )
+
+                self.assertEqual(
+                    result[
+                        "watch_folder_name"
+                    ],
+                    "WhatsApp",
+                )
+
+            finally:
+                runtime.close()
+
+    def test_runtime_batch_rejects_inactive_selected_watch_folder(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = self._runtime()
+
+            watch = {
+                "id": 9,
+                "name": "Inactiva",
+                "folder_path": temp,
+                "is_active": 0,
+            }
+
+            try:
+                with patch(
+                    "backend.services."
+                    "whatsapp_runtime_service."
+                    "document_inbox_watch_service."
+                    "get_watch_folder",
+                    return_value=watch,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "inactiva",
+                    ):
+                        runtime.download_today_sent_documents(
+                            watch_folder_id=9,
+                        )
+
+                connector = (
+                    _RuntimeConnector
+                    .instances[0]
+                )
+
+                self.assertEqual(
+                    connector.batch_calls,
+                    [],
+                )
+
+            finally:
+                runtime.close()
+
+    def test_batch_connector_source_keeps_today_sent_by_me_contract(
+        self,
+    ):
+        source = inspect.getsource(
+            WhatsAppConnector
+            .download_today_sent_documents_from_media_hub
+        )
+
+        self.assertIn(
+            '"TODAY"',
+            source,
+        )
+
+        self.assertIn(
+            '"OUTBOUND"',
+            source,
+        )
+
+        self.assertIn(
+            '"today"',
+            source,
+        )
+
+        self.assertIn(
+            '"sent_by_me"',
+            source,
+        )
+
+        self.assertIn(
+            "TODAY_NOT_SENT_BY_ME",
+            source,
+        )
+
+    def test_batch_source_never_scans_or_imports_document_inbox(
+        self,
+    ):
+        connector_source = inspect.getsource(
+            WhatsAppConnector
+            .download_today_sent_documents_from_media_hub
+        )
+
+        runtime_source = inspect.getsource(
+            WhatsAppRuntimeService
+            ._download_today_sent_documents_impl
+        )
+
+        combined = (
+            connector_source
+            + "\n"
+            + runtime_source
+        )
+
+        self.assertNotIn(
+            "scan_watch_folder(",
+            combined,
+        )
+
+        self.assertNotIn(
+            "scan_active_watch_folders(",
+            combined,
+        )
+
+        self.assertNotIn(
+            "import_file_to_inbox(",
+            combined,
+        )
+
+        self.assertIn(
+            "ensure_default_downloads_watch_folder",
+            runtime_source,
+        )
+
+        self.assertIn(
+            "get_watch_folder",
+            runtime_source,
+        )
 
 
 if __name__ == "__main__":

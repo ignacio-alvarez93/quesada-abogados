@@ -4507,6 +4507,119 @@ class WhatsAppRuntimeService:
             ),
         )
 
+    def _download_today_sent_documents_impl(
+        self,
+        *,
+        watch_folder_id=None,
+        wait_timeout=60,
+        download_timeout=30,
+        max_documents=100,
+    ):
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        if watch_folder_id in (
+            None,
+            "",
+        ):
+            watch_folder = (
+                document_inbox_watch_service
+                .ensure_default_downloads_watch_folder()
+            )
+
+        else:
+            watch_folder = (
+                document_inbox_watch_service
+                .get_watch_folder(
+                    int(
+                        watch_folder_id
+                    )
+                )
+            )
+
+        if not int(
+            watch_folder.get(
+                "is_active"
+            )
+            or 0
+        ):
+            raise ValueError(
+                "La carpeta vigilada "
+                "seleccionada está inactiva"
+            )
+
+        target_dir = Path(
+            watch_folder[
+                "folder_path"
+            ]
+        ).expanduser()
+
+        if (
+            not target_dir.exists()
+            or not target_dir.is_dir()
+        ):
+            raise ValueError(
+                "La carpeta vigilada "
+                "no existe físicamente"
+            )
+
+        result = (
+            connector
+            .download_today_sent_documents_from_media_hub(
+                download_dir=target_dir,
+                timeout=download_timeout,
+                max_documents=max_documents,
+            )
+        )
+
+        return {
+            **dict(
+                result
+                or {}
+            ),
+
+            "watch_folder_id":
+                int(
+                    watch_folder[
+                        "id"
+                    ]
+                ),
+
+            "watch_folder_name":
+                watch_folder.get(
+                    "name"
+                ),
+
+            "watch_folder_path":
+                str(
+                    target_dir.resolve()
+                ),
+
+            "document_inbox_watch":
+                True,
+        }
+
+
+    def download_today_sent_documents(
+        self,
+        *,
+        watch_folder_id=None,
+        wait_timeout=60,
+        download_timeout=30,
+        max_documents=100,
+    ):
+        return self._run_serialized(
+            self._download_today_sent_documents_impl,
+            watch_folder_id=watch_folder_id,
+            wait_timeout=wait_timeout,
+            download_timeout=download_timeout,
+            max_documents=max_documents,
+        )
+
+
     def _close_impl(
         self,
     ):
