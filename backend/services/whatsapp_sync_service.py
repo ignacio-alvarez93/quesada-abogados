@@ -371,6 +371,8 @@ class WhatsAppSyncService:
                 0,
             "status_advanced":
                 0,
+            "metadata_refined":
+                0,
             "skipped":
                 0,
             "errors":
@@ -408,6 +410,8 @@ class WhatsAppSyncService:
                 "reused":
                     False,
                 "status_advanced":
+                    False,
+                "metadata_refined":
                     False,
                 "skipped":
                     False,
@@ -543,6 +547,22 @@ class WhatsAppSyncService:
                 item[
                     "status_advanced"
                 ] = status_advanced
+
+                metadata_refined = bool(
+                    imported.get(
+                        "metadata_refined",
+                        False,
+                    )
+                )
+
+                item[
+                    "metadata_refined"
+                ] = metadata_refined
+
+                if metadata_refined:
+                    summary[
+                        "metadata_refined"
+                    ] += 1
 
                 if created:
                     summary["created"] += 1

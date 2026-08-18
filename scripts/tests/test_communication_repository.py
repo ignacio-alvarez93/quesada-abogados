@@ -1994,6 +1994,96 @@ class CommunicationRepositoryTest(
         )
 
 
+    def test_message_metadata_can_be_updated_without_duplicate(
+        self,
+    ):
+        account = self._create_account()
+
+        thread = self.repo.get_or_create_thread(
+            CommunicationThread(
+                id=None,
+                account_id=account.id,
+                client_id=None,
+                external_thread_key=(
+                    "metadata-refinement"
+                ),
+                external_address=(
+                    "+34600111222"
+                ),
+            )
+        )
+
+        created = self.repo.create_message(
+            CommunicationMessage(
+                id=None,
+                thread_id=thread.id,
+                client_id=None,
+                expedient_id=None,
+                direction=DIRECTION_INBOUND,
+                body_text="Foto histórica",
+                status=MESSAGE_STATUS_PENDING,
+                provider_message_id=(
+                    "WA-METADATA-1"
+                ),
+                metadata={
+                    "message_type":
+                        "UNKNOWN_MEDIA",
+                    "legacy":
+                        True,
+                },
+            )
+        )
+
+        updated = (
+            self.repo
+            .update_message_metadata(
+                created.id,
+                {
+                    "message_type":
+                        "IMAGE",
+                    "legacy":
+                        True,
+                    "image_count":
+                        2,
+                },
+            )
+        )
+
+        self.assertEqual(
+            updated.id,
+            created.id,
+        )
+
+        self.assertEqual(
+            updated.metadata[
+                "message_type"
+            ],
+            "IMAGE",
+        )
+
+        self.assertTrue(
+            updated.metadata[
+                "legacy"
+            ]
+        )
+
+        self.assertEqual(
+            updated.metadata[
+                "image_count"
+            ],
+            2,
+        )
+
+        self.assertEqual(
+            len(
+                self.repo.list_messages(
+                    thread.id
+                )
+            ),
+            1,
+        )
+
+
     def test_list_latest_messages_returns_recent_window_in_ascending_order(
         self,
     ):

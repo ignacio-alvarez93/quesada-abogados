@@ -157,6 +157,13 @@ class CommunicationRepository(Protocol):
     ) -> CommunicationMessage | None:
         ...
 
+    def update_message_metadata(
+        self,
+        message_id: int,
+        metadata: dict | None,
+    ) -> CommunicationMessage:
+        ...
+
     def update_message_status(
         self,
         message_id: int,

@@ -1719,6 +1719,165 @@ class CommunicationServiceTest(
             1,
         )
 
+    def test_import_refines_unknown_media_to_image_without_duplicate(
+        self,
+    ):
+        repository = (
+            self.service.repository
+        )
+
+        account = (
+            self.service
+            .ensure_whatsapp_dev_account()
+        )
+
+        thread = (
+            repository
+            .get_or_create_thread(
+                CommunicationThread(
+                    id=None,
+                    account_id=account.id,
+                    client_id=None,
+                    external_thread_key=(
+                        "image-refinement-thread"
+                    ),
+                    external_address=(
+                        "+34600999111"
+                    ),
+                    match_status=(
+                        THREAD_MATCH_UNMATCHED
+                    ),
+                )
+            )
+        )
+
+        first = (
+            self.service
+            .import_provider_message(
+                thread_id=thread.id,
+                direction=(
+                    DIRECTION_INBOUND
+                ),
+                body_text=(
+                    "Foto histórica"
+                ),
+                provider_message_id=(
+                    "WA-IMAGE-REFINE-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-18T10:00:00"
+                ),
+                status=(
+                    MESSAGE_STATUS_RECEIVED
+                ),
+                metadata={
+                    "message_type":
+                        "UNKNOWN_MEDIA",
+                    "legacy_marker":
+                        True,
+                },
+            )
+        )
+
+        second = (
+            self.service
+            .import_provider_message(
+                thread_id=thread.id,
+                direction=(
+                    DIRECTION_INBOUND
+                ),
+                body_text=(
+                    "Foto histórica"
+                ),
+                provider_message_id=(
+                    "WA-IMAGE-REFINE-1"
+                ),
+                provider_timestamp=(
+                    "2026-08-18T10:00:00"
+                ),
+                status=(
+                    MESSAGE_STATUS_RECEIVED
+                ),
+                metadata={
+                    "message_type":
+                        "IMAGE",
+                    "image_count":
+                        2,
+                    "source":
+                        "whatsapp_web_message_sync",
+                },
+            )
+        )
+
+        self.assertTrue(
+            first[
+                "created"
+            ]
+        )
+
+        self.assertFalse(
+            second[
+                "created"
+            ]
+        )
+
+        self.assertTrue(
+            second[
+                "reused"
+            ]
+        )
+
+        self.assertTrue(
+            second[
+                "metadata_refined"
+            ]
+        )
+
+        self.assertEqual(
+            first[
+                "message"
+            ].id,
+            second[
+                "message"
+            ].id,
+        )
+
+        metadata = (
+            second[
+                "message"
+            ].metadata
+        )
+
+        self.assertEqual(
+            metadata[
+                "message_type"
+            ],
+            "IMAGE",
+        )
+
+        self.assertEqual(
+            metadata[
+                "image_count"
+            ],
+            2,
+        )
+
+        self.assertTrue(
+            metadata[
+                "legacy_marker"
+            ]
+        )
+
+        self.assertEqual(
+            len(
+                repository.list_messages(
+                    thread.id
+                )
+            ),
+            1,
+        )
+
+
     def test_get_latest_thread_provider_message_id(
         self,
     ):

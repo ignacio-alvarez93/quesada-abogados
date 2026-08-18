@@ -1656,6 +1656,134 @@ class CommunicationsViewIndividualStatusBubbleTests(
         )
 
 
+class CommunicationsViewMetadataRefinementTests(
+    unittest.TestCase
+):
+    def test_metadata_refinement_rebuilds_visible_history(
+        self,
+    ):
+        source = Path(
+            "frontend/views/communications_view.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        callback_start = source.index(
+            "        if visible_synced_thread:"
+        )
+
+        callback_end = source.index(
+            "\n        else:",
+            callback_start,
+        )
+
+        block = source[
+            callback_start:
+            callback_end
+        ]
+
+        self.assertIn(
+            'summary.get(\n                    "metadata_refined"',
+            block,
+        )
+
+        self.assertIn(
+            "metadata_refined_count > 0",
+            block,
+        )
+
+        refinement_start = block.index(
+            "elif metadata_refined_count > 0:"
+        )
+
+        incremental_start = block.index(
+            "elif incremental_candidate:",
+            refinement_start,
+        )
+
+        refinement_branch = block[
+            refinement_start:
+            incremental_start
+        ]
+
+        self.assertIn(
+            "_refresh_message_history_control()",
+            refinement_branch,
+        )
+
+        self.assertNotIn(
+            "_update_advanced_message_status_controls(",
+            refinement_branch,
+        )
+
+        self.assertNotIn(
+            "_append_new_message_history_controls(",
+            refinement_branch,
+        )
+
+
+    def test_metadata_refinement_is_not_no_visual_change(
+        self,
+    ):
+        source = Path(
+            "frontend/views/communications_view.py"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        callback_start = source.index(
+            "        if visible_synced_thread:"
+        )
+
+        callback_end = source.index(
+            "\n        else:",
+            callback_start,
+        )
+
+        block = source[
+            callback_start:
+            callback_end
+        ]
+
+        no_visual_start = block.index(
+            "sync_no_visual_change = ("
+        )
+
+        no_visual_end = block.index(
+            "\n            )",
+            no_visual_start,
+        )
+
+        no_visual = block[
+            no_visual_start:
+            no_visual_end
+        ]
+
+        self.assertIn(
+            "metadata_refined_count == 0",
+            no_visual,
+        )
+
+        incremental_start = block.index(
+            "incremental_candidate = ("
+        )
+
+        incremental_end = block.index(
+            "\n            )",
+            incremental_start,
+        )
+
+        incremental = block[
+            incremental_start:
+            incremental_end
+        ]
+
+        self.assertIn(
+            "metadata_refined_count == 0",
+            incremental,
+        )
+
+
 class CommunicationsViewMixedStatusDeltaTests(
     unittest.TestCase
 ):

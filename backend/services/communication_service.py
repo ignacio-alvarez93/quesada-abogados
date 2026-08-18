@@ -1275,6 +1275,71 @@ class CommunicationService:
             )
         )
 
+        metadata_refined = False
+
+        if (
+            not created
+            and previous is not None
+            and isinstance(
+                metadata,
+                dict,
+            )
+        ):
+            previous_metadata = (
+                dict(
+                    previous.metadata
+                    or {}
+                )
+                if isinstance(
+                    previous.metadata,
+                    dict,
+                )
+                else {}
+            )
+
+            previous_type = str(
+                previous_metadata.get(
+                    "message_type"
+                )
+                or ""
+            ).strip().upper()
+
+            incoming_type = str(
+                metadata.get(
+                    "message_type"
+                )
+                or ""
+            ).strip().upper()
+
+            # Refinamiento monotónico y deliberadamente
+            # estrecho para mensajes históricos.
+            #
+            # Nunca degradamos TEXT/DOCUMENT/STICKER/IMAGE
+            # hacia otro tipo por una observación posterior.
+            if (
+                previous_type
+                in (
+                    "",
+                    "UNKNOWN_MEDIA",
+                )
+                and incoming_type
+                == "IMAGE"
+            ):
+                merged_metadata = {
+                    **previous_metadata,
+                    **metadata,
+                }
+
+                message = (
+                    self.repository
+                    .update_message_metadata(
+                        message.id,
+                        merged_metadata,
+                    )
+                )
+
+                metadata_refined = True
+
         status_advanced = bool(
             not created
             and previous is not None
@@ -1298,6 +1363,8 @@ class CommunicationService:
             ),
             "status_advanced":
                 status_advanced,
+            "metadata_refined":
+                metadata_refined,
         }
 
     def register_inbound_message(

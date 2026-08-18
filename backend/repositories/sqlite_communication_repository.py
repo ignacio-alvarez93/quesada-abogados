@@ -4210,6 +4210,56 @@ class SQLiteCommunicationRepository:
                 row
             )
 
+    def update_message_metadata(
+        self,
+        message_id,
+        metadata,
+    ):
+        """Actualiza metadata de un mensaje existente."""
+        self.ensure_schema()
+
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE communication_messages
+                SET
+                    metadata_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    _json_dump(
+                        metadata
+                    ),
+                    int(
+                        message_id
+                    ),
+                ),
+            )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_messages
+                WHERE id = ?
+                """,
+                (
+                    int(
+                        message_id
+                    ),
+                ),
+            ).fetchone()
+
+            if not row:
+                raise ValueError(
+                    "Mensaje de comunicación no encontrado"
+                )
+
+            return self._message_from_row(
+                row
+            )
+
+
     def update_message_status(
         self,
         message_id,
