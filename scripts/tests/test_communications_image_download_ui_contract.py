@@ -204,5 +204,164 @@ class CommunicationsImageDownloadUiContractTest(
         )
 
 
+class CommunicationsTodayImagesBatchUiContractTest(
+    unittest.TestCase
+):
+    def test_batch_images_has_double_click_guard(
+        self,
+    ):
+        self.assertIn(
+            '"downloading_today_images": False',
+            SOURCE,
+        )
+
+        handler = function_source(
+            "_download_today_images"
+        )
+
+        self.assertIn(
+            '"downloading_today_images"',
+            handler,
+        )
+
+        self.assertIn(
+            "] = True",
+            handler,
+        )
+
+
+    def test_batch_images_runs_runtime_in_background(
+        self,
+    ):
+        handler = function_source(
+            "_download_today_images"
+        )
+
+        self.assertIn(
+            ".download_today_images()",
+            handler,
+        )
+
+        self.assertIn(
+            "_run_background(",
+            handler,
+        )
+
+        self.assertNotIn(
+            "WhatsAppConnector(",
+            handler,
+        )
+
+
+    def test_batch_images_returns_with_run_task(
+        self,
+    ):
+        scheduler = function_source(
+            "_schedule_today_images_download_finish"
+        )
+
+        self.assertIn(
+            '"run_task"',
+            scheduler,
+        )
+
+        self.assertIn(
+            "_finish_today_images_download_ui",
+            scheduler,
+        )
+
+
+    def test_batch_images_reports_results(
+        self,
+    ):
+        finish = function_source(
+            "_finish_today_images_download_ui"
+        )
+
+        self.assertIn(
+            "No hay imágenes de hoy.",
+            finish,
+        )
+
+        self.assertIn(
+            '"watch_folder_name"',
+            finish,
+        )
+
+        self.assertIn(
+            '"downloaded"',
+            finish,
+        )
+
+        self.assertIn(
+            '"errors"',
+            finish,
+        )
+
+
+    def test_batch_images_header_button_contract(
+        self,
+    ):
+        tree = ast.parse(
+            SOURCE
+        )
+
+        string_constants = {
+            node.value
+            for node in ast.walk(
+                tree
+            )
+            if (
+                isinstance(
+                    node,
+                    ast.Constant,
+                )
+                and isinstance(
+                    node.value,
+                    str,
+                )
+            )
+        }
+
+        self.assertIn(
+            "Descargar imágenes de hoy de todos los chats",
+            string_constants,
+        )
+
+        self.assertIn(
+            "_download_today_images",
+            SOURCE,
+        )
+
+        self.assertIn(
+            "icon=ft.Icons.IMAGE",
+            SOURCE,
+        )
+
+
+    def test_batch_images_never_scans_or_imports_inbox(
+        self,
+    ):
+        source = (
+            function_source(
+                "_download_today_images"
+            )
+            + "\n"
+            + function_source(
+                "_finish_today_images_download_ui"
+            )
+        )
+
+        for forbidden in (
+            "scan_watch_folder(",
+            "scan_active_watch_folders(",
+            "import_file_to_inbox(",
+        ):
+            self.assertNotIn(
+                forbidden,
+                source,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

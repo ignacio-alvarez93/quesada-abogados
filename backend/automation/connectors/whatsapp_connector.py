@@ -11213,6 +11213,2012 @@ class WhatsAppConnector:
                     pass
 
 
+
+    def download_today_images_from_media_hub(
+        self,
+        *,
+        download_dir,
+        timeout=30,
+        max_images=100,
+    ):
+        """Descarga las imágenes de HOY del Media Hub global.
+
+        Contrato:
+        - Media Hub global;
+        - pestaña Archivos multimedia;
+        - cualquier chat;
+        - cualquier remitente/dirección;
+        - solo fotografías;
+        - excluye vídeo y GIF;
+        - no persiste ni escanea Bandeja Documental.
+
+        En la versión física observada de WhatsApp Web,
+        el contenido de HOY puede aparecer como prefijo
+        sin encabezado explícito, antes de la primera
+        frontera histórica (Ayer/fecha/semana anterior).
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        limit = max(
+            1,
+            int(
+                max_images
+            ),
+        )
+
+        per_image_timeout = max(
+            1.0,
+            float(
+                timeout
+            ),
+        )
+
+        target_dir = Path(
+            download_dir
+        ).expanduser()
+
+        target_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        target_dir = (
+            target_dir.resolve()
+        )
+
+        page = getattr(
+            self.browser,
+            "page",
+            None,
+        )
+
+        loop = getattr(
+            self.browser,
+            "loop",
+            None,
+        )
+
+        send = getattr(
+            page,
+            "send",
+            None,
+        )
+
+        run_until_complete = getattr(
+            loop,
+            "run_until_complete",
+            None,
+        )
+
+        if (
+            not callable(
+                send
+            )
+            or not callable(
+                run_until_complete
+            )
+        ):
+            raise RuntimeError(
+                "Transporte CDP de descarga "
+                "no disponible"
+            )
+
+        active = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active.chat_open:
+            prepared = (
+                self.prepare_chat_interface()
+            )
+
+            if (
+                isinstance(
+                    prepared,
+                    dict,
+                )
+                and not prepared.get(
+                    "ready",
+                    True,
+                )
+            ):
+                raise RuntimeError(
+                    "La lista de chats WhatsApp "
+                    "no está disponible"
+                )
+
+            snapshots = (
+                self.list_visible_chat_snapshots(
+                    viewport_only=True,
+                )
+            )
+
+            if not snapshots:
+                snapshots = (
+                    self.list_visible_chat_snapshots(
+                        viewport_only=False,
+                    )
+                )
+
+            if not snapshots:
+                raise RuntimeError(
+                    "No hay conversaciones WhatsApp "
+                    "disponibles para abrir "
+                    "Contenido multimedia"
+                )
+
+            fallback = snapshots[0]
+
+            if (
+                fallback.virtual_offset
+                is not None
+            ):
+                routing = (
+                    self.open_chat_by_virtual_offset(
+                        fallback.virtual_offset,
+                        expected_display_name=(
+                            fallback.display_name
+                        ),
+                        timeout=min(
+                            15,
+                            max(
+                                1,
+                                int(
+                                    per_image_timeout
+                                ),
+                            ),
+                        ),
+                    )
+                )
+
+            else:
+                routing = (
+                    self.open_chat(
+                        fallback.position,
+                        expected_display_name=(
+                            fallback.display_name
+                        ),
+                        timeout=min(
+                            15,
+                            max(
+                                1,
+                                int(
+                                    per_image_timeout
+                                ),
+                            ),
+                        ),
+                    )
+                )
+
+            if not routing.get(
+                "opened"
+            ):
+                raise RuntimeError(
+                    "No se pudo abrir una conversación "
+                    "WhatsApp para acceder al Media Hub "
+                    f"({routing.get('reason') or 'CHAT_OPEN_FAILED'})"
+                )
+
+            active = (
+                self.get_active_chat_fingerprint()
+            )
+
+            if not active.chat_open:
+                raise RuntimeError(
+                    "WhatsApp no confirmó el chat "
+                    "abierto para acceder al Media Hub"
+                )
+
+        downloaded_items = []
+        skipped_items = []
+        errors = []
+
+        scanned = 0
+        matched = 0
+
+        processed_keys = set()
+
+        hub_open = False
+        download_behavior_enabled = False
+
+
+        def snapshot_files():
+            snapshot = {}
+
+            for file_path in target_dir.iterdir():
+                if not file_path.is_file():
+                    continue
+
+                try:
+                    stat = file_path.stat()
+                except OSError:
+                    continue
+
+                snapshot[
+                    str(
+                        file_path
+                    )
+                ] = (
+                    int(
+                        stat.st_size
+                    ),
+                    int(
+                        stat.st_mtime_ns
+                    ),
+                )
+
+            return snapshot
+
+
+        def changed_final_file(
+            before,
+        ):
+            candidates = []
+
+            for file_path in target_dir.iterdir():
+                if not file_path.is_file():
+                    continue
+
+                if (
+                    file_path.suffix.lower()
+                    in (
+                        ".tmp",
+                        ".crdownload",
+                    )
+                ):
+                    continue
+
+                try:
+                    stat = file_path.stat()
+                except OSError:
+                    continue
+
+                current = (
+                    int(
+                        stat.st_size
+                    ),
+                    int(
+                        stat.st_mtime_ns
+                    ),
+                )
+
+                if (
+                    before.get(
+                        str(
+                            file_path
+                        )
+                    )
+                    == current
+                ):
+                    continue
+
+                if current[0] <= 0:
+                    continue
+
+                candidates.append(
+                    (
+                        current[1],
+                        file_path,
+                        current[0],
+                    )
+                )
+
+            if not candidates:
+                return None
+
+            candidates.sort(
+                key=lambda item:
+                    item[0],
+                reverse=True,
+            )
+
+            _, candidate, size_1 = (
+                candidates[0]
+            )
+
+            time.sleep(
+                0.2
+            )
+
+            try:
+                size_2 = int(
+                    candidate.stat()
+                    .st_size
+                )
+            except OSError:
+                return None
+
+            if (
+                size_1 <= 0
+                or size_1
+                != size_2
+            ):
+                return None
+
+            return candidate
+
+
+        def close_image_viewer():
+            try:
+                return bool(
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const viewer =
+                                document.querySelector(
+                                    '[data-testid="media-viewer-modal"]'
+                                );
+
+                            if (!viewer) {
+                                return false;
+                            }
+
+                            const download =
+                                viewer.querySelector(
+                                    'button'
+                                    + '[aria-label="Descargar"]'
+                                );
+
+                            if (!download) {
+                                return false;
+                            }
+
+                            const visible = el => {
+                                if (!el) {
+                                    return false;
+                                }
+
+                                const style =
+                                    getComputedStyle(
+                                        el
+                                    );
+
+                                const rect =
+                                    el.getBoundingClientRect();
+
+                                return (
+                                    style.display !== 'none'
+                                    && style.visibility !== 'hidden'
+                                    && rect.width > 0
+                                    && rect.height > 0
+                                );
+                            };
+
+                            const close =
+                                Array.from(
+                                    viewer.querySelectorAll(
+                                        'button'
+                                        + '[aria-label="Cerrar"]'
+                                    )
+                                )
+                                .find(
+                                    visible
+                                );
+
+                            if (!close) {
+                                return false;
+                            }
+
+                            close.click();
+
+                            return true;
+                        })()
+                        """
+                    )
+                )
+
+            except Exception:
+                return False
+
+
+        def read_media_state():
+            return (
+                self.browser.evaluate(
+                    r"""
+                    (() => {
+                        const clean = value =>
+                            String(
+                                value || ''
+                            )
+                            .replace(
+                                /\s+/g,
+                                ' '
+                            )
+                            .trim();
+
+                        const tab =
+                            document.querySelector(
+                                '[data-testid="tab-media"]'
+                            );
+
+                        if (!tab) {
+                            return {
+                                ready: false,
+                                rows: []
+                            };
+                        }
+
+                        const root =
+                            tab.closest(
+                                '[data-testid="popup-contents"]'
+                            )
+                            || tab.closest(
+                                '[data-testid="media-hub-modal"]'
+                            )
+                            || document;
+
+                        const rows =
+                            Array.from(
+                                root.querySelectorAll(
+                                    '[role="listitem"]'
+                                    + '[data-testid^="list-item-"]'
+                                )
+                            );
+
+                        const months =
+                            (
+                                'enero|febrero|marzo|abril|mayo|'
+                                + 'junio|julio|agosto|septiembre|'
+                                + 'octubre|noviembre|diciembre'
+                            );
+
+                        const explicitDate =
+                            new RegExp(
+                                '\\b\\d{1,2}\\s+de\\s+('
+                                + months
+                                + ')\\s+de\\s+\\d{4}\\b',
+                                'i'
+                            );
+
+                        const dateRange =
+                            new RegExp(
+                                '\\b\\d{1,2}[–-]\\d{1,2}'
+                                + '\\s+de\\s+('
+                                + months
+                                + ')\\s+de\\s+\\d{4}\\b',
+                                'i'
+                            );
+
+                        const historicLabel =
+                            /^(Ayer|La semana pasada|Esta semana|Este mes|El mes pasado)(\s|$)/i;
+
+                        const isBoundary = row => {
+                            const first =
+                                row.children
+                                && row.children.length
+                                ? row.children[0]
+                                : null;
+
+                            const raw =
+                                clean(
+                                    first
+                                    ? (
+                                        first.innerText
+                                        || first.textContent
+                                    )
+                                    : ''
+                                );
+
+                            if (
+                                /^Hoy(\s|$)/i.test(
+                                    raw
+                                )
+                            ) {
+                                return false;
+                            }
+
+                            return (
+                                historicLabel.test(
+                                    raw
+                                )
+                                || explicitDate.test(
+                                    raw
+                                )
+                                || dateRange.test(
+                                    raw
+                                )
+                            );
+                        };
+
+                        const mapped =
+                            rows.map(
+                                row => {
+                                    const rowKey =
+                                        clean(
+                                            row.getAttribute(
+                                                'data-testid'
+                                            )
+                                        );
+
+                                    const first =
+                                        row.children
+                                        && row.children.length
+                                        ? row.children[0]
+                                        : null;
+
+                                    const boundaryText =
+                                        clean(
+                                            first
+                                            ? (
+                                                first.innerText
+                                                || first.textContent
+                                            )
+                                            : ''
+                                        );
+
+                                    const tiles =
+                                        Array.from(
+                                            row.querySelectorAll(
+                                                '[data-testid="media-canvas"]'
+                                            )
+                                        )
+                                        .map(
+                                            (
+                                                tile,
+                                                tileIndex
+                                            ) => {
+                                                const aria =
+                                                    clean(
+                                                        tile.getAttribute(
+                                                            'aria-label'
+                                                        )
+                                                    );
+
+                                                const text =
+                                                    clean(
+                                                        tile.innerText
+                                                        || tile.textContent
+                                                    );
+
+                                                const hasProvider =
+                                                    Boolean(
+                                                        tile.querySelector(
+                                                            '[data-testid="media-url-provider"]'
+                                                        )
+                                                    );
+
+                                                const hasImage =
+                                                    Boolean(
+                                                        tile.querySelector(
+                                                            '[data-testid="media-canvas-img"]'
+                                                        )
+                                                    );
+
+                                                const hasGif =
+                                                    Boolean(
+                                                        tile.querySelector(
+                                                            '[data-testid="msg-gif"]'
+                                                        )
+                                                    );
+
+                                                const duration =
+                                                    Array.from(
+                                                        tile.querySelectorAll(
+                                                            'span'
+                                                        )
+                                                    )
+                                                    .map(
+                                                        node =>
+                                                            clean(
+                                                                node.textContent
+                                                            )
+                                                    )
+                                                    .find(
+                                                        value =>
+                                                            /^\d{1,2}:\d{2}$/
+                                                            .test(
+                                                                value
+                                                            )
+                                                    )
+                                                    || null;
+
+                                                const isVideo =
+                                                    /Video de/i.test(
+                                                        aria
+                                                    )
+                                                    || Boolean(
+                                                        duration
+                                                    );
+
+                                                const isGif =
+                                                    /GIF de/i.test(
+                                                        aria
+                                                    )
+                                                    || hasGif;
+
+                                                const isImage =
+                                                    /Imagen de/i.test(
+                                                        aria
+                                                    )
+                                                    && hasImage
+                                                    && !isVideo
+                                                    && !isGif;
+
+                                                let kind =
+                                                    'UNKNOWN_MEDIA';
+
+                                                if (isImage) {
+                                                    kind =
+                                                        'IMAGE';
+                                                } else if (isVideo) {
+                                                    kind =
+                                                        'VIDEO';
+                                                } else if (isGif) {
+                                                    kind =
+                                                        'GIF';
+                                                }
+
+                                                return {
+                                                    key:
+                                                        (
+                                                            rowKey
+                                                            + '|'
+                                                            + tileIndex
+                                                            + '|'
+                                                            + aria
+                                                            + '|'
+                                                            + text
+                                                        ),
+
+                                                    row_key:
+                                                        rowKey,
+
+                                                    tile_index:
+                                                        tileIndex,
+
+                                                    aria,
+
+                                                    text,
+
+                                                    kind,
+
+                                                    has_provider:
+                                                        hasProvider,
+
+                                                    has_image:
+                                                        hasImage,
+
+                                                    has_gif:
+                                                        hasGif,
+
+                                                    duration,
+                                                };
+                                            }
+                                        );
+
+                                    return {
+                                        key:
+                                            rowKey,
+
+                                        boundary:
+                                            isBoundary(
+                                                row
+                                            ),
+
+                                        boundary_text:
+                                            boundaryText,
+
+                                        text:
+                                            clean(
+                                                row.innerText
+                                                || row.textContent
+                                            ),
+
+                                        tiles,
+                                    };
+                                }
+                            );
+
+                        const first =
+                            rows[0]
+                            || null;
+
+                        let scroller =
+                            first;
+
+                        while (scroller) {
+                            const style =
+                                getComputedStyle(
+                                    scroller
+                                );
+
+                            if (
+                                scroller.scrollHeight
+                                > (
+                                    scroller.clientHeight
+                                    + 5
+                                )
+                                && (
+                                    style.overflowY
+                                    === 'auto'
+                                    || style.overflowY
+                                    === 'scroll'
+                                )
+                            ) {
+                                break;
+                            }
+
+                            scroller =
+                                scroller.parentElement;
+                        }
+
+                        return {
+                            ready: true,
+                            rows:
+                                mapped,
+
+                            scroll_top:
+                                scroller
+                                ? scroller.scrollTop
+                                : null,
+
+                            scroll_height:
+                                scroller
+                                ? scroller.scrollHeight
+                                : null,
+
+                            client_height:
+                                scroller
+                                ? scroller.clientHeight
+                                : null,
+                        };
+                    })()
+                    """
+                )
+                or {}
+            )
+
+
+        def scroll_media_top():
+            return (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const tab =
+                            document.querySelector(
+                                '[data-testid="tab-media"]'
+                            );
+
+                        const root =
+                            tab
+                            ? (
+                                tab.closest(
+                                    '[data-testid="popup-contents"]'
+                                )
+                                || tab.closest(
+                                    '[data-testid="media-hub-modal"]'
+                                )
+                                || document
+                            )
+                            : document;
+
+                        const first =
+                            root.querySelector(
+                                '[role="listitem"]'
+                                + '[data-testid^="list-item-"]'
+                            );
+
+                        if (!first) {
+                            return {
+                                moved: false,
+                                reason:
+                                    'ROW_MISSING'
+                            };
+                        }
+
+                        let scroller =
+                            first;
+
+                        while (scroller) {
+                            const style =
+                                getComputedStyle(
+                                    scroller
+                                );
+
+                            if (
+                                scroller.scrollHeight
+                                > (
+                                    scroller.clientHeight
+                                    + 5
+                                )
+                                && (
+                                    style.overflowY
+                                    === 'auto'
+                                    || style.overflowY
+                                    === 'scroll'
+                                )
+                            ) {
+                                break;
+                            }
+
+                            scroller =
+                                scroller.parentElement;
+                        }
+
+                        if (!scroller) {
+                            return {
+                                moved: false,
+                                reason:
+                                    'SCROLLER_MISSING'
+                            };
+                        }
+
+                        const before =
+                            scroller.scrollTop;
+
+                        scroller.scrollTop = 0;
+
+                        return {
+                            moved:
+                                before > 1,
+
+                            before,
+
+                            after:
+                                scroller.scrollTop,
+                        };
+                    })()
+                    """
+                )
+                or {}
+            )
+
+
+        def scroll_next_page():
+            return (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const tab =
+                            document.querySelector(
+                                '[data-testid="tab-media"]'
+                            );
+
+                        const root =
+                            tab
+                            ? (
+                                tab.closest(
+                                    '[data-testid="popup-contents"]'
+                                )
+                                || tab.closest(
+                                    '[data-testid="media-hub-modal"]'
+                                )
+                                || document
+                            )
+                            : document;
+
+                        const first =
+                            root.querySelector(
+                                '[role="listitem"]'
+                                + '[data-testid^="list-item-"]'
+                            );
+
+                        if (!first) {
+                            return {
+                                moved: false,
+                                reason:
+                                    'ROW_MISSING'
+                            };
+                        }
+
+                        let scroller =
+                            first;
+
+                        while (scroller) {
+                            const style =
+                                getComputedStyle(
+                                    scroller
+                                );
+
+                            if (
+                                scroller.scrollHeight
+                                > (
+                                    scroller.clientHeight
+                                    + 5
+                                )
+                                && (
+                                    style.overflowY
+                                    === 'auto'
+                                    || style.overflowY
+                                    === 'scroll'
+                                )
+                            ) {
+                                break;
+                            }
+
+                            scroller =
+                                scroller.parentElement;
+                        }
+
+                        if (!scroller) {
+                            return {
+                                moved: false,
+                                reason:
+                                    'SCROLLER_MISSING'
+                            };
+                        }
+
+                        const before =
+                            scroller.scrollTop;
+
+                        const step =
+                            Math.max(
+                                300,
+                                Math.floor(
+                                    scroller.clientHeight
+                                    * 0.8
+                                )
+                            );
+
+                        scroller.scrollTop =
+                            Math.min(
+                                scroller.scrollHeight
+                                - scroller.clientHeight,
+                                before + step
+                            );
+
+                        return {
+                            moved:
+                                scroller.scrollTop
+                                > before + 1,
+
+                            before,
+
+                            after:
+                                scroller.scrollTop,
+                        };
+                    })()
+                    """
+                )
+                or {}
+            )
+
+
+        def open_and_download_image(
+            tile,
+        ):
+            nonlocal download_behavior_enabled
+
+            row_key = str(
+                tile.get(
+                    "row_key"
+                )
+                or ""
+            ).strip()
+
+            tile_index = int(
+                tile.get(
+                    "tile_index"
+                )
+                or 0
+            )
+
+            if not row_key:
+                raise RuntimeError(
+                    "MEDIA_IMAGE_ROW_ID_MISSING"
+                )
+
+            if not download_behavior_enabled:
+                run_until_complete(
+                    send(
+                        cdp_browser
+                        .set_download_behavior(
+                            behavior="allow",
+                            download_path=str(
+                                target_dir
+                            ),
+                            events_enabled=True,
+                        )
+                    )
+                )
+
+                download_behavior_enabled = True
+
+            before = (
+                snapshot_files()
+            )
+
+            opened = (
+                self.browser.evaluate(
+                    r"""
+                    (() => {
+                        const rowKey = %s;
+                        const tileIndex = %d;
+
+                        const row =
+                            document.querySelector(
+                                '[role="listitem"]'
+                                + '[data-testid="'
+                                + rowKey
+                                + '"]'
+                            );
+
+                        if (!row) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'ROW_NOT_RENDERED'
+                            };
+                        }
+
+                        const tiles =
+                            Array.from(
+                                row.querySelectorAll(
+                                    '[data-testid="media-canvas"]'
+                                )
+                            );
+
+                        const tile =
+                            tiles[
+                                tileIndex
+                            ];
+
+                        if (!tile) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'IMAGE_TILE_NOT_RENDERED'
+                            };
+                        }
+
+                        const aria =
+                            String(
+                                tile.getAttribute(
+                                    'aria-label'
+                                )
+                                || ''
+                            ).trim();
+
+                        const image =
+                            tile.querySelector(
+                                '[data-testid="media-canvas-img"]'
+                            );
+
+                        const gif =
+                            tile.querySelector(
+                                '[data-testid="msg-gif"]'
+                            );
+
+                        const duration =
+                            Array.from(
+                                tile.querySelectorAll(
+                                    'span'
+                                )
+                            )
+                            .map(
+                                node =>
+                                    String(
+                                        node.textContent
+                                        || ''
+                                    ).trim()
+                            )
+                            .find(
+                                value =>
+                                    /^\d{1,2}:\d{2}$/
+                                    .test(
+                                        value
+                                    )
+                            );
+
+                        if (
+                            !/Imagen de/i.test(
+                                aria
+                            )
+                            || /Video de/i.test(
+                                aria
+                            )
+                            || /GIF de/i.test(
+                                aria
+                            )
+                            || !image
+                            || gif
+                            || duration
+                        ) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'MEDIA_NOT_IMAGE'
+                            };
+                        }
+
+                        // Contrato físico:
+                        // el click del media-canvas genérico
+                        // no abre siempre el visor.
+                        image.click();
+
+                        return {
+                            opened: true,
+                            strategy:
+                                'MEDIA_CANVAS_IMG',
+                            aria:
+                                aria
+                        };
+                    })()
+                    """
+                    % (
+                        repr(
+                            row_key
+                        ),
+                        tile_index,
+                    )
+                )
+                or {}
+            )
+
+            if not opened.get(
+                "opened"
+            ):
+                raise RuntimeError(
+                    str(
+                        opened.get(
+                            "reason"
+                        )
+                        or "MEDIA_IMAGE_OPEN_FAILED"
+                    )
+                )
+
+            deadline = (
+                time.time()
+                + per_image_timeout
+            )
+
+            viewer_ready = False
+
+            while time.time() < deadline:
+                viewer_ready = bool(
+                    self.browser.evaluate(
+                        """
+                        (() => Boolean(
+                            document.querySelector(
+                                'button'
+                                + '[aria-label="Descargar"]'
+                            )
+                        ))()
+                        """
+                    )
+                )
+
+                if viewer_ready:
+                    break
+
+                time.sleep(
+                    0.1
+                )
+
+            if not viewer_ready:
+                raise RuntimeError(
+                    "MEDIA_IMAGE_VIEWER_TIMEOUT"
+                )
+
+            clicked = bool(
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const button =
+                            document.querySelector(
+                                'button'
+                                + '[aria-label="Descargar"]'
+                            );
+
+                        if (!button) {
+                            return false;
+                        }
+
+                        button.click();
+
+                        return true;
+                    })()
+                    """
+                )
+            )
+
+            if not clicked:
+                raise RuntimeError(
+                    "MEDIA_IMAGE_DOWNLOAD_CLICK_FAILED"
+                )
+
+            deadline = (
+                time.time()
+                + per_image_timeout
+            )
+
+            downloaded = None
+
+            while time.time() < deadline:
+                downloaded = (
+                    changed_final_file(
+                        before
+                    )
+                )
+
+                if downloaded is not None:
+                    break
+
+                time.sleep(
+                    0.1
+                )
+
+            if downloaded is None:
+                raise RuntimeError(
+                    "MEDIA_IMAGE_DOWNLOAD_TIMEOUT"
+                )
+
+            return {
+                "row_key":
+                    row_key,
+
+                "tile_index":
+                    tile_index,
+
+                "media_type":
+                    "IMAGE",
+
+                "aria_label":
+                    tile.get(
+                        "aria"
+                    ),
+
+                "row_text":
+                    tile.get(
+                        "text"
+                    ),
+
+                "filename":
+                    downloaded.name,
+
+                "file_path":
+                    str(
+                        downloaded
+                    ),
+
+                "size_bytes":
+                    int(
+                        downloaded.stat()
+                        .st_size
+                    ),
+            }
+
+
+        try:
+            # ==============================================
+            # 1. ABRIR MEDIA HUB
+            # ==============================================
+
+            existing_hub = bool(
+                self.browser.evaluate(
+                    """
+                    (() => Boolean(
+                        document.querySelector(
+                            '[data-testid="media-hub-modal"]'
+                        )
+                        || document.querySelector(
+                            '[data-testid="tab-media"]'
+                        )
+                    ))()
+                    """
+                )
+            )
+
+            if not existing_hub:
+                entry = (
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const visible = el => {
+                                if (!el) {
+                                    return false;
+                                }
+
+                                const style =
+                                    getComputedStyle(
+                                        el
+                                    );
+
+                                const rect =
+                                    el.getBoundingClientRect();
+
+                                return (
+                                    style.display !== 'none'
+                                    && style.visibility !== 'hidden'
+                                    && rect.width > 0
+                                    && rect.height > 0
+                                );
+                            };
+
+                            const media =
+                                Array.from(
+                                    document.querySelectorAll(
+                                        '[aria-label="Contenido multimedia"]'
+                                    )
+                                )
+                                .find(
+                                    visible
+                                );
+
+                            if (media) {
+                                media.click();
+
+                                return {
+                                    clicked: true,
+                                    strategy:
+                                        'DIRECT_MEDIA'
+                                };
+                            }
+
+                            const info =
+                                document.querySelector(
+                                    '[data-testid="conversation-info-header"]'
+                                )
+                                || document.querySelector(
+                                    '[aria-label="Información del perfil"]'
+                                );
+
+                            if (!info) {
+                                return {
+                                    clicked: false,
+                                    reason:
+                                        'INFO_ENTRY_MISSING'
+                                };
+                            }
+
+                            info.click();
+
+                            return {
+                                clicked: true,
+                                strategy:
+                                    'OPEN_INFO'
+                            };
+                        })()
+                        """
+                    )
+                    or {}
+                )
+
+                if not entry.get(
+                    "clicked"
+                ):
+                    raise RuntimeError(
+                        "No se pudo abrir "
+                        "Contenido multimedia "
+                        f"({entry.get('reason')})"
+                    )
+
+                if (
+                    entry.get(
+                        "strategy"
+                    )
+                    == "OPEN_INFO"
+                ):
+                    deadline = (
+                        time.time()
+                        + min(
+                            15.0,
+                            per_image_timeout,
+                        )
+                    )
+
+                    media_visible = False
+
+                    while time.time() < deadline:
+                        media_visible = bool(
+                            self.browser.evaluate(
+                                """
+                                (() => {
+                                    const visible = el => {
+                                        if (!el) {
+                                            return false;
+                                        }
+
+                                        const style =
+                                            getComputedStyle(
+                                                el
+                                            );
+
+                                        const rect =
+                                            el.getBoundingClientRect();
+
+                                        return (
+                                            style.display !== 'none'
+                                            && style.visibility !== 'hidden'
+                                            && rect.width > 0
+                                            && rect.height > 0
+                                        );
+                                    };
+
+                                    return Array.from(
+                                        document.querySelectorAll(
+                                            '[aria-label="Contenido multimedia"]'
+                                        )
+                                    ).some(
+                                        visible
+                                    );
+                                })()
+                                """
+                            )
+                        )
+
+                        if media_visible:
+                            break
+
+                        time.sleep(
+                            0.1
+                        )
+
+                    if not media_visible:
+                        raise RuntimeError(
+                            "Contenido multimedia "
+                            "no apareció"
+                        )
+
+                    clicked = bool(
+                        self.browser.evaluate(
+                            """
+                            (() => {
+                                const visible = el => {
+                                    if (!el) {
+                                        return false;
+                                    }
+
+                                    const style =
+                                        getComputedStyle(
+                                            el
+                                    );
+
+                                    const rect =
+                                        el.getBoundingClientRect();
+
+                                    return (
+                                        style.display !== 'none'
+                                        && style.visibility !== 'hidden'
+                                        && rect.width > 0
+                                        && rect.height > 0
+                                    );
+                                };
+
+                                const media =
+                                    Array.from(
+                                        document.querySelectorAll(
+                                            '[aria-label="Contenido multimedia"]'
+                                        )
+                                    )
+                                    .find(
+                                        visible
+                                    );
+
+                                if (!media) {
+                                    return false;
+                                }
+
+                                media.click();
+
+                                return true;
+                            })()
+                            """
+                        )
+                    )
+
+                    if not clicked:
+                        raise RuntimeError(
+                            "No se pudo pulsar "
+                            "Contenido multimedia"
+                        )
+
+            deadline = (
+                time.time()
+                + min(
+                    15.0,
+                    per_image_timeout,
+                )
+            )
+
+            while time.time() < deadline:
+                hub_open = bool(
+                    self.browser.evaluate(
+                        """
+                        (() => Boolean(
+                            document.querySelector(
+                                '[data-testid="tab-media"]'
+                            )
+                        ))()
+                        """
+                    )
+                )
+
+                if hub_open:
+                    break
+
+                time.sleep(
+                    0.1
+                )
+
+            if not hub_open:
+                raise RuntimeError(
+                    "Media Hub no apareció"
+                )
+
+            # ==============================================
+            # 2. TAB ARCHIVOS MULTIMEDIA
+            # ==============================================
+
+            media_clicked = bool(
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const tab =
+                            document.querySelector(
+                                '[data-testid="tab-media"]'
+                            );
+
+                        if (!tab) {
+                            return false;
+                        }
+
+                        if (
+                            tab.getAttribute(
+                                'aria-selected'
+                            )
+                            !== 'true'
+                        ) {
+                            tab.click();
+                        }
+
+                        return true;
+                    })()
+                    """
+                )
+            )
+
+            if not media_clicked:
+                raise RuntimeError(
+                    "Pestaña Archivos multimedia "
+                    "no disponible"
+                )
+
+            deadline = (
+                time.time()
+                + min(
+                    15.0,
+                    per_image_timeout,
+                )
+            )
+
+            initial_state = {}
+
+            while time.time() < deadline:
+                initial_state = (
+                    read_media_state()
+                )
+
+                if (
+                    initial_state.get(
+                        "ready"
+                    )
+                    and initial_state.get(
+                        "rows"
+                    )
+                ):
+                    break
+
+                time.sleep(
+                    0.2
+                )
+
+            if not initial_state.get(
+                "rows"
+            ):
+                return {
+                    "scope":
+                        "MEDIA_HUB",
+
+                    "date_scope":
+                        "TODAY",
+
+                    "direction_scope":
+                        "ALL",
+
+                    "media_type_scope":
+                        "IMAGE",
+
+                    "scanned": 0,
+                    "matched": 0,
+                    "downloaded": 0,
+                    "skipped": [],
+                    "errors": [],
+                    "items": [],
+                }
+
+            # Siempre comenzamos desde el inicio cronológico.
+            scroll_media_top()
+
+            time.sleep(
+                0.3
+            )
+
+            # ==============================================
+            # 3. PREFIJO DE HOY · VENTANA VIRTUAL
+            # ==============================================
+
+            while True:
+                state = (
+                    read_media_state()
+                )
+
+                rows = (
+                    state.get(
+                        "rows"
+                    )
+                    or []
+                )
+
+                if not rows:
+                    break
+
+                reached_older_day = False
+                reached_limit = False
+
+                for row in rows:
+                    if bool(
+                        row.get(
+                            "boundary"
+                        )
+                    ):
+                        reached_older_day = True
+                        break
+
+                    for tile in (
+                        row.get(
+                            "tiles"
+                        )
+                        or []
+                    ):
+                        tile_key = str(
+                            tile.get(
+                                "key"
+                            )
+                            or ""
+                        ).strip()
+
+                        if not tile_key:
+                            continue
+
+                        if (
+                            tile_key
+                            in processed_keys
+                        ):
+                            continue
+
+                        processed_keys.add(
+                            tile_key
+                        )
+
+                        scanned += 1
+
+                        kind = str(
+                            tile.get(
+                                "kind"
+                            )
+                            or ""
+                        ).strip().upper()
+
+                        if kind != "IMAGE":
+                            skipped_items.append(
+                                {
+                                    "key":
+                                        tile_key,
+
+                                    "kind":
+                                        kind
+                                        or "UNKNOWN_MEDIA",
+
+                                    "reason":
+                                        (
+                                            "VIDEO_EXCLUDED"
+                                            if kind == "VIDEO"
+                                            else (
+                                                "GIF_EXCLUDED"
+                                                if kind == "GIF"
+                                                else "NOT_IMAGE"
+                                            )
+                                        ),
+
+                                    "row_text":
+                                        tile.get(
+                                            "text"
+                                        ),
+                                }
+                            )
+
+                            continue
+
+                        matched += 1
+
+                        if (
+                            len(
+                                downloaded_items
+                            )
+                            >= limit
+                        ):
+                            skipped_items.append(
+                                {
+                                    "key":
+                                        tile_key,
+
+                                    "kind":
+                                        "IMAGE",
+
+                                    "reason":
+                                        "MAX_IMAGES_REACHED",
+
+                                    "row_text":
+                                        tile.get(
+                                            "text"
+                                        ),
+                                }
+                            )
+
+                            reached_limit = True
+                            break
+
+                        try:
+                            item = (
+                                open_and_download_image(
+                                    tile
+                                )
+                            )
+
+                            downloaded_items.append(
+                                item
+                            )
+
+                        except Exception as exc:
+                            errors.append(
+                                {
+                                    "key":
+                                        tile_key,
+
+                                    "kind":
+                                        "IMAGE",
+
+                                    "row_text":
+                                        tile.get(
+                                            "text"
+                                        ),
+
+                                    "error":
+                                        str(
+                                            exc
+                                        ),
+                                }
+                            )
+
+                        finally:
+                            close_image_viewer()
+
+                            viewer_deadline = (
+                                time.time()
+                                + 3.0
+                            )
+
+                            while (
+                                time.time()
+                                < viewer_deadline
+                            ):
+                                viewer_open = bool(
+                                    self.browser.evaluate(
+                                        """
+                                        (() => Boolean(
+                                            document.querySelector(
+                                                '[data-testid="media-viewer-modal"]'
+                                            )
+                                        ))()
+                                        """
+                                    )
+                                )
+
+                                if not viewer_open:
+                                    break
+
+                                time.sleep(
+                                    0.1
+                                )
+
+                    if reached_limit:
+                        break
+
+                if (
+                    reached_older_day
+                    or reached_limit
+                ):
+                    break
+
+                previous_keys = {
+                    str(
+                        row.get(
+                            "key"
+                        )
+                        or ""
+                    )
+                    for row in rows
+                }
+
+                movement = (
+                    scroll_next_page()
+                )
+
+                if not movement.get(
+                    "moved"
+                ):
+                    break
+
+                refresh_deadline = (
+                    time.time()
+                    + 3.0
+                )
+
+                while time.time() < refresh_deadline:
+                    refreshed = (
+                        read_media_state()
+                    )
+
+                    current_keys = {
+                        str(
+                            row.get(
+                                "key"
+                            )
+                            or ""
+                        )
+                        for row in (
+                            refreshed.get(
+                                "rows"
+                            )
+                            or []
+                        )
+                    }
+
+                    if (
+                        current_keys
+                        != previous_keys
+                    ):
+                        break
+
+                    time.sleep(
+                        0.1
+                    )
+
+            return {
+                "scope":
+                    "MEDIA_HUB",
+
+                "date_scope":
+                    "TODAY",
+
+                "direction_scope":
+                    "ALL",
+
+                "media_type_scope":
+                    "IMAGE",
+
+                "scanned":
+                    int(
+                        scanned
+                    ),
+
+                "matched":
+                    int(
+                        matched
+                    ),
+
+                "downloaded":
+                    len(
+                        downloaded_items
+                    ),
+
+                "skipped":
+                    skipped_items,
+
+                "errors":
+                    errors,
+
+                "items":
+                    downloaded_items,
+            }
+
+        finally:
+            close_image_viewer()
+
+            if hub_open:
+                try:
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const hub =
+                                document.querySelector(
+                                    '[data-testid="media-hub-modal"]'
+                                );
+
+                            const tab =
+                                document.querySelector(
+                                    '[data-testid="tab-media"]'
+                                );
+
+                            const root =
+                                hub
+                                || (
+                                    tab
+                                    ? tab.closest(
+                                        '[data-testid="popup-contents"]'
+                                      )
+                                    : null
+                                );
+
+                            if (!root) {
+                                return false;
+                            }
+
+                            const visible = el => {
+                                if (!el) {
+                                    return false;
+                                }
+
+                                const style =
+                                    getComputedStyle(
+                                        el
+                                    );
+
+                                const rect =
+                                    el.getBoundingClientRect();
+
+                                return (
+                                    style.display !== 'none'
+                                    && style.visibility !== 'hidden'
+                                    && rect.width > 0
+                                    && rect.height > 0
+                                );
+                            };
+
+                            const close =
+                                Array.from(
+                                    root.querySelectorAll(
+                                        'button'
+                                        + '[aria-label="Cerrar"]'
+                                    )
+                                )
+                                .find(
+                                    visible
+                                );
+
+                            if (!close) {
+                                return false;
+                            }
+
+                            close.click();
+
+                            return true;
+                        })()
+                        """
+                    )
+
+                except Exception:
+                    pass
+
+            if download_behavior_enabled:
+                try:
+                    run_until_complete(
+                        send(
+                            cdp_browser
+                            .set_download_behavior(
+                                behavior="default",
+                            )
+                        )
+                    )
+
+                except Exception:
+                    pass
+
+
     @staticmethod
     def _voice_call_snapshot_summary(
         snapshot,

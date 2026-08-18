@@ -201,6 +201,10 @@ def communications_view(
         # Impide dobles ejecuciones desde la UI.
         "downloading_today_documents": False,
 
+        # Descarga batch de imágenes del Media Hub.
+        # Estado efímero para impedir doble ejecución.
+        "downloading_today_images": False,
+
         "send_blocked_thread_ids": set(),
 
         # Routing WhatsApp actualmente solicitado desde CRM.
@@ -4604,6 +4608,254 @@ def communications_view(
         return True
 
 
+    async def _finish_today_images_download_ui(
+        control=None,
+        result=None,
+        error=None,
+    ):
+        if not _ui_active():
+            return False
+
+        state[
+            "downloading_today_images"
+        ] = False
+
+        if control is not None:
+            try:
+                control.disabled = False
+                control.update()
+            except Exception:
+                pass
+
+        if error is not None:
+            _show_message(
+                (
+                    "No se pudieron descargar "
+                    "las imágenes de hoy: "
+                    f"{error}"
+                ),
+                error=True,
+            )
+
+            return False
+
+        batch = dict(
+            result
+            or {}
+        )
+
+        try:
+            downloaded = max(
+                0,
+                int(
+                    batch.get(
+                        "downloaded"
+                    )
+                    or 0
+                ),
+            )
+        except Exception:
+            downloaded = 0
+
+        errors = list(
+            batch.get(
+                "errors"
+            )
+            or []
+        )
+
+        watch_name = str(
+            batch.get(
+                "watch_folder_name"
+            )
+            or "carpeta vigilada"
+        ).strip()
+
+        if (
+            downloaded <= 0
+            and not errors
+        ):
+            _show_message(
+                "No hay imágenes de hoy."
+            )
+
+            return True
+
+        if errors:
+            if downloaded > 0:
+                noun = (
+                    "imagen"
+                    if downloaded == 1
+                    else "imágenes"
+                )
+
+                participle = (
+                    "descargada"
+                    if downloaded == 1
+                    else "descargadas"
+                )
+
+                _show_message(
+                    (
+                        f"{downloaded} {noun} "
+                        f"{participle} "
+                        f"en {watch_name}. "
+                        f"{len(errors)} "
+                        f"{'no se pudo' if len(errors) == 1 else 'no se pudieron'} "
+                        "descargar."
+                    ),
+                    error=True,
+                )
+
+            else:
+                _show_message(
+                    (
+                        "No se pudo descargar ninguna "
+                        "de las imágenes de hoy. "
+                        f"Errores: {len(errors)}."
+                    ),
+                    error=True,
+                )
+
+            return False
+
+        noun = (
+            "imagen"
+            if downloaded == 1
+            else "imágenes"
+        )
+
+        participle = (
+            "descargada"
+            if downloaded == 1
+            else "descargadas"
+        )
+
+        _show_message(
+            (
+                f"{downloaded} {noun} "
+                f"{participle} "
+                f"en {watch_name}."
+            )
+        )
+
+        return True
+
+
+    def _schedule_today_images_download_finish(
+        *,
+        control=None,
+        result=None,
+        error=None,
+    ):
+        runner = getattr(
+            page,
+            "run_task",
+            None,
+        )
+
+        if not callable(
+            runner
+        ):
+            return False
+
+        try:
+            runner(
+                _finish_today_images_download_ui,
+                control,
+                result,
+                error,
+            )
+
+            return True
+
+        except Exception:
+            return False
+
+
+    def _download_today_images(
+        event=None,
+    ):
+        if whatsapp_runtime is None:
+            _show_message(
+                (
+                    "El runtime de WhatsApp "
+                    "no está disponible."
+                ),
+                error=True,
+            )
+
+            return False
+
+        if state.get(
+            "downloading_today_images"
+        ):
+            return False
+
+        state[
+            "downloading_today_images"
+        ] = True
+
+        control = getattr(
+            event,
+            "control",
+            None,
+        )
+
+        if control is not None:
+            try:
+                control.disabled = True
+                control.update()
+            except Exception:
+                pass
+
+        def worker():
+            try:
+                result = (
+                    whatsapp_runtime
+                    .download_today_images()
+                )
+
+                _schedule_today_images_download_finish(
+                    control=control,
+                    result=result,
+                )
+
+            except Exception as exc:
+                _schedule_today_images_download_finish(
+                    control=control,
+                    error=exc,
+                )
+
+        try:
+            _run_background(
+                worker
+            )
+
+        except Exception as exc:
+            state[
+                "downloading_today_images"
+            ] = False
+
+            if control is not None:
+                try:
+                    control.disabled = False
+                    control.update()
+                except Exception:
+                    pass
+
+            _show_message(
+                str(
+                    exc
+                ),
+                error=True,
+            )
+
+            return False
+
+        return True
+
+
     def _message_body(message):
         body = str(
             message.body_text
@@ -8538,7 +8790,24 @@ def communications_view(
                                             on_click=(
                                                 _download_today_documents
                                             ),
-                                        )
+                                        ),
+                                        ft.IconButton(
+                                            icon=ft.Icons.IMAGE,
+                                            tooltip=(
+                                                "Descargar imágenes de hoy "
+                                                "de todos los chats"
+                                            ),
+                                            icon_size=20,
+                                            icon_color=Q_PRIMARY,
+                                            disabled=bool(
+                                                state.get(
+                                                    "downloading_today_images"
+                                                )
+                                            ),
+                                            on_click=(
+                                                _download_today_images
+                                            ),
+                                        ),
                                     ]
                                     if (
                                         whatsapp_runtime
