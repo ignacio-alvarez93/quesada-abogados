@@ -39,8 +39,13 @@ class _FakeDownloadBrowser:
         *,
         target_dir,
         open_result=None,
+        download_filename="documento.pdf",
     ):
         self.target_dir = Path(target_dir)
+
+        self.download_filename = str(
+            download_filename
+        )
 
         self.open_result = (
             open_result
@@ -87,9 +92,9 @@ class _FakeDownloadBrowser:
 
             (
                 self.target_dir
-                / "documento.pdf"
+                / self.download_filename
             ).write_bytes(
-                b"final-document"
+                b"final-download"
             )
 
             return True
@@ -120,6 +125,9 @@ class _RuntimeConnector:
 
         self.download_calls = []
         self.download_thread_ids = []
+
+        self.image_download_calls = []
+        self.image_download_thread_ids = []
 
         self.batch_calls = []
         self.batch_thread_ids = []
@@ -170,6 +178,52 @@ class _RuntimeConnector:
                 ),
             "size_bytes":
                 123,
+        }
+
+    def download_visible_image(
+        self,
+        provider_message_id,
+        *,
+        download_dir,
+        timeout,
+    ):
+        self.image_download_thread_ids.append(
+            threading.get_ident()
+        )
+
+        self.image_download_calls.append(
+            {
+                "provider_message_id":
+                    provider_message_id,
+                "download_dir":
+                    str(
+                        Path(
+                            download_dir
+                        ).resolve()
+                    ),
+                "timeout":
+                    timeout,
+            }
+        )
+
+        return {
+            "provider_message_id":
+                provider_message_id,
+            "media_type":
+                "IMAGE",
+            "expected_filename":
+                None,
+            "filename":
+                "foto.jpg",
+            "file_path":
+                str(
+                    Path(
+                        download_dir
+                    )
+                    / "foto.jpg"
+                ),
+            "size_bytes":
+                456,
         }
 
     def download_today_documents_from_media_hub(
@@ -428,6 +482,271 @@ class WhatsAppDocumentDownloadTest(
                 calls[-1]["behavior"],
                 "default",
             )
+
+    def test_connector_downloads_visible_image(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp:
+            connector = WhatsAppConnector()
+
+            browser = _FakeDownloadBrowser(
+                target_dir=temp,
+                open_result={
+                    "opened": True,
+                    "reason": None,
+                },
+                download_filename="foto.jpg",
+            )
+
+            connector.browser = browser
+
+            connector.get_active_chat_fingerprint = (
+                lambda:
+                    WhatsAppActiveChatFingerprint(
+                        chat_open=True,
+                        active_display_name=(
+                            "Cliente prueba"
+                        ),
+                        active_identity=(
+                            "cliente prueba"
+                        ),
+                        visible_message_count=5,
+                        last_provider_message_id=(
+                            "MSG-5"
+                        ),
+                    )
+            )
+
+            calls = []
+
+            def fake_behavior(**kwargs):
+                calls.append(
+                    dict(
+                        kwargs
+                    )
+                )
+                return dict(
+                    kwargs
+                )
+
+            with patch(
+                "backend.automation.connectors."
+                "whatsapp_connector."
+                "cdp_browser."
+                "set_download_behavior",
+                side_effect=fake_behavior,
+            ):
+                result = (
+                    connector
+                    .download_visible_image(
+                        "MSG-IMG-1",
+                        download_dir=temp,
+                        timeout=1,
+                    )
+                )
+
+            self.assertEqual(
+                result[
+                    "media_type"
+                ],
+                "IMAGE",
+            )
+
+            self.assertEqual(
+                result[
+                    "filename"
+                ],
+                "foto.jpg",
+            )
+
+            self.assertEqual(
+                Path(
+                    result[
+                        "file_path"
+                    ]
+                ).suffix.lower(),
+                ".jpg",
+            )
+
+            self.assertEqual(
+                browser.download_clicks,
+                1,
+            )
+
+            self.assertGreaterEqual(
+                browser.close_clicks,
+                1,
+            )
+
+            self.assertEqual(
+                calls[0][
+                    "behavior"
+                ],
+                "allow",
+            )
+
+            self.assertEqual(
+                calls[-1][
+                    "behavior"
+                ],
+                "default",
+            )
+
+
+    def test_connector_image_contract_requires_image_thumb(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp:
+            connector = WhatsAppConnector()
+
+            browser = _FakeDownloadBrowser(
+                target_dir=temp,
+                open_result={
+                    "opened": False,
+                    "reason":
+                        "IMAGE_NOT_FOUND",
+                },
+            )
+
+            connector.browser = browser
+
+            connector.get_active_chat_fingerprint = (
+                lambda:
+                    WhatsAppActiveChatFingerprint(
+                        chat_open=True,
+                        active_display_name=(
+                            "Cliente prueba"
+                        ),
+                        active_identity=(
+                            "cliente prueba"
+                        ),
+                        visible_message_count=5,
+                        last_provider_message_id=(
+                            "MSG-5"
+                        ),
+                    )
+            )
+
+            with patch(
+                "backend.automation.connectors."
+                "whatsapp_connector."
+                "cdp_browser."
+                "set_download_behavior",
+                side_effect=(
+                    lambda **kwargs:
+                        dict(
+                            kwargs
+                        )
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "IMAGE_NOT_FOUND",
+                ):
+                    connector.download_visible_image(
+                        "MSG-NOT-IMG",
+                        download_dir=temp,
+                        timeout=1,
+                    )
+
+
+    def test_runtime_image_uses_default_watched_folder(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = self._runtime()
+
+            watch = {
+                "id": 1,
+                "name": "Descargas",
+                "folder_path": temp,
+                "is_active": 1,
+            }
+
+            try:
+                with patch(
+                    "backend.services."
+                    "whatsapp_runtime_service."
+                    "document_inbox_watch_service."
+                    "ensure_default_downloads_watch_folder",
+                    return_value=watch,
+                ):
+                    result = (
+                        runtime.download_image(
+                            thread_id=7,
+                            provider_message_id=(
+                                "MSG-IMG-2"
+                            ),
+                            download_timeout=11,
+                        )
+                    )
+
+                connector = (
+                    _RuntimeConnector
+                    .instances[0]
+                )
+
+                self.assertEqual(
+                    len(
+                        connector
+                        .image_download_calls
+                    ),
+                    1,
+                )
+
+                self.assertEqual(
+                    connector
+                    .image_download_calls[
+                        0
+                    ][
+                        "provider_message_id"
+                    ],
+                    "MSG-IMG-2",
+                )
+
+                self.assertEqual(
+                    Path(
+                        connector
+                        .image_download_calls[
+                            0
+                        ][
+                            "download_dir"
+                        ]
+                    ).resolve(),
+                    Path(temp).resolve(),
+                )
+
+                self.assertEqual(
+                    result[
+                        "watch_folder_id"
+                    ],
+                    1,
+                )
+
+                self.assertEqual(
+                    result[
+                        "media_type"
+                    ],
+                    "IMAGE",
+                )
+
+                self.assertTrue(
+                    result[
+                        "document_inbox_watch"
+                    ]
+                )
+
+                self.assertNotEqual(
+                    connector
+                    .image_download_thread_ids[
+                        0
+                    ],
+                    threading.get_ident(),
+                )
+
+            finally:
+                runtime.close()
+
 
     def test_runtime_uses_default_watched_downloads_folder(
         self,

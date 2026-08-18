@@ -216,6 +216,10 @@ MESSAGE_TYPE_DOCUMENT = (
     "DOCUMENT"
 )
 
+MESSAGE_TYPE_IMAGE = (
+    "IMAGE"
+)
+
 MESSAGE_TYPE_UNKNOWN_MEDIA = (
     "UNKNOWN_MEDIA"
 )
@@ -7908,6 +7912,12 @@ class WhatsAppConnector:
                                     '[data-testid="document-thumb"]'
                                 );
 
+                            const imageThumb =
+                                root.querySelector(
+                                    '[data-testid="image-thumb"]'
+                                    + '[aria-label="Abrir foto"]'
+                                );
+
                             const documentFilename =
                                 documentThumb
                                 ? (
@@ -8090,6 +8100,11 @@ class WhatsAppConnector:
                                 has_document:
                                     Boolean(
                                         documentThumb
+                                    ),
+
+                                has_image:
+                                    Boolean(
+                                        imageThumb
                                     ),
 
                                 document_filename:
@@ -8495,6 +8510,13 @@ class WhatsAppConnector:
             ):
                 message_type = (
                     MESSAGE_TYPE_DOCUMENT
+                )
+
+            elif raw.get(
+                "has_image"
+            ):
+                message_type = (
+                    MESSAGE_TYPE_IMAGE
                 )
 
             elif item.get(
@@ -9119,6 +9141,462 @@ class WhatsAppConnector:
                     downloaded.stat()
                     .st_size
                 ),
+            }
+
+        finally:
+            if viewer_opened:
+                try:
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const button =
+                                document.querySelector(
+                                    'button'
+                                    + '[aria-label="Cerrar"]'
+                                );
+
+                            if (!button) {
+                                return false;
+                            }
+
+                            button.click();
+
+                            return true;
+                        })()
+                        """
+                    )
+                except Exception:
+                    pass
+
+            try:
+                run_until_complete(
+                    send(
+                        cdp_browser
+                        .set_download_behavior(
+                            behavior="default",
+                        )
+                    )
+                )
+            except Exception:
+                pass
+
+
+    def download_visible_image(
+        self,
+        provider_message_id,
+        *,
+        download_dir,
+        timeout=30,
+    ):
+        """Descarga UNA foto visible del chat activo.
+
+        Contrato:
+        - localiza el mensaje por provider_message_id;
+        - exige image-thumb / Abrir foto;
+        - abre el visor multimedia;
+        - descarga mediante CDP a la carpeta gobernada;
+        - nunca devuelve .tmp/.crdownload;
+        - restaura la política de descarga;
+        - no persiste ni importa directamente.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        normalized_provider_id = str(
+            provider_message_id
+            or ""
+        ).strip()
+
+        if not normalized_provider_id:
+            raise ValueError(
+                "provider_message_id es obligatorio"
+            )
+
+        target_dir = Path(
+            download_dir
+        ).expanduser()
+
+        target_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        target_dir = target_dir.resolve()
+
+        page = getattr(
+            self.browser,
+            "page",
+            None,
+        )
+
+        loop = getattr(
+            self.browser,
+            "loop",
+            None,
+        )
+
+        send = getattr(
+            page,
+            "send",
+            None,
+        )
+
+        run_until_complete = getattr(
+            loop,
+            "run_until_complete",
+            None,
+        )
+
+        if (
+            not callable(send)
+            or not callable(
+                run_until_complete
+            )
+        ):
+            raise RuntimeError(
+                "Transporte CDP de descarga "
+                "no disponible"
+            )
+
+        active = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active.chat_open:
+            raise RuntimeError(
+                "No hay un chat WhatsApp activo"
+            )
+
+        before = {}
+
+        for file_path in target_dir.iterdir():
+            if not file_path.is_file():
+                continue
+
+            try:
+                stat = file_path.stat()
+            except OSError:
+                continue
+
+            before[str(file_path)] = (
+                int(stat.st_size),
+                int(stat.st_mtime_ns),
+            )
+
+        run_until_complete(
+            send(
+                cdp_browser
+                .set_download_behavior(
+                    behavior="allow",
+                    download_path=str(
+                        target_dir
+                    ),
+                    events_enabled=True,
+                )
+            )
+        )
+
+        viewer_opened = False
+
+        try:
+            provider_js = repr(
+                normalized_provider_id
+            )
+
+            open_result = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const providerId = %s;
+
+                        const root =
+                            Array.from(
+                                document
+                                .querySelectorAll(
+                                    '#main '
+                                    + '[data-testid^="conv-msg-"]'
+                                )
+                            )
+                            .find(
+                                node =>
+                                    node.getAttribute(
+                                        'data-testid'
+                                    )
+                                    === (
+                                        'conv-msg-'
+                                        + providerId
+                                    )
+                            );
+
+                        if (!root) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'MESSAGE_NOT_VISIBLE'
+                            };
+                        }
+
+                        if (
+                            root.querySelector(
+                                '[data-testid="fail-container"]'
+                            )
+                        ) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'IMAGE_FAILED'
+                            };
+                        }
+
+                        if (
+                            root.querySelector(
+                                '[data-testid="loading-spinner"]'
+                            )
+                        ) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'IMAGE_LOADING'
+                            };
+                        }
+
+                        const thumb =
+                            root.querySelector(
+                                '[data-testid="image-thumb"]'
+                                + '[aria-label="Abrir foto"]'
+                            );
+
+                        if (!thumb) {
+                            return {
+                                opened: false,
+                                reason:
+                                    'IMAGE_NOT_FOUND'
+                            };
+                        }
+
+                        thumb.click();
+
+                        return {
+                            opened: true,
+                            reason: null
+                        };
+                    })()
+                    """
+                    % provider_js
+                )
+                or {}
+            )
+
+            if not open_result.get(
+                "opened"
+            ):
+                reason = str(
+                    open_result.get(
+                        "reason"
+                    )
+                    or "IMAGE_OPEN_FAILED"
+                )
+
+                raise RuntimeError(
+                    "No se pudo abrir la "
+                    "imagen WhatsApp "
+                    f"({reason})"
+                )
+
+            viewer_opened = True
+
+            deadline = (
+                time.time()
+                + max(
+                    1,
+                    float(
+                        timeout
+                    ),
+                )
+            )
+
+            while time.time() < deadline:
+                ready = bool(
+                    self.browser.evaluate(
+                        """
+                        (() => Boolean(
+                            document.querySelector(
+                                'button'
+                                + '[aria-label="Descargar"]'
+                            )
+                        ))()
+                        """
+                    )
+                )
+
+                if ready:
+                    break
+
+                time.sleep(
+                    0.1
+                )
+
+            else:
+                raise RuntimeError(
+                    "El visor de imagen WhatsApp "
+                    "no mostró Descargar"
+                )
+
+            clicked = bool(
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const button =
+                            document.querySelector(
+                                'button'
+                                + '[aria-label="Descargar"]'
+                            );
+
+                        if (!button) {
+                            return false;
+                        }
+
+                        button.click();
+
+                        return true;
+                    })()
+                    """
+                )
+            )
+
+            if not clicked:
+                raise RuntimeError(
+                    "No se pudo pulsar Descargar "
+                    "en la imagen WhatsApp"
+                )
+
+            downloaded = None
+
+            deadline = (
+                time.time()
+                + max(
+                    1,
+                    float(
+                        timeout
+                    ),
+                )
+            )
+
+            while time.time() < deadline:
+                candidates = []
+
+                for file_path in (
+                    target_dir.iterdir()
+                ):
+                    if not file_path.is_file():
+                        continue
+
+                    if (
+                        file_path.suffix.lower()
+                        in (
+                            ".tmp",
+                            ".crdownload",
+                        )
+                    ):
+                        continue
+
+                    try:
+                        stat = (
+                            file_path.stat()
+                        )
+                    except OSError:
+                        continue
+
+                    current = (
+                        int(
+                            stat.st_size
+                        ),
+                        int(
+                            stat.st_mtime_ns
+                        ),
+                    )
+
+                    if (
+                        before.get(
+                            str(
+                                file_path
+                            )
+                        )
+                        == current
+                    ):
+                        continue
+
+                    if current[0] <= 0:
+                        continue
+
+                    candidates.append(
+                        (
+                            current[1],
+                            file_path,
+                            current[0],
+                        )
+                    )
+
+                if candidates:
+                    candidates.sort(
+                        key=lambda item:
+                            item[0],
+                        reverse=True,
+                    )
+
+                    _, candidate, size_1 = (
+                        candidates[0]
+                    )
+
+                    time.sleep(
+                        0.2
+                    )
+
+                    try:
+                        size_2 = int(
+                            candidate.stat()
+                            .st_size
+                        )
+                    except OSError:
+                        size_2 = -1
+
+                    if (
+                        size_1 > 0
+                        and size_1 == size_2
+                    ):
+                        downloaded = candidate
+                        break
+
+                time.sleep(
+                    0.1
+                )
+
+            if downloaded is None:
+                raise RuntimeError(
+                    "La descarga de imagen WhatsApp "
+                    "no alcanzó un archivo final"
+                )
+
+            return {
+                "provider_message_id":
+                    normalized_provider_id,
+                "media_type":
+                    "IMAGE",
+                "expected_filename":
+                    None,
+                "filename":
+                    downloaded.name,
+                "file_path":
+                    str(
+                        downloaded
+                    ),
+                "size_bytes":
+                    int(
+                        downloaded.stat()
+                        .st_size
+                    ),
             }
 
         finally:

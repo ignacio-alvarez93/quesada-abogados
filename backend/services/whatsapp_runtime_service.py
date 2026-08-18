@@ -4507,6 +4507,151 @@ class WhatsAppRuntimeService:
             ),
         )
 
+    def _download_image_impl(
+        self,
+        *,
+        thread_id,
+        provider_message_id,
+        watch_folder_id=None,
+        wait_timeout=60,
+        routing_timeout=15,
+        download_timeout=30,
+    ):
+        """Descarga una imagen WhatsApp a carpeta vigilada."""
+        thread = (
+            self._prepare_verified_outbound_impl(
+                thread_id=thread_id,
+                wait_timeout=wait_timeout,
+                routing_timeout=(
+                    routing_timeout
+                ),
+            )
+        )
+
+        if watch_folder_id in (
+            None,
+            "",
+        ):
+            watch_folder = (
+                document_inbox_watch_service
+                .ensure_default_downloads_watch_folder()
+            )
+        else:
+            watch_folder = (
+                document_inbox_watch_service
+                .get_watch_folder(
+                    int(
+                        watch_folder_id
+                    )
+                )
+            )
+
+        if not int(
+            watch_folder.get(
+                "is_active"
+            )
+            or 0
+        ):
+            raise ValueError(
+                "La carpeta de destino "
+                "no está activa en Bandeja Documental"
+            )
+
+        destination = Path(
+            watch_folder[
+                "folder_path"
+            ]
+        ).expanduser().resolve()
+
+        if (
+            not destination.exists()
+            or not destination.is_dir()
+        ):
+            raise ValueError(
+                "La carpeta vigilada de destino "
+                "no existe"
+            )
+
+        connector = (
+            self._build_connector()
+        )
+
+        result = (
+            connector
+            .download_visible_image(
+                provider_message_id,
+                download_dir=(
+                    destination
+                ),
+                timeout=(
+                    download_timeout
+                ),
+            )
+        )
+
+        return {
+            **result,
+            "thread_id":
+                int(
+                    thread.id
+                ),
+            "client_id":
+                (
+                    int(
+                        thread.client_id
+                    )
+                    if thread.client_id
+                    is not None
+                    else None
+                ),
+            "watch_folder_id":
+                int(
+                    watch_folder[
+                        "id"
+                    ]
+                ),
+            "watch_folder_name":
+                watch_folder.get(
+                    "name"
+                ),
+            "watch_folder_path":
+                str(
+                    destination
+                ),
+            "document_inbox_watch":
+                True,
+        }
+
+
+    def download_image(
+        self,
+        *,
+        thread_id,
+        provider_message_id,
+        watch_folder_id=None,
+        wait_timeout=60,
+        routing_timeout=15,
+        download_timeout=30,
+    ):
+        return self._run_serialized(
+            self._download_image_impl,
+            thread_id=thread_id,
+            provider_message_id=(
+                provider_message_id
+            ),
+            watch_folder_id=(
+                watch_folder_id
+            ),
+            wait_timeout=wait_timeout,
+            routing_timeout=(
+                routing_timeout
+            ),
+            download_timeout=(
+                download_timeout
+            ),
+        )
+
+
     def _download_today_documents_impl(
         self,
         *,

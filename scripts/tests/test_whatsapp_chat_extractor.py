@@ -11,6 +11,7 @@ from backend.automation.connectors.whatsapp_connector import (
     MESSAGE_STATUS_RECEIVED,
     MESSAGE_TYPE_STICKER,
     MESSAGE_TYPE_DOCUMENT,
+    MESSAGE_TYPE_IMAGE,
     MESSAGE_TYPE_TEXT,
     WhatsAppActiveChatFingerprint,
     WhatsAppChatSnapshot,
@@ -2176,6 +2177,170 @@ class WhatsAppChatExtractorTest(
         self.assertEqual(
             sticker.provider_timestamp,
             "2026-08-12T09:25:00",
+        )
+
+
+    def test_image_snapshot_is_classified_as_image(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "provider_message_id":
+                        "AC-IMAGE-1",
+                    "pre_plain_text":
+                        "[12:46, 18/8/2026] CLIENTE:",
+                    "body_text":
+                        "",
+                    "meta_text":
+                        "12:46",
+                    "arias":
+                        ["CLIENTE:"],
+                    "testids":
+                        [
+                            "msg-container",
+                            "tail-in",
+                            "image-thumb",
+                            "media-url-provider",
+                            "msg-meta",
+                        ],
+                    "has_tail_in":
+                        True,
+                    "has_tail_out":
+                        False,
+                    "center_ratio":
+                        0.22,
+                    "has_sticker":
+                        False,
+                    "has_document":
+                        False,
+                    "has_image":
+                        True,
+                    "image_info":
+                        [
+                            {
+                                "alt":
+                                    "Foto",
+                                "src":
+                                    "blob:test-image",
+                            }
+                        ],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        image = (
+            connector
+            .list_visible_message_snapshots()
+        )[0]
+
+        self.assertEqual(
+            image.message_type,
+            MESSAGE_TYPE_IMAGE,
+        )
+
+        self.assertEqual(
+            image.direction,
+            MESSAGE_DIRECTION_INBOUND,
+        )
+
+        self.assertEqual(
+            image.provider_status,
+            MESSAGE_STATUS_RECEIVED,
+        )
+
+        self.assertEqual(
+            image.metadata[
+                "image_count"
+            ],
+            1,
+        )
+
+
+    def test_image_with_caption_remains_image(
+        self,
+    ):
+        connector = WhatsAppConnector()
+        browser = FakeBrowser()
+
+        browser.queue(
+            [
+                {
+                    "provider_message_id":
+                        "AC-IMAGE-CAPTION-1",
+                    "pre_plain_text":
+                        "[13:04, 18/8/2026] CLIENTE:",
+                    "body_text":
+                        "Hola Ignacio Las tasas de hoy",
+                    "meta_text":
+                        "13:04",
+                    "arias":
+                        ["CLIENTE:"],
+                    "testids":
+                        [
+                            "msg-container",
+                            "image-thumb",
+                            "image-caption selectable-text",
+                            "media-url-provider",
+                            "msg-meta",
+                        ],
+                    "has_tail_in":
+                        True,
+                    "has_tail_out":
+                        False,
+                    "center_ratio":
+                        0.22,
+                    "has_sticker":
+                        False,
+                    "has_document":
+                        False,
+                    "has_image":
+                        True,
+                    "image_info":
+                        [
+                            {
+                                "alt":
+                                    "Hola Ignacio Las tasas de hoy",
+                                "src":
+                                    "blob:test-image-caption",
+                            }
+                        ],
+                    "video_count":
+                        0,
+                    "audio_count":
+                        0,
+                    "reaction_labels":
+                        [],
+                },
+            ]
+        )
+
+        connector.browser = browser
+
+        image = (
+            connector
+            .list_visible_message_snapshots()
+        )[0]
+
+        self.assertEqual(
+            image.message_type,
+            MESSAGE_TYPE_IMAGE,
+        )
+
+        self.assertEqual(
+            image.body_text,
+            "Hola Ignacio Las tasas de hoy",
         )
 
 
