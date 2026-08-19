@@ -136,6 +136,12 @@ class CommunicationsAttachmentUIContractTests(
             "                                        "
             "attachment_button,\n"
             "                                        "
+            "voice_record_button,\n"
+            "                                        "
+            "voice_cancel_button,\n"
+            "                                        "
+            "voice_send_button,\n"
+            "                                        "
             "send_button,",
             SOURCE,
         )
