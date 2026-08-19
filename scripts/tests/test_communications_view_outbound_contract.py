@@ -211,7 +211,17 @@ class CommunicationsViewOutboundContractTest(
         )
 
         self.assertIn(
-            "if whatsapp_runtime is not None:",
+            "whatsapp_runtime is not None",
+            self.view_text,
+        )
+
+        self.assertIn(
+            "and route_whatsapp",
+            self.view_text,
+        )
+
+        self.assertIn(
+            "route_whatsapp=False",
             self.view_text,
         )
 

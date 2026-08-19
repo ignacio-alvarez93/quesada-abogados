@@ -894,6 +894,8 @@ def clients_view(
     on_open_expediente=None,
     open_client_id=None,
     on_context_back=None,
+    new_client_defaults=None,
+    on_client_created=None,
 ):
     state = {
         "editing_id": None,
@@ -2036,6 +2038,16 @@ def clients_view(
         return "\n".join(lines)
 
     def guardar_cliente(e):
+        creating_new_client = (
+            state.get(
+                "editing_id"
+            )
+            in (
+                None,
+                "",
+            )
+        )
+
         errores = validar_formulario()
         if errores:
             show_message(error_alert("\n".join(errores)))
@@ -2130,6 +2142,21 @@ def clients_view(
                 )
 
         cerrar_dialogo()
+
+        if (
+            creating_new_client
+            and client_id
+            and callable(
+                on_client_created
+            )
+        ):
+            on_client_created(
+                int(
+                    client_id
+                )
+            )
+            return
+
         cargar_clientes()
         show_client_list()
 
@@ -3148,9 +3175,45 @@ def clients_view(
             state["context_index"] = 0
         refresh_table()
 
-    def abrir_nuevo_cliente(e=None):
+    def abrir_nuevo_cliente(
+        e=None,
+        *,
+        defaults=None,
+    ):
         limpiar_formulario()
-        cliente_dialog.title = ft.Text("Nuevo cliente")
+
+        defaults = (
+            defaults
+            if isinstance(
+                defaults,
+                dict,
+            )
+            else {}
+        )
+
+        prefill_name = str(
+            defaults.get(
+                "nombre"
+            )
+            or ""
+        ).strip()
+
+        prefill_phone = str(
+            defaults.get(
+                "telefono"
+            )
+            or ""
+        ).strip()
+
+        if prefill_name:
+            nombre.value = prefill_name
+
+        if prefill_phone:
+            telefono.value = prefill_phone
+
+        cliente_dialog.title = ft.Text(
+            "Nuevo cliente"
+        )
         cliente_dialog.open = True
         page.update()
 
@@ -3621,7 +3684,23 @@ def clients_view(
         else None
     )
 
-    if pending_client:
+    if (
+        not pending_client
+        and isinstance(
+            new_client_defaults,
+            dict,
+        )
+        and new_client_defaults
+    ):
+        show_client_list()
+
+        abrir_nuevo_cliente(
+            defaults=(
+                new_client_defaults
+            )
+        )
+
+    elif pending_client:
         ver_ficha(
             pending_client,
             on_back_override=(

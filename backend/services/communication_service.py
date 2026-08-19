@@ -207,6 +207,111 @@ class CommunicationService:
             )
         )
 
+    def link_whatsapp_thread_to_client(
+        self,
+        thread_id,
+        client_id,
+    ):
+        """Vincula explícitamente una conversación a un cliente CRM.
+
+        No contiene SQL y mantiene la persistencia detrás
+        del repository.
+        """
+        try:
+            normalized_thread_id = int(
+                thread_id
+            )
+            normalized_client_id = int(
+                client_id
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            raise ValueError(
+                "Thread o cliente no válido"
+            )
+
+        if (
+            normalized_thread_id <= 0
+            or normalized_client_id <= 0
+        ):
+            raise ValueError(
+                "Thread o cliente no válido"
+            )
+
+        thread = (
+            self.repository
+            .get_thread(
+                normalized_thread_id
+            )
+        )
+
+        if thread is None:
+            raise ValueError(
+                "Conversación no encontrada"
+            )
+
+        return (
+            self.repository
+            .update_thread_match(
+                normalized_thread_id,
+                client_id=(
+                    normalized_client_id
+                ),
+                match_status=(
+                    THREAD_MATCH_MATCHED
+                ),
+            )
+        )
+
+
+    def update_whatsapp_thread_display_name(
+        self,
+        thread_id,
+        display_name,
+    ):
+        """Actualiza únicamente el nombre visible del thread.
+
+        La identidad canónica phone:<digits> y el teléfono
+        externo permanecen invariantes.
+        """
+        try:
+            normalized_thread_id = int(
+                thread_id
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            raise ValueError(
+                "Thread no válido"
+            )
+
+        normalized_name = str(
+            display_name
+            or ""
+        ).strip()
+
+        if (
+            normalized_thread_id <= 0
+            or not normalized_name
+        ):
+            raise ValueError(
+                "Thread o nombre no válido"
+            )
+
+        return (
+            self.repository
+            .update_thread_display_name(
+                normalized_thread_id,
+                external_display_name=(
+                    normalized_name
+                ),
+            )
+        )
+
+
     def get_thread_context(
         self,
         thread_id,
@@ -1044,6 +1149,76 @@ class CommunicationService:
                 persisted.get(
                     "match"
                 ),
+            "phone":
+                normalized.e164,
+            "external_thread_key":
+                external_thread_key,
+        }
+
+
+    def get_or_create_whatsapp_thread_by_phone(
+        self,
+        phone,
+        *,
+        display_name=None,
+        metadata=None,
+    ):
+        """Crea o reutiliza una conversación WhatsApp por teléfono.
+
+        Contrato:
+        - normaliza el teléfono;
+        - genera siempre la identidad canónica phone:<digits>;
+        - puede existir sin cliente CRM;
+        - reutiliza automáticamente un thread previo;
+        - intenta vinculación automática si existe un único cliente
+          con ese teléfono;
+        - no conoce SeleniumBase ni navega por WhatsApp Web.
+        """
+        normalized = normalize_phone(
+            phone
+        )
+
+        if not normalized.valid:
+            raise ValueError(
+                "Teléfono WhatsApp no válido"
+            )
+
+        thread_metadata = dict(
+            metadata
+            or {}
+        )
+
+        thread_metadata.setdefault(
+            "source",
+            "crm_manual_outbound_start",
+        )
+
+        external_thread_key = (
+            f"phone:{normalized.digits}"
+        )
+
+        persisted = (
+            self.get_or_create_whatsapp_thread(
+                external_thread_key=(
+                    external_thread_key
+                ),
+                phone=normalized.e164,
+                display_name=(
+                    str(
+                        display_name
+                        or ""
+                    ).strip()
+                    or normalized.e164
+                ),
+                metadata=thread_metadata,
+            )
+        )
+
+        return {
+            **dict(
+                persisted
+                or {}
+            ),
             "phone":
                 normalized.e164,
             "external_thread_key":

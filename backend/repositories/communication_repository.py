@@ -88,6 +88,14 @@ class CommunicationRepository(Protocol):
     ) -> CommunicationThread:
         ...
 
+    def update_thread_display_name(
+        self,
+        thread_id: int,
+        *,
+        external_display_name: str,
+    ) -> CommunicationThread:
+        ...
+
     def list_client_phone_candidates(
         self,
         *,

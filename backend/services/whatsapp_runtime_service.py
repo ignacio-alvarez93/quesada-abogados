@@ -457,6 +457,39 @@ class WhatsAppRuntimeService:
 
         return self._sync_service
 
+    @staticmethod
+    def _thread_allows_new_contact_fallback(
+        thread,
+    ):
+        """Solo los threads iniciados manualmente por CRM.
+
+        Un fallo de routing sobre cualquier conversación
+        histórica nunca debe crear contactos automáticamente.
+        """
+        metadata = getattr(
+            thread,
+            "metadata",
+            None,
+        )
+
+        if not isinstance(
+            metadata,
+            dict,
+        ):
+            return False
+
+        return (
+            str(
+                metadata.get(
+                    "source"
+                )
+                or ""
+            )
+            .strip()
+            == "crm_manual_outbound_start"
+        )
+
+
     def _open_thread_impl(
         self,
         thread_id,
@@ -492,17 +525,142 @@ class WhatsAppRuntimeService:
                 "teléfono WhatsApp verificable"
             )
 
-        routing = (
-            connector
-            .open_chat_by_phone(
-                phone,
-                expected_display_name=(
-                    thread.external_display_name
-                ),
-                verify_identity=False,
-                timeout=routing_timeout,
+        if self._thread_allows_new_contact_fallback(
+            thread
+        ):
+            routing = (
+                connector
+                .open_or_create_manual_chat(
+                    phone,
+                    display_name=(
+                        thread.external_display_name
+                    ),
+                    timeout=routing_timeout,
+                )
             )
-        )
+        else:
+            routing = (
+                connector
+                .open_chat_by_phone(
+                    phone,
+                    expected_display_name=(
+                        thread.external_display_name
+                    ),
+                    verify_identity=False,
+                    timeout=routing_timeout,
+                )
+            )
+
+            # Un número que antes aparecía sin guardar puede
+            # pasar a mostrarse bajo el nombre de un contacto.
+            #
+            # En ese caso el buscador general puede dejar de
+            # devolver el teléfono aunque Nuevo chat sí pueda
+            # resolverlo inequívocamente por número.
+            #
+            # Este fallback es EXISTING_ONLY:
+            # un click normal nunca crea contactos.
+            if (
+                not routing.get(
+                    "opened"
+                )
+                and routing.get(
+                    "reason"
+                )
+                == "CHAT_SEARCH_NO_MATCHING_RESULT"
+            ):
+                routing = (
+                    connector
+                    .open_or_create_manual_chat(
+                        phone,
+                        display_name=(
+                            thread.external_display_name
+                            or phone
+                        ),
+                        timeout=routing_timeout,
+                        allow_create=False,
+                    )
+                )
+
+        if (
+            routing.get(
+                "opened"
+            )
+            and routing.get(
+                "navigation"
+            )
+            == "NEW_CHAT_EXISTING"
+        ):
+            observed_name = str(
+                routing.get(
+                    "display_name"
+                )
+                or ""
+            ).strip()
+
+            current_name = str(
+                thread.external_display_name
+                or ""
+            ).strip()
+
+            phone_digits = "".join(
+                char
+                for char in phone
+                if char.isdigit()
+            )
+
+            observed_digits = "".join(
+                char
+                for char in observed_name
+                if char.isdigit()
+            )
+
+            observed_is_phone = bool(
+                phone_digits
+                and observed_digits
+                and phone_digits
+                == observed_digits
+            )
+
+            updater = getattr(
+                self.communication_service,
+                "update_whatsapp_thread_display_name",
+                None,
+            )
+
+            if (
+                observed_name
+                and not observed_is_phone
+                and observed_name != current_name
+                and callable(
+                    updater
+                )
+            ):
+                try:
+                    thread = updater(
+                        int(
+                            thread.id
+                        ),
+                        observed_name,
+                    )
+
+                    print(
+                        "[WA-ROUTE] observed display name reconciled",
+                        {
+                            "thread_id":
+                                int(thread.id),
+                            "display_name":
+                                observed_name,
+                        },
+                        flush=True,
+                    )
+
+                except Exception as exc:
+                    print(
+                        "[WA-ROUTE] observed display name reconciliation failed",
+                        repr(exc),
+                        flush=True,
+                    )
 
         if not routing.get(
             "opened"
@@ -559,16 +717,62 @@ class WhatsAppRuntimeService:
                 "teléfono WhatsApp verificable"
             )
 
-        routing = (
-            connector
-            .open_chat_by_phone(
-                phone,
-                expected_display_name=(
-                    thread.external_display_name
-                ),
-                timeout=routing_timeout,
+        if self._thread_allows_new_contact_fallback(
+            thread
+        ):
+            prepared = (
+                connector
+                .open_or_create_manual_chat(
+                    phone,
+                    display_name=(
+                        thread.external_display_name
+                    ),
+                    timeout=routing_timeout,
+                )
             )
-        )
+
+            routing = prepared
+
+            if prepared.get(
+                "opened"
+            ):
+                # El chat ya fue seleccionado mediante
+                # Nuevo chat. Para operación sensible solo
+                # verificamos ahora la identidad activa.
+                routing = (
+                    connector
+                    .open_chat_by_phone(
+                        phone,
+                        expected_display_name=(
+                            thread.external_display_name
+                        ),
+                        timeout=routing_timeout,
+                    )
+                )
+
+                if routing.get(
+                    "verified"
+                ):
+                    routing[
+                        "navigation"
+                    ] = (
+                        prepared.get(
+                            "navigation"
+                        )
+                        or "NEW_CHAT_FIRST"
+                    )
+
+        else:
+            routing = (
+                connector
+                .open_chat_by_phone(
+                    phone,
+                    expected_display_name=(
+                        thread.external_display_name
+                    ),
+                    timeout=routing_timeout,
+                )
+            )
 
         if not routing.get(
             "verified"
@@ -727,6 +931,80 @@ class WhatsAppRuntimeService:
         ] = routing
 
         return result
+
+
+    def _add_contact_and_open_impl(
+        self,
+        phone,
+        *,
+        display_name,
+        wait_timeout=60,
+        routing_timeout=15,
+    ):
+        """Añade explícitamente un contacto en WhatsApp Web.
+
+        Esta operación:
+        - NO es routing normal de conversaciones;
+        - SIEMPRE ejecuta Nuevo chat -> Nuevo contacto;
+        - SIEMPRE intenta Guardar contacto;
+        - abre después la conversación resultante.
+        """
+        connector = self._ensure_ready_impl(
+            wait_timeout=wait_timeout,
+        )
+
+        result = (
+            connector
+            .create_and_open_contact(
+                phone,
+                display_name=display_name,
+                timeout=routing_timeout,
+            )
+        )
+
+        if not result.get(
+            "opened"
+        ):
+            try:
+                connector.cancel_new_contact_flow(
+                    timeout=min(
+                        3,
+                        routing_timeout,
+                    ),
+                )
+            except Exception:
+                pass
+
+            reason = (
+                result.get(
+                    "reason"
+                )
+                or "ADD_CONTACT_FAILED"
+            )
+
+            raise RuntimeError(
+                "No se pudo añadir el contacto "
+                f"WhatsApp ({reason})"
+            )
+
+        return result
+
+    def add_contact_and_open(
+        self,
+        phone,
+        *,
+        display_name,
+        wait_timeout=60,
+        routing_timeout=15,
+    ):
+        """Caso de uso público: añadir contacto WhatsApp."""
+        return self._run_serialized(
+            self._add_contact_and_open_impl,
+            phone,
+            display_name=display_name,
+            wait_timeout=wait_timeout,
+            routing_timeout=routing_timeout,
+        )
 
 
     def open_thread_for_selection(
