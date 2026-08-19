@@ -376,9 +376,14 @@ def extract_admission_text(text):
 
     numero_expediente = _first_match(
         [
-            # Formato actual:
+            # Formatos con palabra completa:
             # EXPEDIENTE: 330020260007750
-            r"\bEXPEDIENTE\s*[:\-]\s*(\d{12,20})\b",
+            # Expediente Nº 330020260007750
+            # Expediente N.º 330020260007750
+            # Expediente 330020260007750
+            r"\bEXPEDIENTE\s*"
+            r"(?:N\s*\.?\s*[º°o]\.?\s*)?"
+            r"[:\-]?\s*(\d{12,20})\b",
 
             # Formatos históricos:
             # Expte Nº 330020260004822

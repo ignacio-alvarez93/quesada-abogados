@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from backend.services import task_service
@@ -14,6 +15,40 @@ class CalendarTaskApplicationServiceTestCase(
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
+
+        # Fechas relativas para que la política ALTA
+        # conserve siempre:
+        # - 24H_ANTES
+        # - VENCIMIENTO
+        #
+        # El test no debe caducar con el calendario real.
+        now = datetime.now().replace(
+            microsecond=0
+        )
+
+        self.initial_due = (
+            now
+            + timedelta(days=3)
+        ).replace(
+            second=0
+        )
+
+        self.updated_due = (
+            self.initial_due
+            + timedelta(days=2)
+        )
+
+        self.initial_due_text = (
+            self.initial_due.isoformat(
+                sep=" "
+            )
+        )
+
+        self.updated_due_text = (
+            self.updated_due.isoformat(
+                sep=" "
+            )
+        )
 
         self.db_path = (
             Path(self.tmpdir.name)
@@ -89,7 +124,7 @@ class CalendarTaskApplicationServiceTestCase(
             .create_calendar_task(
                 titulo="Presentar expediente",
                 fecha_vencimiento=(
-                    "2026-08-20 10:00:00"
+                    self.initial_due_text
                 ),
                 cliente_id=1,
                 expediente_id=10,
@@ -193,7 +228,7 @@ class CalendarTaskApplicationServiceTestCase(
             .update_calendar_task(
                 task["id"],
                 fecha_vencimiento=(
-                    "2026-08-21 12:00:00"
+                    self.updated_due_text
                 ),
                 db_path=self.db_path,
             )
@@ -230,14 +265,35 @@ class CalendarTaskApplicationServiceTestCase(
             2,
         )
 
-        self.assertTrue(
-            all(
-                "2026-08-21"
-                in row["scheduled_at"]
-                or "2026-08-20"
-                in row["scheduled_at"]
+        expected_schedule = {
+            (
+                self.updated_due
+                - timedelta(hours=24)
+            ).isoformat(
+                sep=" "
+            ),
+            self.updated_due.isoformat(
+                sep=" "
+            ),
+        }
+
+        self.assertEqual(
+            {
+                row["scheduled_at"]
                 for row in active
-            )
+            },
+            expected_schedule,
+        )
+
+        self.assertEqual(
+            {
+                row["notification_type"]
+                for row in active
+            },
+            {
+                "24H_ANTES",
+                "VENCIMIENTO",
+            },
         )
 
     def test_complete_cancels_pending(
