@@ -220,6 +220,14 @@ MESSAGE_TYPE_IMAGE = (
     "IMAGE"
 )
 
+MESSAGE_TYPE_AUDIO = (
+    "AUDIO"
+)
+
+MESSAGE_TYPE_VOICE_NOTE = (
+    "VOICE_NOTE"
+)
+
 MESSAGE_TYPE_UNKNOWN_MEDIA = (
     "UNKNOWN_MEDIA"
 )
@@ -10725,7 +10733,25 @@ class WhatsAppConnector:
                     MESSAGE_STATUS_UNKNOWN
                 )
 
-            if raw.get(
+            testids = {
+                str(value or "").strip()
+                for value in (
+                    raw.get("testids")
+                    or []
+                )
+            }
+
+            is_voice_note = (
+                "ptt-status"
+                in testids
+            )
+
+            if is_voice_note:
+                message_type = (
+                    MESSAGE_TYPE_VOICE_NOTE
+                )
+
+            elif raw.get(
                 "has_sticker"
             ):
                 message_type = (
@@ -10744,6 +10770,16 @@ class WhatsAppConnector:
             ):
                 message_type = (
                     MESSAGE_TYPE_IMAGE
+                )
+
+            elif int(
+                raw.get(
+                    "audio_count"
+                )
+                or 0
+            ) > 0:
+                message_type = (
+                    MESSAGE_TYPE_AUDIO
                 )
 
             elif item.get(
@@ -10800,6 +10836,11 @@ class WhatsAppConnector:
                             "audio_count"
                         )
                         or 0
+                    ),
+
+                "is_voice_note":
+                    bool(
+                        is_voice_note
                     ),
             }
 
@@ -11851,6 +11892,1553 @@ class WhatsAppConnector:
                 except Exception:
                     pass
 
+            try:
+                run_until_complete(
+                    send(
+                        cdp_browser
+                        .set_download_behavior(
+                            behavior="default",
+                        )
+                    )
+                )
+            except Exception:
+                pass
+
+
+
+
+
+    def _voice_recording_active(
+        self,
+    ):
+        if not self.browser:
+            return False
+
+        return bool(
+            self.browser.evaluate(
+                r"""
+                (() => Boolean(
+                    document.querySelector(
+                        '#main footer '
+                        + 'button[aria-label="Pausar grabación"], '
+                        + '#main footer '
+                        + 'button[aria-label="Pause recording"]'
+                    )
+                ))()
+                """
+            )
+        )
+
+
+    def _mouse_click_visible_control(
+        self,
+        selector,
+        *,
+        timeout=5,
+    ):
+        """Click físico sobre el primer control DOM visible."""
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        deadline = (
+            time.time()
+            + max(
+                0.5,
+                float(timeout),
+            )
+        )
+
+        last_error = None
+
+        while time.time() < deadline:
+            try:
+                visibility = (
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const selector = %s;
+
+                            return Array.from(
+                                document.querySelectorAll(
+                                    selector
+                                )
+                            ).map(node => {
+                                const rect =
+                                    node.getBoundingClientRect();
+
+                                const style =
+                                    window.getComputedStyle(
+                                        node
+                                    );
+
+                                return Boolean(
+                                    rect.width > 0
+                                    && rect.height > 0
+                                    && style.display !== 'none'
+                                    && style.visibility !== 'hidden'
+                                );
+                            });
+                        })()
+                        """
+                        % repr(selector)
+                    )
+                    or []
+                )
+
+                elements = (
+                    self.browser.find_elements(
+                        selector
+                    )
+                    or []
+                )
+
+                for index, is_visible in enumerate(
+                    visibility
+                ):
+                    if (
+                        not is_visible
+                        or index >= len(elements)
+                    ):
+                        continue
+
+                    element = elements[index]
+
+                    scroll_into_view = getattr(
+                        element,
+                        "scroll_into_view",
+                        None,
+                    )
+
+                    mouse_move = getattr(
+                        element,
+                        "mouse_move",
+                        None,
+                    )
+
+                    mouse_click = getattr(
+                        element,
+                        "mouse_click",
+                        None,
+                    )
+
+                    if callable(
+                        scroll_into_view
+                    ):
+                        scroll_into_view()
+
+                    if callable(
+                        mouse_move
+                    ):
+                        mouse_move()
+
+                    if not callable(
+                        mouse_click
+                    ):
+                        raise RuntimeError(
+                            "El control WhatsApp "
+                            "no soporta mouse_click()"
+                        )
+
+                    mouse_click()
+
+                    return True
+
+            except Exception as exc:
+                last_error = exc
+
+            time.sleep(0.08)
+
+        raise RuntimeError(
+            "No se pudo realizar click físico "
+            f"en WhatsApp ({last_error!r})"
+        )
+
+
+    def start_voice_note_recording(
+        self,
+        *,
+        timeout=5,
+    ):
+        """Inicia grabación de nota de voz en el chat activo."""
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        if self._voice_recording_active():
+            raise RuntimeError(
+                "Ya existe una grabación de voz activa"
+            )
+
+        selector = (
+            '#main footer '
+            'button[aria-label="Mensaje de voz"], '
+            '#main footer '
+            'button[aria-label="Voice message"]'
+        )
+
+        self._mouse_click_visible_control(
+            selector,
+            timeout=timeout,
+        )
+
+        deadline = (
+            time.time()
+            + max(
+                1,
+                float(timeout),
+            )
+        )
+
+        while time.time() < deadline:
+            if self._voice_recording_active():
+                return {
+                    "ok": True,
+                    "recording": True,
+                    "action": "START",
+                }
+
+            time.sleep(0.08)
+
+        raise RuntimeError(
+            "WhatsApp no confirmó el inicio "
+            "de la grabación de voz"
+        )
+
+
+    def cancel_voice_note_recording(
+        self,
+        *,
+        timeout=5,
+    ):
+        """Cancela la grabación activa sin enviar."""
+        if not self._voice_recording_active():
+            raise RuntimeError(
+                "No existe una grabación de voz activa"
+            )
+
+        selector = (
+            '#main footer '
+            'button[aria-label="Cancelar"], '
+            '#main footer '
+            'button[aria-label="Cancel"]'
+        )
+
+        self._mouse_click_visible_control(
+            selector,
+            timeout=timeout,
+        )
+
+        deadline = (
+            time.time()
+            + max(
+                1,
+                float(timeout),
+            )
+        )
+
+        while time.time() < deadline:
+            if not self._voice_recording_active():
+                return {
+                    "ok": True,
+                    "recording": False,
+                    "action": "CANCEL",
+                }
+
+            time.sleep(0.08)
+
+        raise RuntimeError(
+            "WhatsApp no confirmó la cancelación "
+            "de la grabación"
+        )
+
+
+    def send_voice_note_recording(
+        self,
+        *,
+        timeout=8,
+    ):
+        """Envía la grabación de voz actualmente activa."""
+        if not self._voice_recording_active():
+            raise RuntimeError(
+                "No existe una grabación de voz activa"
+            )
+
+        selector = (
+            '#main footer '
+            'button[aria-label="Enviar"], '
+            '#main footer '
+            'button[aria-label="Send"]'
+        )
+
+        self._mouse_click_visible_control(
+            selector,
+            timeout=timeout,
+        )
+
+        deadline = (
+            time.time()
+            + max(
+                1,
+                float(timeout),
+            )
+        )
+
+        while time.time() < deadline:
+            if not self._voice_recording_active():
+                return {
+                    "ok": True,
+                    "recording": False,
+                    "action": "SEND",
+                }
+
+            time.sleep(0.08)
+
+        raise RuntimeError(
+            "WhatsApp no confirmó el envío "
+            "de la nota de voz"
+        )
+
+
+    def toggle_visible_voice_note_playback(
+        self,
+        provider_message_id,
+    ):
+        """Reproduce o pausa exclusivamente una nota de voz."""
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        provider_id = str(
+            provider_message_id
+            or ""
+        ).strip()
+
+        if not provider_id:
+            raise ValueError(
+                "provider_message_id es obligatorio"
+            )
+
+        result = (
+            self.browser.evaluate(
+                """
+                (() => {
+                    const providerId = %s;
+
+                    const targetRoot =
+                        document.querySelector(
+                            '#main '
+                            + '[data-testid="conv-msg-'
+                            + providerId
+                            + '"]'
+                        );
+
+                    if (!targetRoot) {
+                        return {
+                            ok: false,
+                            reason:
+                                'MESSAGE_NOT_VISIBLE'
+                        };
+                    }
+
+                    if (
+                        !targetRoot.querySelector(
+                            '[data-testid="ptt-status"]'
+                        )
+                    ) {
+                        return {
+                            ok: false,
+                            reason:
+                                'VOICE_NOTE_NOT_FOUND'
+                        };
+                    }
+
+                    function ariaValue(button) {
+                        return String(
+                            button.getAttribute(
+                                'aria-label'
+                            )
+                            || ''
+                        )
+                        .trim()
+                        .toLowerCase();
+                    }
+
+                    function findPause(root) {
+                        return Array.from(
+                            root.querySelectorAll(
+                                'button'
+                            )
+                        ).find(
+                            button => {
+                                const aria =
+                                    ariaValue(
+                                        button
+                                    );
+
+                                return (
+                                    aria.includes(
+                                        'pausar'
+                                    )
+                                    || aria.includes(
+                                        'pause'
+                                    )
+                                );
+                            }
+                        );
+                    }
+
+                    function findPlay(root) {
+                        return Array.from(
+                            root.querySelectorAll(
+                                'button'
+                            )
+                        ).find(
+                            button => {
+                                const aria =
+                                    ariaValue(
+                                        button
+                                    );
+
+                                return (
+                                    aria.includes(
+                                        'reproducir'
+                                    )
+                                    || aria.includes(
+                                        'play'
+                                    )
+                                );
+                            }
+                        );
+                    }
+
+                    /*
+                     * Si la nota pulsada YA está sonando,
+                     * este click significa PAUSE.
+                     */
+                    const targetPause =
+                        findPause(
+                            targetRoot
+                        );
+
+                    if (targetPause) {
+                        targetPause.click();
+
+                        return {
+                            ok: true,
+                            action:
+                                'PAUSE',
+                            playback_state:
+                                'PAUSED',
+                            paused_others:
+                                0
+                        };
+                    }
+
+                    /*
+                     * PLAY exclusivo:
+                     * detener cualquier otra nota visible
+                     * antes de iniciar la seleccionada.
+                     */
+                    const roots =
+                        Array.from(
+                            document.querySelectorAll(
+                                '#main '
+                                + '[data-testid^="conv-msg-"]'
+                            )
+                        );
+
+                    let pausedOthers = 0;
+
+                    for (const root of roots) {
+                        if (
+                            root === targetRoot
+                            || !root.querySelector(
+                                '[data-testid="ptt-status"]'
+                            )
+                        ) {
+                            continue;
+                        }
+
+                        const pause =
+                            findPause(
+                                root
+                            );
+
+                        if (pause) {
+                            pause.click();
+                            pausedOthers += 1;
+                        }
+                    }
+
+                    const targetPlay =
+                        findPlay(
+                            targetRoot
+                        );
+
+                    if (!targetPlay) {
+                        return {
+                            ok: false,
+                            reason:
+                                'VOICE_NOTE_NOT_READY'
+                        };
+                    }
+
+                    targetPlay.click();
+
+                    /*
+                     * Segunda barrera:
+                     * si WhatsApp deja otra nota en PLAYING
+                     * durante el cambio, la pausamos también.
+                     */
+                    for (const root of roots) {
+                        if (
+                            root === targetRoot
+                            || !root.querySelector(
+                                '[data-testid="ptt-status"]'
+                            )
+                        ) {
+                            continue;
+                        }
+
+                        const pause =
+                            findPause(
+                                root
+                            );
+
+                        if (pause) {
+                            pause.click();
+                            pausedOthers += 1;
+                        }
+                    }
+
+                    return {
+                        ok: true,
+                        action:
+                            'PLAY',
+                        playback_state:
+                            'PLAYING',
+                        paused_others:
+                            pausedOthers
+                    };
+                })()
+                """
+                % repr(
+                    provider_id
+                )
+            )
+            or {}
+        )
+
+        if not result.get(
+            "ok"
+        ):
+            reason = str(
+                result.get(
+                    "reason"
+                )
+                or "VOICE_NOTE_PLAYBACK_FAILED"
+            )
+
+            raise RuntimeError(
+                "No se pudo controlar "
+                "la reproducción de la nota de voz "
+                f"({reason})"
+            )
+
+        return {
+            "provider_message_id":
+                provider_id,
+            "action":
+                result.get(
+                    "action"
+                ),
+            "playback_state":
+                result.get(
+                    "playback_state"
+                ),
+            "paused_others":
+                int(
+                    result.get(
+                        "paused_others"
+                    )
+                    or 0
+                ),
+        }
+
+
+    def download_visible_voice_note(
+        self,
+        provider_message_id,
+        *,
+        download_dir,
+        timeout=30,
+    ):
+        """Descarga UNA nota de voz visible del chat activo."""
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        normalized_provider_id = str(
+            provider_message_id
+            or ""
+        ).strip()
+
+        if not normalized_provider_id:
+            raise ValueError(
+                "provider_message_id es obligatorio"
+            )
+
+        target_dir = Path(
+            download_dir
+        ).expanduser()
+
+        target_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        target_dir = target_dir.resolve()
+
+        page = getattr(
+            self.browser,
+            "page",
+            None,
+        )
+
+        loop = getattr(
+            self.browser,
+            "loop",
+            None,
+        )
+
+        send = getattr(
+            page,
+            "send",
+            None,
+        )
+
+        run_until_complete = getattr(
+            loop,
+            "run_until_complete",
+            None,
+        )
+
+        if (
+            not callable(send)
+            or not callable(
+                run_until_complete
+            )
+        ):
+            raise RuntimeError(
+                "Transporte CDP de descarga "
+                "no disponible"
+            )
+
+        active = (
+            self.get_active_chat_fingerprint()
+        )
+
+        if not active.chat_open:
+            raise RuntimeError(
+                "No hay un chat WhatsApp activo"
+            )
+
+        before = {}
+
+        for file_path in target_dir.iterdir():
+            if not file_path.is_file():
+                continue
+
+            try:
+                stat = file_path.stat()
+            except OSError:
+                continue
+
+            before[str(file_path)] = (
+                int(stat.st_size),
+                int(stat.st_mtime_ns),
+            )
+
+        run_until_complete(
+            send(
+                cdp_browser
+                .set_download_behavior(
+                    behavior="allow",
+                    download_path=str(
+                        target_dir
+                    ),
+                    events_enabled=True,
+                )
+            )
+        )
+
+        try:
+            provider_js = repr(
+                normalized_provider_id
+            )
+
+            click_result = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const providerId = %s;
+
+                        const root =
+                            Array.from(
+                                document.querySelectorAll(
+                                    '#main '
+                                    + '[data-testid^="conv-msg-"]'
+                                )
+                            )
+                            .find(
+                                node =>
+                                    node.getAttribute(
+                                        'data-testid'
+                                    )
+                                    === (
+                                        'conv-msg-'
+                                        + providerId
+                                    )
+                            );
+
+                        if (!root) {
+                            return {
+                                clicked: false,
+                                reason:
+                                    'MESSAGE_NOT_VISIBLE'
+                            };
+                        }
+
+                        if (
+                            root.querySelector(
+                                '[data-testid="fail-container"]'
+                            )
+                        ) {
+                            return {
+                                clicked: false,
+                                reason:
+                                    'VOICE_NOTE_FAILED'
+                            };
+                        }
+
+                        if (
+                            root.querySelector(
+                                '[data-testid="loading-spinner"]'
+                            )
+                        ) {
+                            return {
+                                clicked: false,
+                                reason:
+                                    'VOICE_NOTE_LOADING'
+                            };
+                        }
+
+                        const ptt =
+                            root.querySelector(
+                                '[data-testid="ptt-status"]'
+                            );
+
+                        if (!ptt) {
+                            return {
+                                clicked: false,
+                                reason:
+                                    'VOICE_NOTE_NOT_FOUND'
+                            };
+                        }
+
+                        const buttons =
+                            Array.from(
+                                root.querySelectorAll(
+                                    'button'
+                                )
+                            );
+
+                        const downloadButton =
+                            buttons.find(
+                                button => {
+                                    const aria =
+                                        String(
+                                            button.getAttribute(
+                                                'aria-label'
+                                            )
+                                            || ''
+                                        )
+                                        .trim()
+                                        .toLowerCase();
+
+                                    const download =
+                                        (
+                                            aria.includes(
+                                                'descargar'
+                                            )
+                                            || aria.includes(
+                                                'download'
+                                            )
+                                        );
+
+                                    const voice =
+                                        (
+                                            aria.includes(
+                                                'voz'
+                                            )
+                                            || aria.includes(
+                                                'voice'
+                                            )
+                                        );
+
+                                    return (
+                                        download
+                                        && voice
+                                    );
+                                }
+                            );
+
+                        if (!downloadButton) {
+                            return {
+                                clicked: false,
+                                reason:
+                                    'VOICE_NOTE_DOWNLOAD_NOT_FOUND'
+                            };
+                        }
+
+                        downloadButton.click();
+
+                        return {
+                            clicked: true,
+                            reason: null
+                        };
+                    })()
+                    """
+                    % provider_js
+                )
+                or {}
+            )
+
+            if (
+                not click_result.get(
+                    "clicked"
+                )
+                and str(
+                    click_result.get(
+                        "reason"
+                    )
+                    or ""
+                )
+                == "VOICE_NOTE_DOWNLOAD_NOT_FOUND"
+            ):
+                message_selector = (
+                    '#main '
+                    f'[data-testid="conv-msg-{normalized_provider_id}"]'
+                )
+
+                hover_selector = (
+                    message_selector
+                    + ' [data-testid="msg-container"]'
+                )
+
+                menu_deadline = (
+                    time.time()
+                    + max(
+                        1,
+                        float(
+                            timeout
+                        ),
+                    )
+                )
+
+                menu_ready = False
+
+                while (
+                    time.time()
+                    < menu_deadline
+                ):
+                    try:
+                        visible = bool(
+                            self.browser.evaluate(
+                                """
+                                (() => {
+                                    const root =
+                                        document.querySelector(
+                                            %s
+                                        );
+
+                                    if (!root) {
+                                        return false;
+                                    }
+
+                                    const container =
+                                        root.querySelector(
+                                            '[data-testid="msg-container"]'
+                                        );
+
+                                    if (!container) {
+                                        return false;
+                                    }
+
+                                    container.scrollIntoView({
+                                        block: 'center',
+                                        inline: 'nearest'
+                                    });
+
+                                    return true;
+                                })()
+                                """
+                                % repr(
+                                    message_selector
+                                )
+                            )
+                        )
+
+                        if not visible:
+                            time.sleep(0.08)
+                            continue
+
+                        element = (
+                            self.browser.find_element(
+                                hover_selector
+                            )
+                        )
+
+                        mouse_move = getattr(
+                            element,
+                            "mouse_move",
+                            None,
+                        )
+
+                        if not callable(
+                            mouse_move
+                        ):
+                            raise RuntimeError(
+                                "El mensaje no soporta "
+                                "hover gobernado"
+                            )
+
+                        mouse_move()
+
+                        menu_ready = bool(
+                            self.browser.evaluate(
+                                """
+                                (() => {
+                                    const root =
+                                        document.querySelector(
+                                            %s
+                                        );
+
+                                    return Boolean(
+                                        root
+                                        && root.querySelector(
+                                            '[data-testid="icon-down-context"]'
+                                            + '[role="button"]'
+                                        )
+                                    );
+                                })()
+                                """
+                                % repr(
+                                    message_selector
+                                )
+                            )
+                        )
+
+                        if menu_ready:
+                            break
+
+                    except Exception:
+                        menu_ready = False
+
+                    time.sleep(0.08)
+
+                if not menu_ready:
+                    raise RuntimeError(
+                        "WhatsApp no mostró el menú "
+                        "de la nota de voz"
+                    )
+
+                menu_clicked = bool(
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const root =
+                                document.querySelector(
+                                    %s
+                                );
+
+                            if (!root) {
+                                return false;
+                            }
+
+                            const button =
+                                root.querySelector(
+                                    '[data-testid="icon-down-context"]'
+                                    + '[role="button"]'
+                                );
+
+                            if (!button) {
+                                return false;
+                            }
+
+                            button.click();
+
+                            return true;
+                        })()
+                        """
+                        % repr(
+                            message_selector
+                        )
+                    )
+                )
+
+                if not menu_clicked:
+                    raise RuntimeError(
+                        "No se pudo abrir el menú "
+                        "de la nota de voz"
+                    )
+
+                action_clicked = False
+
+                while (
+                    time.time()
+                    < menu_deadline
+                ):
+                    result = (
+                        self.browser.evaluate(
+                            r"""
+                            (() => {
+                                function visible(node) {
+                                    const rect =
+                                        node.getBoundingClientRect();
+
+                                    const style =
+                                        window.getComputedStyle(
+                                            node
+                                        );
+
+                                    return (
+                                        rect.width > 0
+                                        && rect.height > 0
+                                        && style.display !== 'none'
+                                        && style.visibility !== 'hidden'
+                                    );
+                                }
+
+                                const candidates =
+                                    Array.from(
+                                        document.querySelectorAll(
+                                            '[role="menuitem"]'
+                                        )
+                                    )
+                                    .filter(visible)
+                                    .filter(node => {
+                                        const value =
+                                            String(
+                                                node.getAttribute(
+                                                    'aria-label'
+                                                )
+                                                || node.innerText
+                                                || node.textContent
+                                                || ''
+                                            )
+                                            .trim()
+                                            .toLowerCase();
+
+                                        return (
+                                            value === 'descargar'
+                                            || value === 'download'
+                                        );
+                                    });
+
+                                if (!candidates.length) {
+                                    return {
+                                        status:
+                                            'NOT_READY'
+                                    };
+                                }
+
+                                if (
+                                    candidates.length
+                                    !== 1
+                                ) {
+                                    return {
+                                        status:
+                                            'AMBIGUOUS',
+                                        count:
+                                            candidates.length
+                                    };
+                                }
+
+                                candidates[
+                                    0
+                                ].click();
+
+                                return {
+                                    status:
+                                        'CLICKED'
+                                };
+                            })()
+                            """
+                        )
+                        or {}
+                    )
+
+                    status = str(
+                        result.get(
+                            "status"
+                        )
+                        or ""
+                    )
+
+                    if status == "CLICKED":
+                        action_clicked = True
+                        break
+
+                    if status == "AMBIGUOUS":
+                        raise RuntimeError(
+                            "WhatsApp mostró varias "
+                            "acciones Descargar"
+                        )
+
+                    time.sleep(0.05)
+
+                if not action_clicked:
+                    raise RuntimeError(
+                        "WhatsApp no mostró la acción "
+                        "Descargar de la nota de voz"
+                    )
+
+                click_result = {
+                    "clicked": True,
+                    "reason": None,
+                    "transport":
+                        "CONTEXT_MENU",
+                }
+
+            if (
+                not click_result.get(
+                    "clicked"
+                )
+                and str(
+                    click_result.get(
+                        "reason"
+                    )
+                    or ""
+                )
+                == "VOICE_NOTE_DOWNLOAD_NOT_FOUND"
+            ):
+                message_selector = (
+                    '#main '
+                    f'[data-testid="conv-msg-{normalized_provider_id}"]'
+                )
+
+                hover_selector = (
+                    message_selector
+                    + ' [data-testid="msg-container"]'
+                )
+
+                menu_deadline = (
+                    time.time()
+                    + max(
+                        1,
+                        float(
+                            timeout
+                        ),
+                    )
+                )
+
+                menu_ready = False
+
+                while (
+                    time.time()
+                    < menu_deadline
+                ):
+                    try:
+                        visible = bool(
+                            self.browser.evaluate(
+                                """
+                                (() => {
+                                    const root =
+                                        document.querySelector(
+                                            %s
+                                        );
+
+                                    if (!root) {
+                                        return false;
+                                    }
+
+                                    const container =
+                                        root.querySelector(
+                                            '[data-testid="msg-container"]'
+                                        );
+
+                                    if (!container) {
+                                        return false;
+                                    }
+
+                                    container.scrollIntoView({
+                                        block: 'center',
+                                        inline: 'nearest'
+                                    });
+
+                                    return true;
+                                })()
+                                """
+                                % repr(
+                                    message_selector
+                                )
+                            )
+                        )
+
+                        if not visible:
+                            time.sleep(0.08)
+                            continue
+
+                        element = (
+                            self.browser.find_element(
+                                hover_selector
+                            )
+                        )
+
+                        mouse_move = getattr(
+                            element,
+                            "mouse_move",
+                            None,
+                        )
+
+                        if not callable(
+                            mouse_move
+                        ):
+                            raise RuntimeError(
+                                "El mensaje no soporta "
+                                "hover gobernado"
+                            )
+
+                        mouse_move()
+
+                        menu_ready = bool(
+                            self.browser.evaluate(
+                                """
+                                (() => {
+                                    const root =
+                                        document.querySelector(
+                                            %s
+                                        );
+
+                                    return Boolean(
+                                        root
+                                        && root.querySelector(
+                                            '[data-testid="icon-down-context"]'
+                                            + '[role="button"]'
+                                        )
+                                    );
+                                })()
+                                """
+                                % repr(
+                                    message_selector
+                                )
+                            )
+                        )
+
+                        if menu_ready:
+                            break
+
+                    except Exception:
+                        menu_ready = False
+
+                    time.sleep(0.08)
+
+                if not menu_ready:
+                    raise RuntimeError(
+                        "WhatsApp no mostró el menú "
+                        "de la nota de voz"
+                    )
+
+                menu_clicked = bool(
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const root =
+                                document.querySelector(
+                                    %s
+                                );
+
+                            if (!root) {
+                                return false;
+                            }
+
+                            const button =
+                                root.querySelector(
+                                    '[data-testid="icon-down-context"]'
+                                    + '[role="button"]'
+                                );
+
+                            if (!button) {
+                                return false;
+                            }
+
+                            button.click();
+
+                            return true;
+                        })()
+                        """
+                        % repr(
+                            message_selector
+                        )
+                    )
+                )
+
+                if not menu_clicked:
+                    raise RuntimeError(
+                        "No se pudo abrir el menú "
+                        "de la nota de voz"
+                    )
+
+                action_clicked = False
+
+                while (
+                    time.time()
+                    < menu_deadline
+                ):
+                    result = (
+                        self.browser.evaluate(
+                            r"""
+                            (() => {
+                                function visible(node) {
+                                    const rect =
+                                        node.getBoundingClientRect();
+
+                                    const style =
+                                        window.getComputedStyle(
+                                            node
+                                        );
+
+                                    return (
+                                        rect.width > 0
+                                        && rect.height > 0
+                                        && style.display !== 'none'
+                                        && style.visibility !== 'hidden'
+                                    );
+                                }
+
+                                const candidates =
+                                    Array.from(
+                                        document.querySelectorAll(
+                                            '[role="menuitem"]'
+                                        )
+                                    )
+                                    .filter(visible)
+                                    .filter(node => {
+                                        const value =
+                                            String(
+                                                node.getAttribute(
+                                                    'aria-label'
+                                                )
+                                                || node.innerText
+                                                || node.textContent
+                                                || ''
+                                            )
+                                            .trim()
+                                            .toLowerCase();
+
+                                        return (
+                                            value === 'descargar'
+                                            || value === 'download'
+                                        );
+                                    });
+
+                                if (!candidates.length) {
+                                    return {
+                                        status:
+                                            'NOT_READY'
+                                    };
+                                }
+
+                                if (
+                                    candidates.length
+                                    !== 1
+                                ) {
+                                    return {
+                                        status:
+                                            'AMBIGUOUS',
+                                        count:
+                                            candidates.length
+                                    };
+                                }
+
+                                candidates[
+                                    0
+                                ].click();
+
+                                return {
+                                    status:
+                                        'CLICKED'
+                                };
+                            })()
+                            """
+                        )
+                        or {}
+                    )
+
+                    status = str(
+                        result.get(
+                            "status"
+                        )
+                        or ""
+                    )
+
+                    if status == "CLICKED":
+                        action_clicked = True
+                        break
+
+                    if status == "AMBIGUOUS":
+                        raise RuntimeError(
+                            "WhatsApp mostró varias "
+                            "acciones Descargar"
+                        )
+
+                    time.sleep(0.05)
+
+                if not action_clicked:
+                    raise RuntimeError(
+                        "WhatsApp no mostró la acción "
+                        "Descargar de la nota de voz"
+                    )
+
+                click_result = {
+                    "clicked": True,
+                    "reason": None,
+                    "transport":
+                        "CONTEXT_MENU",
+                }
+
+            if not click_result.get(
+                "clicked"
+            ):
+                reason = str(
+                    click_result.get(
+                        "reason"
+                    )
+                    or "VOICE_NOTE_DOWNLOAD_FAILED"
+                )
+
+                raise RuntimeError(
+                    "No se pudo descargar "
+                    "la nota de voz WhatsApp "
+                    f"({reason})"
+                )
+
+            downloaded = None
+
+            deadline = (
+                time.time()
+                + max(
+                    1,
+                    float(
+                        timeout
+                    ),
+                )
+            )
+
+            while time.time() < deadline:
+                candidates = []
+
+                for file_path in target_dir.iterdir():
+                    if not file_path.is_file():
+                        continue
+
+                    if (
+                        file_path.suffix.lower()
+                        in (
+                            ".tmp",
+                            ".crdownload",
+                        )
+                    ):
+                        continue
+
+                    try:
+                        stat = file_path.stat()
+                    except OSError:
+                        continue
+
+                    current = (
+                        int(stat.st_size),
+                        int(stat.st_mtime_ns),
+                    )
+
+                    if (
+                        before.get(
+                            str(file_path)
+                        )
+                        == current
+                    ):
+                        continue
+
+                    if current[0] <= 0:
+                        continue
+
+                    candidates.append(
+                        (
+                            current[1],
+                            file_path,
+                            current[0],
+                        )
+                    )
+
+                if candidates:
+                    candidates.sort(
+                        key=lambda item:
+                            item[0],
+                        reverse=True,
+                    )
+
+                    _, candidate, size_1 = (
+                        candidates[0]
+                    )
+
+                    time.sleep(0.2)
+
+                    try:
+                        size_2 = int(
+                            candidate.stat().st_size
+                        )
+                    except OSError:
+                        size_2 = -1
+
+                    if (
+                        size_1 > 0
+                        and size_1 == size_2
+                    ):
+                        downloaded = candidate
+                        break
+
+                time.sleep(0.1)
+
+            if downloaded is None:
+                raise RuntimeError(
+                    "La descarga de nota de voz "
+                    "no alcanzó un archivo final"
+                )
+
+            return {
+                "provider_message_id":
+                    normalized_provider_id,
+                "media_type":
+                    "VOICE_NOTE",
+                "expected_filename":
+                    None,
+                "filename":
+                    downloaded.name,
+                "file_path":
+                    str(downloaded),
+                "size_bytes":
+                    int(
+                        downloaded.stat().st_size
+                    ),
+            }
+
+        finally:
             try:
                 run_until_complete(
                     send(
