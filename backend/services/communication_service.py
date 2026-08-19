@@ -1616,7 +1616,7 @@ class CommunicationService:
             # Refinamiento monotónico y deliberadamente
             # estrecho para mensajes históricos.
             #
-            # Nunca degradamos TEXT/DOCUMENT/STICKER/IMAGE
+            # Nunca degradamos TEXT/DOCUMENT/STICKER/IMAGE/AUDIO
             # hacia otro tipo por una observación posterior.
             if (
                 previous_type
@@ -1625,7 +1625,11 @@ class CommunicationService:
                     "UNKNOWN_MEDIA",
                 )
                 and incoming_type
-                == "IMAGE"
+                in (
+                    "IMAGE",
+                    "AUDIO",
+                    "VOICE_NOTE",
+                )
             ):
                 merged_metadata = {
                     **previous_metadata,

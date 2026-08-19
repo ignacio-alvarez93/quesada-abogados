@@ -4930,6 +4930,396 @@ class WhatsAppRuntimeService:
         )
 
 
+
+
+
+    def _start_voice_note_recording_impl(
+        self,
+        *,
+        thread_id,
+        wait_timeout=60,
+        routing_timeout=15,
+        action_timeout=5,
+    ):
+        """Verifica destinatario y comienza a grabar."""
+        thread = (
+            self._prepare_verified_outbound_impl(
+                thread_id=thread_id,
+                wait_timeout=wait_timeout,
+                routing_timeout=(
+                    routing_timeout
+                ),
+            )
+        )
+
+        connector = (
+            self._build_connector()
+        )
+
+        result = (
+            connector
+            .start_voice_note_recording(
+                timeout=action_timeout,
+            )
+        )
+
+        return {
+            **result,
+            "thread_id": int(
+                thread.id
+            ),
+            "client_id": (
+                int(
+                    thread.client_id
+                )
+                if thread.client_id
+                is not None
+                else None
+            ),
+        }
+
+
+    def start_voice_note_recording(
+        self,
+        *,
+        thread_id,
+        wait_timeout=60,
+        routing_timeout=15,
+        action_timeout=5,
+    ):
+        return self._run_serialized(
+            self._start_voice_note_recording_impl,
+            thread_id=thread_id,
+            wait_timeout=wait_timeout,
+            routing_timeout=(
+                routing_timeout
+            ),
+            action_timeout=action_timeout,
+        )
+
+
+    def _cancel_voice_note_recording_impl(
+        self,
+        *,
+        thread_id,
+        wait_timeout=60,
+        action_timeout=5,
+    ):
+        """Cancela SOLO la grabación actualmente visible.
+
+        No hace routing: una grabación ya iniciada nunca debe
+        provocar navegación automática a otro destinatario.
+        """
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        result = (
+            connector
+            .cancel_voice_note_recording(
+                timeout=action_timeout,
+            )
+        )
+
+        return {
+            **result,
+            "thread_id":
+                int(thread_id),
+        }
+
+
+    def cancel_voice_note_recording(
+        self,
+        *,
+        thread_id,
+        wait_timeout=60,
+        action_timeout=5,
+    ):
+        return self._run_serialized(
+            self._cancel_voice_note_recording_impl,
+            thread_id=thread_id,
+            wait_timeout=wait_timeout,
+            action_timeout=action_timeout,
+        )
+
+
+    def _send_voice_note_recording_impl(
+        self,
+        *,
+        thread_id,
+        wait_timeout=60,
+        action_timeout=8,
+    ):
+        """Envía SOLO la grabación actualmente visible."""
+        connector = (
+            self._ensure_ready_impl(
+                wait_timeout=wait_timeout,
+            )
+        )
+
+        result = (
+            connector
+            .send_voice_note_recording(
+                timeout=action_timeout,
+            )
+        )
+
+        # Dar al DOM una ventana mínima para incorporar
+        # el nuevo mensaje antes del sync idempotente.
+        time.sleep(0.6)
+
+        sync_result = (
+            self._sync_open_chat_messages_impl(
+                thread_id=int(
+                    thread_id
+                ),
+                limit=50,
+                wait_timeout=(
+                    wait_timeout
+                ),
+            )
+        )
+
+        return {
+            **result,
+            "thread_id":
+                int(thread_id),
+            "sync":
+                sync_result,
+        }
+
+
+    def send_voice_note_recording(
+        self,
+        *,
+        thread_id,
+        wait_timeout=60,
+        action_timeout=8,
+    ):
+        return self._run_serialized(
+            self._send_voice_note_recording_impl,
+            thread_id=thread_id,
+            wait_timeout=wait_timeout,
+            action_timeout=action_timeout,
+        )
+
+
+    def _toggle_voice_note_playback_impl(
+        self,
+        *,
+        thread_id,
+        provider_message_id,
+        wait_timeout=60,
+        routing_timeout=15,
+    ):
+        """Controla PLAY/PAUSE de una nota en WhatsApp Web."""
+        thread = (
+            self._prepare_verified_outbound_impl(
+                thread_id=thread_id,
+                wait_timeout=wait_timeout,
+                routing_timeout=(
+                    routing_timeout
+                ),
+            )
+        )
+
+        connector = (
+            self._build_connector()
+        )
+
+        result = (
+            connector
+            .toggle_visible_voice_note_playback(
+                provider_message_id
+            )
+        )
+
+        return {
+            **result,
+            "thread_id":
+                int(
+                    thread.id
+                ),
+            "client_id":
+                (
+                    int(
+                        thread.client_id
+                    )
+                    if thread.client_id
+                    is not None
+                    else None
+                ),
+        }
+
+
+    def toggle_voice_note_playback(
+        self,
+        *,
+        thread_id,
+        provider_message_id,
+        wait_timeout=60,
+        routing_timeout=15,
+    ):
+        return self._run_serialized(
+            self._toggle_voice_note_playback_impl,
+            thread_id=thread_id,
+            provider_message_id=(
+                provider_message_id
+            ),
+            wait_timeout=wait_timeout,
+            routing_timeout=(
+                routing_timeout
+            ),
+        )
+
+
+    def _download_voice_note_impl(
+        self,
+        *,
+        thread_id,
+        provider_message_id,
+        watch_folder_id=None,
+        wait_timeout=60,
+        routing_timeout=15,
+        download_timeout=30,
+    ):
+        """Descarga una nota de voz WhatsApp."""
+        thread = (
+            self._prepare_verified_outbound_impl(
+                thread_id=thread_id,
+                wait_timeout=wait_timeout,
+                routing_timeout=(
+                    routing_timeout
+                ),
+            )
+        )
+
+        if watch_folder_id in (
+            None,
+            "",
+        ):
+            watch_folder = (
+                document_inbox_watch_service
+                .ensure_default_downloads_watch_folder()
+            )
+        else:
+            watch_folder = (
+                document_inbox_watch_service
+                .get_watch_folder(
+                    int(
+                        watch_folder_id
+                    )
+                )
+            )
+
+        if not int(
+            watch_folder.get(
+                "is_active"
+            )
+            or 0
+        ):
+            raise ValueError(
+                "La carpeta de destino "
+                "no está activa en Bandeja Documental"
+            )
+
+        destination = Path(
+            watch_folder[
+                "folder_path"
+            ]
+        ).expanduser().resolve()
+
+        if (
+            not destination.exists()
+            or not destination.is_dir()
+        ):
+            raise ValueError(
+                "La carpeta vigilada de destino "
+                "no existe"
+            )
+
+        connector = (
+            self._build_connector()
+        )
+
+        result = (
+            connector
+            .download_visible_voice_note(
+                provider_message_id,
+                download_dir=(
+                    destination
+                ),
+                timeout=(
+                    download_timeout
+                ),
+            )
+        )
+
+        return {
+            **result,
+            "thread_id":
+                int(
+                    thread.id
+                ),
+            "client_id":
+                (
+                    int(
+                        thread.client_id
+                    )
+                    if thread.client_id
+                    is not None
+                    else None
+                ),
+            "watch_folder_id":
+                int(
+                    watch_folder[
+                        "id"
+                    ]
+                ),
+            "watch_folder_name":
+                watch_folder.get(
+                    "name"
+                ),
+            "watch_folder_path":
+                str(
+                    destination
+                ),
+            "document_inbox_watch":
+                True,
+        }
+
+
+    def download_voice_note(
+        self,
+        *,
+        thread_id,
+        provider_message_id,
+        watch_folder_id=None,
+        wait_timeout=60,
+        routing_timeout=15,
+        download_timeout=30,
+    ):
+        return self._run_serialized(
+            self._download_voice_note_impl,
+            thread_id=thread_id,
+            provider_message_id=(
+                provider_message_id
+            ),
+            watch_folder_id=(
+                watch_folder_id
+            ),
+            wait_timeout=wait_timeout,
+            routing_timeout=(
+                routing_timeout
+            ),
+            download_timeout=(
+                download_timeout
+            ),
+        )
+
+
     def _download_today_documents_impl(
         self,
         *,

@@ -109,12 +109,115 @@ class WhatsAppOutboundService:
         created_by=None,
         sent_by=None,
         metadata=None,
+        reply_to_message_id=None,
         timeout=10,
     ):
         """Envía y persiste un mensaje WhatsApp trazable.
 
+        Puede responder a un mensaje CRM existente mediante
+        ``reply_to_message_id``.
+
         Nunca reintenta automáticamente un envío incierto.
         """
+        normalized_metadata = dict(
+            metadata
+            or {}
+        )
+
+        reply_target = None
+
+        if reply_to_message_id not in (
+            None,
+            "",
+        ):
+            reply_target = (
+                self.communication_service
+                .get_message(
+                    int(
+                        reply_to_message_id
+                    )
+                )
+            )
+
+            if reply_target is None:
+                raise ValueError(
+                    "Mensaje citado no encontrado"
+                )
+
+            if (
+                int(
+                    reply_target.thread_id
+                )
+                != int(
+                    thread_id
+                )
+            ):
+                raise ValueError(
+                    "El mensaje citado pertenece "
+                    "a otra conversación"
+                )
+
+            provider_id = str(
+                reply_target.provider_message_id
+                or ""
+            ).strip()
+
+            if not provider_id:
+                raise ValueError(
+                    "El mensaje citado no tiene "
+                    "provider_message_id"
+                )
+
+            target_metadata = (
+                dict(
+                    reply_target.metadata
+                    or {}
+                )
+                if isinstance(
+                    reply_target.metadata,
+                    dict,
+                )
+                else {}
+            )
+
+            sender = str(
+                target_metadata.get(
+                    "sender"
+                )
+                or ""
+            ).strip()
+
+            if (
+                not sender
+                and str(
+                    getattr(
+                        reply_target,
+                        "direction",
+                        "",
+                    )
+                    or ""
+                ).strip().upper()
+                == "OUTBOUND"
+            ):
+                sender = "Tú"
+
+            # La relación de cita siempre se construye
+            # desde el mensaje persistido. El frontend
+            # no puede falsificar provider/body/sender.
+            normalized_metadata[
+                "reply"
+            ] = {
+                "provider_message_id":
+                    provider_id,
+                "sender":
+                    sender or None,
+                "body_text":
+                    str(
+                        reply_target.body_text
+                        or ""
+                    ),
+            }
+
         message = (
             self.communication_service
             .create_outbound_message(
@@ -131,7 +234,8 @@ class WhatsAppOutboundService:
                     created_by
                 ),
                 metadata=(
-                    metadata
+                    normalized_metadata
+                    or None
                 ),
             )
         )
@@ -173,13 +277,27 @@ class WhatsAppOutboundService:
             raise
 
         try:
-            snapshot = (
-                self.connector
-                .send_text_message(
-                    sending.body_text,
-                    timeout=timeout,
+            if reply_target is None:
+                snapshot = (
+                    self.connector
+                    .send_text_message(
+                        sending.body_text,
+                        timeout=timeout,
+                    )
                 )
-            )
+
+            else:
+                snapshot = (
+                    self.connector
+                    .send_reply_message(
+                        sending.body_text,
+                        reply_to_provider_message_id=(
+                            reply_target
+                            .provider_message_id
+                        ),
+                        timeout=timeout,
+                    )
+                )
 
         except WhatsAppSendStateUncertainError as exc:
             finished_attempt = (
