@@ -4284,6 +4284,1412 @@ class WhatsAppConnector:
                 timeout=5,
             )
 
+    def cancel_new_contact_flow(
+        self,
+        *,
+        timeout=3,
+    ):
+        """Restaura WhatsApp tras un alta de contacto fallida.
+
+        Cierra de forma gobernada:
+        Nuevo contacto
+        -> Nuevo chat
+        -> lista normal de conversaciones.
+
+        Nunca usa coordenadas de escritorio.
+        """
+        if not self.browser:
+            return {
+                "recovered": False,
+                "reason":
+                    "BROWSER_NOT_STARTED",
+            }
+
+        def drawer_state():
+            try:
+                return (
+                    self.browser.evaluate(
+                        r"""
+                        (() => ({
+                            save_drawer:
+                                !!document.querySelector(
+                                    '[data-testid="save-contact-drawer"]'
+                                ),
+                            new_chat_drawer:
+                                !!document.querySelector(
+                                    '[data-testid="new-chat-drawer"]'
+                                )
+                        }))()
+                        """
+                    )
+                    or {}
+                )
+            except Exception:
+                return {}
+
+        deadline = (
+            time.time()
+            + max(
+                1,
+                float(timeout),
+            )
+        )
+
+        back_selector = (
+            'button[aria-label="Atrás"]'
+        )
+
+        while time.time() < deadline:
+            state = drawer_state()
+
+            if (
+                not state.get(
+                    "save_drawer"
+                )
+                and not state.get(
+                    "new_chat_drawer"
+                )
+            ):
+                return {
+                    "recovered": True,
+                    "reason": None,
+                }
+
+            emitted = False
+
+            mouse_click = getattr(
+                self.browser,
+                "mouse_click",
+                None,
+            )
+
+            if callable(
+                mouse_click
+            ):
+                try:
+                    mouse_click(
+                        back_selector,
+                        timeout=1,
+                        scroll=False,
+                    )
+
+                    emitted = True
+
+                except Exception:
+                    emitted = False
+
+            if not emitted:
+                try:
+                    element = (
+                        self.browser
+                        .find_element(
+                            back_selector
+                        )
+                    )
+
+                    click = getattr(
+                        element,
+                        "click",
+                        None,
+                    )
+
+                    if callable(
+                        click
+                    ):
+                        click()
+                        emitted = True
+
+                except Exception:
+                    emitted = False
+
+            if not emitted:
+                break
+
+            time.sleep(
+                0.20
+            )
+
+        final_state = (
+            drawer_state()
+        )
+
+        recovered = (
+            not final_state.get(
+                "save_drawer"
+            )
+            and not final_state.get(
+                "new_chat_drawer"
+            )
+        )
+
+        print(
+            "[WA-NEW-CONTACT] recovery",
+            {
+                "recovered":
+                    recovered,
+                "state":
+                    final_state,
+            },
+            flush=True,
+        )
+
+        return {
+            "recovered":
+                recovered,
+            "reason":
+                (
+                    None
+                    if recovered
+                    else
+                    "NEW_CONTACT_UI_NOT_RECOVERED"
+                ),
+        }
+
+
+    def open_or_create_manual_chat(
+        self,
+        phone,
+        *,
+        display_name,
+        timeout=15,
+        allow_create=True,
+    ):
+        """Routing proactivo iniciado explícitamente desde CRM.
+
+        Orden gobernado:
+
+        Nuevo chat
+        -> buscar teléfono dentro del drawer
+        -> abrir contacto existente
+
+        Si no existe:
+        -> Nuevo contacto
+        -> crear
+        -> abrir.
+
+        Nunca comienza escribiendo en el buscador general.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        expected = normalize_phone(
+            phone
+        )
+
+        if not expected.valid:
+            raise ValueError(
+                "Teléfono WhatsApp no válido"
+            )
+
+        name = str(
+            display_name
+            or ""
+        ).strip()
+
+        if not name:
+            raise ValueError(
+                "El nombre del contacto es obligatorio"
+            )
+
+        # Garantizamos estado inicial limpio.
+        self.cancel_new_contact_flow(
+            timeout=2,
+        )
+
+        new_chat_selector = (
+            'button[aria-label="Nuevo chat"]'
+        )
+
+        try:
+            self.browser.mouse_click(
+                new_chat_selector,
+                timeout=min(
+                    5,
+                    max(
+                        1,
+                        float(timeout),
+                    ),
+                ),
+            )
+        except Exception:
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CHAT_BUTTON_NOT_FOUND",
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CHAT_FIRST",
+            }
+
+        print(
+            "[WA-NEW-CHAT] drawer opened",
+            flush=True,
+        )
+
+        search_selector = (
+            'input[aria-label='
+            '"Buscar nombre, núm. o @nombre de usuario"]'
+        )
+
+        deadline = (
+            time.time()
+            + min(
+                5,
+                max(
+                    1,
+                    float(timeout),
+                ),
+            )
+        )
+
+        search_ready = False
+
+        while time.time() < deadline:
+            try:
+                search_element = (
+                    self.browser.find_element(
+                        search_selector
+                    )
+                )
+
+                if search_element is not None:
+                    search_ready = True
+                    break
+
+            except Exception:
+                pass
+
+            time.sleep(
+                0.08
+            )
+
+        if not search_ready:
+            self.cancel_new_contact_flow(
+                timeout=3,
+            )
+
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CHAT_SEARCH_NOT_FOUND",
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CHAT_FIRST",
+            }
+
+        # El probe gobernado confirma que para ES +34 el
+        # buscador de Nuevo chat resuelve por número nacional.
+        if (
+            expected.digits.startswith(
+                "34"
+            )
+            and len(
+                expected.digits
+            ) == 11
+        ):
+            search_value = (
+                expected.digits[2:]
+            )
+        else:
+            search_value = (
+                expected.e164
+            )
+
+        try:
+            self.browser.send_keys(
+                search_selector,
+                search_value,
+            )
+        except Exception:
+            self.cancel_new_contact_flow(
+                timeout=3,
+            )
+
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CHAT_SEARCH_INPUT_FAILED",
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CHAT_FIRST",
+            }
+
+        result_deadline = (
+            time.time()
+            + min(
+                3.5,
+                max(
+                    1,
+                    float(timeout),
+                ),
+            )
+        )
+
+        target_selector = (
+            '[data-qa-whatsapp-new-chat-target="1"]'
+        )
+
+        target_found = False
+        ambiguous = False
+        observed_display_name = ""
+
+        while time.time() < result_deadline:
+            state = (
+                self.browser.evaluate(
+                    r"""
+                    (() => {
+                        const expectedName = %s;
+
+                        const normalize = value =>
+                            String(value || '')
+                                .replace(/\s+/g, ' ')
+                                .trim()
+                                .toLocaleLowerCase();
+
+                        const drawer =
+                            document.querySelector(
+                                '[data-testid="new-chat-drawer"]'
+                            );
+
+                        if (!drawer) {
+                            return {
+                                drawer: false,
+                                count: 0,
+                                target: false,
+                                ambiguous: false
+                            };
+                        }
+
+                        drawer
+                            .querySelectorAll(
+                                '[data-qa-whatsapp-new-chat-target]'
+                            )
+                            .forEach(
+                                node =>
+                                    node.removeAttribute(
+                                        'data-qa-whatsapp-new-chat-target'
+                                    )
+                            );
+
+                        const rows = Array.from(
+                            drawer.querySelectorAll(
+                                '[role="listitem"]'
+                                + '[data-testid^="list-item-"]'
+                            )
+                        )
+                        .filter(node => {
+                            const rect =
+                                node.getBoundingClientRect();
+
+                            const style =
+                                window.getComputedStyle(
+                                    node
+                                );
+
+                            return (
+                                rect.width > 0
+                                && rect.height > 0
+                                && style.display !== 'none'
+                                && style.visibility !== 'hidden'
+                            );
+                        });
+
+                        let target = null;
+
+                        if (rows.length === 1) {
+                            target = rows[0];
+                        }
+
+                        if (
+                            !target
+                            && rows.length > 1
+                            && expectedName
+                        ) {
+                            const matches =
+                                rows.filter(row => {
+                                    const titles =
+                                        Array.from(
+                                            row.querySelectorAll(
+                                                '[title]'
+                                            )
+                                        )
+                                        .map(
+                                            node =>
+                                                normalize(
+                                                    node.getAttribute(
+                                                        'title'
+                                                    )
+                                                )
+                                        );
+
+                                    return titles.includes(
+                                        normalize(
+                                            expectedName
+                                        )
+                                    );
+                                });
+
+                            if (matches.length === 1) {
+                                target = matches[0];
+                            }
+                        }
+
+                        let observedName = '';
+
+                        if (target) {
+                            target.setAttribute(
+                                'data-qa-whatsapp-new-chat-target',
+                                '1'
+                            );
+
+                            const titles = Array.from(
+                                target.querySelectorAll(
+                                    '[title]'
+                                )
+                            )
+                            .map(
+                                node =>
+                                    String(
+                                        node.getAttribute(
+                                            'title'
+                                        )
+                                        || ''
+                                    ).trim()
+                            )
+                            .filter(Boolean);
+
+                            if (titles.length) {
+                                observedName = titles[0];
+                            }
+
+                            if (!observedName) {
+                                observedName = String(
+                                    target.innerText
+                                    || target.textContent
+                                    || ''
+                                )
+                                .split('\n')[0]
+                                .trim();
+                            }
+                        }
+
+                        return {
+                            drawer: true,
+                            count: rows.length,
+                            target: !!target,
+                            observed_name:
+                                observedName,
+                            ambiguous:
+                                rows.length > 1
+                                && !target
+                        };
+                    })()
+                    """
+                    % __import__(
+                        "json"
+                    ).dumps(
+                        name,
+                        ensure_ascii=False,
+                    )
+                )
+                or {}
+            )
+
+            if state.get(
+                "target"
+            ):
+                target_found = True
+
+                observed_display_name = str(
+                    state.get(
+                        "observed_name"
+                    )
+                    or ""
+                ).strip()
+
+                break
+
+            ambiguous = bool(
+                state.get(
+                    "ambiguous"
+                )
+            )
+
+            time.sleep(
+                0.10
+            )
+
+        # --------------------------------------------------
+        # CONTACTO YA EXISTENTE
+        # --------------------------------------------------
+
+        if target_found:
+            try:
+                self.browser.mouse_click(
+                    target_selector,
+                    timeout=3,
+                )
+            except Exception:
+                self.cancel_new_contact_flow(
+                    timeout=3,
+                )
+
+                return {
+                    "opened": False,
+                    "verified": False,
+                    "reason":
+                        "NEW_CHAT_RESULT_CLICK_FAILED",
+                    "expected_phone":
+                        expected.e164,
+                    "navigation":
+                        "NEW_CHAT_FIRST",
+                }
+
+            open_deadline = (
+                time.time()
+                + min(
+                    5,
+                    max(
+                        1,
+                        float(timeout),
+                    ),
+                )
+            )
+
+            while time.time() < open_deadline:
+                state = (
+                    self.browser.evaluate(
+                        r"""
+                        (() => ({
+                            drawer:
+                                !!document.querySelector(
+                                    '[data-testid="new-chat-drawer"]'
+                                ),
+                            composer:
+                                !!document.querySelector(
+                                    '[data-testid="conversation-compose-box-input"]'
+                                )
+                        }))()
+                        """
+                    )
+                    or {}
+                )
+
+                if (
+                    not state.get(
+                        "drawer"
+                    )
+                    and state.get(
+                        "composer"
+                    )
+                ):
+                    print(
+                        "[WA-NEW-CHAT] "
+                        "existing contact opened",
+                        expected.e164,
+                        flush=True,
+                    )
+
+                    return {
+                        "opened": True,
+                        "verified": False,
+                        "verification_skipped":
+                            True,
+                        "reason": None,
+                        "contact_created":
+                            False,
+                        "expected_phone":
+                            expected.e164,
+                        "display_name":
+                            (
+                                observed_display_name
+                                or name
+                            ),
+                        "navigation":
+                            "NEW_CHAT_EXISTING",
+                    }
+
+                time.sleep(
+                    0.10
+                )
+
+            self.cancel_new_contact_flow(
+                timeout=3,
+            )
+
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CHAT_RESULT_NOT_OPENED",
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CHAT_FIRST",
+            }
+
+        # Nunca elegimos arbitrariamente entre varios resultados.
+        if ambiguous:
+            self.cancel_new_contact_flow(
+                timeout=3,
+            )
+
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CHAT_RESULT_AMBIGUOUS",
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CHAT_FIRST",
+            }
+
+        # --------------------------------------------------
+        # NO EXISTE
+        # --------------------------------------------------
+
+        # Un click normal sobre una conversación histórica
+        # puede utilizar Nuevo chat para localizar por teléfono,
+        # pero JAMÁS está autorizado a crear un contacto.
+        if not allow_create:
+            print(
+                "[WA-NEW-CHAT] existing-only not found",
+                expected.e164,
+                flush=True,
+            )
+
+            self.cancel_new_contact_flow(
+                timeout=3,
+            )
+
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CHAT_EXISTING_NOT_FOUND",
+                "contact_created":
+                    False,
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CHAT_EXISTING_ONLY",
+            }
+
+        # --------------------------------------------------
+        # FLUJO EXPLÍCITO → CREAR CONTACTO
+        # --------------------------------------------------
+
+        print(
+            "[WA-NEW-CHAT] no existing contact; create",
+            expected.e164,
+            flush=True,
+        )
+
+        # Cerramos correctamente el drawer de búsqueda.
+        self.cancel_new_contact_flow(
+            timeout=3,
+        )
+
+        created = (
+            self.create_and_open_contact(
+                expected.e164,
+                display_name=name,
+                timeout=timeout,
+            )
+        )
+
+        if isinstance(
+            created,
+            dict,
+        ):
+            created[
+                "proactive_navigation"
+            ] = "NEW_CHAT_FIRST"
+
+        return created
+
+
+    def create_and_open_contact(
+        self,
+        phone,
+        *,
+        display_name,
+        timeout=15,
+    ):
+        """Crea un contacto WhatsApp y abre su conversación.
+
+        Ruta gobernada:
+        Nuevo chat
+        -> Nuevo contacto
+        -> Nombre
+        -> teléfono
+        -> validación WhatsApp
+        -> Guardar contacto
+        -> abrir conversación.
+
+        Esta ruta NO sustituye al routing histórico.
+        Se utiliza únicamente como fallback explícito para
+        conversaciones iniciadas manualmente desde el CRM.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        expected = normalize_phone(
+            phone
+        )
+
+        if not expected.valid:
+            raise ValueError(
+                "Teléfono WhatsApp no válido"
+            )
+
+        name = str(
+            display_name
+            or ""
+        ).strip()
+
+        if not name:
+            raise ValueError(
+                "El nombre del contacto es obligatorio"
+            )
+
+        # El contrato DOM congelado actualmente corresponde
+        # al formulario ES +34 de WhatsApp Web.
+        #
+        # No cambiamos automáticamente el país sin haber
+        # gobernado antes su selector.
+        if (
+            not expected.digits.startswith(
+                "34"
+            )
+            or len(expected.digits) != 11
+        ):
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CONTACT_COUNTRY_NOT_SUPPORTED",
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CONTACT",
+            }
+
+        national_phone = (
+            expected.digits[2:]
+        )
+
+        def find_and_click(
+            selector,
+            *,
+            wait_seconds=5,
+        ):
+            deadline = (
+                time.time()
+                + max(
+                    0.5,
+                    float(
+                        wait_seconds
+                    ),
+                )
+            )
+
+            element = None
+
+            while time.time() < deadline:
+                try:
+                    element = (
+                        self.browser
+                        .find_element(
+                            selector
+                        )
+                    )
+                except Exception:
+                    element = None
+
+                if element is not None:
+                    break
+
+                time.sleep(
+                    0.08
+                )
+
+            if element is None:
+                return False
+
+            mouse_click = getattr(
+                element,
+                "mouse_click",
+                None,
+            )
+
+            click = getattr(
+                element,
+                "click",
+                None,
+            )
+
+            try:
+                if callable(
+                    mouse_click
+                ):
+                    mouse_click()
+
+                elif callable(
+                    click
+                ):
+                    click()
+
+                else:
+                    return False
+
+            except Exception:
+                return False
+
+            return True
+
+        # A · NUEVO CHAT
+        if not find_and_click(
+            'button[aria-label="Nuevo chat"]',
+            wait_seconds=min(
+                5,
+                timeout,
+            ),
+        ):
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CHAT_BUTTON_NOT_FOUND",
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CONTACT",
+            }
+
+        time.sleep(
+            0.35
+        )
+
+        # B · NUEVO CONTACTO
+        if not find_and_click(
+            (
+                '[data-testid='
+                '"new-chat-drawer-new-contact-cell"]'
+            ),
+            wait_seconds=min(
+                5,
+                timeout,
+            ),
+        ):
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CONTACT_BUTTON_NOT_FOUND",
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CONTACT",
+            }
+
+        name_selector = (
+            '[data-testid="text-input"]'
+            '[aria-label="Nombre"]'
+        )
+
+        phone_selector = (
+            '[data-testid="phone-number-input"]'
+        )
+
+        # C · ESPERAR FORMULARIO
+        deadline = (
+            time.time()
+            + max(
+                1,
+                float(timeout),
+            )
+        )
+
+        form_ready = False
+
+        while time.time() < deadline:
+            try:
+                name_element = (
+                    self.browser
+                    .find_element(
+                        name_selector
+                    )
+                )
+
+                phone_element = (
+                    self.browser
+                    .find_element(
+                        phone_selector
+                    )
+                )
+
+                form_ready = bool(
+                    name_element
+                    and phone_element
+                )
+
+            except Exception:
+                form_ready = False
+
+            if form_ready:
+                break
+
+            time.sleep(
+                0.08
+            )
+
+        if not form_ready:
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CONTACT_FORM_NOT_READY",
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CONTACT",
+            }
+
+        # D · NOMBRE + TELÉFONO
+        try:
+            self.browser.send_keys(
+                name_selector,
+                name,
+            )
+
+            self.browser.send_keys(
+                phone_selector,
+                national_phone,
+            )
+
+        except Exception:
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CONTACT_FORM_INPUT_FAILED",
+                "expected_phone":
+                    expected.e164,
+                "navigation":
+                    "NEW_CONTACT",
+            }
+
+        # E · VALIDACIÓN ASÍNCRONA DE WHATSAPP
+        validation_deadline = (
+            time.time()
+            + max(
+                2,
+                float(timeout),
+            )
+        )
+
+        phone_valid = False
+        validation_text = ""
+
+        while (
+            time.time()
+            < validation_deadline
+        ):
+            state = (
+                self.browser.evaluate(
+                    r"""
+                    (() => {
+                        const phone =
+                            document.querySelector(
+                                '[data-testid="phone-number-input"]'
+                            );
+
+                        const helper =
+                            document.querySelector(
+                                '#contact-phone-number-fields-error'
+                            );
+
+                        return {
+                            found:
+                                !!phone,
+                            invalid:
+                                phone
+                                ? String(
+                                    phone.getAttribute(
+                                        'aria-invalid'
+                                    )
+                                    || ''
+                                )
+                                : '',
+                            helper:
+                                helper
+                                ? String(
+                                    helper.innerText
+                                    || helper.textContent
+                                    || ''
+                                )
+                                .replace(/\s+/g, ' ')
+                                .trim()
+                                : ''
+                        };
+                    })()
+                    """
+                )
+                or {}
+            )
+
+            validation_text = str(
+                state.get(
+                    "helper"
+                )
+                or ""
+            ).strip()
+
+            invalid = str(
+                state.get(
+                    "invalid"
+                )
+                or ""
+            ).strip().lower()
+
+            lowered = (
+                validation_text
+                .casefold()
+            )
+
+            explicitly_not_whatsapp = (
+                "no está en whatsapp"
+                in lowered
+                or "not on whatsapp"
+                in lowered
+            )
+
+            explicitly_whatsapp = (
+                (
+                    "está en whatsapp"
+                    in lowered
+                    and not explicitly_not_whatsapp
+                )
+                or "is on whatsapp"
+                in lowered
+            )
+
+            save_button_ready = bool(
+                self.browser.evaluate(
+                    r"""
+                    (() => (
+                        !!document.querySelector(
+                            '[data-testid="save-contact-btn"]'
+                            + '[aria-label="Guardar contacto"]'
+                        )
+                    ))()
+                    """
+                )
+            )
+
+            # WhatsApp ya ha terminado su validación cuando:
+            # - aria-invalid pasa a false; y
+            # - aparece el botón real de Guardar contacto.
+            #
+            # No dependemos del texto traducido del helper.
+            if (
+                invalid == "false"
+                and save_button_ready
+            ):
+                phone_valid = True
+
+                print(
+                    "[WA-NEW-CONTACT] phone validated",
+                    expected.e164,
+                    flush=True,
+                )
+
+                break
+
+            if (
+                invalid == "true"
+                and explicitly_not_whatsapp
+            ):
+                return {
+                    "opened": False,
+                    "verified": False,
+                    "reason":
+                        "PHONE_NOT_ON_WHATSAPP",
+                    "expected_phone":
+                        expected.e164,
+                    "validation_text":
+                        validation_text,
+                    "navigation":
+                        "NEW_CONTACT",
+                }
+
+            time.sleep(
+                0.12
+            )
+
+        if not phone_valid:
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "NEW_CONTACT_PHONE_NOT_VALIDATED",
+                "expected_phone":
+                    expected.e164,
+                "validation_text":
+                    validation_text,
+                "navigation":
+                    "NEW_CONTACT",
+            }
+
+        # F · GUARDAR
+        save_selector = (
+            '[data-testid="save-contact-btn"]'
+            '[aria-label="Guardar contacto"]'
+        )
+
+        def save_drawer_present():
+            try:
+                return bool(
+                    self.browser.evaluate(
+                        r"""
+                        (() => (
+                            !!document.querySelector(
+                                '[data-testid="save-contact-drawer"]'
+                            )
+                        ))()
+                        """
+                    )
+                )
+            except Exception:
+                return True
+
+        def wait_save_confirmed(
+            wait_seconds,
+        ):
+            deadline = (
+                time.time()
+                + max(
+                    0.5,
+                    float(
+                        wait_seconds
+                    ),
+                )
+            )
+
+            while time.time() < deadline:
+                if not save_drawer_present():
+                    return True
+
+                time.sleep(
+                    0.10
+                )
+
+            return (
+                not save_drawer_present()
+            )
+
+        saved = False
+
+        # INTENTO 1
+        # CDP mouse_click directamente sobre selector.
+        browser_mouse_click = getattr(
+            self.browser,
+            "mouse_click",
+            None,
+        )
+
+        if callable(
+            browser_mouse_click
+        ):
+            try:
+                browser_mouse_click(
+                    save_selector,
+                    timeout=min(
+                        5,
+                        max(
+                            1,
+                            float(timeout),
+                        ),
+                    ),
+                )
+
+                print(
+                    "[WA-NEW-CONTACT] "
+                    "save mouse_click emitted",
+                    flush=True,
+                )
+
+            except Exception as exc:
+                print(
+                    "[WA-NEW-CONTACT] "
+                    "save mouse_click failed",
+                    type(exc).__name__,
+                    flush=True,
+                )
+
+        saved = (
+            wait_save_confirmed(
+                1.75
+            )
+        )
+
+        # INTENTO 2
+        # Otro click CDP real sobre el centro del nodo.
+        if not saved:
+            click_with_offset = getattr(
+                self.browser,
+                "click_with_offset",
+                None,
+            )
+
+            if callable(
+                click_with_offset
+            ):
+                try:
+                    click_with_offset(
+                        save_selector,
+                        0,
+                        0,
+                        center=True,
+                    )
+
+                    print(
+                        "[WA-NEW-CONTACT] "
+                        "save offset click emitted",
+                        flush=True,
+                    )
+
+                except Exception as exc:
+                    print(
+                        "[WA-NEW-CONTACT] "
+                        "save offset click failed",
+                        type(exc).__name__,
+                        flush=True,
+                    )
+
+            saved = (
+                wait_save_confirmed(
+                    1.75
+                )
+            )
+
+        if not saved:
+            recovery = (
+                self.cancel_new_contact_flow(
+                    timeout=3,
+                )
+            )
+
+            print(
+                "[WA-NEW-CONTACT] "
+                "save not confirmed",
+                {
+                    "ui_recovered":
+                        recovery.get(
+                            "recovered"
+                        )
+                },
+                flush=True,
+            )
+
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    "SAVE_CONTACT_NOT_CONFIRMED",
+                "contact_created": False,
+                "ui_recovered":
+                    recovery.get(
+                        "recovered"
+                    ),
+                "expected_phone":
+                    expected.e164,
+                "display_name":
+                    name,
+                "navigation":
+                    "NEW_CONTACT",
+            }
+
+        print(
+            "[WA-NEW-CONTACT] contact saved",
+            expected.e164,
+            flush=True,
+        )
+
+        # IMPORTANTE:
+        #
+        # No aceptamos simplemente la existencia del compositor.
+        # Podría pertenecer al chat que ya estaba abierto antes
+        # de iniciar el alta del contacto.
+        #
+        # Después de confirmar el cierre del drawer abrimos
+        # explícitamente el contacto recién creado mediante el
+        # routing histórico gobernado.
+        time.sleep(
+            0.35
+        )
+
+        searched = (
+            self.search_and_open_chat_by_phone(
+                expected.e164,
+                expected_display_name=name,
+                timeout=timeout,
+            )
+        )
+
+        if not searched.get(
+            "opened"
+        ):
+            return {
+                "opened": False,
+                "verified": False,
+                "reason":
+                    searched.get(
+                        "reason"
+                    )
+                    or "NEW_CONTACT_CHAT_OPEN_FAILED",
+                "contact_created": True,
+                "expected_phone":
+                    expected.e164,
+                "display_name":
+                    name,
+                "navigation":
+                    "NEW_CONTACT",
+            }
+
+        print(
+            "[WA-NEW-CONTACT] chat opened",
+            expected.e164,
+            flush=True,
+        )
+
+        return {
+            "opened": True,
+            "verified": False,
+            "verification_skipped": True,
+            "reason": None,
+            "contact_created": True,
+            "expected_phone":
+                expected.e164,
+            "display_name":
+                name,
+            "navigation":
+                "NEW_CONTACT",
+        }
+
+
     def open_chat_by_phone(
         self,
         phone,

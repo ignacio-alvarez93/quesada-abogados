@@ -729,6 +729,32 @@ def main(page: ft.Page):
                 "return_context"
             )
 
+            new_client_source_thread_id = (
+                kwargs.get(
+                    "new_client_source_thread_id"
+                )
+            )
+
+            def _after_whatsapp_client_created(
+                client_id,
+            ):
+                if new_client_source_thread_id:
+                    communication_service.link_whatsapp_thread_to_client(
+                        int(
+                            new_client_source_thread_id
+                        ),
+                        int(
+                            client_id
+                        ),
+                    )
+
+                    navigate(
+                        "WhatsApp",
+                        thread_id=int(
+                            new_client_source_thread_id
+                        ),
+                    )
+
             content = clients_view(
                 page,
                 on_create_expediente=lambda cliente_id: navigate(
@@ -743,6 +769,14 @@ def main(page: ft.Page):
                 ),
                 open_client_id=kwargs.get(
                     "open_client_id"
+                ),
+                new_client_defaults=kwargs.get(
+                    "new_client_defaults"
+                ),
+                on_client_created=(
+                    _after_whatsapp_client_created
+                    if new_client_source_thread_id
+                    else None
                 ),
                 on_context_back=(
                     (
@@ -970,6 +1004,31 @@ def main(page: ft.Page):
                             ),
                             initial_expedient_id=(
                                 expediente_id
+                            ),
+                            return_context=(
+                                return_context
+                            ),
+                        )
+                ),
+                on_create_cliente=(
+                    lambda phone,
+                    display_name,
+                    thread_id,
+                    return_context:
+                        navigate(
+                            "Clientes",
+                            new_client_defaults={
+                                "nombre": (
+                                    display_name
+                                    or ""
+                                ),
+                                "telefono": (
+                                    phone
+                                    or ""
+                                ),
+                            },
+                            new_client_source_thread_id=(
+                                thread_id
                             ),
                             return_context=(
                                 return_context

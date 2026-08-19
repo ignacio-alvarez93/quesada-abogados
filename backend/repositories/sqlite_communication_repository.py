@@ -3428,6 +3428,60 @@ class SQLiteCommunicationRepository:
                 row
             )
 
+    def update_thread_display_name(
+        self,
+        thread_id,
+        *,
+        external_display_name,
+    ):
+        self.ensure_schema()
+
+        normalized_name = str(
+            external_display_name
+            or ""
+        ).strip()
+
+        if not normalized_name:
+            raise ValueError(
+                "Nombre de conversación no válido"
+            )
+
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE communication_threads
+                SET
+                    external_display_name = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    normalized_name,
+                    int(thread_id),
+                ),
+            )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM communication_threads
+                WHERE id = ?
+                """,
+                (
+                    int(thread_id),
+                ),
+            ).fetchone()
+
+            if not row:
+                raise ValueError(
+                    "Conversación de comunicación "
+                    "no encontrada"
+                )
+
+            return self._thread_from_row(
+                row
+            )
+
     def list_client_phone_candidates(
         self,
         *,

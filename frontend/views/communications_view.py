@@ -67,6 +67,7 @@ def communications_view(
     on_create_expediente=None,
     on_create_task=None,
     on_create_alert=None,
+    on_create_cliente=None,
 ):
     """
     Vista principal de Comunicaciones.
@@ -280,6 +281,229 @@ def communications_view(
         ),
         expand=True,
     )
+
+    new_whatsapp_phone = ft.TextField(
+        label="Teléfono WhatsApp",
+        hint_text="Ej. 600 123 456",
+        width=340,
+        autofocus=True,
+    )
+
+    new_whatsapp_name = ft.TextField(
+        label="Nombre",
+        width=340,
+    )
+
+    def _close_new_whatsapp_dialog(
+        e=None,
+    ):
+        new_whatsapp_dialog.open = False
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def _confirm_new_whatsapp(
+        e=None,
+    ):
+        phone = str(
+            new_whatsapp_phone.value
+            or ""
+        ).strip()
+
+        display_name = str(
+            new_whatsapp_name.value
+            or ""
+        ).strip()
+
+        if not phone:
+            _show_message(
+                "Indica un teléfono WhatsApp.",
+                error=True,
+            )
+            return False
+
+        if not display_name:
+            _show_message(
+                "Indica el nombre del contacto.",
+                error=True,
+            )
+            return False
+
+        try:
+            result = (
+                communication_service
+                .get_or_create_whatsapp_thread_by_phone(
+                    phone,
+                    display_name=(
+                        display_name
+                        or None
+                    ),
+                )
+            )
+
+            thread = (
+                result.get(
+                    "thread"
+                )
+                if isinstance(
+                    result,
+                    dict,
+                )
+                else None
+            )
+
+            if (
+                thread is None
+                or getattr(
+                    thread,
+                    "id",
+                    None,
+                )
+                in (
+                    None,
+                    "",
+                )
+            ):
+                raise RuntimeError(
+                    "No se pudo crear la conversación"
+                )
+
+            normalized_phone = str(
+                result.get(
+                    "phone"
+                )
+                or phone
+            ).strip()
+
+            # El botón Añadir contacto representa una
+            # operación explícita de alta en WhatsApp Web.
+            #
+            # No delegamos esta responsabilidad en select_thread():
+            # seleccionar una conversación es routing normal,
+            # mientras que aquí SIEMPRE debemos ejecutar
+            # Nuevo chat -> Nuevo contacto -> Guardar.
+            whatsapp_runtime.add_contact_and_open(
+                normalized_phone,
+                display_name=display_name,
+                wait_timeout=60,
+                routing_timeout=20,
+            )
+
+            # WhatsApp ya confirmó Guardar contacto.
+            # Ahora reconciliamos exclusivamente el nombre
+            # visual del thread CRM.
+            #
+            # La identidad canónica phone:<digits> y
+            # external_address NO cambian.
+            try:
+                communication_service.update_whatsapp_thread_display_name(
+                    int(
+                        thread.id
+                    ),
+                    display_name,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Contacto guardado en WhatsApp, "
+                    "pero no se pudo actualizar "
+                    f"su nombre en el CRM: {exc}"
+                ) from exc
+
+            _close_new_whatsapp_dialog()
+
+            load_data(
+                preserve_selection=False,
+            )
+
+            # WhatsApp ya dejó abierto este contacto mediante
+            # add_contact_and_open(). Aquí únicamente seleccionamos
+            # el thread CRM; no repetimos navegación Selenium.
+            select_thread(
+                int(
+                    thread.id
+                ),
+                route_whatsapp=False,
+            )
+
+            _show_message(
+                (
+                    "Contacto WhatsApp añadido: "
+                    f"{normalized_phone}."
+                ),
+                severity="success",
+            )
+
+            return True
+
+        except Exception as exc:
+            _show_message(
+                (
+                    "No se pudo añadir el "
+                    "contacto WhatsApp: "
+                    f"{exc}"
+                ),
+                error=True,
+            )
+
+            return False
+
+    def _open_new_whatsapp_dialog(
+        e=None,
+    ):
+        new_whatsapp_phone.value = ""
+        new_whatsapp_name.value = ""
+
+        new_whatsapp_dialog.open = True
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    new_whatsapp_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(
+            "Añadir contacto"
+        ),
+        content=ft.Column(
+            controls=[
+                ft.Text(
+                    (
+                        "Añade el contacto a WhatsApp "
+                        "aunque todavía no sea cliente "
+                        "del CRM."
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                new_whatsapp_phone,
+                new_whatsapp_name,
+            ],
+            tight=True,
+            spacing=12,
+            width=360,
+        ),
+        actions=[
+            secondary_button(
+                "Cancelar",
+                _close_new_whatsapp_dialog,
+            ),
+            primary_button(
+                "Añadir contacto",
+                _confirm_new_whatsapp,
+            ),
+        ],
+        actions_alignment=(
+            ft.MainAxisAlignment.END
+        ),
+    )
+
+    page.overlay.append(
+        new_whatsapp_dialog
+    )
+
 
     channel_filter = AppAutocomplete(
         page=page,
@@ -808,6 +1032,8 @@ def communications_view(
 
     def select_thread(
         thread_id,
+        *,
+        route_whatsapp=True,
     ):
         previous_thread_id = (
             state.get(
@@ -840,7 +1066,11 @@ def communications_view(
 
         state[
             "routing_target_thread_id"
-        ] = new_thread_id
+        ] = (
+            new_thread_id
+            if route_whatsapp
+            else None
+        )
 
         if (
             previous_thread_id
@@ -965,7 +1195,10 @@ def communications_view(
         # interfaces sincronizadas: seleccionar una
         # conversación en CRM mueve WhatsApp al mismo chat.
         try:
-            if whatsapp_runtime is not None:
+            if (
+                whatsapp_runtime is not None
+                and route_whatsapp
+            ):
                 _route_whatsapp_thread(
                     new_thread_id,
                     generation=(
@@ -4941,11 +5174,33 @@ def communications_view(
         if not value:
             return ""
 
+        # Timestamp normalizado del provider:
+        # YYYY-MM-DDTHH:MM[:SS][offset]
+        #
+        # La burbuja muestra fecha y hora para que el historial
+        # sea inequívoco incluso cuando abarca varios días.
         if (
             len(value) >= 16
             and "T" in value
+            and len(value) >= 10
         ):
-            return value[11:16]
+            raw_date = value[:10]
+            raw_time = value[11:16]
+
+            parts = raw_date.split(
+                "-"
+            )
+
+            if (
+                len(parts) == 3
+                and all(parts)
+            ):
+                year, month, day = parts
+
+                return (
+                    f"{day}/{month}/{year}"
+                    f" · {raw_time}"
+                )
 
         return value
 
@@ -7411,6 +7666,88 @@ def communications_view(
             "routing_target_thread_id"
         ] = None
 
+        # El routing puede haber reconciliado información
+        # persistida del thread, por ejemplo el nombre real
+        # observado en WhatsApp.
+        #
+        # Refrescamos exclusivamente el overview afectado,
+        # sin ejecutar load_data() completo ni volver a
+        # sincronizar mensajes/contexto.
+        if verified:
+            try:
+                overview_result = (
+                    communication_service
+                    .list_thread_overviews(
+                        channel=(
+                            selected_channel()
+                        ),
+                        linkage=(
+                            selected_linkage()
+                        ),
+                        search="",
+                        include_archived=False,
+                        limit=5000,
+                    )
+                )
+
+                fresh_item = next(
+                    (
+                        item
+                        for item
+                        in (
+                            overview_result.get(
+                                "items"
+                            )
+                            or []
+                        )
+                        if int(
+                            item.thread_id
+                        )
+                        == int(
+                            thread_id
+                        )
+                    ),
+                    None,
+                )
+
+                if fresh_item is not None:
+                    state["items"] = [
+                        (
+                            fresh_item
+                            if int(
+                                item.thread_id
+                            )
+                            == int(
+                                thread_id
+                            )
+                            else item
+                        )
+                        for item
+                        in (
+                            state.get(
+                                "items"
+                            )
+                            or []
+                        )
+                    ]
+
+                    print(
+                        "[WA-FLET] thread overview refreshed",
+                        {
+                            "thread_id":
+                                int(thread_id),
+                            "display_name":
+                                fresh_item.external_display_name,
+                        },
+                        flush=True,
+                    )
+
+            except Exception as exc:
+                print(
+                    "[WA-FLET] thread overview refresh failed",
+                    repr(exc),
+                    flush=True,
+                )
 
         flushed = (
             _flush_pending_whatsapp_sidebar()
@@ -8129,6 +8466,19 @@ def communications_view(
             _mark_realtime_thread_read(
                 thread_id,
                 refresh_sidebar=False,
+            )
+
+        # COM-WA-POLISH
+        #
+        # Un envío confirmado constituye actividad reciente
+        # exactamente igual que un mensaje entrante.
+        #
+        # El repository ya garantiza el orden persistente por
+        # last_message_at DESC. Aquí mantenemos inmediatamente
+        # ese mismo orden en el modelo realtime del sidebar.
+        if completed_operation_count > 0:
+            _promote_realtime_thread(
+                thread_id
             )
 
         _refresh_composer_controls()
@@ -9299,6 +9649,33 @@ def communications_view(
                         or "-"
                     ),
                 ),
+                *(
+                    [
+                        primary_button(
+                            "Crear cliente",
+                            lambda e,
+                            phone=(
+                                item.external_address
+                            ),
+                            display_name=(
+                                item.external_display_name
+                            ),
+                            thread_id=(
+                                item.thread_id
+                            ):
+                                on_create_cliente(
+                                    phone,
+                                    display_name,
+                                    thread_id,
+                                    current_return_context(),
+                                ),
+                        )
+                    ]
+                    if callable(
+                        on_create_cliente
+                    )
+                    else []
+                ),
             ]
 
         contact_card = ft.Container(
@@ -9706,6 +10083,10 @@ def communications_view(
                     search_input,
                     channel_filter.control,
                     linkage_filter.control,
+                    primary_button(
+                        "Nuevo WhatsApp",
+                        _open_new_whatsapp_dialog,
+                    ),
                     secondary_button(
                         "Limpiar",
                         clear_filters,
