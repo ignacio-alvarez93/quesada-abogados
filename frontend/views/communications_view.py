@@ -193,6 +193,12 @@ def communications_view(
         "pending_attachments": [],
         "attachment_target_thread_id": None,
 
+        # COM-WA-INTERACTION-1 · respuesta citada pendiente.
+        #
+        # Estado exclusivamente efímero del compositor.
+        # Conserva identidad CRM + provider del mensaje exacto.
+        "reply_target": None,
+
         # Documentos WhatsApp cuya descarga está en curso.
         # Estado exclusivamente visual para impedir doble click.
         "downloading_document_provider_ids": set(),
@@ -1081,6 +1087,11 @@ def communications_view(
             # cambio explícito de destinatario.
             state["pending_attachments"] = []
             state["attachment_target_thread_id"] = None
+
+            # Una respuesta pertenece siempre al chat donde
+            # fue seleccionada. Nunca sobrevive al cambio
+            # explícito de destinatario.
+            state["reply_target"] = None
 
             # Cada conversación comienza siempre con una
             # ventana reciente limpia de 50 mensajes.
@@ -5355,6 +5366,44 @@ def communications_view(
                 status_control
             )
 
+        reply_provider_id = str(
+            getattr(
+                message,
+                "provider_message_id",
+                None,
+            )
+            or ""
+        ).strip()
+
+        reply_message_id = getattr(
+            message,
+            "id",
+            None,
+        )
+
+        if (
+            reply_provider_id
+            and reply_message_id not in (
+                None,
+                "",
+            )
+        ):
+            footer_controls.append(
+                ft.IconButton(
+                    icon=ft.Icons.REPLY,
+                    tooltip="Responder",
+                    icon_size=14,
+                    icon_color=Q_MUTED,
+                    on_click=(
+                        lambda e,
+                        captured_message=message:
+                            _set_reply_target(
+                                captured_message
+                            )
+                    ),
+                )
+            )
+
         content_controls = []
 
         reply = _message_reply(
@@ -7143,6 +7192,241 @@ def communications_view(
             _safe_update()
             return False
 
+
+    def _set_reply_target(
+        message,
+    ):
+        """Fija un mensaje persistido como cita del compositor."""
+        if state.get(
+            "sending"
+        ):
+            return
+
+        selected_thread_id = state.get(
+            "selected_thread_id"
+        )
+
+        if selected_thread_id is None:
+            return
+
+        message_id = getattr(
+            message,
+            "id",
+            None,
+        )
+
+        message_thread_id = getattr(
+            message,
+            "thread_id",
+            None,
+        )
+
+        provider_message_id = str(
+            getattr(
+                message,
+                "provider_message_id",
+                None,
+            )
+            or ""
+        ).strip()
+
+        if (
+            message_id in (
+                None,
+                "",
+            )
+            or message_thread_id in (
+                None,
+                "",
+            )
+            or not provider_message_id
+        ):
+            _show_message(
+                (
+                    "Este mensaje no dispone de una "
+                    "identidad WhatsApp válida para responder."
+                ),
+                error=True,
+            )
+            return
+
+        if (
+            int(
+                message_thread_id
+            )
+            != int(
+                selected_thread_id
+            )
+        ):
+            _show_message(
+                (
+                    "El mensaje pertenece a otra "
+                    "conversación."
+                ),
+                error=True,
+            )
+            return
+
+        metadata = (
+            message.metadata
+            or {}
+        )
+
+        if not isinstance(
+            metadata,
+            dict,
+        ):
+            metadata = {}
+
+        sender = str(
+            metadata.get(
+                "sender"
+            )
+            or ""
+        ).strip()
+
+        direction = str(
+            getattr(
+                message,
+                "direction",
+                "",
+            )
+            or ""
+        ).strip().upper()
+
+        if not sender:
+            sender = (
+                "Tú"
+                if direction == "OUTBOUND"
+                else "Mensaje recibido"
+            )
+
+        state["reply_target"] = {
+            "message_id":
+                int(
+                    message_id
+                ),
+            "thread_id":
+                int(
+                    message_thread_id
+                ),
+            "provider_message_id":
+                provider_message_id,
+            "sender":
+                sender,
+            "body_text":
+                _message_body(
+                    message
+                ),
+        }
+
+        _refresh_pending_attachment_ui()
+
+
+    def _clear_reply_target(
+        e=None,
+    ):
+        if state.get(
+            "sending"
+        ):
+            return
+
+        state["reply_target"] = None
+
+        _refresh_pending_attachment_ui()
+
+
+    def _build_reply_target():
+        target = (
+            state.get(
+                "reply_target"
+            )
+            or {}
+        )
+
+        if not target:
+            return ft.Container(
+                height=0,
+            )
+
+        body_text = str(
+            target.get(
+                "body_text"
+            )
+            or "Mensaje"
+        ).strip()
+
+        sender = str(
+            target.get(
+                "sender"
+            )
+            or "Respuesta a mensaje"
+        ).strip()
+
+        return ft.Container(
+            padding=ft.padding.symmetric(
+                horizontal=10,
+                vertical=7,
+            ),
+            border_radius=8,
+            bgcolor="#F8FAFC",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.REPLY,
+                        size=16,
+                        color=Q_PRIMARY,
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                sender,
+                                size=9,
+                                weight=(
+                                    ft.FontWeight.BOLD
+                                ),
+                                color=Q_PRIMARY,
+                            ),
+                            ft.Text(
+                                body_text,
+                                size=10,
+                                color=Q_MUTED,
+                                max_lines=2,
+                                overflow=(
+                                    ft.TextOverflow.ELLIPSIS
+                                ),
+                            ),
+                        ],
+                        spacing=1,
+                        expand=True,
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.CLOSE,
+                        tooltip="Cancelar respuesta",
+                        icon_size=15,
+                        icon_color=Q_MUTED,
+                        disabled=bool(
+                            state.get(
+                                "sending"
+                            )
+                        ),
+                        on_click=(
+                            _clear_reply_target
+                        ),
+                    ),
+                ],
+                spacing=7,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
+        )
+
+
     def _remove_pending_attachment(
         path_key,
     ):
@@ -8606,6 +8890,74 @@ def communications_view(
             or ""
         ).strip()
 
+        captured_reply_target = dict(
+            state.get(
+                "reply_target"
+            )
+            or {}
+        )
+
+        reply_to_message_id = None
+
+        if captured_reply_target:
+            if not text_to_send:
+                _show_message(
+                    (
+                        "Escribe un mensaje para responder "
+                        "a la cita seleccionada."
+                    ),
+                    error=True,
+                )
+                return
+
+            reply_thread_id = (
+                captured_reply_target.get(
+                    "thread_id"
+                )
+            )
+
+            if (
+                reply_thread_id in (
+                    None,
+                    "",
+                )
+                or int(
+                    reply_thread_id
+                )
+                != captured_thread_id
+            ):
+                _show_message(
+                    (
+                        "La respuesta pendiente pertenece "
+                        "a otra conversación."
+                    ),
+                    error=True,
+                )
+                return
+
+            reply_to_message_id = (
+                captured_reply_target.get(
+                    "message_id"
+                )
+            )
+
+            if reply_to_message_id in (
+                None,
+                "",
+            ):
+                _show_message(
+                    (
+                        "El mensaje citado no dispone "
+                        "de identidad CRM."
+                    ),
+                    error=True,
+                )
+                return
+
+            reply_to_message_id = int(
+                reply_to_message_id
+            )
+
         pending_attachments = [
             dict(
                 item
@@ -8663,7 +9015,44 @@ def communications_view(
             return
 
         state["sending"] = True
+
+        # La intención de respuesta queda congelada para este
+        # único envío y desaparece del compositor antes de
+        # iniciar transporte.
+        #
+        # Evita que un resultado incierto permita repetir
+        # accidentalmente la misma respuesta.
+        if captured_reply_target:
+            current_reply = (
+                state.get(
+                    "reply_target"
+                )
+                or {}
+            )
+
+            if (
+                current_reply.get(
+                    "message_id"
+                )
+                == captured_reply_target.get(
+                    "message_id"
+                )
+                and current_reply.get(
+                    "thread_id"
+                )
+                == captured_reply_target.get(
+                    "thread_id"
+                )
+            ):
+                state["reply_target"] = None
+
         _refresh_composer_controls()
+
+        if captured_reply_target:
+            try:
+                _refresh_chat_panel_control()
+            except NameError:
+                pass
 
         try:
             page.update()
@@ -8691,6 +9080,12 @@ def communications_view(
                     ),
                 "text_sent":
                     False,
+                "reply_requested":
+                    bool(
+                        reply_to_message_id
+                    ),
+                "reply_to_message_id":
+                    reply_to_message_id,
                 "attachment_requested_count":
                     len(
                         pending_attachments
@@ -8789,6 +9184,23 @@ def communications_view(
                     )
                 )
 
+                print(
+                    "[WA-REPLY-SMOKE] transport rejected",
+                    {
+                        "thread_id":
+                            captured_thread_id,
+                        "reply_to_message_id":
+                            reply_to_message_id,
+                        "uncertain":
+                            operation_uncertain,
+                        "error":
+                            batch_result.get(
+                                "error"
+                            ),
+                    },
+                    flush=True,
+                )
+
                 batch_result[
                     "stopped_reason"
                 ] = (
@@ -8819,6 +9231,9 @@ def communications_view(
                             ),
                             created_by=username,
                             sent_by=username,
+                            reply_to_message_id=(
+                                reply_to_message_id
+                            ),
                         )
                     )
 
@@ -9001,6 +9416,25 @@ def communications_view(
                 )
 
             except Exception as exc:
+                print(
+                    "[WA-REPLY-SMOKE] worker exception",
+                    {
+                        "thread_id":
+                            captured_thread_id,
+                        "reply_to_message_id":
+                            reply_to_message_id,
+                        "type":
+                            type(
+                                exc
+                            ).__name__,
+                        "error":
+                            str(
+                                exc
+                            ),
+                    },
+                    flush=True,
+                )
+
                 _schedule_finish_send_ui(
                     thread_id=(
                         captured_thread_id
@@ -9200,6 +9634,7 @@ def communications_view(
                         ),
                         content=ft.Column(
                             controls=[
+                                _build_reply_target(),
                                 _build_pending_attachments(),
                                 ft.Row(
                                     controls=[

@@ -8798,6 +8798,827 @@ class WhatsAppConnector:
             "un documento OUTBOUND nuevo"
         )
 
+    def _cancel_reply_mode(
+        self,
+    ):
+        """Cancela exclusivamente el modo respuesta visible."""
+        if not self.browser:
+            return False
+
+        return bool(
+            self.browser.evaluate(
+                """
+                (() => {
+                    const footer =
+                        document.querySelector(
+                            '#main footer'
+                        );
+
+                    if (!footer) {
+                        return false;
+                    }
+
+                    const button =
+                        footer.querySelector(
+                            'button'
+                            + '[aria-label="Cancelar"]'
+                        );
+
+                    if (!button) {
+                        return false;
+                    }
+
+                    button.click();
+
+                    return true;
+                })()
+                """
+            )
+        )
+
+
+    def _activate_reply_mode(
+        self,
+        provider_message_id,
+        *,
+        timeout=2,
+    ):
+        """Activa Responder sobre UN mensaje visible exacto.
+
+        No escribe ni envía contenido.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        provider_id = str(
+            provider_message_id
+            or ""
+        ).strip()
+
+        if not provider_id:
+            raise ValueError(
+                "provider_message_id es obligatorio"
+            )
+
+        composer = (
+            self.get_message_composer_state()
+        )
+
+        if str(
+            composer.get(
+                "text"
+            )
+            or ""
+        ):
+            raise RuntimeError(
+                "WhatsApp contiene un borrador previo"
+            )
+
+        reply_already_active = bool(
+            self.browser.evaluate(
+                """
+                (() => {
+                    const footer =
+                        document.querySelector(
+                            '#main footer'
+                        );
+
+                    return Boolean(
+                        footer
+                        && (
+                            footer.querySelector(
+                                '[data-testid="quoted-message"]'
+                            )
+                            || footer.querySelector(
+                                'button'
+                                + '[aria-label="Cancelar"]'
+                            )
+                        )
+                    );
+                })()
+                """
+            )
+        )
+
+        if reply_already_active:
+            raise RuntimeError(
+                "WhatsApp ya está en modo respuesta"
+            )
+
+        message_selector = (
+            '#main '
+            f'[data-testid="conv-msg-{provider_id}"]'
+        )
+
+        hover_selector = (
+            message_selector
+            + ' [data-testid="msg-container"]'
+        )
+
+        provider_js = repr(
+            provider_id
+        )
+
+        deadline = (
+            time.time()
+            + max(
+                0.25,
+                float(
+                    timeout
+                ),
+            )
+        )
+
+        menu_ready = False
+        hover_attempts = 0
+        last_hover_error = None
+
+        # WhatsApp puede rerenderizar/virtualizar el mensaje
+        # inmediatamente después del routing.
+        #
+        # Por ello no conservamos una referencia SeleniumBase
+        # potencialmente obsoleta: en cada intento volvemos a:
+        # 1. centrar el mensaje exacto;
+        # 2. localizar msg-container;
+        # 3. emitir hover físico;
+        # 4. verificar el control contextual.
+        #
+        # Todo ocurre ANTES de cualquier click con efecto externo.
+        while time.time() < deadline:
+            hover_attempts += 1
+
+            try:
+                visible = bool(
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const providerId = %s;
+
+                            const root =
+                                document.querySelector(
+                                    '#main '
+                                    + '[data-testid="conv-msg-'
+                                    + providerId
+                                    + '"]'
+                                );
+
+                            if (!root) {
+                                return false;
+                            }
+
+                            const container =
+                                root.querySelector(
+                                    '[data-testid="msg-container"]'
+                                );
+
+                            if (!container) {
+                                return false;
+                            }
+
+                            container.scrollIntoView({
+                                block: 'center',
+                                inline: 'nearest'
+                            });
+
+                            return true;
+                        })()
+                        """
+                        % provider_js
+                    )
+                )
+
+            except Exception as exc:
+                visible = False
+                last_hover_error = exc
+
+            if not visible:
+                time.sleep(
+                    0.08
+                )
+                continue
+
+            try:
+                element = (
+                    self.browser.find_element(
+                        hover_selector
+                    )
+                )
+
+                mouse_move = getattr(
+                    element,
+                    "mouse_move",
+                    None,
+                )
+
+                if not callable(
+                    mouse_move
+                ):
+                    raise RuntimeError(
+                        "El mensaje no soporta "
+                        "hover gobernado"
+                    )
+
+                mouse_move()
+
+            except Exception as exc:
+                last_hover_error = exc
+
+                time.sleep(
+                    0.08
+                )
+                continue
+
+            try:
+                menu_ready = bool(
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const providerId = %s;
+
+                            const root =
+                                document.querySelector(
+                                    '#main '
+                                    + '[data-testid="conv-msg-'
+                                    + providerId
+                                    + '"]'
+                                );
+
+                            return Boolean(
+                                root
+                                && root.querySelector(
+                                    '[data-testid="icon-down-context"][role="button"]'
+                                )
+                            );
+                        })()
+                        """
+                        % provider_js
+                    )
+                )
+
+            except Exception as exc:
+                last_hover_error = exc
+                menu_ready = False
+
+            if menu_ready:
+                break
+
+            time.sleep(
+                0.08
+            )
+
+        if not menu_ready:
+            try:
+                hover_diagnostic = (
+                    self.browser.evaluate(
+                        """
+                        (() => {
+                            const providerId = %s;
+
+                            const root =
+                                document.querySelector(
+                                    '#main '
+                                    + '[data-testid="conv-msg-'
+                                    + providerId
+                                    + '"]'
+                                );
+
+                            const container =
+                                root
+                                ? root.querySelector(
+                                    '[data-testid="msg-container"]'
+                                )
+                                : null;
+
+                            const globalOptions =
+                                Array.from(
+                                    document.querySelectorAll(
+                                        '[aria-label]'
+                                    )
+                                )
+                                .filter(
+                                    node => {
+                                        const aria =
+                                            String(
+                                                node.getAttribute(
+                                                    'aria-label'
+                                                )
+                                                || ''
+                                            )
+                                            .toLowerCase();
+
+                                        return (
+                                            aria.includes(
+                                                'opcion'
+                                            )
+                                            || aria.includes(
+                                                'option'
+                                            )
+                                            || aria.includes(
+                                                'menú'
+                                            )
+                                            || aria.includes(
+                                                'menu'
+                                            )
+                                        );
+                                    }
+                                )
+                                .slice(
+                                    0,
+                                    30
+                                )
+                                .map(
+                                    node => ({
+                                        tag:
+                                            node.tagName,
+                                        testid:
+                                            node.getAttribute(
+                                                'data-testid'
+                                            ),
+                                        aria:
+                                            node.getAttribute(
+                                                'aria-label'
+                                            ),
+                                        role:
+                                            node.getAttribute(
+                                                'role'
+                                            ),
+                                        owner:
+                                            (
+                                                node.closest(
+                                                    '[data-testid^="conv-msg-"]'
+                                                )
+                                                || {}
+                                            ).getAttribute
+                                            ? node.closest(
+                                                '[data-testid^="conv-msg-"]'
+                                            ).getAttribute(
+                                                'data-testid'
+                                            )
+                                            : null
+                                    })
+                                );
+
+                            const rootControls =
+                                root
+                                ? Array.from(
+                                    root.querySelectorAll(
+                                        '[data-testid],'
+                                        + '[aria-label],'
+                                        + '[role]'
+                                    )
+                                )
+                                .slice(
+                                    0,
+                                    80
+                                )
+                                .map(
+                                    node => ({
+                                        tag:
+                                            node.tagName,
+                                        testid:
+                                            node.getAttribute(
+                                                'data-testid'
+                                            ),
+                                        aria:
+                                            node.getAttribute(
+                                                'aria-label'
+                                            ),
+                                        role:
+                                            node.getAttribute(
+                                                'role'
+                                            )
+                                    })
+                                )
+                                : [];
+
+                            return {
+                                root_exists:
+                                    Boolean(
+                                        root
+                                    ),
+                                container_exists:
+                                    Boolean(
+                                        container
+                                    ),
+                                root_hover:
+                                    Boolean(
+                                        root
+                                        && root.matches(
+                                            ':hover'
+                                        )
+                                    ),
+                                container_hover:
+                                    Boolean(
+                                        container
+                                        && container.matches(
+                                            ':hover'
+                                        )
+                                    ),
+                                root_controls:
+                                    rootControls,
+                                global_options:
+                                    globalOptions
+                            };
+                        })()
+                        """
+                        % provider_js
+                    )
+                    or {}
+                )
+
+            except Exception as exc:
+                hover_diagnostic = {
+                    "diagnostic_error":
+                        repr(
+                            exc
+                        )
+                }
+
+            print(
+                "[WA-REPLY-DOM]",
+                hover_diagnostic,
+                flush=True,
+            )
+
+            print(
+                "[WA-REPLY] message options hover timeout",
+                {
+                    "provider_message_id":
+                        provider_id,
+                    "hover_attempts":
+                        hover_attempts,
+                    "last_error":
+                        (
+                            repr(
+                                last_hover_error
+                            )
+                            if last_hover_error
+                            else None
+                        ),
+                },
+                flush=True,
+            )
+
+            raise RuntimeError(
+                "WhatsApp no mostró las opciones "
+                "del mensaje citado"
+            )
+
+        menu_clicked = bool(
+            self.browser.evaluate(
+                """
+                (() => {
+                    const providerId = %s;
+
+                    const root =
+                        document.querySelector(
+                            '#main '
+                            + '[data-testid="conv-msg-'
+                            + providerId
+                            + '"]'
+                        );
+
+                    if (!root) {
+                        return false;
+                    }
+
+                    const button =
+                        root.querySelector(
+                            '[data-testid="icon-down-context"][role="button"]'
+                        );
+
+                    if (!button) {
+                        return false;
+                    }
+
+                    button.click();
+
+                    return true;
+                })()
+                """
+                % provider_js
+            )
+        )
+
+        if not menu_clicked:
+            raise RuntimeError(
+                "No se pudo abrir el menú "
+                "del mensaje citado"
+            )
+
+        deadline = (
+            time.time()
+            + max(
+                0.25,
+                float(
+                    timeout
+                ),
+            )
+        )
+
+        reply_clicked = False
+
+        while time.time() < deadline:
+            result = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        function visible(node) {
+                            const rect =
+                                node.getBoundingClientRect();
+
+                            const style =
+                                window.getComputedStyle(
+                                    node
+                                );
+
+                            return (
+                                rect.width > 0
+                                && rect.height > 0
+                                && style.display !== 'none'
+                                && style.visibility !== 'hidden'
+                            );
+                        }
+
+                        const candidates =
+                            Array.from(
+                                document.querySelectorAll(
+                                    '[role="menuitem"]'
+                                    + '[aria-label="Responder"]'
+                                )
+                            )
+                            .filter(
+                                visible
+                            );
+
+                        if (!candidates.length) {
+                            return {
+                                status:
+                                    'NOT_READY'
+                            };
+                        }
+
+                        if (
+                            candidates.length
+                            !== 1
+                        ) {
+                            return {
+                                status:
+                                    'AMBIGUOUS',
+                                count:
+                                    candidates.length
+                            };
+                        }
+
+                        candidates[
+                            0
+                        ].click();
+
+                        return {
+                            status:
+                                'CLICKED'
+                        };
+                    })()
+                    """
+                )
+                or {}
+            )
+
+            status = str(
+                result.get(
+                    "status"
+                )
+                or ""
+            )
+
+            if (
+                status
+                == "CLICKED"
+            ):
+                reply_clicked = True
+                break
+
+            if (
+                status
+                == "AMBIGUOUS"
+            ):
+                raise RuntimeError(
+                    "WhatsApp mostró varias acciones "
+                    "Responder simultáneas"
+                )
+
+            time.sleep(
+                0.05
+            )
+
+        if not reply_clicked:
+            raise RuntimeError(
+                "WhatsApp no mostró la acción Responder"
+            )
+
+        deadline = (
+            time.time()
+            + max(
+                0.25,
+                float(
+                    timeout
+                ),
+            )
+        )
+
+        reply_state = None
+
+        while time.time() < deadline:
+            reply_state = (
+                self.browser.evaluate(
+                    """
+                    (() => {
+                        const footer =
+                            document.querySelector(
+                                '#main footer'
+                            );
+
+                        if (!footer) {
+                            return {
+                                active: false
+                            };
+                        }
+
+                        const quoted =
+                            footer.querySelector(
+                                '[data-testid="quoted-message"]'
+                            );
+
+                        const cancel =
+                            footer.querySelector(
+                                'button'
+                                + '[aria-label="Cancelar"]'
+                            );
+
+                        if (
+                            !quoted
+                            || !cancel
+                        ) {
+                            return {
+                                active: false
+                            };
+                        }
+
+                        return {
+                            active: true,
+                            body_text:
+                                String(
+                                    quoted.innerText
+                                    || quoted.textContent
+                                    || ''
+                                )
+                                .trim()
+                        };
+                    })()
+                    """
+                )
+                or {}
+            )
+
+            if reply_state.get(
+                "active"
+            ):
+                break
+
+            time.sleep(
+                0.05
+            )
+
+        if not (
+            reply_state
+            and reply_state.get(
+                "active"
+            )
+        ):
+            raise RuntimeError(
+                "WhatsApp no confirmó el modo respuesta"
+            )
+
+        return {
+            "provider_message_id":
+                provider_id,
+            "quoted_body_text":
+                str(
+                    reply_state.get(
+                        "body_text"
+                    )
+                    or ""
+                ).strip(),
+        }
+
+
+    def send_reply_message(
+        self,
+        text,
+        *,
+        reply_to_provider_message_id,
+        timeout=10,
+    ):
+        """Responde a un mensaje exacto del chat activo.
+
+        Reutiliza send_text_message para mantener intactas
+        todas las garantías de transporte existentes.
+        """
+        if not self.browser:
+            raise RuntimeError(
+                "WhatsApp Web no está iniciado"
+            )
+
+        value = str(
+            text
+            or ""
+        )
+
+        if not value.strip():
+            raise ValueError(
+                "El texto del mensaje no puede estar vacío"
+            )
+
+        provider_id = str(
+            reply_to_provider_message_id
+            or ""
+        ).strip()
+
+        if not provider_id:
+            raise ValueError(
+                "reply_to_provider_message_id "
+                "es obligatorio"
+            )
+
+        self._activate_reply_mode(
+            provider_id,
+            timeout=min(
+                3,
+                max(
+                    0.5,
+                    float(
+                        timeout
+                    ),
+                ),
+            ),
+        )
+
+        try:
+            snapshot = (
+                self.send_text_message(
+                    value,
+                    timeout=timeout,
+                )
+            )
+
+        except WhatsAppSendStateUncertainError:
+            # Pudo haberse enviado realmente.
+            # Nunca limpiamos ni reintentamos.
+            raise
+
+        except Exception:
+            # send_text_message solo devuelve excepciones
+            # normales cuando no existe confirmación de
+            # que se haya emitido un envío.
+            try:
+                self.clear_message_composer()
+            except Exception:
+                pass
+
+            try:
+                self._cancel_reply_mode()
+            except Exception:
+                pass
+
+            raise
+
+        reply_metadata = (
+            dict(
+                snapshot.metadata
+                or {}
+            ).get(
+                "reply"
+            )
+        )
+
+        if not isinstance(
+            reply_metadata,
+            dict,
+        ):
+            # Existe un OUTBOUND nuevo, por tanto jamás
+            # reintentamos. Pero WhatsApp no permitió
+            # confirmar que conservara la cita.
+            raise WhatsAppSendStateUncertainError(
+                "Estado de envío de respuesta incierto: "
+                "el mensaje OUTBOUND apareció pero "
+                "WhatsApp no confirmó la cita"
+            )
+
+        return snapshot
+
+
     def send_text_message(
         self,
         text,
