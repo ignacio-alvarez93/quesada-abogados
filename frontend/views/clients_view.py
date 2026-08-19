@@ -39,6 +39,7 @@ from backend.services.client_administrative_status_service import (
 from frontend.components.client_context_panel import client_context_panel
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.views.client_detail_view import client_detail_view
+from frontend.components.app_snackbar import show_snackbar
 from frontend.components.listing import card_item, compact_pagination_bar
 
 from frontend.components import (
@@ -896,9 +897,12 @@ def clients_view(
     on_context_back=None,
     new_client_defaults=None,
     on_client_created=None,
+    on_client_phone_changed=None,
 ):
     state = {
         "editing_id": None,
+        "editing_original_phone": "",
+        "pending_phone_change": None,
         "clients": [],
         "csv_path": None,
         "csv_preview": [],
@@ -1532,6 +1536,8 @@ def clients_view(
 
     def limpiar_formulario():
         state["editing_id"] = None
+        state["editing_original_phone"] = ""
+        state["pending_phone_change"] = None
         for field in [
             nombre,
             primer_apellido,
@@ -1618,6 +1624,11 @@ def clients_view(
 
     def cargar_cliente_en_formulario(cliente):
         state["editing_id"] = cliente["id"]
+        state["editing_original_phone"] = str(
+            cliente.get("telefono")
+            or ""
+        ).strip()
+
         nombre.value = cliente.get("nombre") or ""
         primer_apellido.value = cliente.get("primer_apellido") or ""
         segundo_apellido.value = cliente.get("segundo_apellido") or ""
@@ -2053,6 +2064,28 @@ def clients_view(
             show_message(error_alert("\n".join(errores)))
             return
         data = datos_formulario()
+
+        previous_phone = str(
+            state.get(
+                "editing_original_phone"
+            )
+            or ""
+        ).strip()
+
+        new_phone = str(
+            data.get(
+                "telefono"
+            )
+            or ""
+        ).strip()
+
+        phone_changed = bool(
+            not creating_new_client
+            and new_phone
+            and previous_phone
+            != new_phone
+        )
+
         if state["editing_id"]:
             client_id = int(
                 state["editing_id"]
@@ -2160,6 +2193,48 @@ def clients_view(
         cargar_clientes()
         show_client_list()
 
+        if (
+            phone_changed
+            and client_id
+            and callable(
+                on_client_phone_changed
+            )
+        ):
+            display_name = " ".join(
+                part
+                for part in (
+                    str(
+                        data.get("nombre")
+                        or ""
+                    ).strip(),
+                    str(
+                        data.get("primer_apellido")
+                        or ""
+                    ).strip(),
+                    str(
+                        data.get("segundo_apellido")
+                        or ""
+                    ).strip(),
+                )
+                if part
+            ).strip()
+
+            _open_phone_change_dialog(
+                client_id=int(
+                    client_id
+                ),
+                previous_phone=(
+                    previous_phone
+                ),
+                new_phone=(
+                    new_phone
+                ),
+                display_name=(
+                    display_name
+                    or new_phone
+                ),
+            )
+
     def set_hubspot_message(control):
         hubspot_message.controls.clear()
         hubspot_message.controls.append(control)
@@ -2254,6 +2329,168 @@ def clients_view(
         clear_hubspot_message()
         hubspot_dialog.open = True
         page.update()
+
+    def _close_phone_change_dialog(
+        e=None,
+    ):
+        state[
+            "pending_phone_change"
+        ] = None
+
+        phone_change_dialog.open = False
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    def _confirm_phone_change_whatsapp(
+        e=None,
+    ):
+        pending = (
+            state.get(
+                "pending_phone_change"
+            )
+            or {}
+        )
+
+        if not pending:
+            return False
+
+        try:
+            result = (
+                on_client_phone_changed(
+                    int(
+                        pending[
+                            "client_id"
+                        ]
+                    ),
+                    pending.get(
+                        "previous_phone"
+                    ),
+                    pending.get(
+                        "new_phone"
+                    ),
+                    pending.get(
+                        "display_name"
+                    ),
+                )
+            )
+
+            normalized_phone = str(
+                (
+                    result.get(
+                        "phone"
+                    )
+                    if isinstance(
+                        result,
+                        dict,
+                    )
+                    else None
+                )
+                or pending.get(
+                    "new_phone"
+                )
+                or ""
+            ).strip()
+
+            _close_phone_change_dialog()
+
+            show_snackbar(
+                page,
+                (
+                    "Nuevo teléfono añadido y "
+                    "vinculado a WhatsApp: "
+                    f"{normalized_phone}"
+                ),
+                severity="success",
+            )
+
+            return True
+
+        except Exception as exc:
+            show_snackbar(
+                page,
+                (
+                    "No se pudo añadir el nuevo "
+                    "teléfono a WhatsApp: "
+                    f"{exc}"
+                ),
+                severity="error",
+            )
+
+            return False
+
+
+    def _open_phone_change_dialog(
+        *,
+        client_id,
+        previous_phone,
+        new_phone,
+        display_name,
+    ):
+        state[
+            "pending_phone_change"
+        ] = {
+            "client_id":
+                int(client_id),
+            "previous_phone":
+                previous_phone,
+            "new_phone":
+                new_phone,
+            "display_name":
+                display_name,
+        }
+
+        phone_change_summary.value = (
+            "Has cambiado el teléfono del cliente.\n\n"
+            f"Anterior: {previous_phone or 'Sin teléfono'}\n"
+            f"Nuevo: {new_phone}\n\n"
+            "La conversación anterior se conservará "
+            "como histórico. Puedes añadir ahora el "
+            "nuevo número a WhatsApp."
+        )
+
+        phone_change_dialog.open = True
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    phone_change_summary = ft.Text(
+        "",
+        size=12,
+    )
+
+    phone_change_dialog = form_dialog(
+        "Nuevo teléfono del cliente",
+        ft.Column(
+            controls=[
+                phone_change_summary,
+            ],
+            tight=True,
+            spacing=10,
+            width=420,
+        ),
+        [
+            secondary_button(
+                "Ahora no",
+                _close_phone_change_dialog,
+            ),
+            primary_button(
+                "Añadir a WhatsApp",
+                _confirm_phone_change_whatsapp,
+            ),
+        ],
+    )
+
+    page.overlay.append(
+        phone_change_dialog
+    )
+
 
     cliente_dialog = form_dialog(
         "Cliente",

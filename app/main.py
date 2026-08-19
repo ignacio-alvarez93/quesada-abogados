@@ -755,6 +755,78 @@ def main(page: ft.Page):
                         ),
                     )
 
+            def _after_client_phone_changed(
+                client_id,
+                previous_phone,
+                new_phone,
+                display_name,
+            ):
+                prepared = (
+                    communication_service
+                    .prepare_whatsapp_thread_for_client_phone_change(
+                        int(
+                            client_id
+                        ),
+                        new_phone,
+                        display_name=(
+                            display_name
+                            or new_phone
+                        ),
+                    )
+                )
+
+                thread = (
+                    prepared.get(
+                        "thread"
+                    )
+                )
+
+                if thread is None:
+                    raise RuntimeError(
+                        "No se pudo preparar "
+                        "la conversación WhatsApp"
+                    )
+
+                normalized_phone = str(
+                    prepared.get(
+                        "phone"
+                    )
+                    or new_phone
+                    or ""
+                ).strip()
+
+                whatsapp_runtime.add_contact_and_open(
+                    normalized_phone,
+                    display_name=(
+                        display_name
+                        or normalized_phone
+                    ),
+                    wait_timeout=60,
+                    routing_timeout=20,
+                )
+
+                communication_service.update_whatsapp_thread_display_name(
+                    int(
+                        thread.id
+                    ),
+                    (
+                        display_name
+                        or normalized_phone
+                    ),
+                )
+
+                return {
+                    "thread_id":
+                        int(
+                            thread.id
+                        ),
+                    "phone":
+                        normalized_phone,
+                    "previous_phone":
+                        previous_phone,
+                }
+
+
             content = clients_view(
                 page,
                 on_create_expediente=lambda cliente_id: navigate(
@@ -777,6 +849,9 @@ def main(page: ft.Page):
                     _after_whatsapp_client_created
                     if new_client_source_thread_id
                     else None
+                ),
+                on_client_phone_changed=(
+                    _after_client_phone_changed
                 ),
                 on_context_back=(
                     (

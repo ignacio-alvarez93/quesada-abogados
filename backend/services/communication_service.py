@@ -1321,6 +1321,133 @@ class CommunicationService:
             ),
         }
 
+    def prepare_whatsapp_thread_for_client_phone_change(
+        self,
+        client_id,
+        phone,
+        *,
+        display_name=None,
+    ):
+        """Prepara el thread del nuevo teléfono de un cliente.
+
+        Invariantes:
+        - nunca modifica external_address de threads históricos;
+        - crea o reutiliza la identidad phone:<digits> nueva;
+        - vincula únicamente al cliente solicitado;
+        - rechaza conflictos con otro cliente;
+        - no conoce SeleniumBase.
+        """
+        try:
+            normalized_client_id = int(
+                client_id
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            raise ValueError(
+                "Cliente no válido"
+            )
+
+        if normalized_client_id <= 0:
+            raise ValueError(
+                "Cliente no válido"
+            )
+
+        normalized = normalize_phone(
+            phone
+        )
+
+        if not normalized.valid:
+            raise ValueError(
+                "Nuevo teléfono WhatsApp no válido"
+            )
+
+        result = (
+            self.get_or_create_whatsapp_thread_by_phone(
+                normalized.e164,
+                display_name=display_name,
+                metadata={
+                    "source":
+                        "client_phone_change",
+                },
+            )
+        )
+
+        thread = (
+            result.get(
+                "thread"
+            )
+            if isinstance(
+                result,
+                dict,
+            )
+            else None
+        )
+
+        if thread is None:
+            raise RuntimeError(
+                "No se pudo preparar la conversación "
+                "del nuevo teléfono"
+            )
+
+        current_client_id = getattr(
+            thread,
+            "client_id",
+            None,
+        )
+
+        if current_client_id is not None:
+            if (
+                int(current_client_id)
+                != normalized_client_id
+            ):
+                raise RuntimeError(
+                    "El nuevo teléfono ya está "
+                    "vinculado a otro cliente"
+                )
+
+        else:
+            match = (
+                result.get(
+                    "match"
+                )
+                or {}
+            )
+
+            if bool(
+                match.get(
+                    "ambiguous"
+                )
+            ):
+                raise RuntimeError(
+                    "El nuevo teléfono coincide "
+                    "con varios clientes CRM"
+                )
+
+            thread = (
+                self.link_whatsapp_thread_to_client(
+                    int(
+                        thread.id
+                    ),
+                    normalized_client_id,
+                )
+            )
+
+        return {
+            **dict(
+                result
+                or {}
+            ),
+            "thread":
+                thread,
+            "client_id":
+                normalized_client_id,
+            "phone":
+                normalized.e164,
+        }
+
+
     def import_provider_message(
         self,
         *,
