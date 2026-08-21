@@ -25766,6 +25766,39 @@ def expedients_view(
 
         cards = []
 
+        def _admin_state_trace_date(
+            expediente_id,
+            estado_administrativo,
+        ):
+            target_state = _norm(
+                estado_administrativo
+            )
+
+            if not target_state:
+                return ""
+
+            try:
+                eventos = (
+                    trace_service.get_eventos_expediente(
+                        expediente_id
+                    )
+                    or []
+                )
+            except Exception:
+                return ""
+
+            # get_eventos_expediente ya devuelve
+            # fecha_evento DESC, id DESC.
+            for evento in eventos:
+                if _norm(
+                    evento.get("estado_nuevo")
+                ) == target_state:
+                    return _date_to_display(
+                        evento.get("fecha_evento")
+                    )
+
+            return ""
+
         for index, e in enumerate(expedientes):
             expediente_id = e["id"]
             is_selected = expediente_id in state["selected_ids"]
@@ -25812,302 +25845,638 @@ def expedients_view(
             box_label = _box_path_label(e)
             box_color = _box_path_color(e)
 
-            cards.append(
-                card_item(
-                    title=(_cliente_nombre(e) or "-").upper(),
-                    subtitle=f"Expediente interno CRM: {e.get('numero_expediente') or '-'}",
-                    leading=checkbox,
-                    selected=is_selected,
-                    on_click=lambda ev, eid=expediente_id, idx=index: toggle_selection(eid, index=idx),
-                    badges=[
-                        expedient_status_badge(familia_label, "#0057B8"),
-                        expedient_status_badge(e.get("estado_documental_nombre"), e.get("estado_documental_color")),
-                        expedient_status_badge(e.get("estado_administrativo_nombre"), e.get("estado_administrativo_color")),
-                        priority_badge(e.get("prioridad_nombre"), e.get("prioridad_color")),
-                    ],
-                    actions=[
-                        ft.PopupMenuButton(
-                            icon=ft.Icons.MORE_VERT,
-                            tooltip="Acciones del expediente",
-                            items=[
-                                ft.PopupMenuItem(
-                                    content=ft.Row(
-                                        controls=[
-                                            ft.Icon(ft.Icons.OPEN_IN_NEW, size=16, color=Q_PRIMARY),
-                                            ft.Text("Ver ficha"),
-                                        ],
-                                        spacing=8,
-                                    ),
-                                    on_click=lambda ev, eid=expediente_id: open_expediente_card_action(eid),
+            client_name = (
+                _cliente_nombre(e) or "-"
+            ).upper()
+
+            name_parts = [
+                part
+                for part in client_name.split()
+                if part
+            ]
+
+            initials = "".join(
+                part[0]
+                for part in name_parts[:2]
+            ) or "?"
+
+            avatar = ft.Container(
+                width=46,
+                height=46,
+                border_radius=23,
+                bgcolor="#EAF3FF",
+                alignment=ft.Alignment(0, 0),
+                content=ft.Text(
+                    initials,
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY,
+                ),
+            )
+
+            leading = ft.Row(
+                controls=[
+                    checkbox,
+                    avatar,
+                ],
+                spacing=8,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            )
+
+            popup = ft.PopupMenuButton(
+                icon=ft.Icons.MORE_VERT,
+                tooltip="Acciones del expediente",
+                items=[
+                    ft.PopupMenuItem(
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.OPEN_IN_NEW,
+                                    size=16,
+                                    color=Q_PRIMARY,
                                 ),
-                                ft.PopupMenuItem(
-                                    content=ft.Row(
-                                        controls=[
-                                            ft.Icon(ft.Icons.OUTBOX, size=16, color=Q_PRIMARY),
-                                            ft.Text("Enviar a cola"),
-                                        ],
-                                        spacing=8,
-                                    ),
-                                    on_click=lambda ev, eid=expediente_id: enqueue_expediente_card_action(eid),
+                                ft.Text("Ver ficha"),
+                            ],
+                            spacing=8,
+                        ),
+                        on_click=lambda ev, eid=expediente_id: (
+                            open_expediente_card_action(eid)
+                        ),
+                    ),
+                    ft.PopupMenuItem(
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.OUTBOX,
+                                    size=16,
+                                    color=Q_PRIMARY,
                                 ),
-                                ft.PopupMenuItem(
-                                    content=ft.Row(
-                                        controls=[
-                                            ft.Icon(ft.Icons.ROCKET_LAUNCH, size=16, color=Q_PRIMARY),
-                                            ft.Text("Presentación asistida"),
-                                        ],
-                                        spacing=8,
-                                    ),
-                                    on_click=lambda ev, eid=expediente_id: assisted_presentation_card_action(eid),
+                                ft.Text("Enviar a cola"),
+                            ],
+                            spacing=8,
+                        ),
+                        on_click=lambda ev, eid=expediente_id: (
+                            enqueue_expediente_card_action(eid)
+                        ),
+                    ),
+                    ft.PopupMenuItem(
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.ROCKET_LAUNCH,
+                                    size=16,
+                                    color=Q_PRIMARY,
                                 ),
-                                ft.PopupMenuItem(
-                                    content=ft.Row(
-                                        controls=[
-                                            ft.Icon(ft.Icons.ARCHIVE_OUTLINED, size=16, color="#B42318"),
-                                            ft.Text("Archivar", color="#B42318"),
-                                        ],
-                                        spacing=8,
-                                    ),
-                                    on_click=lambda ev, eid=expediente_id: archive_expediente_card_action(eid),
+                                ft.Text(
+                                    "Presentación asistida"
                                 ),
                             ],
-                        )
-                    ],
-                    body=[
-                        (
-                            ft.Column(
-                                controls=[
-                                    ft.Row(
-                                        controls=[
-                                            ft.Text(
-                                                "Trámite:",
-                                                size=11,
-                                                color=Q_MUTED,
-                                            ),
-                                            ft.Text(
-                                                tipo_label,
-                                                size=14,
-                                                weight=ft.FontWeight.BOLD,
-                                                color=Q_PRIMARY_DARK,
-                                            ),
-                                            ft.Text(
-                                                "Subtrámite:",
-                                                size=11,
-                                                color=Q_MUTED,
-                                            ),
-                                            ft.Text(
-                                                subtipo_label,
-                                                size=12,
-                                                weight=ft.FontWeight.W_600,
-                                                color="#6D28D9",
-                                            ),
-                                        ],
-                                        spacing=6,
-                                        wrap=True,
-                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                    ),
-                                    ft.Row(
-                                        controls=[
-                                            ft.Text(
-                                                "Estado administrativo:",
-                                                size=11,
-                                                color=Q_MUTED,
-                                            ),
-                                            expedient_status_badge(
-                                                e.get("estado_administrativo_nombre"),
-                                                e.get("estado_administrativo_color"),
-                                            ),
-                                        ],
-                                        spacing=6,
-                                        wrap=True,
-                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                    ),
-                                    ft.Row(
-                                        controls=[
-                                            ft.Icon(
-                                                ft.Icons.CONFIRMATION_NUMBER_OUTLINED,
-                                                size=15,
-                                                color=(
-                                                    Q_PRIMARY
-                                                    if numero_expediente_extranjeria
-                                                    else "#B42318"
-                                                ),
-                                            ),
-                                            ft.Text(
-                                                "Nº expediente:",
-                                                size=11,
-                                                color=Q_MUTED,
-                                            ),
-                                            ft.Text(
-                                                numero_expediente_extranjeria
-                                                or "SIN NÚMERO",
-                                                size=13,
-                                                weight=ft.FontWeight.BOLD,
-                                                color=(
-                                                    Q_PRIMARY_DARK
-                                                    if numero_expediente_extranjeria
-                                                    else "#B42318"
-                                                ),
-                                                selectable=True,
-                                            ),
-                                            ft.Text(
-                                                "ID presentación:",
-                                                size=11,
-                                                color=Q_MUTED,
-                                            ),
-                                            ft.Text(
-                                                id_presentacion or "SIN ID",
-                                                size=13,
-                                                weight=ft.FontWeight.BOLD,
-                                                color=(
-                                                    Q_PRIMARY_DARK
-                                                    if id_presentacion
-                                                    else "#B42318"
-                                                ),
-                                                selectable=True,
-                                            ),
-                                        ],
-                                        spacing=6,
-                                        wrap=True,
-                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                    ),
-                                    ft.Row(
-                                        controls=[
-                                            ft.Text(
-                                                "CRM:",
-                                                size=11,
-                                                color=Q_MUTED,
-                                            ),
-                                            ft.Text(
-                                                e.get("numero_expediente") or "-",
-                                                size=12,
-                                                weight=ft.FontWeight.W_600,
-                                                color=Q_PRIMARY,
-                                                selectable=True,
-                                            ),
-                                            ft.Icon(
-                                                ft.Icons.FOLDER_OPEN,
-                                                size=15,
-                                                color=box_color,
-                                            ),
-                                            ft.Text(
-                                                box_label,
-                                                size=11,
-                                                color=box_color,
-                                                weight=ft.FontWeight.W_600,
-                                            ),
-                                        ],
-                                        spacing=6,
-                                        wrap=True,
-                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                    ),
-                                ],
-                                spacing=5,
-                            )
-                            if familia_codigo == "EXTRANJERIA"
-                            else ft.Column(
-                                controls=[
-                                    ft.Row(
-                                        controls=[
-                                            ft.Text("Familia:", size=11, color=Q_MUTED),
-                                            ft.Text(
-                                                familia_label,
-                                                size=12,
-                                                weight=ft.FontWeight.BOLD,
-                                                color=Q_PRIMARY,
-                                            ),
-                                            ft.Text("Tipo:", size=11, color=Q_MUTED),
-                                            ft.Text(
-                                                tipo_label,
-                                                size=12,
-                                                weight=ft.FontWeight.BOLD,
-                                                color=Q_PRIMARY_DARK,
-                                            ),
-                                            ft.Text("Subtipo:", size=11, color=Q_MUTED),
-                                            ft.Text(
-                                                subtipo_label,
-                                                size=12,
-                                                color=Q_PRIMARY_DARK,
-                                            ),
-                                        ],
-                                        spacing=6,
-                                        wrap=True,
-                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                    ),
-                                    ft.Row(
-                                        controls=[
-                                            ft.Icon(
-                                                ft.Icons.CONFIRMATION_NUMBER_OUTLINED,
-                                                size=16,
-                                                color=(
-                                                    Q_PRIMARY
-                                                    if external_number
-                                                    else "#B42318"
-                                                ),
-                                            ),
-                                            ft.Text(
-                                                "Nº expediente:",
-                                                size=12,
-                                                color=Q_MUTED,
-                                            ),
-                                            ft.Text(
-                                                external_number
-                                                or "SIN NÚMERO DE EXPEDIENTE",
-                                                size=14,
-                                                color=(
-                                                    Q_PRIMARY_DARK
-                                                    if external_number
-                                                    else "#B42318"
-                                                ),
-                                                weight=ft.FontWeight.BOLD,
-                                            ),
-                                        ],
-                                        spacing=6,
-                                        wrap=True,
-                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                    ),
-                                    ft.Row(
-                                        controls=[
-                                            ft.Icon(
-                                                ft.Icons.FOLDER_OPEN,
-                                                size=15,
-                                                color=box_color,
-                                            ),
-                                            ft.Text(
-                                                box_label,
-                                                size=12,
-                                                color=box_color,
-                                                weight=ft.FontWeight.W_600,
-                                            ),
-                                        ],
-                                        spacing=6,
-                                        wrap=True,
-                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                    ),
-                                ],
-                                spacing=3,
+                            spacing=8,
+                        ),
+                        on_click=lambda ev, eid=expediente_id: (
+                            assisted_presentation_card_action(
+                                eid
                             )
                         ),
-                    ],
-                    footer=[
+                    ),
+                    ft.PopupMenuItem(
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.ARCHIVE_OUTLINED,
+                                    size=16,
+                                    color="#B42318",
+                                ),
+                                ft.Text(
+                                    "Archivar",
+                                    color="#B42318",
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                        on_click=lambda ev, eid=expediente_id: (
+                            archive_expediente_card_action(eid)
+                        ),
+                    ),
+                ],
+            )
+
+            def meta_text(
+                label,
+                value,
+                *,
+                color=Q_PRIMARY_DARK,
+                width=None,
+                selectable=False,
+                weight=ft.FontWeight.W_600,
+            ):
+                return ft.Container(
+                    width=width,
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                label,
+                                size=10,
+                                color=Q_MUTED,
+                            ),
+                            ft.Text(
+                                str(value or "-"),
+                                size=11,
+                                weight=weight,
+                                color=color,
+                                selectable=selectable,
+                            ),
+                        ],
+                        spacing=2,
+                    ),
+                )
+
+            fecha_apertura_card = _date_to_display(
+                e.get("fecha_apertura")
+            )
+
+            fecha_presentacion_card = _date_to_display(
+                e.get("fecha_presentacion")
+            )
+
+            fecha_admision_tramite_card = _date_to_display(
+                e.get("fecha_admision_tramite")
+                or e.get("fecha_admision")
+                or e.get("fecha_admision_a_tramite")
+            )
+
+            fecha_resolucion_card = _date_to_display(
+                e.get("fecha_resolucion")
+            )
+
+            estado_admin_card = _norm(
+                e.get("estado_administrativo_nombre")
+            )
+
+            fecha_estado_administrativo_card = (
+                _admin_state_trace_date(
+                    expediente_id,
+                    e.get(
+                        "estado_administrativo_nombre"
+                    ),
+                )
+                or "-"
+            )
+
+            # Fallback únicamente cuando no existe
+            # todavía un evento equivalente en trazabilidad.
+            if fecha_estado_administrativo_card == "-":
+                if (
+                    "RESUELT" in estado_admin_card
+                    or "DENEG" in estado_admin_card
+                ):
+                    fecha_estado_administrativo_card = (
+                        fecha_resolucion_card or "-"
+                    )
+                elif "ADMIT" in estado_admin_card:
+                    fecha_estado_administrativo_card = (
+                        fecha_admision_tramite_card or "-"
+                    )
+                elif "REQUER" in estado_admin_card:
+                    fecha_estado_administrativo_card = (
+                        _date_to_display(
+                            e.get("fecha_requerimiento")
+                        )
+                        or "-"
+                    )
+                elif "PRESENT" in estado_admin_card:
+                    fecha_estado_administrativo_card = (
+                        fecha_presentacion_card or "-"
+                    )
+
+            left_details = []
+
+            if familia_codigo == "EXTRANJERIA":
+                left_details.extend(
+                    [
                         ft.Row(
                             controls=[
                                 ft.Text(
-                                    f"Apertura: {_date_to_display(e.get('fecha_apertura'))}",
-                                    size=11,
+                                    "Estado documental:",
+                                    size=10,
+                                    color=Q_MUTED,
+                                ),
+                                expedient_status_badge(
+                                    e.get(
+                                        "estado_documental_nombre"
+                                    ),
+                                    e.get(
+                                        "estado_documental_color"
+                                    ),
+                                ),
+                                ft.Text(
+                                    "Prioridad:",
+                                    size=10,
+                                    color=Q_MUTED,
+                                ),
+                                priority_badge(
+                                    e.get(
+                                        "prioridad_nombre"
+                                    ),
+                                    e.get(
+                                        "prioridad_color"
+                                    ),
+                                ),
+                            ],
+                            spacing=6,
+                            wrap=True,
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.CENTER
+                            ),
+                        ),
+                        ft.Row(
+                            controls=[
+                                meta_text(
+                                    "Apertura",
+                                    fecha_apertura_card,
+                                    width=105,
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                meta_text(
+                                    "Presentación",
+                                    fecha_presentacion_card,
+                                    width=115,
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                meta_text(
+                                    "Admisión a trámite",
+                                    fecha_admision_tramite_card,
+                                    width=145,
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                meta_text(
+                                    "Resolución",
+                                    fecha_resolucion_card,
+                                    width=110,
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                            ],
+                            spacing=16,
+                            wrap=True,
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.START
+                            ),
+                        ),
+                    ]
+                )
+
+            else:
+                left_details.extend(
+                    [
+                        ft.Row(
+                            controls=[
+                                ft.Text(
+                                    "Familia:",
+                                    size=10,
                                     color=Q_MUTED,
                                 ),
                                 ft.Text(
-                                    f"Responsable: {e.get('responsable') or '-'}",
+                                    familia_label,
                                     size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY,
+                                ),
+                                ft.Text(
+                                    "Tipo:",
+                                    size=10,
                                     color=Q_MUTED,
                                 ),
+                                ft.Text(
+                                    tipo_label,
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=Q_PRIMARY_DARK,
+                                ),
+                                ft.Text(
+                                    "Subtipo:",
+                                    size=10,
+                                    color=Q_MUTED,
+                                ),
+                                ft.Text(
+                                    subtipo_label,
+                                    size=11,
+                                    color=Q_PRIMARY_DARK,
+                                ),
                             ],
-                            spacing=14,
+                            spacing=5,
                             wrap=True,
-                        )
+                        ),
+                    ]
+                )
+
+            left_details.append(
+                ft.Row(
+                    controls=[
+                        ft.Text(
+                            "CRM:",
+                            size=10,
+                            color=Q_MUTED,
+                        ),
+                        ft.Text(
+                            e.get("numero_expediente")
+                            or "-",
+                            size=11,
+                            weight=ft.FontWeight.W_600,
+                            color=Q_PRIMARY,
+                            selectable=True,
+                        ),
+                        ft.Icon(
+                            ft.Icons.FOLDER_OPEN,
+                            size=14,
+                            color=box_color,
+                        ),
+                        ft.Text(
+                            box_label,
+                            size=10,
+                            color=box_color,
+                            weight=ft.FontWeight.W_600,
+                        ),
                     ],
-                    padding=12,
+                    spacing=5,
+                    wrap=True,
+                    vertical_alignment=(
+                        ft.CrossAxisAlignment.CENTER
+                    ),
+                )
+            )
+
+            displayed_external_number = (
+                numero_expediente_extranjeria
+                if familia_codigo == "EXTRANJERIA"
+                else external_number
+            )
+
+            cliente_documento = (
+                _cliente_documento(e)
+                or "SIN DOCUMENTO"
+            )
+
+            metadata_controls = []
+
+            if familia_codigo != "EXTRANJERIA":
+                metadata_controls.append(
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Estado administrativo",
+                                size=10,
+                                color=Q_MUTED,
+                            ),
+                            expedient_status_badge(
+                                e.get(
+                                    "estado_administrativo_nombre"
+                                ),
+                                e.get(
+                                    "estado_administrativo_color"
+                                ),
+                            ),
+                        ],
+                        spacing=3,
+                    )
+                )
+
+            if familia_codigo == "EXTRANJERIA":
+                metadata_controls.append(
+                    meta_text(
+                        "ID presentación",
+                        id_presentacion or "SIN ID",
+                        color=(
+                            Q_PRIMARY_DARK
+                            if id_presentacion
+                            else "#B42318"
+                        ),
+                        width=145,
+                        selectable=True,
+                    )
+                )
+            else:
+                metadata_controls.append(
+                    meta_text(
+                        "Nº expediente",
+                        displayed_external_number
+                        or "SIN NÚMERO",
+                        color=(
+                            Q_PRIMARY_DARK
+                            if displayed_external_number
+                            else "#B42318"
+                        ),
+                        width=145,
+                        selectable=True,
+                    )
+                )
+
+            metadata_controls.extend(
+                [
+                    meta_text(
+                        "Responsable",
+                        e.get("responsable") or "-",
+                        width=100,
+                    ),
+                ]
+            )
+
+            if familia_codigo == "EXTRANJERIA":
+                card_title_controls = [
+                    # Cliente
+                    ft.Text(
+                        client_name,
+                        size=15,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+
+                    # NIE / pasaporte
+                    ft.Text(
+                        cliente_documento,
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                        selectable=True,
+                    ),
+
+                    # Familia
+                    expedient_status_badge(
+                        familia_label,
+                        "#0057B8",
+                    ),
+
+                    # Tipo
+                    ft.Container(
+                        padding=ft.padding.symmetric(
+                            horizontal=10,
+                            vertical=5,
+                        ),
+                        border_radius=10,
+                        bgcolor="#EFF6FF",
+                        content=ft.Text(
+                            tipo_label,
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY_DARK,
+                        ),
+                    ),
+
+                    # Subtipo
+                    (
+                        ft.Container(
+                            padding=ft.padding.symmetric(
+                                horizontal=10,
+                                vertical=5,
+                            ),
+                            border_radius=10,
+                            bgcolor="#F5F3FF",
+                            content=ft.Text(
+                                subtipo_label,
+                                size=11,
+                                weight=ft.FontWeight.W_600,
+                                color="#6D28D9",
+                            ),
+                        )
+                        if (
+                            subtipo_label
+                            and subtipo_label != "-"
+                            and _norm(subtipo_label)
+                            not in {
+                                "SIN SUBTIPO",
+                                "NINGUNO",
+                            }
+                        )
+                        else None
+                    ),
+
+                    # Nº expediente Extranjería
+                    ft.Text(
+                        numero_expediente_extranjeria
+                        or "SIN Nº EXPEDIENTE",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=(
+                            Q_PRIMARY_DARK
+                            if numero_expediente_extranjeria
+                            else "#B42318"
+                        ),
+                        selectable=True,
+                    ),
+
+                    # Fecha de presentación
+                    ft.Text(
+                        fecha_presentacion_card or "-",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+
+                    # Estado administrativo
+                    expedient_status_badge(
+                        e.get(
+                            "estado_administrativo_nombre"
+                        ),
+                        e.get(
+                            "estado_administrativo_color"
+                        ),
+                    ),
+
+                    # Fecha correspondiente al estado administrativo
+                    ft.Text(
+                        fecha_estado_administrativo_card,
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+
+                ]
+
+            else:
+                # Card genérico provisional.
+                # Cada familia tendrá después su variante.
+                card_title_controls = [
+                    ft.Text(
+                        client_name,
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                    expedient_status_badge(
+                        familia_label,
+                        "#0057B8",
+                    ),
+                    expedient_status_badge(
+                        e.get(
+                            "estado_documental_nombre"
+                        ),
+                        e.get(
+                            "estado_documental_color"
+                        ),
+                    ),
+                    expedient_status_badge(
+                        e.get(
+                            "estado_administrativo_nombre"
+                        ),
+                        e.get(
+                            "estado_administrativo_color"
+                        ),
+                    ),
+                    priority_badge(
+                        e.get("prioridad_nombre"),
+                        e.get("prioridad_color"),
+                    ),
+                ]
+
+            cards.append(
+                card_item(
+                    title=client_name,
+                    subtitle=(
+                        "Expediente interno · CRM: "
+                        + str(
+                            e.get(
+                                "numero_expediente"
+                            )
+                            or "-"
+                        )
+                    ),
+                    leading=leading,
+                    selected=is_selected,
+                    on_click=lambda ev, eid=expediente_id, idx=index: (
+                        toggle_selection(
+                            eid,
+                            index=idx,
+                        )
+                    ),
+                    title_controls=card_title_controls,
+                    trailing=popup,
+                    body=[
+                        ft.Row(
+                            controls=[
+                                ft.Container(
+                                    content=ft.Column(
+                                        controls=left_details,
+                                        spacing=5,
+                                    ),
+                                ),
+                                ft.Row(
+                                    controls=metadata_controls,
+                                    spacing=18,
+                                    wrap=True,
+                                    vertical_alignment=(
+                                        ft.CrossAxisAlignment.START
+                                    ),
+                                ),
+                            ],
+                            spacing=22,
+                            wrap=True,
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.START
+                            ),
+                        ),
+                    ],
+                    padding=16,
                 )
             )
 
@@ -26119,61 +26488,81 @@ def expedients_view(
                         1,
                         Q_BORDER,
                     ),
-                    border_radius=14,
-                    padding=ft.padding.symmetric(
-                        horizontal=12,
-                        vertical=9,
-                    ),
+                    border_radius=16,
                     content=ft.Column(
                         controls=[
-                            ft.Row(
-                                controls=[
-                                    ft.Row(
-                                        controls=[
-                                            ft.Icon(
-                                                ft.Icons.FOLDER_OPEN,
-                                                size=17,
-                                                color=Q_PRIMARY,
-                                            ),
-                                            ft.Text(
-                                                "Expedientes",
-                                                size=13,
-                                                weight=ft.FontWeight.BOLD,
-                                                color=Q_PRIMARY_DARK,
-                                            ),
-                                            ft.Container(
-                                                padding=ft.padding.symmetric(
-                                                    horizontal=8,
-                                                    vertical=3,
+                            ft.Container(
+                                padding=ft.padding.symmetric(
+                                    horizontal=14,
+                                    vertical=10,
+                                ),
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Row(
+                                            controls=[
+                                                ft.Container(
+                                                    width=32,
+                                                    height=32,
+                                                    alignment=ft.Alignment(0, 0),
+                                                    border_radius=9,
+                                                    bgcolor="#EAF3FF",
+                                                    content=ft.Icon(
+                                                        ft.Icons.FOLDER_OPEN,
+                                                        size=17,
+                                                        color=Q_PRIMARY,
+                                                    ),
                                                 ),
-                                                border_radius=20,
-                                                bgcolor="#EAF3FF",
-                                                content=ft.Text(
-                                                    str(total_items),
-                                                    size=11,
+                                                ft.Text(
+                                                    "Expedientes",
+                                                    size=14,
                                                     weight=ft.FontWeight.BOLD,
-                                                    color=Q_PRIMARY,
+                                                    color=Q_PRIMARY_DARK,
                                                 ),
-                                            ),
-                                        ],
-                                        spacing=7,
-                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                    ),
-                                    build_selected_action_bar(),
-                                ],
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                spacing=12,
+                                                ft.Container(
+                                                    padding=ft.padding.symmetric(
+                                                        horizontal=8,
+                                                        vertical=3,
+                                                    ),
+                                                    border_radius=20,
+                                                    bgcolor="#EAF3FF",
+                                                    content=ft.Text(
+                                                        str(total_items),
+                                                        size=11,
+                                                        weight=ft.FontWeight.BOLD,
+                                                        color=Q_PRIMARY,
+                                                    ),
+                                                ),
+                                            ],
+                                            spacing=8,
+                                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                        ),
+                                        build_selected_action_bar(),
+                                    ],
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    spacing=12,
+                                ),
                             ),
-                            compact_pagination_bar(
-                                page=state.get("cards_page") or 1,
-                                page_size=state.get("cards_page_size") or 10,
-                                total_items=total_items,
-                                on_page_change=set_cards_page,
-                                label_prefix="Listado",
+                            ft.Divider(
+                                height=1,
+                                thickness=1,
+                                color="#E8EEF5",
+                            ),
+                            ft.Container(
+                                padding=ft.padding.symmetric(
+                                    horizontal=10,
+                                    vertical=7,
+                                ),
+                                content=compact_pagination_bar(
+                                    page=state.get("cards_page") or 1,
+                                    page_size=state.get("cards_page_size") or 10,
+                                    total_items=total_items,
+                                    on_page_change=set_cards_page,
+                                    label_prefix="Listado",
+                                ),
                             ),
                         ],
-                        spacing=7,
+                        spacing=0,
                     ),
                 ),
                 ft.Container(
@@ -26225,9 +26614,10 @@ def expedients_view(
         selected_count = len(state["selected_ids"])
 
         return bulk_action_bar(
-            title="Acciones masivas de expedientes",
+            title="Acciones masivas",
             selected_count=selected_count,
             on_clear=clear_selected_expedients,
+            inline=True,
             actions=[
                 {
                     "icon": ft.Icons.OUTBOX,
