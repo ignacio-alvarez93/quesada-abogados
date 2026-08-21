@@ -1,0 +1,50 @@
+{
+  "schema_version": 2,
+  "provider": "ICP_PLUS",
+  "flows": {
+    "ASTURIAS:POLICIA_TOMA_HUELLAS_TIE": {
+      "province": {
+        "key": "ASTURIAS",
+        "provider_text": "Asturias",
+        "provider_value": "/icpplus/citar?p=33&locale=es",
+        "provider_code": "33"
+      },
+      "procedure": {
+        "key": "POLICIA_TOMA_HUELLAS_TIE",
+        "provider_text": "POLICÍA-TOMA DE HUELLAS (EXPEDICIÓN DE TARJETA) INICIAL, RENOVACIÓN, DUPLICADO Y LEY 14/2013",
+        "provider_value": "4010"
+      },
+      "office_scope_supported": [
+        "SINGLE"
+      ],
+      "procedure_specific_offices": {
+        "status": "VALIDATED",
+        "source_stage": "acCitar",
+        "select_id": "idSede",
+        "captured_with": "ICP_PLUS_OBSERVER_V4",
+        "items": [
+          {
+            "key": "CNP_AVILES",
+            "provider_value": "5",
+            "provider_text": "CNP AVILES, Río San Martín, 2, AVILES"
+          },
+          {
+            "key": "CNP_GIJON",
+            "provider_value": "2",
+            "provider_text": "CNP GIJÓN, Plaza Máximo Gonzalez, s/n, Gijón"
+          },
+          {
+            "key": "CNP_LUARCA",
+            "provider_value": "4",
+            "provider_text": "CNP LUARCA, OLAVARRIETA, 25, LUARCA"
+          },
+          {
+            "key": "CNP_OVIEDO_EXPEDICION_TIE",
+            "provider_value": "3",
+            "provider_text": "CNP OVIEDO - EXPEDICION TIE, Plaza de España, 3, Planta Baja (POLICÍA), 3, Oviedo"
+          }
+        ]
+      }
+    }
+  }
+}

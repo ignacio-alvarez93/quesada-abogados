@@ -35,6 +35,9 @@ from backend.services.whatsapp_runtime_service import (
 from backend.services.dehu_runtime_service import (
     DehuRuntimeService,
 )
+from backend.services.icpplus_availability_service import (
+    IcpPlusAvailabilityService,
+)
 from database.connection import initialize_database
 from frontend.views.login_view import login_view
 from frontend.views.clients_view import clients_view
@@ -56,6 +59,7 @@ from frontend.views.calendar_view import calendar_view
 from frontend.views.document_inbox_view import document_inbox_view
 from frontend.views.communications_view import communications_view
 from frontend.views.calls_view import calls_view
+from frontend.views.icpplus_view import icpplus_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
 from frontend.components.global_call_ui_coordinator import (
@@ -102,6 +106,14 @@ def main(page: ft.Page):
     }
 
     main_container = ft.Container(expand=True)
+
+    # ICP Plus es una automatización one-shot.
+    #
+    # La vista únicamente consume este servicio de aplicación;
+    # no conoce Chrome, Observer, Win32 ni el connector.
+    icpplus_service = (
+        IcpPlusAvailabilityService()
+    )
 
     # Composition root de Comunicaciones.
     #
@@ -613,6 +625,34 @@ def main(page: ft.Page):
             return False
 
 
+    def close_icpplus_session_services():
+        """
+        Libera cualquier recurso ICP Plus pendiente.
+
+        El runtime es one-shot e idempotente:
+        - si nunca se utilizó, no crea worker;
+        - si ya fue cerrado por la vista, no hace trabajo;
+        - si queda algún recurso, lo libera.
+        """
+
+        try:
+            return bool(
+                icpplus_service.close()
+            )
+
+        except Exception as exc:
+            print(
+                "[ICPPLUS] error cerrando "
+                "runtime de sesión:",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
+            return False
+
+
     def on_page_close(
         e=None,
     ):
@@ -625,6 +665,7 @@ def main(page: ft.Page):
 
         whatsapp_result = False
         dehu_result = False
+        icpplus_result = False
 
         try:
             whatsapp_result = (
@@ -654,9 +695,24 @@ def main(page: ft.Page):
                 flush=True,
             )
 
+        try:
+            icpplus_result = (
+                close_icpplus_session_services()
+            )
+        except Exception as exc:
+            print(
+                "[ICPPLUS] error inesperado "
+                "en cierre global:",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
         return bool(
             whatsapp_result
             or dehu_result
+            or icpplus_result
         )
 
 
@@ -1138,6 +1194,12 @@ def main(page: ft.Page):
             )
         elif view_name == "Reporting":
             content = reporting_view(page)
+        elif view_name == "Citas ICP Plus":
+            content = icpplus_view(
+                page,
+                service=icpplus_service,
+            )
+
         elif view_name == "Configuración":
             content = settings_view(page)
         else:

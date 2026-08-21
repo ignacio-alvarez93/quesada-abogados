@@ -10,6 +10,10 @@ def main_layout(sidebar, content):
             ft.Container(
                 content=content,
                 expand=True,
+                alignment=ft.Alignment(
+                    -1,
+                    -1,
+                ),
                 bgcolor=Q_BG,
                 padding=ft.padding.only(
                     left=16,
