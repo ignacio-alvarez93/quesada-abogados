@@ -660,3 +660,152 @@ def test_legacy_appointment_cards_merge_with_new_history():
         "if office_key:"
         in legacy_merge
     )
+
+
+def test_scheduler_execution_mode_is_exposed_in_dialog():
+    text = VIEW.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "Vigilancia programada"
+        in text
+    )
+
+    assert (
+        'value="ONE_SHOT"'
+        in text
+    )
+
+    assert (
+        'value="SCHEDULED"'
+        in text
+    )
+
+    assert (
+        "scheduler_interval_input"
+        in text
+    )
+
+    assert (
+        "scheduler_duration_input"
+        in text
+    )
+
+
+def test_scheduler_ui_enforces_15_minute_backend_contract():
+    text = VIEW.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "icpplus_scheduler_service"
+        in text
+    )
+
+    assert (
+        "MIN_INTERVAL_MINUTES"
+        in text
+    )
+
+    assert (
+        "Iniciar vigilancia"
+        in text
+    )
+
+    assert (
+        ".create_schedule("
+        in text
+    )
+
+
+def test_active_scheduler_chip_uses_central_panel_mode():
+    text = VIEW.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "Vigilancias activas · 0"
+        in text
+    )
+
+    assert (
+        ']= "schedulers"'
+        in text.replace(
+            "\\n",
+            ""
+        ).replace(
+            " ",
+            ""
+        )
+        or '"schedulers"' in text
+    )
+
+    assert (
+        "render_active_schedulers_in_history"
+        in text
+    )
+
+    assert (
+        "scheduler_chip.on_click"
+        in text
+    )
+
+
+def test_active_scheduler_card_displays_procedure():
+    text = VIEW.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'schedule.get(\n                    "procedure_text"'
+        in text
+    )
+
+    assert (
+        "ft.Icons.DESCRIPTION_OUTLINED"
+        in text
+    )
+
+    assert (
+        "procedure_text=("
+        in text
+    )
+
+
+def test_central_panel_has_root_all_attempts_chip():
+    text = VIEW.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "Todos los intentos · 0"
+        in text
+    )
+
+    assert (
+        "all_attempts_chip"
+        in text
+    )
+
+    assert (
+        "def show_all_attempts"
+        in text
+    )
+
+    assert (
+        ']= "history"'
+        in text.replace(
+            " ",
+            ""
+        ).replace(
+            "\n",
+            ""
+        )
+        or '"history"' in text
+    )
+
+    assert (
+        ".list_history("
+        in text
+    )
