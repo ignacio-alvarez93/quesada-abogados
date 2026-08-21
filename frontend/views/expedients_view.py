@@ -26310,52 +26310,94 @@ def expedients_view(
             [
                 ft.Row(
                     controls=[
-                        metric_card(
-                            "Expedientes activos",
-                            m["total"],
-                            icon=ft.Icons.FOLDER_OPEN,
-                            accent_color=Q_PRIMARY,
-                            subtitle="Asuntos abiertos",
-                            width=215,
+                        ft.Container(
+                            expand=True,
+                            content=metric_card(
+                                "Expedientes activos",
+                                m["total"],
+                                icon=ft.Icons.FOLDER_OPEN,
+                                accent_color=Q_PRIMARY,
+                                subtitle="Asuntos abiertos",
+                                width=None,
+                                horizontal=True,
+                            ),
                         ),
-                        metric_card(
-                            "Presentados",
-                            m["presentados"],
-                            icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
-                            accent_color="#2563EB",
-                            subtitle="En fase administrativa",
-                            width=215,
+                        ft.Container(
+                            expand=True,
+                            content=metric_card(
+                                "Presentados",
+                                m["presentados"],
+                                icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
+                                accent_color="#2563EB",
+                                subtitle="En fase administrativa",
+                                width=None,
+                                horizontal=True,
+                            ),
                         ),
-                        metric_card(
-                            "Requeridos",
-                            m["requeridos"],
-                            icon=ft.Icons.ERROR_OUTLINE,
-                            accent_color="#B54708",
-                            subtitle="Requieren seguimiento",
-                            width=215,
+                        ft.Container(
+                            expand=True,
+                            content=metric_card(
+                                "Requeridos",
+                                m["requeridos"],
+                                icon=ft.Icons.ERROR_OUTLINE,
+                                accent_color="#B54708",
+                                subtitle="Requieren seguimiento",
+                                width=None,
+                                horizontal=True,
+                            ),
                         ),
-                        metric_card(
-                            "Doc. incompleta",
-                            m["incompletos"],
-                            icon=ft.Icons.DESCRIPTION_OUTLINED,
-                            accent_color="#B42318",
-                            subtitle="Pendientes de completar",
-                            width=215,
+                        ft.Container(
+                            expand=True,
+                            content=metric_card(
+                                "Doc. incompleta",
+                                m["incompletos"],
+                                icon=ft.Icons.DESCRIPTION_OUTLINED,
+                                accent_color="#B42318",
+                                subtitle="Pendientes de completar",
+                                width=None,
+                                horizontal=True,
+                            ),
                         ),
                     ],
                     spacing=12,
-                    wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 filter_bar(
-                    dropdown=filtro_estado.control,
-                    search_input=search_input,
-                    actions=[
-                        filtro_familia.control,
-                        filtro_tipo.control,
-                        filtro_subtipo.control,
-                        filtro_prioridad.control,
+                    fields=[
+                        {
+                            "label": "Estado admin.",
+                            "control": filtro_estado.control,
+                            "width": 220,
+                        },
+                        {
+                            "label": "Buscar expediente / cliente / registro",
+                            "control": search_input,
+                            "width": 360,
+                        },
+                        {
+                            "label": "Familia",
+                            "control": filtro_familia.control,
+                            "width": 175,
+                        },
+                        {
+                            "label": "Tipo",
+                            "control": filtro_tipo.control,
+                            "width": 190,
+                        },
+                        {
+                            "label": "Subtipo",
+                            "control": filtro_subtipo.control,
+                            "width": 190,
+                        },
+                        {
+                            "label": "Prioridad",
+                            "control": filtro_prioridad.control,
+                            "width": 160,
+                        },
+                    ],
+                    footer_actions=[
                         secondary_button(
-                            "Limpiar",
+                            "Limpiar filtros",
                             clear_filters,
                         ),
                     ],
