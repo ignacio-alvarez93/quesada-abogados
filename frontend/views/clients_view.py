@@ -66,6 +66,8 @@ from frontend.components import (
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
+HEADER_BORDER = "#D9E3F0"
+
 FILTER_COLUMNS = ["Nombre", "NIE / Pasaporte", "Nacionalidad", "Telefono", "Estado"]
 
 CLIENT_STATES = [
@@ -3173,75 +3175,422 @@ def clients_view(
 
         ficha_pct = porcentaje_ficha(cliente)
         nombre = nombre_completo(cliente) or "Cliente sin nombre"
-        expedientes = cliente.get("_expedientes_cliente") or get_context_expedientes(cliente)
-        expediente_principal = expedientes[0] if expedientes else None
-        economico = get_context_economico(cliente)
+        documento = documento_cliente(cliente) or "Sin documento"
 
-        expediente_estado = "-"
-        expediente_tipo = "-"
-        expediente_numero = "-"
+        expedientes = (
+            cliente.get("_expedientes_cliente")
+            or get_context_expedientes(cliente)
+        )
 
-        if expediente_principal:
-            expediente_estado = (
-                expediente_principal.get("estado_administrativo")
-                or expediente_principal.get("estado_presentacion")
-                or expediente_principal.get("estado_documental")
-                or "-"
+        deuda_total = cliente_deuda_total(cliente)
+
+        telefono = cliente.get("telefono") or "Sin teléfono"
+        email = cliente.get("email") or "Sin email"
+        nacionalidad = cliente.get("nacionalidad") or "Sin nacionalidad"
+
+        edad = (
+            calcular_edad(
+                cliente.get("fecha_nacimiento")
             )
-            expediente_tipo = expediente_principal.get("tipo_expediente") or "-"
-            expediente_numero = expediente_principal.get("numero_expediente") or "-"
+            or "-"
+        )
 
-        return ft.Column(
-            controls=[
-                context_header_card(cliente, nombre, ficha_pct),
-                context_card(
-                    "Resumen ficha",
-                    [
-                        context_line("Documento", documento_cliente(cliente)),
-                        context_line("Teléfono", cliente.get("telefono")),
-                        context_line("Email", cliente.get("email")),
-                        context_line("Ficha", f"{ficha_pct}%"),
-                        primary_button("Ver ficha", ver_ficha_contextual),
-                    ],
-                ),
-                context_card(
-                    "Resumen expedientes",
-                    [
-                        context_line("Activos", len(expedientes)),
-                        context_line("Expediente", expediente_numero),
-                        context_line("Tipo", expediente_tipo),
-                        context_line("Estado", expediente_estado),
-                    ],
-                ),
-                context_card(
-                    "Resumen económico",
-                    [
-                        context_line("Cobros", economico.get("cobros")),
-                        context_line("Total cobrado", money_context(economico.get("total_cobrado"))),
-                        context_line("Hojas encargo", economico.get("hojas")),
-                        context_line("Facturas", economico.get("facturas")),
-                        context_line("Sin conciliar", economico.get("pendientes_conciliar")),
-                    ],
-                ),
-                context_card(
-                    "Alertas",
-                    build_context_alerts(cliente, expedientes, economico),
-                ),
-                ft.Row(
-                    controls=[secondary_button("Anterior", prev_context_client), primary_button("Siguiente", next_context_client)],
-                    spacing=8,
-                    alignment=ft.MainAxisAlignment.END,
-                    visible=len(clientes) > 1,
-                ),
-                ft.Text(
-                    f"Cliente {state['context_index'] + 1} de {len(clientes)} seleccionados",
-                    size=12,
-                    color="#64748B",
-                    visible=len(clientes) > 1,
-                ),
-            ],
-            spacing=10,
-            scroll=ft.ScrollMode.AUTO,
+        localidad = cliente.get("localidad") or ""
+        provincia = cliente.get("provincia") or ""
+
+        ubicacion = ", ".join(
+            part.upper()
+            for part in [localidad, provincia]
+            if part
+        ) or "Sin ubicación"
+
+        fecha_alta = (
+            fecha_a_display(
+                cliente.get("fecha_alta")
+            )
+            or cliente.get("fecha_alta")
+            or "-"
+        )
+
+        edit_btn = primary_button(
+            "Editar cliente",
+            lambda e, c=cliente:
+                abrir_editar_cliente(c),
+        )
+        edit_btn.width = 310
+
+        expediente_btn = secondary_button(
+            "Crear expediente",
+            lambda e, cid=cliente["id"]:
+                crear_expediente_desde_cliente(cid),
+        )
+        expediente_btn.width = 310
+        expediente_btn.disabled = not bool(
+            on_create_expediente
+        )
+
+        ficha_btn = secondary_button(
+            "Ver ficha completa",
+            ver_ficha_contextual,
+        )
+        ficha_btn.width = 310
+
+        return ft.Container(
+            width=360,
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                "#D9E3F0",
+            ),
+            border_radius=18,
+            padding=20,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=72,
+                                height=72,
+                                border_radius=36,
+                                bgcolor="#EAF3FF",
+                                alignment=ft.Alignment.CENTER,
+                                content=ft.Text(
+                                    client_initials(cliente),
+                                    size=25,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#0057B8",
+                                ),
+                            ),
+                            ft.Container(expand=True),
+                            client_action_menu(cliente),
+                        ],
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.START
+                        ),
+                    ),
+
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Text(
+                                    "Cliente activo",
+                                    size=10,
+                                    weight=ft.FontWeight.W_600,
+                                    color="#027A48",
+                                ),
+                                bgcolor="#ECFDF3",
+                                border_radius=14,
+                                padding=ft.padding.symmetric(
+                                    horizontal=10,
+                                    vertical=5,
+                                ),
+                            ),
+                        ],
+                    ),
+
+                    ft.Text(
+                        nombre.upper(),
+                        size=17,
+                        weight=ft.FontWeight.BOLD,
+                        color="#102A56",
+                    ),
+
+                    ft.Text(
+                        documento,
+                        size=12,
+                        color="#667085",
+                    ),
+
+                    ft.Container(height=4),
+
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.PHONE_OUTLINED,
+                                size=16,
+                                color="#486581",
+                            ),
+                            ft.Text(
+                                telefono,
+                                size=12,
+                                color="#344054",
+                                selectable=True,
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.EMAIL_OUTLINED,
+                                size=16,
+                                color="#486581",
+                            ),
+                            ft.Text(
+                                email,
+                                size=12,
+                                color="#344054",
+                                selectable=True,
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.LOCATION_ON_OUTLINED,
+                                size=16,
+                                color="#486581",
+                            ),
+                            ft.Text(
+                                ubicacion,
+                                size=12,
+                                color="#344054",
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.PUBLIC,
+                                size=16,
+                                color="#486581",
+                            ),
+                            ft.Text(
+                                nacionalidad.upper(),
+                                size=12,
+                                color="#344054",
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.PERSON_OUTLINE,
+                                size=16,
+                                color="#486581",
+                            ),
+                            ft.Text(
+                                f"Edad: {edad} años",
+                                size=12,
+                                color="#344054",
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.CALENDAR_MONTH_OUTLINED,
+                                size=16,
+                                color="#486581",
+                            ),
+                            ft.Text(
+                                f"Alta: {fecha_alta}",
+                                size=12,
+                                color="#344054",
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+
+                    ft.Divider(
+                        height=22,
+                        color="#E4E7EC",
+                    ),
+
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                expand=True,
+                                padding=14,
+                                bgcolor="#FAFCFF",
+                                border=ft.border.all(
+                                    1,
+                                    "#E3EAF3",
+                                ),
+                                border_radius=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Importe a deber",
+                                            size=11,
+                                            weight=ft.FontWeight.W_600,
+                                            color="#475467",
+                                        ),
+                                        ft.Text(
+                                            money_display(
+                                                deuda_total
+                                            ),
+                                            size=18,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=(
+                                                "#027A48"
+                                                if deuda_total <= 0
+                                                else "#B42318"
+                                            ),
+                                        ),
+                                        ft.Text(
+                                            (
+                                                "Sin deuda"
+                                                if deuda_total <= 0
+                                                else "Pendiente"
+                                            ),
+                                            size=10,
+                                            color="#667085",
+                                        ),
+                                    ],
+                                    spacing=3,
+                                ),
+                            ),
+
+                            ft.Container(
+                                expand=True,
+                                padding=14,
+                                bgcolor="#FAFCFF",
+                                border=ft.border.all(
+                                    1,
+                                    "#E3EAF3",
+                                ),
+                                border_radius=12,
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            "Expedientes activos",
+                                            size=11,
+                                            weight=ft.FontWeight.W_600,
+                                            color="#475467",
+                                        ),
+                                        ft.Text(
+                                            str(len(expedientes)),
+                                            size=18,
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#0057B8",
+                                        ),
+                                        ft.Text(
+                                            "Expedientes",
+                                            size=10,
+                                            color="#667085",
+                                        ),
+                                    ],
+                                    spacing=3,
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+
+                    ft.Container(
+                        padding=14,
+                        bgcolor="#FFFFFF",
+                        border=ft.border.all(
+                            1,
+                            "#E3EAF3",
+                        ),
+                        border_radius=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        ft.Text(
+                                            "Ficha de cliente",
+                                            size=12,
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#102A56",
+                                            expand=True,
+                                        ),
+                                        ft.Text(
+                                            f"{ficha_pct}%",
+                                            size=13,
+                                            weight=ft.FontWeight.BOLD,
+                                            color="#027A48",
+                                        ),
+                                    ],
+                                ),
+                                ft.Text(
+                                    "Completitud del perfil",
+                                    size=10,
+                                    color="#667085",
+                                ),
+                                ft.ProgressBar(
+                                    value=ficha_pct / 100,
+                                    height=6,
+                                    color="#12B76A",
+                                    bgcolor="#EAECF0",
+                                    border_radius=6,
+                                ),
+                            ],
+                            spacing=7,
+                        ),
+                    ),
+
+                    ft.Container(
+                        padding=14,
+                        border=ft.border.all(
+                            1,
+                            "#E3EAF3",
+                        ),
+                        border_radius=12,
+                        content=ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "Etiquetas",
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#102A56",
+                                ),
+                                ft.Row(
+                                    controls=[
+                                        estado_cliente_priorizado_badge(
+                                            cliente
+                                        ),
+                                        deuda_tramites_cell(
+                                            cliente
+                                        ),
+                                    ],
+                                    spacing=7,
+                                    wrap=True,
+                                ),
+                            ],
+                            spacing=9,
+                        ),
+                    ),
+
+                    ft.Text(
+                        "Acciones rápidas",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color="#102A56",
+                    ),
+
+                    edit_btn,
+                    expediente_btn,
+                    ficha_btn,
+
+                    ft.Divider(
+                        height=18,
+                        color="#E4E7EC",
+                    ),
+
+                    ft.Text(
+                        (
+                            "Sistema de gestión de clientes · "
+                            "Quesada Abogados"
+                        ),
+                        size=9,
+                        color="#98A2B3",
+                    ),
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            ),
         )
 
     def refresh_context_panel():
@@ -3322,22 +3671,100 @@ def clients_view(
 
     bulk_actions.on_change = ejecutar_accion_lote
 
+    def quick_filter_count(key):
+        previous = state["quick_filter"]
+
+        try:
+            state["quick_filter"] = key
+
+            return sum(
+                1
+                for cliente in state["clients"]
+                if pasa_quick_filter(cliente)
+            )
+        finally:
+            state["quick_filter"] = previous
+
+
     def build_quick_filter_chip(label, key):
         selected = state["quick_filter"] == key
         bg, fg, border_color = quick_filter_colors(key)
+
+        selected_bg = (
+            "#0057B8"
+            if key == "todos"
+            else fg
+        )
+
         return ft.Container(
-            content=ft.Text(
-                title_filter_label(label),
-                size=13,
-                weight=ft.FontWeight.W_600 if selected else ft.FontWeight.NORMAL,
-                color="#FFFFFF" if selected else fg,
+            height=34,
+            padding=ft.padding.symmetric(
+                horizontal=13,
+                vertical=6,
             ),
-            bgcolor=fg if selected else bg,
-            border=ft.border.all(1, fg if selected else border_color),
-            border_radius=20,
-            padding=ft.padding.symmetric(horizontal=14, vertical=8),
+            bgcolor=(
+                selected_bg
+                if selected
+                else bg
+            ),
+            border=ft.border.all(
+                1,
+                selected_bg
+                if selected
+                else border_color,
+            ),
+            border_radius=17,
             ink=True,
-            on_click=lambda e, k=key: set_quick_filter(k),
+            on_click=lambda e, k=key:
+                set_quick_filter(k),
+            content=ft.Row(
+                controls=[
+                    ft.Text(
+                        title_filter_label(label),
+                        size=11,
+                        weight=(
+                            ft.FontWeight.W_600
+                            if selected
+                            else ft.FontWeight.W_500
+                        ),
+                        color=(
+                            "#FFFFFF"
+                            if selected
+                            else fg
+                        ),
+                    ),
+                    ft.Container(
+                        width=22,
+                        height=20,
+                        border_radius=10,
+                        alignment=ft.Alignment.CENTER,
+                        bgcolor=(
+                            "#FFFFFF22"
+                            if selected
+                            else "#FFFFFF"
+                        ),
+                        content=ft.Text(
+                            str(
+                                quick_filter_count(
+                                    key
+                                )
+                            ),
+                            size=9,
+                            weight=ft.FontWeight.BOLD,
+                            color=(
+                                "#FFFFFF"
+                                if selected
+                                else fg
+                            ),
+                        ),
+                    ),
+                ],
+                spacing=5,
+                tight=True,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
         )
 
     def refresh_quick_filters():
@@ -3354,23 +3781,62 @@ def clients_view(
 
     def refresh_selection_bar():
         selected_info.value = selected_count_text()
-        has_selection = len(state["selected_client_ids"]) > 0
-        editar_btn = secondary_button("Editar selección", open_bulk_dialog)
-        archivar_btn = danger_button("Archivar selección", archivar_seleccionados)
+
+        has_selection = (
+            len(state["selected_client_ids"]) > 0
+        )
+
+        editar_btn = secondary_button(
+            "Editar selección",
+            open_bulk_dialog,
+        )
+
+        crear_btn = secondary_button(
+            "Crear expediente",
+            crear_expediente_cliente_seleccionado,
+        )
+
+        archivar_btn = danger_button(
+            "Archivar selección",
+            archivar_seleccionados,
+        )
+
         bulk_actions.disabled = not has_selection
         editar_btn.disabled = not has_selection
         archivar_btn.disabled = not has_selection
+
         selection_bar.visible = True
-        selection_bar.content = ft.Row(
-            controls=[
-                selected_info,
-                bulk_actions,
-                editar_btn,
-                secondary_button("Crear expediente", crear_expediente_cliente_seleccionado),
-                archivar_btn,
-            ],
-            spacing=12,
-            wrap=True,
+
+        selection_bar.content = ft.Container(
+            padding=ft.padding.symmetric(
+                horizontal=12,
+                vertical=9,
+            ),
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                "#DCE5EF",
+            ),
+            border_radius=12,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=175,
+                        content=selected_info,
+                    ),
+
+                    bulk_actions,
+
+                    editar_btn,
+                    crear_btn,
+                    archivar_btn,
+                ],
+                spacing=10,
+                wrap=True,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
+            ),
         )
 
     def refresh_table(e=None):
@@ -3638,65 +4104,323 @@ def clients_view(
         )
 
     def build_client_card(cliente, index=0):
-        is_selected = cliente["id"] in state["selected_client_ids"]
+        is_selected = (
+            cliente["id"]
+            in state["selected_client_ids"]
+        )
+
+        documento = (
+            documento_cliente(cliente)
+            or "Sin documento"
+        )
+
+        telefono = (
+            cliente.get("telefono")
+            or "Sin teléfono"
+        )
+
+        email = (
+            cliente.get("email")
+            or "Sin email"
+        )
+
+        nacionalidad = (
+            cliente.get("nacionalidad")
+            or "Sin nacionalidad"
+        )
+
+        edad = (
+            calcular_edad(
+                cliente.get("fecha_nacimiento")
+            )
+            or "-"
+        )
+
+        localidad = (
+            cliente.get("localidad")
+            or ""
+        )
+
+        provincia = (
+            cliente.get("provincia")
+            or ""
+        )
+
+        ubicacion = ", ".join(
+            part.upper()
+            for part in [localidad, provincia]
+            if part
+        ) or "Sin ubicación"
+
+        ficha_pct = porcentaje_ficha(cliente)
+
+        deuda = cliente.get(
+            "_deuda_cliente"
+        ) or {}
+
+        deuda_total = float(
+            deuda.get("deuda_total")
+            or 0
+        )
 
         checkbox = ft.Checkbox(
             value=is_selected,
-            on_change=lambda e, cid=cliente["id"]: toggle_client_selection(cid),
+            on_change=lambda e, cid=cliente["id"]:
+                toggle_client_selection(cid),
         )
 
-        documento = documento_cliente(cliente) or "Sin documento"
-        telefono = cliente.get("telefono") or "Sin teléfono"
-        email = cliente.get("email") or "Sin email"
-        nacionalidad = cliente.get("nacionalidad") or "Sin nacionalidad"
-        edad = calcular_edad(cliente.get("fecha_nacimiento")) or "-"
-        localidad = cliente.get("localidad") or ""
-        provincia = cliente.get("provincia") or ""
+        avatar = ft.Container(
+            width=56,
+            height=56,
+            border_radius=28,
+            bgcolor=(
+                "#E7F0FF"
+                if index % 3 == 0
+                else
+                "#E9F9F0"
+                if index % 3 == 1
+                else
+                "#F2EAFE"
+            ),
+            alignment=ft.Alignment.CENTER,
+            content=ft.Text(
+                client_initials(cliente),
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=(
+                    "#0057B8"
+                    if index % 3 == 0
+                    else
+                    "#079455"
+                    if index % 3 == 1
+                    else
+                    "#7F56D9"
+                ),
+            ),
+        )
 
-        ubicacion = " · ".join([part for part in [localidad, provincia] if part]) or "Sin localidad"
-
-        body = [
-            ft.Row(
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                2 if is_selected else 1,
+                "#2F80ED"
+                if is_selected
+                else "#D9E2EC",
+            ),
+            border_radius=13,
+            padding=ft.padding.symmetric(
+                horizontal=14,
+                vertical=11,
+            ),
+            shadow=ft.BoxShadow(
+                blur_radius=8,
+                spread_radius=0,
+                color="#102A560A",
+                offset=ft.Offset(0, 2),
+            ),
+            ink=True,
+            on_click=lambda e, cid=cliente["id"]:
+                toggle_client_selection(cid),
+            content=ft.Row(
                 controls=[
-                    ft.Text(f"Documento: {documento}", size=11, color="#64748B", selectable=True),
-                    ft.Text(f"Tel: {telefono}", size=11, color="#64748B", selectable=True),
-                    ft.Text(f"Email: {email}", size=11, color="#64748B", selectable=True),
+                    checkbox,
+
+                    avatar,
+
+                    ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        (
+                                            nombre_completo(cliente)
+                                            or
+                                            f"Cliente #{cliente.get('id')}"
+                                        ).upper(),
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#123B73",
+                                        expand=True,
+                                    ),
+                                    client_action_menu(
+                                        cliente
+                                    ),
+                                ],
+                                vertical_alignment=(
+                                    ft.CrossAxisAlignment.CENTER
+                                ),
+                            ),
+
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        f"{documento}",
+                                        size=10,
+                                        color="#667085",
+                                        selectable=True,
+                                    ),
+                                    ft.Text(
+                                        "•",
+                                        size=10,
+                                        color="#98A2B3",
+                                    ),
+                                    ft.Text(
+                                        telefono,
+                                        size=10,
+                                        color="#667085",
+                                        selectable=True,
+                                    ),
+                                    ft.Text(
+                                        "•",
+                                        size=10,
+                                        color="#98A2B3",
+                                    ),
+                                    ft.Text(
+                                        email,
+                                        size=10,
+                                        color="#667085",
+                                        selectable=True,
+                                    ),
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
+
+                            ft.Row(
+                                controls=[
+                                    ft.Text(
+                                        (
+                                            "Nacionalidad: "
+                                            f"{nacionalidad.upper()}"
+                                        ),
+                                        size=10,
+                                        color="#667085",
+                                    ),
+                                    ft.Text(
+                                        "•",
+                                        size=10,
+                                        color="#98A2B3",
+                                    ),
+                                    ft.Text(
+                                        f"Edad: {edad}",
+                                        size=10,
+                                        color="#667085",
+                                    ),
+                                    ft.Text(
+                                        "•",
+                                        size=10,
+                                        color="#98A2B3",
+                                    ),
+                                    ft.Text(
+                                        (
+                                            "Ubicación: "
+                                            f"{ubicacion}"
+                                        ),
+                                        size=10,
+                                        color="#667085",
+                                    ),
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
+
+                            ft.Row(
+                                controls=[
+                                    ft.Row(
+                                        controls=[
+                                            estado_cliente_priorizado_badge(
+                                                cliente
+                                            ),
+                                            deuda_tramites_cell(
+                                                cliente
+                                            ),
+                                        ],
+                                        spacing=8,
+                                        wrap=True,
+                                    ),
+
+                                    ft.Row(
+                                        controls=[
+                                            ft.Text(
+                                                "A deber",
+                                                size=10,
+                                                color="#667085",
+                                            ),
+                                            ft.Container(
+                                                content=ft.Text(
+                                                    money_display(
+                                                        deuda_total
+                                                    ),
+                                                    size=11,
+                                                    weight=ft.FontWeight.BOLD,
+                                                    color=(
+                                                        "#027A48"
+                                                        if deuda_total <= 0
+                                                        else "#B42318"
+                                                    ),
+                                                ),
+                                                bgcolor=(
+                                                    "#ECFDF3"
+                                                    if deuda_total <= 0
+                                                    else "#FEF3F2"
+                                                ),
+                                                border_radius=14,
+                                                padding=ft.padding.symmetric(
+                                                    horizontal=10,
+                                                    vertical=4,
+                                                ),
+                                            ),
+                                            ft.Text(
+                                                "Ficha completa",
+                                                size=10,
+                                                color="#667085",
+                                            ),
+                                            ft.Container(
+                                                content=ft.Text(
+                                                    f"{ficha_pct}%",
+                                                    size=11,
+                                                    weight=ft.FontWeight.BOLD,
+                                                    color=(
+                                                        "#027A48"
+                                                        if ficha_pct >= 80
+                                                        else "#B54708"
+                                                    ),
+                                                ),
+                                                bgcolor=(
+                                                    "#ECFDF3"
+                                                    if ficha_pct >= 80
+                                                    else "#FFFAEB"
+                                                ),
+                                                border_radius=14,
+                                                padding=ft.padding.symmetric(
+                                                    horizontal=10,
+                                                    vertical=4,
+                                                ),
+                                            ),
+                                        ],
+                                        spacing=8,
+                                        vertical_alignment=(
+                                            ft.CrossAxisAlignment.CENTER
+                                        ),
+                                    ),
+                                ],
+                                alignment=(
+                                    ft.MainAxisAlignment.SPACE_BETWEEN
+                                ),
+                                vertical_alignment=(
+                                    ft.CrossAxisAlignment.CENTER
+                                ),
+                            ),
+                        ],
+                        spacing=5,
+                        expand=True,
+                    ),
                 ],
                 spacing=12,
-                wrap=True,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
+                ),
             ),
-            ft.Row(
-                controls=[
-                    ft.Text(f"Nacionalidad: {nacionalidad}", size=11, color="#64748B", selectable=True),
-                    ft.Text(f"Edad: {edad}", size=11, color="#64748B"),
-                    ft.Text(f"Ubicación: {ubicacion}", size=11, color="#64748B", selectable=True),
-                ],
-                spacing=12,
-                wrap=True,
-            ),
-            ft.Row(
-                controls=[
-                    estado_cliente_priorizado_badge(cliente),
-                    estado_economico_cliente_badge(cliente),
-                    deuda_badge(cliente),
-                    ficha_badge(cliente),
-                ],
-                spacing=8,
-                wrap=True,
-            ),
-            deuda_tramites_cell(cliente),
-        ]
-
-        return card_item(
-            title=nombre_completo(cliente) or f"Cliente #{cliente.get('id')}",
-            subtitle=f"ID cliente: {cliente.get('id')}",
-            leading=checkbox,
-            actions=[client_action_menu(cliente)],
-            body=body,
-            selected=is_selected,
-            selected_color="#FFFFFF",
-            on_click=lambda e, cid=cliente["id"]: toggle_client_selection(cid),
-            padding=10,
         )
 
     def build_table():
@@ -3732,32 +4456,167 @@ def clients_view(
             for index, cliente in enumerate(page_clients)
         ]
 
-        toolbar = ft.Row(
-            controls=[
-                ft.Row(
-                    controls=[
-                        select_all_checkbox,
-                        ft.Text(
-                            "Seleccionar visibles",
-                            size=12,
-                            color="#64748B",
-                            weight=ft.FontWeight.BOLD,
+        first_item = (
+            start + 1
+            if total_items
+            else 0
+        )
+        last_item = min(
+            end,
+            total_items,
+        )
+
+        previous_button = ft.IconButton(
+            icon=ft.Icons.CHEVRON_LEFT_ROUNDED,
+            icon_size=18,
+            tooltip="Página anterior",
+            disabled=current_page <= 1,
+            on_click=lambda e: set_page(
+                current_page - 1
+            ),
+        )
+
+        next_button = ft.IconButton(
+            icon=ft.Icons.CHEVRON_RIGHT_ROUNDED,
+            icon_size=18,
+            tooltip="Página siguiente",
+            disabled=current_page >= total_pages,
+            on_click=lambda e: set_page(
+                current_page + 1
+            ),
+        )
+
+        toolbar = ft.Container(
+            height=52,
+            padding=ft.padding.symmetric(
+                horizontal=14,
+                vertical=6,
+            ),
+            bgcolor="#FFFFFF",
+            border=ft.border.all(
+                1,
+                "#DCE5EF",
+            ),
+            border_radius=12,
+            content=ft.Row(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            select_all_checkbox,
+
+                            ft.Text(
+                                "Seleccionar visibles",
+                                size=11,
+                                color="#475467",
+                                weight=ft.FontWeight.W_600,
+                            ),
+
+                            ft.Container(
+                                width=1,
+                                height=22,
+                                bgcolor="#E4E7EC",
+                            ),
+
+                            ft.Text(
+                                "Clientes",
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color="#102A56",
+                            ),
+
+                            ft.Container(
+                                width=30,
+                                height=24,
+                                alignment=ft.Alignment.CENTER,
+                                padding=ft.padding.symmetric(
+                                    horizontal=8,
+                                ),
+                                bgcolor="#0057B8",
+                                border_radius=12,
+                                content=ft.Text(
+                                    str(total_items),
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#FFFFFF",
+                                ),
+                            ),
+                        ],
+                        spacing=9,
+                        vertical_alignment=(
+                            ft.CrossAxisAlignment.CENTER
                         ),
-                    ],
-                    spacing=4,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+
+                    ft.Container(expand=True),
+
+                    ft.Text(
+                        (
+                            f"Mostrando {first_item}-{last_item} "
+                            f"de {total_items}"
+                        ),
+                        size=11,
+                        color="#667085",
+                    ),
+
+                    ft.Container(
+                        width=1,
+                        height=22,
+                        bgcolor="#E4E7EC",
+                    ),
+
+                    ft.Text(
+                        (
+                            f"Página {current_page} "
+                            f"de {total_pages}"
+                        ),
+                        size=11,
+                        weight=ft.FontWeight.W_600,
+                        color="#344054",
+                    ),
+
+                    ft.Container(
+                        height=34,
+                        border=ft.border.all(
+                            1,
+                            "#DCE5EF",
+                        ),
+                        border_radius=9,
+                        content=ft.Row(
+                            controls=[
+                                previous_button,
+                                ft.Container(
+                                    width=1,
+                                    height=20,
+                                    bgcolor="#E4E7EC",
+                                ),
+                                next_button,
+                            ],
+                            spacing=0,
+                            tight=True,
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.CENTER
+                            ),
+                        ),
+                    ),
+
+                    ft.Container(
+                        width=34,
+                        height=34,
+                        border_radius=9,
+                        bgcolor="#0057B8",
+                        alignment=ft.Alignment.CENTER,
+                        content=ft.Icon(
+                            ft.Icons.VIEW_LIST_ROUNDED,
+                            size=18,
+                            color="#FFFFFF",
+                        ),
+                    ),
+                ],
+                spacing=12,
+                vertical_alignment=(
+                    ft.CrossAxisAlignment.CENTER
                 ),
-                compact_pagination_bar(
-                    page=current_page,
-                    page_size=page_size,
-                    total_items=total_items,
-                    on_page_change=set_page,
-                    label_prefix="Clientes",
-                ),
-            ],
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            wrap=True,
+            ),
         )
 
         return ft.Column(
@@ -3774,8 +4633,9 @@ def clients_view(
                     ),
                 ),
             ],
-            spacing=8,
+            spacing=10,
             expand=True,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         )
 
     def build_client_detail(cliente):
@@ -3844,6 +4704,14 @@ def clients_view(
         cargar_clientes()
         filter_column.on_change = refresh_table
         search_input.on_change = refresh_table
+
+        search_input.prefix_icon = ft.Icons.SEARCH
+        search_input.hint_text = "Buscar cliente..."
+
+        # Distribución visual de la barra superior.
+        filter_column.width = 210
+        search_input.width = 420
+        search_input.expand = False
         refresh_quick_filters()
         table_container.content = build_table()
         refresh_selection_bar()
@@ -3851,37 +4719,150 @@ def clients_view(
         content_area.content = ft.Row(
             controls=[
                 ft.Container(
+                    expand=True,
                     content=ft.Column(
                         controls=[
                             ft.Column(
                                 controls=[
-                                    ft.Text("Clientes", size=28, weight=ft.FontWeight.BOLD, color="#003B7A"),
-                                    ft.Text("Gestión operativa de clientes del despacho", size=14, color="#64748B"),
+                                    ft.Text(
+                                        "Clientes",
+                                        size=28,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#003B7A",
+                                    ),
+                                    ft.Text(
+                                        "Gestión operativa de clientes del despacho",
+                                        size=14,
+                                        color="#64748B",
+                                    ),
                                 ],
                                 spacing=2,
                             ),
+
                             ft.Row(
                                 controls=[
-                                    metric_card("Clientes activos", len(state["clients"])),
-                                    metric_card("Morosos", total_morosos(state["clients"])),
-                                    metric_card("Importe total a deber", money_display(importe_total_deuda(state["clients"]))),
-                                    metric_card("Sin documento", sum(1 for c in state["clients"] if not documento_cliente(c))),
+                                    ft.Container(
+                                        expand=1,
+                                        content=metric_card(
+                                            "Clientes activos",
+                                            len(state["clients"]),
+                                            icon=ft.Icons.PEOPLE_OUTLINE,
+                                            accent_color="#0057B8",
+                                            subtitle="Clientes",
+                                            width=None,
+                                            horizontal=True,
+                                        ),
+                                    ),
+                                    ft.Container(
+                                        expand=1,
+                                        content=metric_card(
+                                            "Morosos",
+                                            total_morosos(
+                                                state["clients"]
+                                            ),
+                                            icon=ft.Icons.ERROR_OUTLINE,
+                                            accent_color="#D92D20",
+                                            subtitle="Clientes",
+                                            width=None,
+                                            horizontal=True,
+                                        ),
+                                    ),
+                                    ft.Container(
+                                        expand=1,
+                                        content=metric_card(
+                                            "Importe total a deber",
+                                            money_display(
+                                                importe_total_deuda(
+                                                    state["clients"]
+                                                )
+                                            ),
+                                            icon=ft.Icons.EURO,
+                                            accent_color="#0057B8",
+                                            subtitle="Total pendiente",
+                                            width=None,
+                                            horizontal=True,
+                                        ),
+                                    ),
+                                    ft.Container(
+                                        expand=1,
+                                        content=metric_card(
+                                            "Sin documento",
+                                            sum(
+                                                1
+                                                for c in state["clients"]
+                                                if not documento_cliente(c)
+                                            ),
+                                            icon=ft.Icons.DESCRIPTION_OUTLINED,
+                                            accent_color="#7F56D9",
+                                            subtitle="Clientes",
+                                            width=None,
+                                            horizontal=True,
+                                        ),
+                                    ),
                                 ],
                                 spacing=12,
+                                wrap=False,
+                                vertical_alignment=(
+                                    ft.CrossAxisAlignment.CENTER
+                                ),
                             ),
-                            filter_bar(
-                                dropdown=filter_column,
-                                search_input=search_input,
-                                actions=[primary_button("Nuevo cliente", abrir_nuevo_cliente), secondary_button("Importar CSV", seleccionar_csv)],
+
+                            ft.Container(
+                                height=66,
+                                padding=ft.padding.symmetric(
+                                    horizontal=12,
+                                    vertical=8,
+                                ),
+                                bgcolor="#FFFFFF",
+                                border=ft.border.all(
+                                    1,
+                                    "#DCE5EF",
+                                ),
+                                border_radius=12,
+                                content=ft.Row(
+                                    controls=[
+                                        ft.Container(
+                                            width=210,
+                                            content=filter_column,
+                                        ),
+                                        ft.Container(
+                                            width=420,
+                                            content=search_input,
+                                        ),
+                                        ft.Container(
+                                            width=170,
+                                            content=primary_button(
+                                                "＋  Nuevo cliente",
+                                                abrir_nuevo_cliente,
+                                            ),
+                                        ),
+                                        ft.Container(
+                                            width=170,
+                                            content=secondary_button(
+                                                "Importar CSV",
+                                                seleccionar_csv,
+                                            ),
+                                        ),
+                                    ],
+                                    spacing=12,
+                                    alignment=(
+                                        ft.MainAxisAlignment.SPACE_BETWEEN
+                                    ),
+                                    vertical_alignment=(
+                                        ft.CrossAxisAlignment.CENTER
+                                    ),
+                                    wrap=False,
+                                ),
                             ),
+
                             quick_filters_container,
                             table_container,
                         ],
                         spacing=10,
                         expand=True,
                     ),
-                    expand=True,
                 ),
+
                 context_panel_container,
             ],
             spacing=18,
