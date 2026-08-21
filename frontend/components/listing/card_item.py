@@ -13,6 +13,7 @@ def card_item(
     badges=None,
     actions=None,
     title_controls=None,
+    trailing=None,
     body=None,
     footer=None,
     selected=False,
@@ -98,6 +99,9 @@ def card_item(
             expand=True,
         )
     )
+
+    if trailing is not None:
+        header_controls.append(trailing)
 
     return ft.Container(
         padding=padding,

@@ -48,6 +48,7 @@ def bulk_action_bar(
     clear_tooltip="Limpiar selección",
     message_control=None,
     compact=True,
+    inline=False,
 ):
     """
     Barra reusable para acciones masivas.
@@ -124,6 +125,13 @@ def bulk_action_bar(
 
     if message_control is not None:
         controls.append(message_control)
+
+    if inline:
+        return ft.Column(
+            controls=controls,
+            spacing=4,
+            tight=True,
+        )
 
     return ft.Container(
         bgcolor="#FFFFFF",

@@ -33,6 +33,7 @@ def metric_card(
     accent_color=None,
     subtitle=None,
     width=220,
+    horizontal=False,
 ):
     """
     Card reutilizable de métrica.
@@ -40,8 +41,8 @@ def metric_card(
     Compatible con el contrato histórico:
         metric_card(title, value)
 
-    Permite además una presentación enriquecida
-    mediante icono, color de acento y subtítulo.
+    horizontal=True activa la variante dashboard:
+    icono lateral + contenido jerarquizado.
     """
     accent = accent_color or Q_PRIMARY
 
@@ -74,27 +75,75 @@ def metric_card(
             width=width,
         )
 
-    header_controls = []
+    icon_control = None
 
     if icon is not None:
-        header_controls.append(
-            ft.Container(
-                width=36,
-                height=36,
-                alignment=ft.Alignment(0, 0),
-                border_radius=10,
-                bgcolor="#F8FAFC",
-                border=ft.border.all(
-                    1,
-                    Q_BORDER,
-                ),
-                content=ft.Icon(
-                    icon,
-                    size=19,
-                    color=accent,
-                ),
-            )
+        icon_control = ft.Container(
+            width=48 if horizontal else 36,
+            height=48 if horizontal else 36,
+            alignment=ft.Alignment(0, 0),
+            border_radius=13 if horizontal else 10,
+            bgcolor="#F8FAFC",
+            border=ft.border.all(
+                1,
+                Q_BORDER,
+            ),
+            content=ft.Icon(
+                icon,
+                size=23 if horizontal else 19,
+                color=accent,
+            ),
         )
+
+    if horizontal:
+        text_controls = [
+            ft.Text(
+                title,
+                size=12,
+                color=Q_MUTED,
+                weight=ft.FontWeight.W_600,
+            ),
+            ft.Text(
+                str(value),
+                size=28,
+                weight=ft.FontWeight.BOLD,
+                color=Q_PRIMARY_DARK,
+            ),
+        ]
+
+        if subtitle:
+            text_controls.append(
+                ft.Text(
+                    str(subtitle),
+                    size=10,
+                    color=Q_MUTED,
+                )
+            )
+
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.border.all(1, Q_BORDER),
+            border_radius=15,
+            padding=16,
+            width=width,
+            content=ft.Row(
+                controls=[
+                    icon_control,
+                    ft.Column(
+                        controls=text_controls,
+                        spacing=3,
+                        expand=True,
+                    ),
+                ],
+                spacing=14,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    header_controls = []
+
+    if icon_control is not None:
+        header_controls.append(icon_control)
 
     header_controls.append(
         ft.Text(
