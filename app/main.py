@@ -75,32 +75,24 @@ from frontend.components.global_call_ui_coordinator import (
 )
 
 
-def main(page: ft.Page):
+async def main(page: ft.Page):
     page.title = "Quesada Abogados ERP"
 
-    configure_sqlite_runtime()
-    initialize_database()
-    configure_sqlite_runtime()
-
-    page.window.width = 1650
-    page.window.height = 920
+    # Arranque nativo oculto.
+    # Se maximiza antes del primer frame visible.
+    page.window.visible = False
+    page.window.full_screen = False
+    page.window.minimized = False
+    page.window.maximized = True
     page.window.min_width = 1200
     page.window.min_height = 750
-    page.window.full_screen = False
-    page.window.maximized = True
     page.window.resizable = True
     page.window.minimizable = True
     page.window.maximizable = True
 
-    try:
-        page.window_maximized = True
-    except Exception:
-        pass
-
-    try:
-        page.window_full_screen = False
-    except Exception:
-        pass
+    configure_sqlite_runtime()
+    initialize_database()
+    configure_sqlite_runtime()
 
     current_user = {"value": None}
 
@@ -2356,19 +2348,25 @@ def main(page: ft.Page):
         page.update()
 
     page.add(main_container)
+
+    # Construimos el login mientras la ventana sigue oculta.
     start()
 
-    try:
-        page.window.maximized = True
-    except Exception:
-        pass
+    # Aplicamos el estado final antes de mostrarla.
+    page.window.full_screen = False
+    page.window.minimized = False
+    page.window.maximized = True
+    page.update()
 
-    try:
-        page.window_maximized = True
-    except Exception:
-        pass
+    await page.window.wait_until_ready_to_show()
 
+    # Primer frame visible: ya maximizado.
+    page.window.visible = True
+    page.window.focused = True
     page.update()
 
 
-ft.run(main)
+ft.run(
+    main,
+    view=ft.AppView.FLET_APP_HIDDEN,
+)
