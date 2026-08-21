@@ -26361,6 +26361,7 @@ def expedients_view(
         return ft.Column(
             controls=[
                 ft.Container(
+                    width=float("inf"),
                     bgcolor="#FFFFFF",
                     border=ft.border.all(
                         1,
@@ -26448,12 +26449,12 @@ def expedients_view(
                     width=float("inf"),
                     content=ft.Column(
                         controls=cards,
-                        spacing=10,
+                        spacing=8,
                         scroll=None,
                     ),
                 ),
             ],
-            spacing=9,
+            spacing=8,
             expand=True,
             scroll=ft.ScrollMode.AUTO,
         )
@@ -26627,48 +26628,51 @@ def expedients_view(
                             ),
                         ),
                     ],
-                    spacing=12,
+                    spacing=10,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                filter_bar(
-                    fields=[
-                        {
-                            "label": "Estado admin.",
-                            "control": filtro_estado.control,
-                            "width": 220,
-                        },
-                        {
-                            "label": "Buscar expediente / cliente / registro",
-                            "control": search_input,
-                            "width": 360,
-                        },
-                        {
-                            "label": "Familia",
-                            "control": filtro_familia.control,
-                            "width": 175,
-                        },
-                        {
-                            "label": "Tipo",
-                            "control": filtro_tipo.control,
-                            "width": 190,
-                        },
-                        {
-                            "label": "Subtipo",
-                            "control": filtro_subtipo.control,
-                            "width": 190,
-                        },
-                        {
-                            "label": "Prioridad",
-                            "control": filtro_prioridad.control,
-                            "width": 160,
-                        },
-                    ],
-                    footer_actions=[
-                        secondary_button(
-                            "Limpiar filtros",
-                            clear_filters,
-                        ),
-                    ],
+                ft.Container(
+                    width=float("inf"),
+                    content=filter_bar(
+                        fields=[
+                            {
+                                "label": "Estado admin.",
+                                "control": filtro_estado.control,
+                                "width": 220,
+                            },
+                            {
+                                "label": "Buscar expediente / cliente / registro",
+                                "control": search_input,
+                                "width": 360,
+                            },
+                            {
+                                "label": "Familia",
+                                "control": filtro_familia.control,
+                                "width": 175,
+                            },
+                            {
+                                "label": "Tipo",
+                                "control": filtro_tipo.control,
+                                "width": 190,
+                            },
+                            {
+                                "label": "Subtipo",
+                                "control": filtro_subtipo.control,
+                                "width": 190,
+                            },
+                            {
+                                "label": "Prioridad",
+                                "control": filtro_prioridad.control,
+                                "width": 160,
+                            },
+                        ],
+                        footer_actions=[
+                            secondary_button(
+                                "Limpiar filtros",
+                                clear_filters,
+                            ),
+                        ],
+                    ),
                 ),
                 table_container,
             ]
@@ -26676,7 +26680,7 @@ def expedients_view(
 
         return ft.Column(
             controls=controls,
-            spacing=18,
+            spacing=14,
             expand=True,
         )
 
