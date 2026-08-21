@@ -26,6 +26,7 @@ from frontend.components.listing import (
 
 from backend.services import (
     icpplus_profile_service,
+    icpplus_scheduler_service,
     icpplus_state_service,
     icpplus_test_reservation_service,
 )
@@ -739,6 +740,33 @@ def icpplus_view(
         color=Q_MUTED,
     )
 
+    all_attempts_chip_text = ft.Text(
+        "Todos los intentos · 0",
+        size=11,
+        weight=ft.FontWeight.BOLD,
+        color=Q_PRIMARY_2,
+    )
+
+    all_attempts_chip = ft.Container(
+        padding=ft.padding.symmetric(
+            horizontal=10,
+            vertical=5,
+        ),
+        bgcolor="#EAF3FF",
+        border=ft.border.all(
+            1,
+            "#B9D5F5",
+        ),
+        border_radius=20,
+        ink=True,
+        content=all_attempts_chip_text,
+        tooltip=(
+            "Mostrar el historial principal "
+            "de intentos ICP Plus"
+        ),
+    )
+
+
     test_reservation_chip_text = ft.Text(
         "Cita reservada · 0",
         size=11,
@@ -762,6 +790,33 @@ def icpplus_view(
         tooltip=(
             "Mostrar la cita reservada "
             "con el perfil técnico de prueba"
+        ),
+    )
+
+
+    scheduler_chip_text = ft.Text(
+        "Vigilancias activas · 0",
+        size=11,
+        weight=ft.FontWeight.BOLD,
+        color=Q_MUTED,
+    )
+
+    scheduler_chip = ft.Container(
+        padding=ft.padding.symmetric(
+            horizontal=10,
+            vertical=5,
+        ),
+        bgcolor="#F5F7FA",
+        border=ft.border.all(
+            1,
+            Q_BORDER,
+        ),
+        border_radius=20,
+        ink=True,
+        content=scheduler_chip_text,
+        tooltip=(
+            "Mostrar las vigilancias "
+            "programadas de ICP Plus"
         ),
     )
 
@@ -845,7 +900,9 @@ def icpplus_view(
     appointment_history_header = ft.Row(
         [
             appointment_history_count,
+            all_attempts_chip,
             test_reservation_chip,
+            scheduler_chip,
         ],
         spacing=8,
         vertical_alignment=(
@@ -2806,9 +2863,332 @@ def icpplus_view(
         )
 
 
+    def refresh_all_attempts_chip():
+        try:
+            attempts = (
+                icpplus_state_service
+                .list_history(
+                    limit=250
+                )
+            )
+
+            count = len(
+                attempts
+                or []
+            )
+
+        except Exception:
+            count = 0
+
+        all_attempts_chip_text.value = (
+            f"Todos los intentos · {count}"
+        )
+
+        selected = (
+            appointment_panel_mode[
+                "value"
+            ]
+            == "history"
+        )
+
+        all_attempts_chip_text.color = (
+            Q_PRIMARY_2
+            if selected
+            else Q_MUTED
+        )
+
+        all_attempts_chip.bgcolor = (
+            "#EAF3FF"
+            if selected
+            else "#F5F7FA"
+        )
+
+        all_attempts_chip.border = (
+            ft.border.all(
+                1,
+                "#B9D5F5",
+            )
+            if selected
+            else ft.border.all(
+                1,
+                Q_BORDER,
+            )
+        )
+
+
+    def refresh_scheduler_chip():
+        count = (
+            icpplus_scheduler_service
+            .active_count()
+        )
+
+        scheduler_chip_text.value = (
+            f"Vigilancias activas · {count}"
+        )
+
+        if count:
+            scheduler_chip_text.color = (
+                Q_PRIMARY_2
+            )
+
+            scheduler_chip.bgcolor = (
+                "#EAF3FF"
+            )
+
+        else:
+            scheduler_chip_text.color = (
+                Q_MUTED
+            )
+
+            scheduler_chip.bgcolor = (
+                "#F5F7FA"
+            )
+
+
+    def render_active_schedulers_in_history():
+        appointment_history_column.controls.clear()
+
+        appointment_pagination_host.visible = (
+            False
+        )
+
+        schedules = (
+            icpplus_scheduler_service
+            .list_active()
+        )
+
+        refresh_scheduler_chip()
+
+        if not schedules:
+            appointment_history_count.value = (
+                "0 vigilancias"
+            )
+
+            appointment_history_column.controls.append(
+                ft.Container(
+                    padding=16,
+                    content=ft.Text(
+                        "No hay vigilancias activas.",
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                )
+            )
+
+            return
+
+
+        appointment_history_count.value = (
+            f"{len(schedules)} vigilancias"
+        )
+
+
+        for schedule in schedules:
+            status = str(
+                schedule.get(
+                    "status"
+                )
+                or "ACTIVE"
+            ).upper()
+
+            interval_minutes = int(
+                schedule.get(
+                    "interval_minutes"
+                )
+                or 0
+            )
+
+            attempt_count = int(
+                schedule.get(
+                    "attempt_count"
+                )
+                or 0
+            )
+
+            office_text = str(
+                schedule.get(
+                    "office_text"
+                )
+                or schedule.get(
+                    "office_key"
+                )
+                or "ICP Plus"
+            )
+
+            province_text = str(
+                schedule.get(
+                    "province_key"
+                )
+                or ""
+            ).replace(
+                "_",
+                " ",
+            ).title()
+
+            procedure_text = str(
+                schedule.get(
+                    "procedure_text"
+                )
+                or schedule.get(
+                    "procedure_key"
+                )
+                or "Trámite ICP Plus"
+            )
+
+            appointment_history_column.controls.append(
+                ft.Container(
+                    padding=14,
+                    bgcolor="#FFFFFF",
+                    border=ft.border.all(
+                        1,
+                        Q_BORDER,
+                    ),
+                    border_radius=10,
+                    content=ft.Column(
+                        [
+                            ft.Row(
+                                [
+                                    ft.Text(
+                                        office_text,
+                                        size=14,
+                                        weight=(
+                                            ft.FontWeight.BOLD
+                                        ),
+                                        color=Q_PRIMARY,
+                                        expand=True,
+                                    ),
+                                    _status_chip(
+                                        status,
+                                        {
+                                            "ACTIVE":
+                                                "Activa",
+                                            "RUNNING":
+                                                "Ejecutando",
+                                            "PAUSED":
+                                                "Pausada",
+                                        }.get(
+                                            status,
+                                            status,
+                                        ),
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+
+                            ft.Text(
+                                province_text,
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+
+                            ft.Row(
+                                [
+                                    ft.Icon(
+                                        ft.Icons.DESCRIPTION_OUTLINED,
+                                        size=14,
+                                        color=Q_PRIMARY_2,
+                                    ),
+
+                                    ft.Text(
+                                        procedure_text,
+                                        size=11,
+                                        color=Q_TEXT,
+                                        weight=ft.FontWeight.W_500,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=5,
+                            ),
+
+                            ft.Text(
+                                (
+                                    f"Cada {interval_minutes} min"
+                                    f" · Intentos: {attempt_count}"
+                                ),
+                                size=12,
+                                color=Q_TEXT,
+                            ),
+
+                            ft.Text(
+                                (
+                                    "Próximo intento: "
+                                    + _format_iso_datetime(
+                                        schedule.get(
+                                            "next_run_at"
+                                        )
+                                    )
+                                ),
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+
+                            ft.Text(
+                                (
+                                    "Finaliza: "
+                                    + _format_iso_datetime(
+                                        schedule.get(
+                                            "ends_at"
+                                        )
+                                    )
+                                ),
+                                size=11,
+                                color=Q_MUTED,
+                            ),
+                        ],
+                        spacing=6,
+                    ),
+                )
+            )
+
+
+    def show_all_attempts(
+        e=None,
+    ):
+        appointment_panel_mode[
+            "value"
+        ] = "history"
+
+        appointment_history_page[
+            "value"
+        ] = 1
+
+        refresh_persistent_cards()
+
+        _safe_page_update(
+            page
+        )
+
+
+    all_attempts_chip.on_click = (
+        show_all_attempts
+    )
+
+
+    def show_active_schedulers(
+        e=None,
+    ):
+        appointment_panel_mode[
+            "value"
+        ] = "schedulers"
+
+        refresh_persistent_cards()
+
+        _safe_page_update(
+            page
+        )
+
+
+    scheduler_chip.on_click = (
+        show_active_schedulers
+    )
+
+
     def refresh_appointment_history(
         cards,
     ):
+        refresh_all_attempts_chip()
+        refresh_scheduler_chip()
+
         if (
             appointment_panel_mode[
                 "value"
@@ -2816,6 +3196,15 @@ def icpplus_view(
             == "reservation"
         ):
             render_test_reservation_in_history()
+            return
+
+        if (
+            appointment_panel_mode[
+                "value"
+            ]
+            == "schedulers"
+        ):
+            render_active_schedulers_in_history()
             return
 
 
@@ -4144,6 +4533,102 @@ def icpplus_view(
             return
 
 
+        if (
+            execution_mode.value
+            == "SCHEDULED"
+        ):
+            try:
+                interval_minutes = int(
+                    scheduler_interval_input.value
+                    or 0
+                )
+
+                duration_minutes = int(
+                    scheduler_duration_input.value
+                    or 0
+                )
+
+                schedule = (
+                    icpplus_scheduler_service
+                    .create_schedule(
+                        province_key=(
+                            province_key
+                        ),
+                        procedure_key=(
+                            procedure_key
+                        ),
+                        procedure_text=(
+                            procedure_key_to_label.get(
+                                procedure_key,
+                                procedure_key,
+                            )
+                        ),
+                        office_key=(
+                            office_key
+                        ),
+                        office_text=(
+                            office_key_to_label.get(
+                                office_key,
+                                office_key,
+                            )
+                        ),
+                        interval_minutes=(
+                            interval_minutes
+                        ),
+                        duration_minutes=(
+                            duration_minutes
+                        ),
+                    )
+                )
+
+                appointment_panel_mode[
+                    "value"
+                ] = "schedulers"
+
+                result_message.value = (
+                    "Vigilancia ICP Plus programada."
+                )
+
+                result_message.color = (
+                    Q_SUCCESS
+                )
+
+                refresh_persistent_cards()
+
+                check_dialog.open = False
+
+                _safe_page_update(
+                    page
+                )
+
+                print(
+                    "[ICPPLUS-SCHEDULER] created =",
+                    schedule.get(
+                        "scheduler_id"
+                    ),
+                    flush=True,
+                )
+
+            except Exception as exc:
+                dialog_execution_status.value = (
+                    "No se pudo programar"
+                )
+
+                dialog_execution_status.color = (
+                    Q_ERROR
+                )
+
+                dialog_execution_detail.value = str(
+                    exc
+                )
+
+                _safe_page_update(
+                    page
+                )
+
+            return
+
+
         check_button.disabled = True
         save_button.disabled = True
 
@@ -4288,6 +4773,18 @@ def icpplus_view(
         color=Q_TEXT,
     )
 
+    execution_mode_value = ft.Text(
+        "Una comprobación",
+        size=13,
+        color=Q_TEXT,
+    )
+
+    execution_schedule_value = ft.Text(
+        "No aplica",
+        size=13,
+        color=Q_TEXT,
+    )
+
 
     dialog_result_body = ft.Column(
         spacing=10,
@@ -4421,6 +4918,112 @@ def icpplus_view(
     # CONSULTA
     # --------------------------------------------------------
 
+    execution_mode = ft.RadioGroup(
+        value="ONE_SHOT",
+        content=ft.Row(
+            [
+                ft.Radio(
+                    value="ONE_SHOT",
+                    label="Una comprobación",
+                ),
+                ft.Radio(
+                    value="SCHEDULED",
+                    label="Vigilancia programada",
+                ),
+            ],
+            spacing=28,
+        ),
+    )
+
+    scheduler_interval_input = ft.TextField(
+        label="Intervalo entre intentos (minutos)",
+        value="15",
+        width=260,
+        keyboard_type=ft.KeyboardType.NUMBER,
+    )
+
+    scheduler_duration_input = ft.TextField(
+        label="Duración total (minutos)",
+        value="60",
+        width=260,
+        keyboard_type=ft.KeyboardType.NUMBER,
+    )
+
+    scheduler_settings = ft.Container(
+        visible=False,
+        padding=12,
+        bgcolor="#F8FAFC",
+        border=ft.border.all(
+            1,
+            Q_BORDER,
+        ),
+        border_radius=9,
+        content=ft.Column(
+            [
+                ft.Text(
+                    "Configuración de vigilancia",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=Q_PRIMARY,
+                ),
+                ft.Row(
+                    [
+                        scheduler_interval_input,
+                        scheduler_duration_input,
+                    ],
+                    spacing=10,
+                ),
+                ft.Text(
+                    (
+                        "Cada ejecución abre y cierra su propio "
+                        "Chrome. Existe además un descanso global "
+                        "mínimo de 15 minutos entre bots."
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+                ft.Text(
+                    (
+                        "Un minuto antes de cada ejecución efectiva "
+                        "se mostrará un aviso."
+                    ),
+                    size=11,
+                    color=Q_MUTED,
+                ),
+            ],
+            spacing=8,
+        ),
+    )
+
+
+    def on_execution_mode_change(
+        e=None,
+    ):
+        scheduled = (
+            execution_mode.value
+            == "SCHEDULED"
+        )
+
+        scheduler_settings.visible = (
+            scheduled
+        )
+
+        check_button.text = (
+            "Iniciar vigilancia"
+            if scheduled
+            else "Lanzar comprobación"
+        )
+
+        _safe_page_update(
+            page
+        )
+
+
+    execution_mode.on_change = (
+        on_execution_mode_change
+    )
+
+
     query_step_content = ft.Column(
         [
             ft.Container(
@@ -4483,6 +5086,21 @@ def icpplus_view(
                         ),
 
                         office_dd.control,
+
+                        ft.Divider(
+                            height=1,
+                        ),
+
+                        ft.Text(
+                            "Modo de ejecución",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY,
+                        ),
+
+                        execution_mode,
+
+                        scheduler_settings,
 
                         ft.Container(
                             padding=12,
@@ -4594,6 +5212,16 @@ def icpplus_view(
             dialog_summary_row(
                 "Oficina",
                 execution_office_value,
+            ),
+
+            dialog_summary_row(
+                "Modo",
+                execution_mode_value,
+            ),
+
+            dialog_summary_row(
+                "Programación",
+                execution_schedule_value,
             ),
 
             ft.Container(
@@ -5186,20 +5814,102 @@ def icpplus_view(
         )
 
 
-        dialog_execution_status.value = (
-            "Listo para lanzar"
-        )
+        if (
+            execution_mode.value
+            == "SCHEDULED"
+        ):
+            try:
+                interval_minutes = int(
+                    scheduler_interval_input.value
+                    or 0
+                )
+
+                duration_minutes = int(
+                    scheduler_duration_input.value
+                    or 0
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                raise ValueError(
+                    "Intervalo y duración deben "
+                    "ser números enteros."
+                )
+
+            if (
+                interval_minutes
+                < icpplus_scheduler_service
+                .MIN_INTERVAL_MINUTES
+            ):
+                raise ValueError(
+                    "El intervalo mínimo de vigilancia "
+                    "es de 15 minutos."
+                )
+
+            if (
+                duration_minutes
+                < interval_minutes
+            ):
+                raise ValueError(
+                    "La duración debe ser igual o "
+                    "superior al intervalo."
+                )
+
+            execution_mode_value.value = (
+                "Vigilancia programada"
+            )
+
+            execution_schedule_value.value = (
+                f"Cada {interval_minutes} min · "
+                f"durante {duration_minutes} min"
+            )
+
+            check_button.text = (
+                "Iniciar vigilancia"
+            )
+
+            dialog_execution_status.value = (
+                "Vigilancia lista"
+            )
+
+            dialog_execution_detail.value = (
+                (
+                    "Al pulsar «Iniciar vigilancia» "
+                    "se programará el primer intento. "
+                    "Chrome NO se abrirá ahora."
+                )
+            )
+
+        else:
+            execution_mode_value.value = (
+                "Una comprobación"
+            )
+
+            execution_schedule_value.value = (
+                "No aplica"
+            )
+
+            check_button.text = (
+                "Lanzar comprobación"
+            )
+
+            dialog_execution_status.value = (
+                "Listo para lanzar"
+            )
+
+            dialog_execution_detail.value = (
+                (
+                    "Al pulsar «Lanzar comprobación» "
+                    "se abrirá Chrome y comenzará "
+                    "la consulta."
+                )
+            )
+
 
         dialog_execution_status.color = (
             Q_SUCCESS
-        )
-
-        dialog_execution_detail.value = (
-            (
-                "Al pulsar «Lanzar comprobación» "
-                "se abrirá Chrome y comenzará "
-                "la consulta."
-            )
         )
 
 
@@ -5420,6 +6130,26 @@ def icpplus_view(
         dialog_last_result[
             "value"
         ] = None
+
+        execution_mode.value = (
+            "ONE_SHOT"
+        )
+
+        scheduler_settings.visible = (
+            False
+        )
+
+        scheduler_interval_input.value = (
+            "15"
+        )
+
+        scheduler_duration_input.value = (
+            "60"
+        )
+
+        check_button.text = (
+            "Lanzar comprobación"
+        )
 
         # Primero registramos el diálogo en overlay.
         #

@@ -1,5 +1,9 @@
 import asyncio
 import os
+from datetime import (
+    datetime,
+    timedelta,
+)
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -37,6 +41,10 @@ from backend.services.dehu_runtime_service import (
 )
 from backend.services.icpplus_availability_service import (
     IcpPlusAvailabilityService,
+)
+from backend.services import (
+    icpplus_scheduler_service,
+    icpplus_ui_presence_service,
 )
 from database.connection import initialize_database
 from frontend.views.login_view import login_view
@@ -114,6 +122,685 @@ def main(page: ft.Page):
     icpplus_service = (
         IcpPlusAvailabilityService()
     )
+
+    # ========================================================
+    # ICP PLUS · AVISO GLOBAL T-60
+    # ========================================================
+
+    icpplus_ui_instance_id = (
+        f"ERP-{os.getpid()}"
+    )
+
+    icpplus_warning_watch_started = {
+        "value":
+            False,
+    }
+
+    icpplus_warning_watch_shutdown = {
+        "value":
+            False,
+    }
+
+    icpplus_warning_current = {
+        "event_id":
+            None,
+    }
+
+    icpplus_warning_title = ft.Text(
+        "Próxima comprobación ICP Plus",
+        size=21,
+        weight=ft.FontWeight.BOLD,
+        color="#003B7A",
+    )
+
+    icpplus_warning_province = ft.Text(
+        "—",
+        size=13,
+        weight=ft.FontWeight.BOLD,
+        color="#172B4D",
+    )
+
+    icpplus_warning_procedure = ft.Text(
+        "—",
+        size=13,
+        color="#172B4D",
+    )
+
+    icpplus_warning_office = ft.Text(
+        "—",
+        size=13,
+        color="#66788A",
+    )
+
+    icpplus_warning_countdown = ft.Text(
+        "00:59",
+        size=34,
+        weight=ft.FontWeight.BOLD,
+        color="#0057B8",
+    )
+
+    icpplus_warning_message = ft.Text(
+        "",
+        size=11,
+        color="#B42318",
+        visible=False,
+    )
+
+
+    def close_icpplus_warning_dialog():
+        icpplus_warning_dialog.open = False
+
+        icpplus_warning_current[
+            "event_id"
+        ] = None
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+
+    def on_icpplus_warning_skip(
+        e=None,
+    ):
+        event_id = (
+            icpplus_warning_current.get(
+                "event_id"
+            )
+        )
+
+        if not event_id:
+            return
+
+        if event_id.startswith(
+            "ICPPLUS-WARNING-SMOKE-"
+        ):
+            print(
+                "[ICPPLUS-SCHEDULER-UI] "
+                "SMOKE_ACTION_ONLY",
+                event_id,
+                flush=True,
+            )
+
+            close_icpplus_warning_dialog()
+            return
+
+        try:
+            icpplus_scheduler_service.handle_warning_action(
+                event_id,
+                action="SKIP",
+            )
+
+            print(
+                "[ICPPLUS-SCHEDULER-UI] "
+                "WARNING_ACTION=SKIP",
+                event_id,
+                flush=True,
+            )
+
+            close_icpplus_warning_dialog()
+
+        except Exception as exc:
+            icpplus_warning_message.value = str(
+                exc
+            )
+
+            icpplus_warning_message.visible = (
+                True
+            )
+
+            page.update()
+
+
+    def on_icpplus_warning_stop(
+        e=None,
+    ):
+        event_id = (
+            icpplus_warning_current.get(
+                "event_id"
+            )
+        )
+
+        if not event_id:
+            return
+
+        if event_id.startswith(
+            "ICPPLUS-WARNING-SMOKE-"
+        ):
+            print(
+                "[ICPPLUS-SCHEDULER-UI] "
+                "SMOKE_ACTION_ONLY",
+                event_id,
+                flush=True,
+            )
+
+            close_icpplus_warning_dialog()
+            return
+
+        try:
+            icpplus_scheduler_service.handle_warning_action(
+                event_id,
+                action="STOP",
+            )
+
+            print(
+                "[ICPPLUS-SCHEDULER-UI] "
+                "WARNING_ACTION=STOP",
+                event_id,
+                flush=True,
+            )
+
+            close_icpplus_warning_dialog()
+
+        except Exception as exc:
+            icpplus_warning_message.value = str(
+                exc
+            )
+
+            icpplus_warning_message.visible = (
+                True
+            )
+
+            page.update()
+
+
+    icpplus_warning_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Row(
+            [
+                ft.Icon(
+                    ft.Icons.SCHEDULE,
+                    color="#0057B8",
+                    size=24,
+                ),
+
+                icpplus_warning_title,
+            ],
+            spacing=9,
+        ),
+
+        content=ft.Container(
+            width=520,
+            content=ft.Column(
+                [
+                    ft.Container(
+                        padding=14,
+                        bgcolor="#EAF3FF",
+                        border_radius=10,
+                        content=ft.Column(
+                            [
+                                icpplus_warning_province,
+                                icpplus_warning_procedure,
+                                icpplus_warning_office,
+                            ],
+                            spacing=5,
+                        ),
+                    ),
+
+                    ft.Container(
+                        padding=18,
+                        alignment=ft.Alignment(
+                            0,
+                            0,
+                        ),
+                        content=ft.Column(
+                            [
+                                ft.Text(
+                                    (
+                                        "La comprobación comenzará "
+                                        "automáticamente en"
+                                    ),
+                                    size=12,
+                                    color="#66788A",
+                                    text_align=(
+                                        ft.TextAlign.CENTER
+                                    ),
+                                ),
+
+                                icpplus_warning_countdown,
+
+                                ft.Text(
+                                    (
+                                        "Se respetará el descanso "
+                                        "global mínimo de 15 minutos."
+                                    ),
+                                    size=11,
+                                    color="#66788A",
+                                    text_align=(
+                                        ft.TextAlign.CENTER
+                                    ),
+                                ),
+                            ],
+                            horizontal_alignment=(
+                                ft.CrossAxisAlignment.CENTER
+                            ),
+                            spacing=7,
+                        ),
+                    ),
+
+                    icpplus_warning_message,
+                ],
+                spacing=10,
+                tight=True,
+            ),
+        ),
+
+        actions=[
+            ft.OutlinedButton(
+                "Omitir este intento",
+                on_click=(
+                    on_icpplus_warning_skip
+                ),
+            ),
+
+            ft.ElevatedButton(
+                "Detener vigilancia",
+                bgcolor="#B42318",
+                color="#FFFFFF",
+                on_click=(
+                    on_icpplus_warning_stop
+                ),
+            ),
+        ],
+
+        actions_alignment=(
+            ft.MainAxisAlignment.END
+        ),
+    )
+
+
+    def open_icpplus_warning_dialog(
+        event,
+    ):
+        event = dict(
+            event
+            or {}
+        )
+
+        event_id = str(
+            event.get(
+                "event_id"
+            )
+            or ""
+        )
+
+        if not event_id:
+            return False
+
+        icpplus_warning_current[
+            "event_id"
+        ] = event_id
+
+        province = str(
+            event.get(
+                "province_key"
+            )
+            or "ICP Plus"
+        ).replace(
+            "_",
+            " ",
+        ).title()
+
+        icpplus_warning_province.value = (
+            province
+        )
+
+        icpplus_warning_procedure.value = str(
+            event.get(
+                "procedure_text"
+            )
+            or event.get(
+                "procedure_key"
+            )
+            or "Trámite ICP Plus"
+        )
+
+        icpplus_warning_office.value = str(
+            event.get(
+                "office_text"
+            )
+            or event.get(
+                "office_key"
+            )
+            or "Oficina ICP Plus"
+        )
+
+        icpplus_warning_message.visible = (
+            False
+        )
+
+        if (
+            icpplus_warning_dialog
+            not in page.overlay
+        ):
+            page.overlay.append(
+                icpplus_warning_dialog
+            )
+
+        icpplus_warning_dialog.open = True
+
+        page.update()
+
+        return True
+
+
+    async def run_icpplus_warning_watch():
+        """
+        Proyección global del warning persistido por
+        icpplus_scheduler_worker.py.
+
+        No ejecuta el bot.
+        No controla Chrome.
+        No altera el cooldown.
+        """
+
+        while (
+            not icpplus_warning_watch_shutdown[
+                "value"
+            ]
+        ):
+            try:
+                try:
+                    icpplus_ui_presence_service.mark_alive(
+                        icpplus_ui_instance_id
+                    )
+
+                except Exception as heartbeat_exc:
+                    # Un conflicto temporal del heartbeat nunca
+                    # puede impedir proyectar un warning ya
+                    # persistido por el worker.
+                    print(
+                        "[ICPPLUS-SCHEDULER-UI] "
+                        "heartbeat error:",
+                        repr(
+                            heartbeat_exc
+                        ),
+                        flush=True,
+                    )
+
+                event = (
+                    icpplus_scheduler_service
+                    .get_last_warning_event()
+                )
+
+                if isinstance(
+                    event,
+                    dict,
+                ):
+                    status = str(
+                        event.get(
+                            "status"
+                        )
+                        or "PENDING"
+                    ).upper()
+
+                    event_id = str(
+                        event.get(
+                            "event_id"
+                        )
+                        or ""
+                    )
+
+                    if (
+                        status == "PENDING"
+                        and event_id
+                    ):
+                        if (
+                            icpplus_warning_current[
+                                "event_id"
+                            ]
+                            != event_id
+                        ):
+                            open_icpplus_warning_dialog(
+                                event
+                            )
+
+                        effective_raw = (
+                            event.get(
+                                "effective_run_at"
+                            )
+                        )
+
+                        if effective_raw:
+                            effective = (
+                                datetime.fromisoformat(
+                                    str(
+                                        effective_raw
+                                    )
+                                )
+                            )
+
+                            now = (
+                                datetime.now()
+                                .astimezone()
+                            )
+
+                            remaining = max(
+                                0,
+                                int(
+                                    (
+                                        effective
+                                        - now
+                                    ).total_seconds()
+                                ),
+                            )
+
+                            minutes, seconds = divmod(
+                                remaining,
+                                60,
+                            )
+
+                            icpplus_warning_countdown.value = (
+                                f"{minutes:02d}:"
+                                f"{seconds:02d}"
+                            )
+
+                            if (
+                                icpplus_warning_dialog.open
+                            ):
+                                page.update()
+
+                    elif (
+                        icpplus_warning_dialog.open
+                        and icpplus_warning_current[
+                            "event_id"
+                        ]
+                        == event_id
+                    ):
+                        close_icpplus_warning_dialog()
+
+            except Exception as exc:
+                print(
+                    "[ICPPLUS-SCHEDULER-UI] "
+                    "warning watch error:",
+                    repr(
+                        exc
+                    ),
+                    flush=True,
+                )
+
+            await asyncio.sleep(
+                1
+            )
+
+
+    def start_icpplus_warning_watch():
+        if icpplus_warning_watch_started[
+            "value"
+        ]:
+            return False
+
+        icpplus_warning_watch_started[
+            "value"
+        ] = True
+
+        icpplus_warning_watch_shutdown[
+            "value"
+        ] = False
+
+        page.run_task(
+            run_icpplus_warning_watch
+        )
+
+        return True
+
+    # ========================================================
+    # ICP PLUS · SMOKE VISUAL AVISO GLOBAL
+    # ========================================================
+
+    icpplus_warning_ui_smoke_started = {
+        "value":
+            False,
+    }
+
+
+    async def run_icpplus_warning_ui_smoke():
+        """
+        Smoke exclusivamente visual.
+
+        No crea scheduler.
+        No escribe en config_service.
+        No ejecuta ICP Plus.
+        No abre Chrome.
+        """
+
+        await asyncio.sleep(
+            2
+        )
+
+        effective_run_at = (
+            datetime.now()
+            .astimezone()
+            + timedelta(
+                seconds=60
+            )
+        )
+
+        event = {
+            "event_id":
+                "ICPPLUS-WARNING-SMOKE-001",
+
+            "scheduler_id":
+                "ICPPLUS-SMOKE-001",
+
+            "province_key":
+                "ASTURIAS",
+
+            "procedure_key":
+                "POLICIA_TOMA_HUELLAS_TIE",
+
+            "procedure_text":
+                "Policía · Toma de huellas TIE",
+
+            "office_key":
+                "CNP_OVIEDO",
+
+            "office_text":
+                (
+                    "CNP OVIEDO - EXPEDICION TIE, "
+                    "Plaza de España, 3"
+                ),
+
+            "effective_run_at":
+                effective_run_at.isoformat(
+                    timespec="seconds"
+                ),
+
+            "status":
+                "PENDING",
+        }
+
+        print(
+            "[ICPPLUS-WARNING-SMOKE] OPEN",
+            flush=True,
+        )
+
+        open_icpplus_warning_dialog(
+            event
+        )
+
+        # Dejamos el diálogo visible 20 segundos
+        # actualizando el countdown.
+        for _ in range(
+            20
+        ):
+            if (
+                not icpplus_warning_dialog.open
+            ):
+                return
+
+            remaining = max(
+                0,
+                int(
+                    (
+                        effective_run_at
+                        - datetime.now()
+                        .astimezone()
+                    ).total_seconds()
+                ),
+            )
+
+            minutes, seconds = divmod(
+                remaining,
+                60,
+            )
+
+            icpplus_warning_countdown.value = (
+                f"{minutes:02d}:"
+                f"{seconds:02d}"
+            )
+
+            page.update()
+
+            await asyncio.sleep(
+                1
+            )
+
+        if (
+            icpplus_warning_dialog.open
+        ):
+            close_icpplus_warning_dialog()
+
+        print(
+            "[ICPPLUS-WARNING-SMOKE] COMPLETE",
+            flush=True,
+        )
+
+
+    def maybe_start_icpplus_warning_ui_smoke():
+        enabled = str(
+            os.getenv(
+                "QUESADA_ICPPLUS_WARNING_UI_SMOKE",
+                "",
+            )
+            or ""
+        ).strip().lower()
+
+        if enabled not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return False
+
+        if (
+            icpplus_warning_ui_smoke_started[
+                "value"
+            ]
+        ):
+            return False
+
+        icpplus_warning_ui_smoke_started[
+            "value"
+        ] = True
+
+        page.run_task(
+            run_icpplus_warning_ui_smoke
+        )
+
+        return True
+
 
     # Composition root de Comunicaciones.
     #
@@ -656,6 +1343,17 @@ def main(page: ft.Page):
     def on_page_close(
         e=None,
     ):
+        icpplus_warning_watch_shutdown[
+            "value"
+        ] = True
+
+        try:
+            icpplus_ui_presence_service.clear(
+                icpplus_ui_instance_id
+            )
+        except Exception:
+            pass
+
         """
         Cierra independientemente los runtimes globales.
 
@@ -1642,6 +2340,10 @@ def main(page: ft.Page):
         # un QR, un timeout o cualquier indisponibilidad
         # del provider nunca bloquee el acceso al ERP.
         navigate("Clientes")
+
+        start_icpplus_warning_watch()
+
+        maybe_start_icpplus_warning_ui_smoke()
 
         start_whatsapp_session_services()
 
