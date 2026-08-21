@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Quesada ICP Plus Observer V7",
+  "version": "0.7.0",
+  "description": "Observador pasivo del estado y disponibilidad de ICP Plus.",
+  "permissions": [
+    "webNavigation",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://sede.administracionespublicas.gob.es/*",
+    "https://icp.administracionelectronica.gob.es/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://sede.administracionespublicas.gob.es/*",
+        "https://icp.administracionelectronica.gob.es/*"
+      ],
+      "js": [
+        "content.js",
+        "semantic.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

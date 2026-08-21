@@ -1,0 +1,615 @@
+{
+  "schema_version": 2,
+  "provider": "ICP_PLUS",
+  "captured_from": "exports/automation_sessions/icpplus_map/20260820_150202",
+  "generated_at": "2026-08-20T15:08:18.840233+02:00",
+  "provinces": [
+    {
+      "text": "Selecciona Provincia ...",
+      "provider_value": "",
+      "option_index": 0,
+      "disabled": false,
+      "provider_code": null
+    },
+    {
+      "text": "A Coruña",
+      "provider_value": "/icpplus/citar?p=15&locale=es",
+      "option_index": 1,
+      "disabled": false,
+      "provider_code": "15"
+    },
+    {
+      "text": "Albacete",
+      "provider_value": "/icpplus/citar?p=2&locale=es",
+      "option_index": 2,
+      "disabled": false,
+      "provider_code": "2"
+    },
+    {
+      "text": "Alicante",
+      "provider_value": "/icpco/citar?p=3&locale=es",
+      "option_index": 3,
+      "disabled": false,
+      "provider_code": "3"
+    },
+    {
+      "text": "Almería",
+      "provider_value": "/icpplus/citar?p=4&locale=es",
+      "option_index": 4,
+      "disabled": false,
+      "provider_code": "4"
+    },
+    {
+      "text": "Araba",
+      "provider_value": "/icpplus/citar?p=1&locale=es",
+      "option_index": 5,
+      "disabled": false,
+      "provider_code": "1"
+    },
+    {
+      "text": "Asturias",
+      "provider_value": "/icpplus/citar?p=33&locale=es",
+      "option_index": 6,
+      "disabled": false,
+      "provider_code": "33"
+    },
+    {
+      "text": "Ávila",
+      "provider_value": "/icpplus/citar?p=5&locale=es",
+      "option_index": 7,
+      "disabled": false,
+      "provider_code": "5"
+    },
+    {
+      "text": "Badajoz",
+      "provider_value": "/icpplus/citar?p=6&locale=es",
+      "option_index": 8,
+      "disabled": false,
+      "provider_code": "6"
+    },
+    {
+      "text": "Barcelona",
+      "provider_value": "/icpplustieb/citar?p=8&locale=es",
+      "option_index": 9,
+      "disabled": false,
+      "provider_code": "8"
+    },
+    {
+      "text": "Bizkaia",
+      "provider_value": "/icpplus/citar?p=48&locale=es",
+      "option_index": 10,
+      "disabled": false,
+      "provider_code": "48"
+    },
+    {
+      "text": "Burgos",
+      "provider_value": "/icpplus/citar?p=9&locale=es",
+      "option_index": 11,
+      "disabled": false,
+      "provider_code": "9"
+    },
+    {
+      "text": "Cáceres",
+      "provider_value": "/icpplus/citar?p=10&locale=es",
+      "option_index": 12,
+      "disabled": false,
+      "provider_code": "10"
+    },
+    {
+      "text": "Cádiz",
+      "provider_value": "/icpplus/citar?p=11&locale=es",
+      "option_index": 13,
+      "disabled": false,
+      "provider_code": "11"
+    },
+    {
+      "text": "Cantabria",
+      "provider_value": "/icpplus/citar?p=39&locale=es",
+      "option_index": 14,
+      "disabled": false,
+      "provider_code": "39"
+    },
+    {
+      "text": "Castellón",
+      "provider_value": "/icpplus/citar?p=12&locale=es",
+      "option_index": 15,
+      "disabled": false,
+      "provider_code": "12"
+    },
+    {
+      "text": "Ceuta",
+      "provider_value": "/icpplus/citar?p=51&locale=es",
+      "option_index": 16,
+      "disabled": false,
+      "provider_code": "51"
+    },
+    {
+      "text": "Ciudad Real",
+      "provider_value": "/icpplus/citar?p=13&locale=es",
+      "option_index": 17,
+      "disabled": false,
+      "provider_code": "13"
+    },
+    {
+      "text": "Córdoba",
+      "provider_value": "/icpplus/citar?p=14&locale=es",
+      "option_index": 18,
+      "disabled": false,
+      "provider_code": "14"
+    },
+    {
+      "text": "Cuenca",
+      "provider_value": "/icpplus/citar?p=16&locale=es",
+      "option_index": 19,
+      "disabled": false,
+      "provider_code": "16"
+    },
+    {
+      "text": "Gipuzkoa",
+      "provider_value": "/icpplus/citar?p=20&locale=es",
+      "option_index": 20,
+      "disabled": false,
+      "provider_code": "20"
+    },
+    {
+      "text": "Girona",
+      "provider_value": "/icpplus/citar?p=17&locale=es",
+      "option_index": 21,
+      "disabled": false,
+      "provider_code": "17"
+    },
+    {
+      "text": "Granada",
+      "provider_value": "/icpplus/citar?p=18&locale=es",
+      "option_index": 22,
+      "disabled": false,
+      "provider_code": "18"
+    },
+    {
+      "text": "Guadalajara",
+      "provider_value": "/icpplus/citar?p=19&locale=es",
+      "option_index": 23,
+      "disabled": false,
+      "provider_code": "19"
+    },
+    {
+      "text": "Huelva",
+      "provider_value": "/icpplus/citar?p=21&locale=es",
+      "option_index": 24,
+      "disabled": false,
+      "provider_code": "21"
+    },
+    {
+      "text": "Huesca",
+      "provider_value": "/icpplus/citar?p=22&locale=es",
+      "option_index": 25,
+      "disabled": false,
+      "provider_code": "22"
+    },
+    {
+      "text": "Illes Balears",
+      "provider_value": "/icpplustie/citar?p=7&locale=es",
+      "option_index": 26,
+      "disabled": false,
+      "provider_code": "7"
+    },
+    {
+      "text": "Jaén",
+      "provider_value": "/icpplus/citar?p=23&locale=es",
+      "option_index": 27,
+      "disabled": false,
+      "provider_code": "23"
+    },
+    {
+      "text": "La Rioja",
+      "provider_value": "/icpplus/citar?p=26&locale=es",
+      "option_index": 28,
+      "disabled": false,
+      "provider_code": "26"
+    },
+    {
+      "text": "Las Palmas",
+      "provider_value": "/icpplustie/citar?p=35&locale=es",
+      "option_index": 29,
+      "disabled": false,
+      "provider_code": "35"
+    },
+    {
+      "text": "León",
+      "provider_value": "/icpplus/citar?p=24&locale=es",
+      "option_index": 30,
+      "disabled": false,
+      "provider_code": "24"
+    },
+    {
+      "text": "Lleida",
+      "provider_value": "/icpplus/citar?p=25&locale=es",
+      "option_index": 31,
+      "disabled": false,
+      "provider_code": "25"
+    },
+    {
+      "text": "Lugo",
+      "provider_value": "/icpplus/citar?p=27&locale=es",
+      "option_index": 32,
+      "disabled": false,
+      "provider_code": "27"
+    },
+    {
+      "text": "Madrid",
+      "provider_value": "/icpplustiem/citar?p=28&locale=es",
+      "option_index": 33,
+      "disabled": false,
+      "provider_code": "28"
+    },
+    {
+      "text": "Málaga",
+      "provider_value": "/icpplustie/citar?p=29&locale=es",
+      "option_index": 34,
+      "disabled": false,
+      "provider_code": "29"
+    },
+    {
+      "text": "Melilla",
+      "provider_value": "/icpplus/citar?p=52&locale=es",
+      "option_index": 35,
+      "disabled": false,
+      "provider_code": "52"
+    },
+    {
+      "text": "Murcia",
+      "provider_value": "/icpplus/citar?p=30&locale=es",
+      "option_index": 36,
+      "disabled": false,
+      "provider_code": "30"
+    },
+    {
+      "text": "Navarra",
+      "provider_value": "/icpplus/citar?p=31&locale=es",
+      "option_index": 37,
+      "disabled": false,
+      "provider_code": "31"
+    },
+    {
+      "text": "Ourense",
+      "provider_value": "/icpplus/citar?p=32&locale=es",
+      "option_index": 38,
+      "disabled": false,
+      "provider_code": "32"
+    },
+    {
+      "text": "Palencia",
+      "provider_value": "/icpplus/citar?p=34&locale=es",
+      "option_index": 39,
+      "disabled": false,
+      "provider_code": "34"
+    },
+    {
+      "text": "Pontevedra",
+      "provider_value": "/icpplus/citar?p=36&locale=es",
+      "option_index": 40,
+      "disabled": false,
+      "provider_code": "36"
+    },
+    {
+      "text": "Salamanca",
+      "provider_value": "/icpplus/citar?p=37&locale=es",
+      "option_index": 41,
+      "disabled": false,
+      "provider_code": "37"
+    },
+    {
+      "text": "S.Cruz Tenerife",
+      "provider_value": "/icpco/citar?p=38&locale=es",
+      "option_index": 42,
+      "disabled": false,
+      "provider_code": "38"
+    },
+    {
+      "text": "Segovia",
+      "provider_value": "/icpplus/citar?p=40&locale=es",
+      "option_index": 43,
+      "disabled": false,
+      "provider_code": "40"
+    },
+    {
+      "text": "Sevilla",
+      "provider_value": "/icpplus/citar?p=41&locale=es",
+      "option_index": 44,
+      "disabled": false,
+      "provider_code": "41"
+    },
+    {
+      "text": "Soria",
+      "provider_value": "/icpplus/citar?p=42&locale=es",
+      "option_index": 45,
+      "disabled": false,
+      "provider_code": "42"
+    },
+    {
+      "text": "Tarragona",
+      "provider_value": "/icpplus/citar?p=43&locale=es",
+      "option_index": 46,
+      "disabled": false,
+      "provider_code": "43"
+    },
+    {
+      "text": "Teruel",
+      "provider_value": "/icpplus/citar?p=44&locale=es",
+      "option_index": 47,
+      "disabled": false,
+      "provider_code": "44"
+    },
+    {
+      "text": "Toledo",
+      "provider_value": "/icpplus/citar?p=45&locale=es",
+      "option_index": 48,
+      "disabled": false,
+      "provider_code": "45"
+    },
+    {
+      "text": "Valencia",
+      "provider_value": "/icpplus/citar?p=46&locale=es",
+      "option_index": 49,
+      "disabled": false,
+      "provider_code": "46"
+    },
+    {
+      "text": "Valladolid",
+      "provider_value": "/icpplus/citar?p=47&locale=es",
+      "option_index": 50,
+      "disabled": false,
+      "provider_code": "47"
+    },
+    {
+      "text": "Zamora",
+      "provider_value": "/icpplus/citar?p=49&locale=es",
+      "option_index": 51,
+      "disabled": false,
+      "provider_code": "49"
+    },
+    {
+      "text": "Zaragoza",
+      "provider_value": "/icpplus/citar?p=50&locale=es",
+      "option_index": 52,
+      "disabled": false,
+      "provider_code": "50"
+    }
+  ],
+  "province_catalogs": {
+    "ASTURIAS": {
+      "key": "ASTURIAS",
+      "provider_text": "Asturias",
+      "provider_value": "/icpplus/citar?p=33&locale=es",
+      "provider_code": "33",
+      "offices_general": [
+        {
+          "text": "Cualquier oficina",
+          "provider_value": "99",
+          "option_index": 0,
+          "disabled": false
+        },
+        {
+          "text": "CNP AVILES, Río San Martín, 2, AVILES",
+          "provider_value": "5",
+          "option_index": 1,
+          "disabled": false
+        },
+        {
+          "text": "CNP GIJÓN, Plaza Máximo Gonzalez, s/n, Gijón",
+          "provider_value": "2",
+          "option_index": 2,
+          "disabled": false
+        },
+        {
+          "text": "CNP LUARCA, OLAVARRIETA, 25, LUARCA",
+          "provider_value": "4",
+          "option_index": 3,
+          "disabled": false
+        },
+        {
+          "text": "CNP OVIEDO - EXPEDICION TIE, Plaza de España, 3, Planta Baja (POLICÍA), 3, Oviedo",
+          "provider_value": "3",
+          "option_index": 4,
+          "disabled": false
+        },
+        {
+          "text": "CNP OVIEDO - OTROS DOCUMENTOS, PLAZA DE ESPAÑA, 3 , PLANTA BAJA (OVIEDO), 3, OVIEDO",
+          "provider_value": "6",
+          "option_index": 5,
+          "disabled": false
+        },
+        {
+          "text": "Oficina de Extranjería en Oviedo, Plaza de España, 3, Oviedo",
+          "provider_value": "1",
+          "option_index": 6,
+          "disabled": false
+        },
+        {
+          "text": "SOLICITUD INICIAL ASILO, OFICINA DE EXTRANJEROS (PLAZA DE ESPAÑA 3, POSTERIOR), 3, OVIEDO",
+          "provider_value": "7",
+          "option_index": 7,
+          "disabled": false
+        }
+      ],
+      "procedures": [
+        {
+          "text": "Despliega para ver trámites disponibles en esta provincia",
+          "provider_value": "-1",
+          "option_index": 0,
+          "disabled": false
+        },
+        {
+          "text": "AUTORIZACIÓN DE RESIDENCIA TEMPORAL POR CIRCUNSTANCIAS EXCEPCIONALES POR ARRAIGO",
+          "provider_value": "10",
+          "option_index": 1,
+          "disabled": false
+        },
+        {
+          "text": "FAMILIARES DE RESIDENTES COMUNITARIOS",
+          "provider_value": "4060",
+          "option_index": 2,
+          "disabled": false
+        },
+        {
+          "text": "INFORMACIÓN",
+          "provider_value": "4009",
+          "option_index": 3,
+          "disabled": false
+        },
+        {
+          "text": "SOLICITUD DE AUTORIZACIONES",
+          "provider_value": "4",
+          "option_index": 4,
+          "disabled": false
+        },
+        {
+          "text": "Despliega para ver trámites disponibles en esta provincia",
+          "provider_value": "-1",
+          "option_index": 0,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA - COMUNICACIÓN DE CAMBIO DE DOMICILIO",
+          "provider_value": "4093",
+          "option_index": 1,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA - RECOGIDA DE TARJETA DE IDENTIDAD DE EXTRANJERO (TIE)",
+          "provider_value": "4036",
+          "option_index": 2,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA - TÍTULOS DE VIAJE",
+          "provider_value": "4092",
+          "option_index": 3,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA- EXPEDICIÓN/RENOVACIÓN DE DOCUMENTOS DE SOLICITANTES DE ASILO",
+          "provider_value": "4067",
+          "option_index": 4,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA- SOLICITUD ASILO",
+          "provider_value": "4078",
+          "option_index": 5,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA-AUTORIZACIÓN DE REGRESO",
+          "provider_value": "20",
+          "option_index": 6,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA-CARTA DE INVITACIÓN",
+          "provider_value": "4037",
+          "option_index": 7,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA-CERTIFICADO DE REGISTRO DE CIUDADANO DE LA U.E.",
+          "provider_value": "4038",
+          "option_index": 8,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA-CERTIFICADOS (DE RESIDENCIA, DE NO RESIDENCIA Y DE CONCORDANCIA)",
+          "provider_value": "4049",
+          "option_index": 9,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA-CERTIFICADOS Y ASIGNACION NIE",
+          "provider_value": "4096",
+          "option_index": 10,
+          "disabled": false
+        },
+        {
+          "text": "POLICIA-INFORMACION DE TRÁMITES DE LA COMISARÍA DE POLICIA",
+          "provider_value": "4097",
+          "option_index": 11,
+          "disabled": false
+        },
+        {
+          "text": "POLICÍA - CÉDULA DE INSCRIPCIÓN",
+          "provider_value": "4099",
+          "option_index": 12,
+          "disabled": false
+        },
+        {
+          "text": "POLICÍA TARJETA CONFLICTO UCRANIA–ПОЛІЦІЯ -КАРТКА ДЛЯ ПЕРЕМІЩЕНИХ ОСІБ ВНАСЛІДОК КОНФЛІКТУ В УКРАЇНІ",
+          "provider_value": "4112",
+          "option_index": 13,
+          "disabled": false
+        },
+        {
+          "text": "POLICÍA-PRORROGA DE ESTANCIA",
+          "provider_value": "4124",
+          "option_index": 14,
+          "disabled": false
+        },
+        {
+          "text": "POLICÍA-TOMA DE HUELLAS (EXPEDICIÓN DE TARJETA) INICIAL, RENOVACIÓN, DUPLICADO Y LEY 14/2013",
+          "provider_value": "4010",
+          "option_index": 15,
+          "disabled": false
+        }
+      ],
+      "subprocedures": [
+        {
+          "text": "Autorizaciones de Arraigo",
+          "provider_value": "433001",
+          "option_index": 0,
+          "disabled": false
+        },
+        {
+          "text": "Autorizaciones de Trabajo por Estudios",
+          "provider_value": "433002",
+          "option_index": 1,
+          "disabled": false
+        },
+        {
+          "text": "Comunitarios",
+          "provider_value": "433003",
+          "option_index": 2,
+          "disabled": false
+        },
+        {
+          "text": "Autorizaciones de Estudiantes",
+          "provider_value": "433004",
+          "option_index": 3,
+          "disabled": false
+        },
+        {
+          "text": "Autorizaciones Permanentes",
+          "provider_value": "433005",
+          "option_index": 4,
+          "disabled": false
+        },
+        {
+          "text": "Renovaciones",
+          "provider_value": "433006",
+          "option_index": 5,
+          "disabled": false
+        },
+        {
+          "text": "Trabajo y Residencia Inicial por Cuenta Propia",
+          "provider_value": "433007",
+          "option_index": 6,
+          "disabled": false
+        },
+        {
+          "text": "Solicitud de Autorizaciones",
+          "provider_value": "433008",
+          "option_index": 7,
+          "disabled": false
+        }
+      ]
+    }
+  }
+}
