@@ -222,10 +222,58 @@ function renderSession(session) {
     )
   );
 
+  const statusElement =
+    element("session-status");
+
+  if (statusElement) {
+    const statusClasses = [
+      "qcc-session-status--automating",
+      "qcc-session-status--waiting-user",
+      "qcc-session-status--user-action-detected",
+      "qcc-session-status--resuming",
+      "qcc-session-status--completed",
+      "qcc-session-status--error"
+    ];
+
+    statusElement.classList.remove(
+      ...statusClasses
+    );
+
+    const statusClass =
+      String(session.status || "")
+        .toLowerCase()
+        .replaceAll("_", "-");
+
+    if (statusClass) {
+      statusElement.classList.add(
+        `qcc-session-status--${statusClass}`
+      );
+    }
+  }
+
   setText(
     "session-step",
     normalizeLabel(
       session.current_step
+    )
+  );
+
+  const lastEvent =
+    session.last_event || null;
+
+  const lastEventText =
+    lastEvent
+      ? (
+          lastEvent.message
+          || lastEvent.event
+          || "Evento QCC"
+        )
+      : "—";
+
+  setText(
+    "session-last-event",
+    normalizeLabel(
+      lastEventText
     )
   );
 

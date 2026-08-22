@@ -24,7 +24,7 @@ def test_qcc_manifest_is_v3_side_panel_extension():
     assert manifest["name"] == (
         "Quesada Chrome Companion"
     )
-    assert manifest["version"] == "0.3.0"
+    assert manifest["version"] == "0.4.0"
 
     assert manifest["permissions"] == [
         "sidePanel"
@@ -202,3 +202,52 @@ def test_qcc_sidepanel_remains_runtime_agnostic():
     assert "DESKTOP_GUI_ASSISTED" not in script
     assert '"MERCURIO"' not in script
     assert '"ICP_PLUS"' not in script
+
+
+
+def test_qcc_sidepanel_supports_dynamic_statuses():
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    css = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.css"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert "session-last-event" in script
+
+    for status in (
+        "automating",
+        "waiting-user",
+        "user-action-detected",
+        "resuming",
+        "completed",
+        "error",
+    ):
+        assert (
+            f"qcc-session-status--{status}"
+            in css
+        )
+
+
+def test_qcc_sidepanel_projects_last_event():
+    html = (
+        QCC_DIR
+        / "sidepanel"
+        / "index.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'id="session-last-event"'
+        in html
+    )

@@ -321,3 +321,32 @@ body {
   font-size: 10px;
   line-height: 1.45;
 }
+
+
+.qcc-session-status--automating,
+.qcc-session-status--resuming {
+  background: var(--qcc-primary-soft);
+  color: var(--qcc-primary);
+}
+
+.qcc-session-status--waiting-user {
+  background: #fff8e8;
+  color: #8a4b08;
+}
+
+.qcc-session-status--user-action-detected,
+.qcc-session-status--completed {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.qcc-session-status--error {
+  background: #fef3f2;
+  color: #b42318;
+}
+
+.qcc-last-event {
+  color: var(--qcc-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
