@@ -268,3 +268,47 @@ def test_normalizer_does_not_promote_ambiguous_selector():
         selectors["candidates"][0]["unique"]
         is False
     )
+
+
+def test_normalizer_maps_viewport_and_element_geometry():
+    payload = _payload()
+
+    payload["viewport"] = {
+        "inner_width": 1280,
+        "inner_height": 720,
+        "scroll_x": 120,
+        "scroll_y": 340,
+        "device_pixel_ratio": 1.25,
+    }
+
+    payload["elements"] = [{
+        "index": 0,
+        "frame_path": "main",
+        "tag": "button",
+        "id": "continuar",
+        "attributes": {},
+        "rect": {
+            "x": 300,
+            "y": 400,
+            "width": 120,
+            "height": 40,
+        },
+    }]
+
+    snapshot = normalize_dom_capture(
+        payload
+    )
+
+    assert snapshot.viewport.inner_width == 1280
+    assert snapshot.viewport.scroll_y == 340
+
+    geometry = (
+        snapshot.elements[0]["geometry"]
+    )
+
+    assert (
+        geometry["coordinate_space"]
+        == "TOP_LEVEL_VIEWPORT"
+    )
+    assert geometry["center"]["x"] == 360.0
+    assert geometry["center"]["y"] == 420.0

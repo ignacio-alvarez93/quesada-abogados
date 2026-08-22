@@ -8,6 +8,11 @@ from backend.automation.dom_inspector import (
     DOM_CAPTURE_SCHEMA_VERSION,
 )
 
+from .geometry import (
+    normalize_element_geometry,
+    normalize_viewport,
+)
+
 from .models import (
     SiteArchitecturePage,
     SiteArchitectureSnapshot,
@@ -99,6 +104,12 @@ def _normalize_element(
         ).to_dict()
     )
 
+    record["geometry"] = (
+        normalize_element_geometry(
+            record
+        )
+    )
+
     return record
 
 
@@ -158,6 +169,9 @@ def normalize_dom_capture(
             payload.get("captured_at")
         ),
         page=page,
+        viewport=normalize_viewport(
+            payload.get("viewport")
+        ),
         documents=tuple(
             dict(item)
             for item in (

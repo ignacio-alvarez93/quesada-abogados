@@ -41,6 +41,10 @@ class SiteArchitectureViewport:
     scroll_x: float | None = None
     scroll_y: float | None = None
     device_pixel_ratio: float | None = None
+    screen_x: float | None = None
+    screen_y: float | None = None
+    outer_width: float | None = None
+    outer_height: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

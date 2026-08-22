@@ -483,6 +483,76 @@ def _capture_browser_payload(
                 )
         },
 
+        viewport: {
+            inner_width:
+                Number(
+                    window.innerWidth
+                    || 0
+                ),
+
+            inner_height:
+                Number(
+                    window.innerHeight
+                    || 0
+                ),
+
+            client_width:
+                Number(
+                    document.documentElement
+                        ?.clientWidth
+                    || 0
+                ),
+
+            client_height:
+                Number(
+                    document.documentElement
+                        ?.clientHeight
+                    || 0
+                ),
+
+            scroll_x:
+                Number(
+                    window.scrollX
+                    || 0
+                ),
+
+            scroll_y:
+                Number(
+                    window.scrollY
+                    || 0
+                ),
+
+            device_pixel_ratio:
+                Number(
+                    window.devicePixelRatio
+                    || 1
+                ),
+
+            screen_x:
+                Number(
+                    window.screenX
+                    || 0
+                ),
+
+            screen_y:
+                Number(
+                    window.screenY
+                    || 0
+                ),
+
+            outer_width:
+                Number(
+                    window.outerWidth
+                    || 0
+                ),
+
+            outer_height:
+                Number(
+                    window.outerHeight
+                    || 0
+                )
+        },
+
         html:
             (
                 document.documentElement
@@ -1002,6 +1072,13 @@ def capture_dom_snapshot(
         or {}
     )
 
+    viewport = dict(
+        payload.get(
+            "viewport"
+        )
+        or {}
+    )
+
     page_path = (
         capture_dir
         / "page.html"
@@ -1137,6 +1214,9 @@ def capture_dom_snapshot(
         "metadata":
             metadata,
 
+        "viewport":
+            viewport,
+
         "counts":
             counts,
 
@@ -1196,6 +1276,9 @@ def capture_dom_snapshot(
             metadata.get(
                 "title"
             ),
+
+        "viewport":
+            viewport,
 
         "counts":
             counts,
