@@ -9,6 +9,10 @@ from backend.qcc.bridge.server import (
     QCC_PROTOCOL_VERSION,
     QccBridgeServer,
 )
+from backend.qcc.contracts.protocol import (
+    QccPresentationSession,
+    QccPresentationStatus,
+)
 
 
 @pytest.fixture
@@ -114,3 +118,88 @@ def test_bridge_close_stops_runtime(
     bridge.close()
 
     assert bridge.is_running is False
+
+
+
+def test_context_endpoint_starts_empty(
+    bridge,
+):
+    status, payload = _get_json(
+        f"http://{bridge.host}:"
+        f"{bridge.port}/qcc/context"
+    )
+
+    assert status == 200
+
+    assert payload == {
+        "protocol_version":
+            QCC_PROTOCOL_VERSION,
+        "revision":
+            0,
+        "active":
+            False,
+        "active_session":
+            None,
+    }
+
+
+def test_context_endpoint_reflects_live_session(
+    bridge,
+):
+    from datetime import (
+        datetime,
+        timezone,
+    )
+
+    session = QccPresentationSession(
+        session_id="qcc-live-001",
+        expedient_id=1842,
+        client_id=321,
+        procedure=(
+            "REAGRUPACION_FAMILIAR_INICIAL"
+        ),
+        provider="MERCURIO",
+        runtime="SELENIUMBASE_ASSISTED",
+        started_at=datetime(
+            2026,
+            8,
+            22,
+            8,
+            30,
+            tzinfo=timezone.utc,
+        ),
+        status=(
+            QccPresentationStatus.AUTOMATING
+        ),
+        current_step="UPLOAD_DOCUMENTS",
+        progress=68,
+        requires_user_action=False,
+    )
+
+    bridge.context_store.set_active_session(
+        session
+    )
+
+    status, payload = _get_json(
+        f"http://{bridge.host}:"
+        f"{bridge.port}/qcc/context"
+    )
+
+    assert status == 200
+    assert payload["active"] is True
+    assert payload["revision"] == 1
+
+    active = payload["active_session"]
+
+    assert active["session_id"] == (
+        "qcc-live-001"
+    )
+
+    assert active["provider"] == "MERCURIO"
+
+    assert (
+        active["runtime"]
+        == "SELENIUMBASE_ASSISTED"
+    )
+
+    assert active["progress"] == 68

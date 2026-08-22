@@ -26,6 +26,9 @@ from typing import Any
 from backend.qcc.contracts.protocol import (
     QCC_PROTOCOL_VERSION,
 )
+from backend.qcc.context.store import (
+    QccContextStore,
+)
 
 
 QCC_BRIDGE_HOST = "127.0.0.1"
@@ -79,6 +82,29 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if self.path == "/qcc/context":
+            context_store = getattr(
+                self.server,
+                "qcc_context_store",
+                None,
+            )
+
+            if context_store is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_CONTEXT_UNAVAILABLE",
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                context_store.snapshot(),
+            )
+            return
+
         self._send_json(
             404,
             {
@@ -103,15 +129,29 @@ class QccBridgeServer:
         *,
         host: str = QCC_BRIDGE_HOST,
         port: int = QCC_BRIDGE_PORT,
+        context_store: (
+            QccContextStore
+            | None
+        ) = None,
     ) -> None:
         if host != QCC_BRIDGE_HOST:
             raise ValueError(
                 "QCC_BRIDGE_LOOPBACK_ONLY"
             )
 
+        self._context_store = (
+            context_store
+            if context_store is not None
+            else QccContextStore()
+        )
+
         self._server = ThreadingHTTPServer(
             (host, port),
             _QccBridgeHandler,
+        )
+
+        self._server.qcc_context_store = (
+            self._context_store
         )
 
         self._thread: threading.Thread | None = None
@@ -127,6 +167,12 @@ class QccBridgeServer:
         return int(
             self._server.server_address[1]
         )
+
+    @property
+    def context_store(
+        self,
+    ) -> QccContextStore:
+        return self._context_store
 
     @property
     def is_running(self) -> bool:
