@@ -118,3 +118,36 @@ def test_action_round_trip_from_payload():
         "document_index": 2,
         "value": "43",
     }
+
+
+def test_action_preserves_client_action_id():
+    request = QccActionRequest(
+        session_id="qcc-001",
+        action=(
+            QccActionType
+            .DOCUMENTS_START
+        ),
+        payload={},
+        client_action_id=(
+            "chrome-action-001"
+        ),
+    )
+
+    payload = request.to_payload()
+
+    assert payload[
+        "client_action_id"
+    ] == "chrome-action-001"
+
+    restored = (
+        QccActionRequest
+        .from_payload(
+            payload,
+            session_id="qcc-001",
+        )
+    )
+
+    assert (
+        restored.client_action_id
+        == "chrome-action-001"
+    )

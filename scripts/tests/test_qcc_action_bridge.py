@@ -271,3 +271,105 @@ def test_action_rejects_invalid_document_payload(
     assert payload["error"] == (
         "QCC_ACTION_DOCUMENT_INDEX_INVALID"
     )
+
+
+def test_bridge_deduplicates_client_action_id(
+    bridge,
+):
+    bridge.context_store.set_active_session(
+        _session()
+    )
+
+    base = (
+        f"http://{bridge.host}:"
+        f"{bridge.port}"
+    )
+
+    url = (
+        base
+        + "/qcc/session/"
+        + "qcc-actions-001"
+        + "/action"
+    )
+
+    payload = {
+        "protocol_version":
+            QCC_PROTOCOL_VERSION,
+        "client_action_id":
+            "chrome-action-001",
+        "action":
+            "DOCUMENT_PREPARE",
+        "payload": {
+            "document_index": 1,
+        },
+    }
+
+    status, first = _post(
+        url,
+        payload,
+    )
+
+    assert status == 200
+
+    status, second = _post(
+        url,
+        payload,
+    )
+
+    assert status == 200
+
+    assert (
+        second["action_id"]
+        == first["action_id"]
+    )
+
+    assert second["pending"] == 1
+
+    consume_url = (
+        url
+        + "/consume"
+    )
+
+    status, consumed = _post(
+        consume_url,
+        {
+            "protocol_version":
+                QCC_PROTOCOL_VERSION,
+        },
+    )
+
+    assert status == 200
+    assert consumed[
+        "available"
+    ] is True
+
+    status, empty = _post(
+        consume_url,
+        {
+            "protocol_version":
+                QCC_PROTOCOL_VERSION,
+        },
+    )
+
+    assert status == 200
+    assert empty[
+        "available"
+    ] is False
+
+    # Repetición incluso después de consumir:
+    # misma action_id, pero NO se reencola.
+    status, third = _post(
+        url,
+        payload,
+    )
+
+    assert status == 200
+
+    assert (
+        third["action_id"]
+        == first["action_id"]
+    )
+
+    assert third[
+        "pending"
+    ] == 0

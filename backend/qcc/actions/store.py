@@ -60,6 +60,14 @@ class QccActionStore:
 
         self._next_action_id = 1
 
+        # Registro de idempotencia durante la vida
+        # de cada sesión. También conserva acciones
+        # ya consumidas para impedir reencolados.
+        self._known_actions: dict[
+            tuple[str, str],
+            QccQueuedAction,
+        ] = {}
+
     def submit(
         self,
         request: QccActionRequest,
@@ -73,6 +81,34 @@ class QccActionStore:
             )
 
         with self._lock:
+            dedupe_key = (
+                (
+                    request.session_id,
+                    request.client_action_id,
+                )
+                if request.client_action_id
+                else None
+            )
+
+            if dedupe_key is not None:
+                existing = (
+                    self._known_actions
+                    .get(
+                        dedupe_key
+                    )
+                )
+
+                if existing is not None:
+                    if (
+                        existing.request
+                        != request
+                    ):
+                        raise ValueError(
+                            "QCC_ACTION_IDEMPOTENCY_CONFLICT"
+                        )
+
+                    return existing
+
             queue = self._queues.setdefault(
                 request.session_id,
                 deque(),
@@ -98,6 +134,11 @@ class QccActionStore:
             queue.append(
                 queued
             )
+
+            if dedupe_key is not None:
+                self._known_actions[
+                    dedupe_key
+                ] = queued
 
             return queued
 
@@ -153,16 +194,33 @@ class QccActionStore:
         self,
         session_id: str,
     ) -> int:
+        session_id = str(
+            session_id
+        ).strip()
+
         with self._lock:
             queue = self._queues.pop(
-                str(
-                    session_id
-                ).strip(),
+                session_id,
                 None,
             )
 
-            return (
+            pending = (
                 len(queue)
                 if queue is not None
                 else 0
             )
+
+            dedupe_keys = [
+                key
+                for key
+                in self._known_actions
+                if key[0] == session_id
+            ]
+
+            for key in dedupe_keys:
+                self._known_actions.pop(
+                    key,
+                    None,
+                )
+
+            return pending

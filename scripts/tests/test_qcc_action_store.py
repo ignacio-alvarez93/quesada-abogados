@@ -1,3 +1,5 @@
+import pytest
+
 from backend.qcc.actions.store import (
     QccActionStore,
 )
@@ -145,3 +147,122 @@ def test_clear_session_removes_pending():
         )
         == 0
     )
+
+
+def test_store_deduplicates_client_action_id():
+    store = QccActionStore()
+
+    request = QccActionRequest(
+        session_id="qcc-001",
+        action=(
+            QccActionType
+            .DOCUMENT_PREPARE
+        ),
+        payload={
+            "document_index": 1,
+        },
+        client_action_id=(
+            "chrome-action-001"
+        ),
+    )
+
+    first = store.submit(
+        request
+    )
+
+    second = store.submit(
+        request
+    )
+
+    assert (
+        second.action_id
+        == first.action_id
+    )
+
+    assert (
+        store.pending_count(
+            "qcc-001"
+        )
+        == 1
+    )
+
+    consumed = store.consume_next(
+        "qcc-001"
+    )
+
+    assert (
+        consumed.action_id
+        == first.action_id
+    )
+
+    assert (
+        store.pending_count(
+            "qcc-001"
+        )
+        == 0
+    )
+
+    third = store.submit(
+        request
+    )
+
+    assert (
+        third.action_id
+        == first.action_id
+    )
+
+    # Una repetición posterior al consumo
+    # tampoco vuelve a meter la acción
+    # en la cola.
+    assert (
+        store.pending_count(
+            "qcc-001"
+        )
+        == 0
+    )
+
+
+def test_store_rejects_idempotency_conflict():
+    store = QccActionStore()
+
+    first = QccActionRequest(
+        session_id="qcc-001",
+        action=(
+            QccActionType
+            .DOCUMENT_PREPARE
+        ),
+        payload={
+            "document_index": 1,
+        },
+        client_action_id=(
+            "chrome-action-001"
+        ),
+    )
+
+    conflicting = QccActionRequest(
+        session_id="qcc-001",
+        action=(
+            QccActionType
+            .DOCUMENT_SKIP
+        ),
+        payload={
+            "document_index": 1,
+        },
+        client_action_id=(
+            "chrome-action-001"
+        ),
+    )
+
+    store.submit(
+        first
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "QCC_ACTION_IDEMPOTENCY_CONFLICT"
+        ),
+    ):
+        store.submit(
+            conflicting
+        )

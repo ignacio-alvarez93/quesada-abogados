@@ -35,6 +35,7 @@ class QccActionRequest:
     session_id: str
     action: QccActionType
     payload: dict[str, Any]
+    client_action_id: str | None = None
 
     def __post_init__(self) -> None:
         session_id = str(
@@ -44,6 +45,25 @@ class QccActionRequest:
         if not session_id:
             raise ValueError(
                 "QCC_ACTION_SESSION_ID_REQUIRED"
+            )
+
+        client_action_id = (
+            None
+            if self.client_action_id is None
+            else str(
+                self.client_action_id
+            ).strip()
+        )
+
+        if (
+            self.client_action_id is not None
+            and (
+                not client_action_id
+                or len(client_action_id) > 128
+            )
+        ):
+            raise ValueError(
+                "QCC_CLIENT_ACTION_ID_INVALID"
             )
 
         if not isinstance(
@@ -149,6 +169,12 @@ class QccActionRequest:
 
         object.__setattr__(
             self,
+            "client_action_id",
+            client_action_id,
+        )
+
+        object.__setattr__(
+            self,
             "payload",
             payload,
         )
@@ -156,7 +182,7 @@ class QccActionRequest:
     def to_payload(
         self,
     ) -> dict[str, Any]:
-        return {
+        result = {
             "session_id":
                 self.session_id,
 
@@ -168,6 +194,13 @@ class QccActionRequest:
                     self.payload
                 ),
         }
+
+        if self.client_action_id is not None:
+            result[
+                "client_action_id"
+            ] = self.client_action_id
+
+        return result
 
     @classmethod
     def from_payload(
@@ -212,4 +245,9 @@ class QccActionRequest:
             session_id=session_id,
             action=action,
             payload=raw_payload,
+            client_action_id=(
+                payload.get(
+                    "client_action_id"
+                )
+            ),
         )
