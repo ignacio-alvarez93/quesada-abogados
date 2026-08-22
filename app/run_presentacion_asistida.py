@@ -2346,7 +2346,7 @@ def classify_documento_mercurio(path):
         ("3", ["vinculo", "familiar", "familia", "matrimonio", "nacimiento", "parentesco"]),
         ("186", ["convivencia", "unidad familiar"]),
         ("187", ["permanencia", "padron", "padrón", "empadronamiento", "historico", "histórico"]),
-        ("43", ["tasa", "790", "052", "pago", "justificante"]),
+        ("51", ["tasa", "790", "052"]),
     ]
     for code, keywords in rules:
         for kw in keywords:
