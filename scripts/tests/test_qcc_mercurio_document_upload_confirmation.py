@@ -525,3 +525,93 @@ def test_upload_flow_uses_document_progress_not_undefined_progress():
         "progress=progress"
         not in block
     )
+
+
+def test_prepare_document_uses_plupload_send_file(tmp_path):
+    from unittest.mock import Mock, patch
+
+    path = tmp_path / "pasaporte.pdf"
+    path.write_bytes(b"%PDF-1.4 D5")
+
+    element = SimpleNamespace(send_file=Mock())
+    browser = Mock()
+    browser.find_element.return_value = element
+
+    with patch.object(runner, "wait_for_js"), \
+         patch.object(runner, "select_by_text_or_value"), \
+         patch.object(runner, "write_log"), \
+         patch.object(runner, "js", return_value=path.name):
+        result = runner.preparar_documento_mercurio(
+            browser, path, "1", str(tmp_path)
+        )
+
+    assert result is True
+    element.send_file.assert_called_once_with(str(path.resolve()))
+
+
+def test_prepare_document_does_not_retry_after_send_error_if_reconciled(tmp_path):
+    from unittest.mock import Mock, patch
+
+    path = tmp_path / "pasaporte.pdf"
+    path.write_bytes(b"%PDF-1.4 D5")
+
+    send_file = Mock(side_effect=RuntimeError("transport"))
+    browser = Mock()
+    browser.find_element.return_value = SimpleNamespace(send_file=send_file)
+
+    with patch.object(runner, "wait_for_js"), \
+         patch.object(runner, "select_by_text_or_value"), \
+         patch.object(runner, "write_log"), \
+         patch.object(runner, "js", return_value=path.name):
+        result = runner.preparar_documento_mercurio(
+            browser, path, "1", str(tmp_path)
+        )
+
+    assert result is True
+    send_file.assert_called_once_with(str(path.resolve()))
+
+
+def test_prepare_document_send_error_without_reconciliation_fails(tmp_path):
+    import pytest
+    from unittest.mock import Mock, patch
+
+    path = tmp_path / "pasaporte.pdf"
+    path.write_bytes(b"%PDF-1.4 D5")
+
+    send_file = Mock(side_effect=RuntimeError("transport"))
+    browser = Mock()
+    browser.find_element.return_value = SimpleNamespace(send_file=send_file)
+
+    with patch.object(runner, "wait_for_js"), \
+         patch.object(runner, "select_by_text_or_value"), \
+         patch.object(runner.time, "monotonic", side_effect=[100, 116]):
+        with pytest.raises(
+            RuntimeError,
+            match="MERCURIO_PLUPLOAD_SEND_FILE_FAILED",
+        ):
+            runner.preparar_documento_mercurio(
+                browser, path, "1", str(tmp_path)
+            )
+
+    send_file.assert_called_once()
+
+
+def test_prepare_document_requires_send_file_capability(tmp_path):
+    import pytest
+    from unittest.mock import Mock, patch
+
+    path = tmp_path / "pasaporte.pdf"
+    path.write_bytes(b"%PDF-1.4 D5")
+
+    browser = Mock()
+    browser.find_element.return_value = SimpleNamespace()
+
+    with patch.object(runner, "wait_for_js"), \
+         patch.object(runner, "select_by_text_or_value"):
+        with pytest.raises(
+            RuntimeError,
+            match="MERCURIO_PLUPLOAD_SEND_FILE_UNAVAILABLE",
+        ):
+            runner.preparar_documento_mercurio(
+                browser, path, "1", str(tmp_path)
+            )

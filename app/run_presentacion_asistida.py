@@ -2356,21 +2356,94 @@ def classify_documento_mercurio(path):
 
 
 def preparar_documento_mercurio(browser, path, code, session_dir):
-    """
-    Prepara Mercurio para el documento.
+    """Prepara un documento en el Plupload de Mercurio."""
 
-    Cambio:
-    - Selecciona solo el tipo documental.
-    - NO rellena descripción. La descripción la pone el humano.
-    - Pulsa Añadir documentación.
-    """
-    wait_for_js(browser, "document.getElementById('docAdjuntarAdjuntos') && document.getElementById('addDou')", timeout=25)
-    select_by_text_or_value(browser, "docAdjuntarAdjuntos", value=code, session_dir=session_dir)
+    path = (
+        Path(path)
+        .expanduser()
+        .resolve(strict=True)
+    )
+
+    if not path.is_file():
+        raise RuntimeError(
+            f"MERCURIO_DOCUMENT_NOT_FILE: {path}"
+        )
+
+    wait_for_js(
+        browser,
+        "document.getElementById('docAdjuntarAdjuntos')"
+        " && document.getElementById('addDou')"
+        " && document.querySelector('.moxie-shim input[type=file]')",
+        timeout=25,
+    )
+
+    select_by_text_or_value(
+        browser,
+        "docAdjuntarAdjuntos",
+        value=code,
+        session_dir=session_dir,
+    )
     time.sleep(0.3)
 
-    ok = click_js(browser, "#addDou")
-    write_log(session_dir, f"DOCUMENTO click addDou path={path} code={code} ok={ok}")
-    return ok
+    input_element = browser.find_element(
+        ".moxie-shim input[type=file]",
+        timeout=20,
+    )
+
+    send_file = getattr(
+        input_element,
+        "send_file",
+        None,
+    )
+
+    if not callable(send_file):
+        raise RuntimeError(
+            "MERCURIO_PLUPLOAD_SEND_FILE_UNAVAILABLE"
+        )
+
+    send_error = None
+
+    try:
+        send_file(str(path))
+    except Exception as exc:
+        send_error = exc
+
+    deadline = time.monotonic() + 15
+
+    while time.monotonic() < deadline:
+        selected = js(
+            browser,
+            "return "
+            "(document.getElementById('fileDocumentoAdjuntos') || {})"
+            ".value || '';",
+        )
+
+        selected_name = (
+            str(selected or "")
+            .strip()
+            .replace("\\", "/")
+            .rsplit("/", 1)[-1]
+            .casefold()
+        )
+
+        if selected_name == path.name.casefold():
+            write_log(
+                session_dir,
+                "DOCUMENTO Plupload preparado "
+                f"path={path} code={code}",
+            )
+            return True
+
+        time.sleep(0.2)
+
+    if send_error is not None:
+        raise RuntimeError(
+            "MERCURIO_PLUPLOAD_SEND_FILE_FAILED"
+        ) from send_error
+
+    raise RuntimeError(
+        "MERCURIO_PLUPLOAD_FILE_NOT_RECONCILED"
+    )
 
 
 
@@ -2990,11 +3063,6 @@ def upload_documentos_mercurio_asistido(
 
             return False
 
-        clipboard_ok = copy_text_to_clipboard(
-            str(path),
-            session_dir=session_dir,
-        )
-
         preparar_documento_mercurio(
             browser,
             path,
@@ -3002,44 +3070,21 @@ def upload_documentos_mercurio_asistido(
             session_dir,
         )
 
-        copy_text_to_clipboard(
-            str(path),
-            session_dir=session_dir,
-        )
-
         print()
         print("=" * 80)
         print("ACCIÓN HUMANA")
-        print(
-            "Se ha pulsado 'Añadir documentación' "
-            "en Mercurio."
-        )
-        print("Ruta copiada al portapapeles:")
-        print(str(path))
+        print("Documento preparado automáticamente en Mercurio:")
+        print(path.name)
         print()
         print(
-            "1) Pega la ruta en el explorador "
-            "con CTRL+V y abre el archivo."
-        )
-        print(
-            "2) Pulsa SUBIR / ADJUNTAR DOCUMENTO "
+            "Pulsa SUBIR / ADJUNTAR DOCUMENTO "
             "en Mercurio."
         )
         print(
-            "3) No vuelvas a CMD: el CRM detectará "
-            "automáticamente la fila subida."
+            "El CRM confirmará automáticamente "
+            "la incorporación."
         )
         print("=" * 80)
-
-        if not clipboard_ok:
-            print(
-                "AVISO: no se pudo verificar "
-                "el copiado al portapapeles."
-            )
-            print(
-                "Copia manualmente la ruta mostrada "
-                "antes de abrir el archivo."
-            )
 
         qcc_report(
             reporter,
