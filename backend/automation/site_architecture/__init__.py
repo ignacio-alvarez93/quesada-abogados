@@ -76,3 +76,13 @@ __all__ += (
     "ContractChange",
     "diff_site_architecture",
 )
+
+from .service import (
+    capture_site_architecture,
+    persist_site_architecture_from_raw,
+)
+
+__all__ += (
+    "capture_site_architecture",
+    "persist_site_architecture_from_raw",
+)

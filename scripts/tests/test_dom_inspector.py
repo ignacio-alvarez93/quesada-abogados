@@ -863,3 +863,32 @@ def test_inspector_javascript_captures_interaction_signals():
 
     for token in required:
         assert token in script
+
+
+def test_capture_can_optionally_return_raw_payload(
+    tmp_path,
+):
+    browser = FakeBrowser(
+        _payload()
+    )
+
+    result = (
+        dom_inspector.capture_dom_snapshot(
+            browser,
+            tmp_path,
+            label="raw_payload",
+            include_payload=True,
+        )
+    )
+
+    assert isinstance(
+        result["raw_payload"],
+        dict,
+    )
+
+    assert (
+        result["raw_payload"][
+            "schema_version"
+        ]
+        == dom_inspector.DOM_CAPTURE_SCHEMA_VERSION
+    )

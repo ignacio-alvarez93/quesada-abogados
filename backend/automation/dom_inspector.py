@@ -1118,6 +1118,7 @@ def capture_dom_snapshot(
     *,
     label="dom_inspect",
     timestamp=None,
+    include_payload=False,
 ):
     """Captura el DOM vivo accesible y persiste los artefactos."""
 
@@ -1411,7 +1412,7 @@ def capture_dom_snapshot(
     )
 
 
-    return {
+    result = {
         "capture_dir":
             capture_dir,
 
@@ -1437,3 +1438,8 @@ def capture_dom_snapshot(
                 "title"
             ),
     }
+
+    if include_payload:
+        result["raw_payload"] = payload
+
+    return result
