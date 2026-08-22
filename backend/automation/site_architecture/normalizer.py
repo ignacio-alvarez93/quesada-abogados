@@ -88,6 +88,23 @@ def _query_from_metadata(
     return urlsplit(url).query
 
 
+def _copy_record(
+    item,
+    *,
+    excluded=(),
+):
+    record = dict(item)
+
+    for key in excluded:
+        record.pop(
+            key,
+            None,
+        )
+
+    return record
+
+
+
 def _normalize_element(
     item,
     *,
@@ -203,14 +220,20 @@ def normalize_dom_capture(
             )
         ),
         frames=tuple(
-            dict(item)
+            _copy_record(
+                item,
+                excluded=("html",),
+            )
             for item in (
                 payload.get("frames")
                 or []
             )
         ),
         shadow_roots=tuple(
-            dict(item)
+            _copy_record(
+                item,
+                excluded=("html",),
+            )
             for item in (
                 payload.get("shadows")
                 or []

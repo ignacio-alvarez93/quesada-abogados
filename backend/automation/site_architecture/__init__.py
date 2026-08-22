@@ -56,3 +56,13 @@ __all__ += (
     "build_selector_candidates",
     "resolve_selector_profile",
 )
+
+from .snapshot import (
+    build_normalized_snapshot_payload,
+    write_normalized_snapshot,
+)
+
+__all__ += (
+    "build_normalized_snapshot_payload",
+    "write_normalized_snapshot",
+)

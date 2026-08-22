@@ -347,3 +347,26 @@ def test_normalizer_adds_interaction_state():
     assert interaction["visible"] is True
     assert interaction["interactable"] is True
     assert interaction["state"] == "INTERACTABLE"
+
+
+def test_normalizer_strips_raw_html_from_nested_records():
+    payload = _payload()
+
+    payload["frames"] = [{
+        "index": 1,
+        "frame_path": "1",
+        "html": "<html>raw frame</html>",
+    }]
+
+    payload["shadows"] = [{
+        "index": 1,
+        "frame_path": "main",
+        "html": "<div>raw shadow</div>",
+    }]
+
+    snapshot = normalize_dom_capture(
+        payload
+    )
+
+    assert "html" not in snapshot.frames[0]
+    assert "html" not in snapshot.shadow_roots[0]
