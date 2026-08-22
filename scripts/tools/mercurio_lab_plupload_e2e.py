@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.run_presentacion_asistida import (
     get_mercurio_document_upload_baseline,
+    preparar_documento_mercurio,
     wait_for_mercurio_document_upload,
 )
 from backend.automation.browser_contracts import (
@@ -79,42 +80,36 @@ def run_e2e():
 
         print("PLUPLOAD_RUNTIME_OK = True")
 
-        input_element = browser.find_element(
-            ".moxie-shim input[type=file]",
-            timeout=20,
-        )
-
-        browser.select_option_by_value(
-            "#docAdjuntarAdjuntos",
-            "47",
-        )
-
-        send_file = getattr(input_element, "send_file", None)
-        if not callable(send_file):
-            raise RuntimeError("PLUPLOAD_INPUT_SEND_FILE_UNAVAILABLE")
-
-        send_file(str(pdf_path.resolve()))
-
-        deadline = time.time() + 15
-        while time.time() < deadline:
-            mirror = browser.evaluate(
-                'document.getElementById("fileDocumentoAdjuntos").value'
-            )
-            if str(mirror or "").endswith(pdf_path.name):
-                break
-            time.sleep(0.2)
-        else:
-            raise RuntimeError("PLUPLOAD_FILES_ADDED_NOT_OBSERVED")
-
-        print("FILES_ADDED_OK = True")
-        print("MIRROR =", mirror)
-
         baseline = get_mercurio_document_upload_baseline(
             browser,
             filename=pdf_path.name,
             code="47",
         )
         print("BASELINE =", baseline)
+
+        staged = preparar_documento_mercurio(
+            browser,
+            pdf_path,
+            "47",
+            temp_dir.name,
+        )
+
+        if staged is not True:
+            raise RuntimeError(
+                "PRODUCTION_DOCUMENT_STAGING_FAILED"
+            )
+
+        mirror = browser.evaluate(
+            'document.getElementById("fileDocumentoAdjuntos").value'
+        )
+
+        if not str(mirror or "").endswith(pdf_path.name):
+            raise RuntimeError(
+                "PRODUCTION_DOCUMENT_MIRROR_MISMATCH"
+            )
+
+        print("PRODUCTION_STAGING_OK = True")
+        print("MIRROR =", mirror)
 
         browser.find_element(
             "#btnOpeAdjuntar",
