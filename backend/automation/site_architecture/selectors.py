@@ -284,12 +284,64 @@ def _element_frame_path(
     )
 
 
+def build_selector_occurrence_index(
+    elements,
+):
+    """Precalcula ocurrencias por frame y selector en una sola pasada."""
+
+    occurrences = {}
+
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+
+        frame_path = _element_frame_path(
+            item
+        )
+
+        selectors = {
+            candidate.selector
+            for candidate
+            in build_selector_candidates(
+                item
+            )
+        }
+
+        for selector in selectors:
+            key = (
+                frame_path,
+                selector,
+            )
+
+            occurrences[key] = (
+                occurrences.get(
+                    key,
+                    0,
+                )
+                + 1
+            )
+
+    return occurrences
+
+
 def _selector_occurrences(
     selector,
     *,
     frame_path,
     elements,
+    occurrence_index=None,
 ):
+    if occurrence_index is not None:
+        return int(
+            occurrence_index.get(
+                (
+                    frame_path,
+                    selector,
+                ),
+                0,
+            )
+        )
+
     occurrences = 0
 
     for item in elements:
@@ -318,6 +370,8 @@ def _selector_occurrences(
 def resolve_selector_profile(
     element,
     elements,
+    *,
+    occurrence_index=None,
 ):
     """Resuelve unicidad y selecciona locator primario seguro."""
 
@@ -339,6 +393,9 @@ def resolve_selector_profile(
                     candidate.selector,
                     frame_path=frame_path,
                     elements=elements,
+                    occurrence_index=(
+                        occurrence_index
+                    ),
                 )
                 == 1
             ),

@@ -9,6 +9,8 @@ from urllib.request import (
     urlopen,
 )
 
+import backend.qcc.bridge.server as qcc_bridge_server
+
 from backend.qcc.bridge.server import (
     QccBridgeServer,
 )
@@ -246,9 +248,24 @@ def test_site_architecture_channel_accepts_more_than_64k(
         bridge.close()
 
 
-def test_site_architecture_channel_rejects_more_than_8m(
+def test_site_architecture_channel_has_64m_limit():
+    assert (
+        qcc_bridge_server
+        .QCC_SITE_ARCHITECTURE_MAX_BYTES
+        == 64 * 1024 * 1024
+    )
+
+
+def test_site_architecture_channel_rejects_oversize(
     tmp_path,
+    monkeypatch,
 ):
+    monkeypatch.setattr(
+        qcc_bridge_server,
+        "QCC_SITE_ARCHITECTURE_MAX_BYTES",
+        1024,
+    )
+
     bridge = QccBridgeServer(
         port=0,
         site_architecture_ingestor=(
@@ -271,14 +288,7 @@ def test_site_architecture_channel_rejects_more_than_8m(
             _capture(
                 html=(
                     "<html>"
-                    + (
-                        "x"
-                        * (
-                            8
-                            * 1024
-                            * 1024
-                        )
-                    )
+                    + ("x" * 2048)
                     + "</html>"
                 )
             ),
@@ -297,3 +307,4 @@ def test_site_architecture_channel_rejects_more_than_8m(
 
     finally:
         bridge.close()
+

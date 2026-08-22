@@ -308,7 +308,7 @@ def test_site_architecture_upload_has_dedicated_timeout():
         in source
     )
 
-    assert "10000" in source
+    assert "30000" in source
 
     assert (
         "timeoutMs = QCC_REQUEST_TIMEOUT_MS"

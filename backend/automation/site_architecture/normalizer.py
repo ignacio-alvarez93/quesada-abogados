@@ -27,6 +27,7 @@ from .semantics import (
 )
 
 from .selectors import (
+    build_selector_occurrence_index,
     resolve_selector_profile,
 )
 
@@ -109,6 +110,7 @@ def _normalize_element(
     item,
     *,
     elements,
+    selector_occurrence_index,
 ):
     record = dict(item)
 
@@ -122,6 +124,9 @@ def _normalize_element(
         resolve_selector_profile(
             record,
             elements,
+            occurrence_index=(
+                selector_occurrence_index
+            ),
         ).to_dict()
     )
 
@@ -155,6 +160,17 @@ def normalize_dom_capture(
     metadata = dict(
         payload.get("metadata")
         or {}
+    )
+
+    elements = (
+        payload.get("elements")
+        or []
+    )
+
+    selector_occurrence_index = (
+        build_selector_occurrence_index(
+            elements
+        )
     )
 
     page = SiteArchitecturePage(
@@ -209,15 +225,12 @@ def normalize_dom_capture(
         elements=tuple(
             _normalize_element(
                 item,
-                elements=(
-                    payload.get("elements")
-                    or []
+                elements=elements,
+                selector_occurrence_index=(
+                    selector_occurrence_index
                 ),
             )
-            for item in (
-                payload.get("elements")
-                or []
-            )
+            for item in elements
         ),
         frames=tuple(
             _copy_record(

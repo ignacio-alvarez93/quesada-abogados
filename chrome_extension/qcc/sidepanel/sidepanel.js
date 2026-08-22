@@ -14,7 +14,7 @@ const QCC_HEALTH_INTERVAL_MS = 2000;
 const QCC_REQUEST_TIMEOUT_MS = 1200;
 
 const QCC_SITE_ARCHITECTURE_REQUEST_TIMEOUT_MS =
-  10000;
+  30000;
 
 let qccActiveSessionId = null;
 
