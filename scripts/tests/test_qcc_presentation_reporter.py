@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from backend.qcc.bridge.server import (
     QccBridgeServer,
 )
@@ -211,4 +213,65 @@ def test_reporter_is_fail_open_without_bridge():
             message="Continuando",
         )
         is False
+    )
+
+
+def test_waiting_user_preserves_event_details():
+    reporter = QccPresentationReporter(
+        session_id="qcc-document-test-001",
+        expedient_id=1,
+        client_id=1,
+        procedure="TEST_PROCEDURE",
+        provider="MERCURIO",
+        runtime="SELENIUMBASE_ASSISTED",
+    )
+
+    with patch.object(
+        reporter,
+        "_publish",
+        return_value=True,
+    ):
+        result = reporter.waiting_user(
+            step="DOCUMENT_READY",
+            progress=91,
+            message="Documento preparado",
+            event_details={
+                "document_index": 2,
+                "document_total": 6,
+                "document_name":
+                    "pasaporte.pdf",
+                "document_type_code":
+                    "1",
+            },
+        )
+
+    assert result is True
+
+    event = dict(
+        reporter.session.last_event
+    )
+
+    assert (
+        event["event"]
+        == "presentation.waiting_user"
+    )
+
+    assert (
+        event["document_index"]
+        == 2
+    )
+
+    assert (
+        event["document_total"]
+        == 6
+    )
+
+    assert (
+        event["document_name"]
+        == "pasaporte.pdf"
+    )
+
+    assert (
+        event["document_type_code"]
+        == "1"
     )

@@ -335,3 +335,48 @@ def test_qcc_sidepanel_action_does_not_control_browser():
 
     for token in forbidden:
         assert token not in script
+
+
+def test_qcc_document_action_identity_includes_payload():
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "function buildActionIdentityKey("
+        in script
+    )
+
+    assert (
+        "payload?.document_index"
+        in script
+    )
+
+    assert (
+        "payload?.value"
+        in script
+    )
+
+    assert (
+        "getClientActionId("
+        in script
+    )
+
+
+def test_qcc_document_action_identity_separates_documents():
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "`${documentIndex}:${value}`"
+        in script
+    )

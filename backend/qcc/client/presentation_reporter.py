@@ -15,6 +15,10 @@ from datetime import (
     timezone,
 )
 import json
+from typing import (
+    Any,
+    Mapping,
+)
 from urllib.request import (
     Request,
     urlopen,
@@ -154,6 +158,10 @@ class QccPresentationReporter:
         requires_user_action: bool,
         event: str,
         message: str,
+        event_details: (
+            Mapping[str, Any]
+            | None
+        ) = None,
     ) -> bool:
         try:
             self._session = replace(
@@ -169,6 +177,14 @@ class QccPresentationReporter:
                         event,
                     "message":
                         message,
+                    **(
+                        dict(
+                            event_details
+                        )
+                        if event_details
+                        is not None
+                        else {}
+                    ),
                 },
             )
 
@@ -209,6 +225,10 @@ class QccPresentationReporter:
         step: str,
         progress: int,
         message: str,
+        event_details: (
+            Mapping[str, Any]
+            | None
+        ) = None,
     ) -> bool:
         return self._transition(
             status=(
@@ -222,6 +242,7 @@ class QccPresentationReporter:
                 "presentation.waiting_user"
             ),
             message=message,
+            event_details=event_details,
         )
 
     def user_action_detected(

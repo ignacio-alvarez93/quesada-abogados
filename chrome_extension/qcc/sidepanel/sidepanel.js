@@ -129,12 +129,35 @@ async function postJson(
 }
 
 
+function buildActionIdentityKey(
+  sessionId,
+  action,
+  payload = {}
+) {
+  const documentIndex =
+    payload?.document_index ?? "";
+
+  const value =
+    payload?.value ?? "";
+
+  return (
+    `${sessionId}:${action}:`
+    + `${documentIndex}:${value}`
+  );
+}
+
+
 function getClientActionId(
   sessionId,
-  action
+  action,
+  payload = {}
 ) {
   const key =
-    `${sessionId}:${action}`;
+    buildActionIdentityKey(
+      sessionId,
+      action,
+      payload
+    );
 
   let clientActionId =
     qccPendingActionIds.get(
@@ -171,7 +194,8 @@ async function submitSessionAction(
   const clientActionId =
     getClientActionId(
       sessionId,
-      action
+      action,
+      payload
     );
 
   const url =
