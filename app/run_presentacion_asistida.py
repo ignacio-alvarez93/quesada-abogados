@@ -25,6 +25,9 @@ from backend.automation.automation_logger import write_log
 from backend.automation.browser_actions import click_js, field_exists, js, wait_for_js
 from backend.automation.browser_session import get_session_dir
 from backend.automation.connectors.mercurio_connector import MercurioConnector
+from backend.qcc.client.action_client import (
+    QccActionClient,
+)
 from backend.qcc.client.presentation_reporter import (
     QccPresentationReporter,
 )
@@ -106,6 +109,53 @@ def build_qcc_reporter(
         )
 
         return None
+
+
+
+def build_qcc_action_client(
+    args,
+    session_dir,
+):
+    """Construye el consumidor de acciones QCC.
+
+    No conoce ni controla SeleniumBase.
+    """
+
+    session_id = str(
+        getattr(
+            args,
+            "qcc_session_id",
+            "",
+        )
+        or ""
+    ).strip()
+
+    if not session_id:
+        write_log(
+            session_dir,
+            (
+                "QCC action client deshabilitado: "
+                "qcc_session_id ausente"
+            ),
+        )
+        return None
+
+    try:
+        return QccActionClient(
+            session_id=session_id,
+        )
+
+    except Exception as exc:
+        write_log(
+            session_dir,
+            (
+                "QCC action client no disponible: "
+                f"{type(exc).__name__}"
+            ),
+        )
+
+        return None
+
 
 
 def qcc_report(
@@ -1874,6 +1924,115 @@ def pause_humana_final_presentacion(
     return result
 
 
+def wait_for_qcc_documents_start(
+    action_client,
+    session_dir,
+    reporter=None,
+    *,
+    poll_interval=0.25,
+):
+    """Espera DOCUMENTS_START desde QCC.
+
+    La espera ocurre en el hilo principal.
+    QCC no controla directamente SeleniumBase.
+    """
+
+    if action_client is None:
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTOS QCC: "
+                "action client no disponible"
+            ),
+        )
+
+        return None
+
+    print()
+    print("=" * 80)
+    print("DOCUMENTACIÓN PREPARADA")
+    print(
+        "Esperando 'Iniciar documentación' "
+        "en Quesada Chrome Companion..."
+    )
+    print("=" * 80)
+
+    write_log(
+        session_dir,
+        (
+            "DOCUMENTOS QCC: "
+            "esperando DOCUMENTS_START"
+        ),
+    )
+
+    while True:
+        action = (
+            action_client
+            .consume_next()
+        )
+
+        if action is None:
+            time.sleep(
+                poll_interval
+            )
+            continue
+
+        action_name = str(
+            action.get(
+                "action",
+                "",
+            )
+        ).strip()
+
+        if action_name != "DOCUMENTS_START":
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTOS QCC: "
+                    "acción inesperada descartada "
+                    f"{action_name or '-'}"
+                ),
+            )
+            continue
+
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTOS QCC: "
+                "DOCUMENTS_START recibido "
+                f"action_id="
+                f"{action.get('action_id')}"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "user_action_detected",
+            session_dir,
+            step="DOCUMENTS_START",
+            progress=89,
+            message=(
+                "Inicio documental solicitado "
+                "desde QCC"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "resuming",
+            session_dir,
+            step="DOCUMENTS_RUNNING",
+            progress=90,
+            message=(
+                "Iniciando subida documental "
+                "asistida"
+            ),
+        )
+
+        return action
+
+
+
 # =============================================================================
 # SUBIDA DOCUMENTAL ASISTIDA - PARA PRESENTAR
 # =============================================================================
@@ -2150,10 +2309,13 @@ def upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio,
     for i, p in enumerate(docs, 1):
         print(f"  {i}. {p}")
 
-    ans = input("Iniciar preparación asistida? [ENTER=sí / n=no]: ").strip().lower()
-    if ans in ("n", "no"):
-        write_log(session_dir, "DOCUMENTOS cancelado por usuario antes de iniciar")
-        return False
+    write_log(
+        session_dir,
+        (
+            "DOCUMENTOS: inicio autorizado "
+            "desde QCC"
+        ),
+    )
 
     resultados = []
     for idx, path in enumerate(docs, 1):
@@ -2206,6 +2368,88 @@ def upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio,
         print(f"{estado}: {ruta}")
     write_log(session_dir, f"DOCUMENTOS resultado asistido: {resultados}")
     return True
+
+
+def run_auto_and_documents_with_qcc(
+    browser,
+    provincia_codigo,
+    datos_mercurio,
+    documentos_dir,
+    session_dir,
+    *,
+    reporter=None,
+    action_client=None,
+):
+    """Ejecuta presentación y espera inicio documental QCC."""
+
+    auto_result = run_auto_with_qcc(
+        browser,
+        provincia_codigo,
+        datos_mercurio,
+        session_dir,
+        reporter=reporter,
+    )
+
+    if not documentos_dir:
+        print()
+        print(
+            "No se ha encontrado carpeta "
+            "PARA PRESENTAR."
+        )
+
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTOS no iniciados: "
+                "carpeta PARA PRESENTAR ausente"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "error",
+            session_dir,
+            step="DOCUMENTS_FOLDER_MISSING",
+            progress=88,
+            message=(
+                "No se ha encontrado la carpeta "
+                "PARA PRESENTAR"
+            ),
+        )
+
+        return auto_result
+
+    action = wait_for_qcc_documents_start(
+        action_client,
+        session_dir,
+        reporter=reporter,
+    )
+
+    if action is None:
+        print()
+        print(
+            "QCC Action Channel no disponible. "
+            "La documentación no se inicia."
+        )
+
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTOS no iniciados: "
+                "QCC Action Channel no disponible"
+            ),
+        )
+
+        return auto_result
+
+    return upload_documentos_mercurio_asistido(
+        browser,
+        documentos_dir,
+        datos_mercurio,
+        session_dir,
+    )
+
+
 
 
 def run_auto(
@@ -2305,17 +2549,32 @@ def main(
     tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
     mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
     mapper_codigo = mapper_mode.get("mapper_codigo")
-    documentos_dir = resolve_para_presentar_dir(args, datos_mercurio, session_dir)
+    documentos_dir = resolve_para_presentar_dir(
+        args,
+        datos_mercurio,
+        session_dir,
+    )
 
     qcc_reporter = build_qcc_reporter(
         args,
         session_dir,
     )
 
+    qcc_action_client = (
+        build_qcc_action_client(
+            args,
+            session_dir,
+        )
+    )
+
     if lifecycle is not None:
         lifecycle[
             "qcc_reporter"
         ] = qcc_reporter
+
+        lifecycle[
+            "qcc_action_client"
+        ] = qcc_action_client
 
     url = (args.url or "").strip()
     if not url:
@@ -2386,15 +2645,20 @@ def main(
     if args.auto:
         connector.safe_execute(
             "auto inicial",
-            lambda: run_auto_with_qcc(
+            lambda: run_auto_and_documents_with_qcc(
                 browser,
                 args.provincia_codigo,
                 datos_mercurio,
+                documentos_dir,
                 session_dir,
                 reporter=qcc_reporter,
+                action_client=qcc_action_client,
             ),
         )
-        print("Flujo auto finalizado. Si se ha ejecutado la pausa humana, Chrome queda bajo control manual.")
+        print(
+            "Flujo automático/documental finalizado. "
+            "Chrome permanece bajo control gobernado."
+        )
 
     print()
     print("MENÚ:")
@@ -2405,7 +2669,6 @@ def main(
     print("  fillfam    -> rellenar solo datos del familiar EX01")
     print("  fillrea    -> rellenar solo datos del reagrupante EX02")
     print("  human      -> pausa humana final sin disconnect")
-    print("  docs       -> subida documental asistida")
     print("  q          -> salir")
     print()
 
@@ -2422,13 +2685,15 @@ def main(
         elif cmd == "auto":
             connector.safe_execute(
                 "auto",
-                lambda: run_auto_with_qcc(
-                    browser,
-                    args.provincia_codigo,
-                    datos_mercurio,
-                    session_dir,
-                    reporter=qcc_reporter,
-                ),
+                lambda: run_auto_and_documents_with_qcc(
+                browser,
+                args.provincia_codigo,
+                datos_mercurio,
+                documentos_dir,
+                session_dir,
+                reporter=qcc_reporter,
+                action_client=qcc_action_client,
+            ),
             )
 
         elif cmd == "fill":
@@ -2478,14 +2743,6 @@ def main(
                 session_dir,
                 reporter=qcc_reporter,
             )
-
-        elif cmd in ("docs", "documentos", "upload"):
-            documentos_dir = resolve_para_presentar_dir(args, datos_mercurio, session_dir)
-            if not documentos_dir:
-                print("No se ha encontrado carpeta PARA PRESENTAR. Revisa --documentos-dir o la ruta exportada del expediente.")
-            else:
-                print(f"Usando carpeta PARA PRESENTAR: {documentos_dir}")
-                connector.safe_execute("docs", lambda: upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir))
 
         elif cmd in ("q", "quit", "exit", "salir"):
             print(
