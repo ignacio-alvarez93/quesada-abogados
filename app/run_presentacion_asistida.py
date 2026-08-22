@@ -2294,7 +2294,188 @@ def preparar_documento_mercurio(browser, path, code, session_dir):
 
 
 
-def upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir):
+def wait_for_qcc_document_action(
+    action_client,
+    *,
+    document_index,
+    document_total,
+    document_name,
+    proposed_code,
+    session_dir,
+    reporter=None,
+    poll_interval=0.25,
+):
+    """Publica documento actual y espera decisión humana QCC.
+
+    QCC transporta la intención del usuario.
+    Este helper NO controla SeleniumBase ni el DOM.
+    """
+
+    if action_client is None:
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTO QCC: "
+                "action client no disponible"
+            ),
+        )
+
+        return None
+
+    progress = min(
+        96,
+        90
+        + max(
+            1,
+            int(
+                document_index
+                * 6
+                / max(
+                    document_total,
+                    1,
+                )
+            ),
+        ),
+    )
+
+    qcc_report(
+        reporter,
+        "waiting_user",
+        session_dir,
+        step="DOCUMENT_READY",
+        progress=progress,
+        message=(
+            f"Documento {document_index}/"
+            f"{document_total}: "
+            f"{document_name}"
+        ),
+        event_details={
+            "document_index":
+                document_index,
+            "document_total":
+                document_total,
+            "document_name":
+                document_name,
+            "document_type_code":
+                proposed_code,
+        },
+    )
+
+    write_log(
+        session_dir,
+        (
+            "DOCUMENTO QCC: esperando decisión "
+            f"index={document_index} "
+            f"name={document_name} "
+            f"code={proposed_code}"
+        ),
+    )
+
+    while True:
+        action = (
+            action_client
+            .consume_next()
+        )
+
+        if action is None:
+            time.sleep(
+                poll_interval
+            )
+            continue
+
+        action_name = str(
+            action.get(
+                "action",
+                "",
+            )
+        ).strip()
+
+        payload = (
+            action.get(
+                "payload",
+                {},
+            )
+            or {}
+        )
+
+        if not isinstance(
+            payload,
+            dict,
+        ):
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO QCC: payload "
+                    "inválido descartado"
+                ),
+            )
+            continue
+
+        action_index = payload.get(
+            "document_index"
+        )
+
+        if action_index != document_index:
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO QCC: acción "
+                    "de otro documento descartada "
+                    f"action={action_name or '-'} "
+                    f"index={action_index} "
+                    f"expected={document_index}"
+                ),
+            )
+            continue
+
+        if action_name not in (
+            "DOCUMENT_PREPARE",
+            "DOCUMENT_SKIP",
+            "DOCUMENT_FORCE_TYPE",
+        ):
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO QCC: acción "
+                    "no aplicable descartada "
+                    f"{action_name or '-'}"
+                ),
+            )
+            continue
+
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTO QCC: decisión recibida "
+                f"action={action_name} "
+                f"index={document_index}"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "user_action_detected",
+            session_dir,
+            step="DOCUMENT_ACTION",
+            progress=progress,
+            message=(
+                "Decisión documental recibida "
+                f"para {document_name}"
+            ),
+        )
+
+        return action
+
+
+def upload_documentos_mercurio_asistido(
+    browser,
+    documentos_dir,
+    datos_mercurio,
+    session_dir,
+    *,
+    reporter=None,
+    action_client=None,
+):
     print()
     print("=" * 80)
     print("SUBIDA DOCUMENTAL ASISTIDA - PARA PRESENTAR")
@@ -2328,14 +2509,112 @@ def upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio,
         print(f"Tipo Mercurio propuesto: {code}")
         print("-" * 80)
 
-        ans = input("Preparar este documento? [ENTER=sí / s=saltar / código=forzar tipo]: ").strip().lower()
-        if ans in ("s", "skip", "no", "n"):
-            resultados.append((str(path), "SALTADO"))
-            write_log(session_dir, f"DOCUMENTO saltado: {path}")
+        action = wait_for_qcc_document_action(
+            action_client,
+            document_index=idx,
+            document_total=len(docs),
+            document_name=path.name,
+            proposed_code=code,
+            session_dir=session_dir,
+            reporter=reporter,
+        )
+
+        if action is None:
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO no procesado: "
+                    "QCC Action Channel no disponible "
+                    f"path={path}"
+                ),
+            )
+
+            return False
+
+        action_name = str(
+            action.get(
+                "action",
+                "",
+            )
+        ).strip()
+
+        if action_name == "DOCUMENT_SKIP":
+            resultados.append(
+                (
+                    str(path),
+                    "SALTADO",
+                )
+            )
+
+            write_log(
+                session_dir,
+                f"DOCUMENTO saltado: {path}",
+            )
+
             continue
-        if ans:
-            code = ans
-            write_log(session_dir, f"DOCUMENTO código forzado {path}: {code}")
+
+        if (
+            action_name
+            == "DOCUMENT_FORCE_TYPE"
+        ):
+            payload = (
+                action.get(
+                    "payload",
+                    {},
+                )
+                or {}
+            )
+
+            forced_code = str(
+                payload.get(
+                    "value",
+                    "",
+                )
+            ).strip()
+
+            if not forced_code:
+                write_log(
+                    session_dir,
+                    (
+                        "DOCUMENTO código forzado "
+                        "vacío; documento no procesado "
+                        f"path={path}"
+                    ),
+                )
+
+                return False
+
+            code = forced_code
+
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO código forzado "
+                    f"{path}: {code}"
+                ),
+            )
+
+        qcc_report(
+            reporter,
+            "resuming",
+            session_dir,
+            step="DOCUMENT_PREPARING",
+            progress=min(
+                97,
+                91
+                + int(
+                    idx
+                    * 6
+                    / max(
+                        len(docs),
+                        1,
+                    )
+                ),
+            ),
+            message=(
+                f"Preparando {path.name}"
+            ),
+        )
 
         clipboard_ok = copy_text_to_clipboard(str(path), session_dir=session_dir)
         preparar_documento_mercurio(browser, path, code, session_dir)
@@ -2447,6 +2726,8 @@ def run_auto_and_documents_with_qcc(
         documentos_dir,
         datos_mercurio,
         session_dir,
+        reporter=reporter,
+        action_client=action_client,
     )
 
 
