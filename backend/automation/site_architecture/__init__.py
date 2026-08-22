@@ -20,3 +20,11 @@ __all__ = (
     "SiteArchitectureSource",
     "SiteArchitectureViewport",
 )
+
+from .normalizer import (
+    normalize_dom_capture,
+)
+
+__all__ += (
+    "normalize_dom_capture",
+)

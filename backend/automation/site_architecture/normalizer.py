@@ -1,0 +1,161 @@
+"""Normalización RAW DOM Capture → QCC Site Architecture."""
+
+from __future__ import annotations
+
+from urllib.parse import urlsplit
+
+from backend.automation.dom_inspector import (
+    DOM_CAPTURE_SCHEMA_VERSION,
+)
+
+from .models import (
+    SiteArchitecturePage,
+    SiteArchitectureSnapshot,
+    SiteArchitectureSource,
+)
+from .schema import (
+    SITE_ARCHITECTURE_SOURCE_DOM_CAPTURE,
+)
+
+
+def _require_dom_capture_payload(
+    payload,
+):
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "SITE_ARCHITECTURE_DOM_CAPTURE_INVALID"
+        )
+
+    try:
+        schema_version = int(
+            payload.get("schema_version")
+        )
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ValueError(
+            "SITE_ARCHITECTURE_DOM_CAPTURE_SCHEMA_INVALID"
+        ) from exc
+
+    if (
+        schema_version
+        != DOM_CAPTURE_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "SITE_ARCHITECTURE_DOM_CAPTURE_SCHEMA_UNSUPPORTED"
+        )
+
+    return schema_version
+
+
+def _query_from_metadata(
+    metadata,
+):
+    explicit = str(
+        metadata.get("query")
+        or ""
+    )
+
+    if explicit:
+        return explicit
+
+    url = str(
+        metadata.get("url")
+        or ""
+    )
+
+    if not url:
+        return ""
+
+    return urlsplit(url).query
+
+
+def normalize_dom_capture(
+    payload,
+):
+    """Convierte un DOM Capture RAW en SiteArchitectureSnapshot."""
+
+    source_schema_version = (
+        _require_dom_capture_payload(
+            payload
+        )
+    )
+
+    metadata = dict(
+        payload.get("metadata")
+        or {}
+    )
+
+    page = SiteArchitecturePage(
+        url=str(
+            metadata.get("url")
+            or ""
+        ),
+        origin=str(
+            metadata.get("origin")
+            or ""
+        ),
+        pathname=str(
+            metadata.get("pathname")
+            or ""
+        ),
+        query=_query_from_metadata(
+            metadata
+        ),
+        title=str(
+            metadata.get("title")
+            or ""
+        ),
+        ready_state=str(
+            metadata.get("ready_state")
+            or ""
+        ),
+    )
+
+    return SiteArchitectureSnapshot(
+        source=SiteArchitectureSource(
+            kind=(
+                SITE_ARCHITECTURE_SOURCE_DOM_CAPTURE
+            ),
+            schema_version=(
+                source_schema_version
+            ),
+        ),
+        captured_at=(
+            payload.get("captured_at")
+        ),
+        page=page,
+        documents=tuple(
+            dict(item)
+            for item in (
+                payload.get("documents")
+                or []
+            )
+        ),
+        elements=tuple(
+            dict(item)
+            for item in (
+                payload.get("elements")
+                or []
+            )
+        ),
+        frames=tuple(
+            dict(item)
+            for item in (
+                payload.get("frames")
+                or []
+            )
+        ),
+        shadow_roots=tuple(
+            dict(item)
+            for item in (
+                payload.get("shadows")
+                or []
+            )
+        ),
+        counts=dict(
+            payload.get("counts")
+            or {}
+        ),
+    )
