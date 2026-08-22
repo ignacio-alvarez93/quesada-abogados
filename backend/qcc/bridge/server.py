@@ -22,7 +22,17 @@ from http.server import (
     ThreadingHTTPServer,
 )
 from typing import Any
+from urllib.parse import (
+    unquote,
+    urlparse,
+)
 
+from backend.qcc.contracts.actions import (
+    QccActionRequest,
+)
+from backend.qcc.actions.store import (
+    QccActionStore,
+)
 from backend.qcc.contracts.protocol import (
     QCC_PROTOCOL_VERSION,
     QccPresentationSession,
@@ -165,7 +175,147 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
-        if self.path != "/qcc/session":
+        parsed = urlparse(
+            self.path
+        )
+
+        path = (
+            parsed.path.rstrip("/")
+            or "/"
+        )
+
+        context_store = getattr(
+            self.server,
+            "qcc_context_store",
+            None,
+        )
+
+        action_store = getattr(
+            self.server,
+            "qcc_action_store",
+            None,
+        )
+
+        # ---------------------------------------------
+        # Runtime -> Bridge: snapshot de sesión
+        # ---------------------------------------------
+        if path == "/qcc/session":
+            try:
+                payload = self._read_json()
+
+                if (
+                    payload.get(
+                        "protocol_version"
+                    )
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                raw_session = payload.get(
+                    "session"
+                )
+
+                session = (
+                    QccPresentationSession
+                    .from_payload(
+                        raw_session
+                    )
+                )
+
+            except ValueError as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            if context_store is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_CONTEXT_UNAVAILABLE",
+                    },
+                )
+                return
+
+            previous = (
+                context_store
+                .get_active_session()
+            )
+
+            revision = (
+                context_store
+                .set_active_session(
+                    session
+                )
+            )
+
+            if (
+                action_store is not None
+                and previous is not None
+                and previous.session_id
+                != session.session_id
+            ):
+                action_store.clear_session(
+                    previous.session_id
+                )
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "revision":
+                        revision,
+
+                    "session_id":
+                        session.session_id,
+                },
+            )
+            return
+
+        # ---------------------------------------------
+        # Side Panel -> Bridge:
+        # POST /qcc/session/<id>/action
+        #
+        # Runtime -> Bridge:
+        # POST /qcc/session/<id>/action/consume
+        # ---------------------------------------------
+        parts = [
+            unquote(
+                part
+            )
+            for part
+            in path.strip("/").split("/")
+            if part
+        ]
+
+        is_action_route = (
+            len(parts) == 4
+            and parts[0] == "qcc"
+            and parts[1] == "session"
+            and parts[3] == "action"
+        )
+
+        is_consume_route = (
+            len(parts) == 5
+            and parts[0] == "qcc"
+            and parts[1] == "session"
+            and parts[3] == "action"
+            and parts[4] == "consume"
+        )
+
+        if not (
+            is_action_route
+            or is_consume_route
+        ):
             self._send_json(
                 404,
                 {
@@ -175,6 +325,29 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if (
+            context_store is None
+            or action_store is None
+        ):
+            self._send_json(
+                503,
+                {
+                    "error":
+                        "QCC_ACTION_CHANNEL_UNAVAILABLE",
+                },
+            )
+            return
+
+        session_id = str(
+            parts[2]
+        ).strip()
+
+        # Leer SIEMPRE el body antes de responder.
+        #
+        # En Windows, cerrar una conexión HTTP con bytes
+        # de request todavía pendientes puede provocar
+        # WinError 10053 en el cliente en lugar de permitir
+        # que urllib lea correctamente nuestro 4xx.
         try:
             payload = self._read_json()
 
@@ -188,17 +361,6 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     "QCC_PROTOCOL_VERSION_INVALID"
                 )
 
-            raw_session = payload.get(
-                "session"
-            )
-
-            session = (
-                QccPresentationSession
-                .from_payload(
-                    raw_session
-                )
-            )
-
         except ValueError as exc:
             self._send_json(
                 400,
@@ -209,26 +371,80 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             )
             return
 
-        context_store = getattr(
-            self.server,
-            "qcc_context_store",
-            None,
+        active_session = (
+            context_store
+            .get_active_session()
         )
 
-        if context_store is None:
+        if (
+            active_session is None
+            or active_session.session_id
+            != session_id
+        ):
             self._send_json(
-                503,
+                409,
                 {
                     "error":
-                        "QCC_CONTEXT_UNAVAILABLE",
+                        "QCC_ACTION_SESSION_NOT_ACTIVE",
                 },
             )
             return
 
-        revision = (
-            context_store
-            .set_active_session(
-                session
+        if is_action_route:
+            try:
+                request = (
+                    QccActionRequest
+                    .from_payload(
+                        payload,
+                        session_id=session_id,
+                    )
+                )
+
+                queued = (
+                    action_store
+                    .submit(
+                        request
+                    )
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "action_id":
+                        queued.action_id,
+
+                    "session_id":
+                        session_id,
+
+                    "pending":
+                        action_store
+                        .pending_count(
+                            session_id
+                        ),
+                },
+            )
+            return
+
+        action = (
+            action_store
+            .consume_next(
+                session_id
             )
         )
 
@@ -238,11 +454,21 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 "ok":
                     True,
 
-                "revision":
-                    revision,
+                "available":
+                    action is not None,
 
-                "session_id":
-                    session.session_id,
+                "action":
+                    (
+                        action.to_payload()
+                        if action is not None
+                        else None
+                    ),
+
+                "pending":
+                    action_store
+                    .pending_count(
+                        session_id
+                    ),
             },
         )
 
@@ -267,6 +493,10 @@ class QccBridgeServer:
             QccContextStore
             | None
         ) = None,
+        action_store: (
+            QccActionStore
+            | None
+        ) = None,
     ) -> None:
         if host != QCC_BRIDGE_HOST:
             raise ValueError(
@@ -279,6 +509,12 @@ class QccBridgeServer:
             else QccContextStore()
         )
 
+        self._action_store = (
+            action_store
+            if action_store is not None
+            else QccActionStore()
+        )
+
         self._server = ThreadingHTTPServer(
             (host, port),
             _QccBridgeHandler,
@@ -286,6 +522,10 @@ class QccBridgeServer:
 
         self._server.qcc_context_store = (
             self._context_store
+        )
+
+        self._server.qcc_action_store = (
+            self._action_store
         )
 
         self._thread: threading.Thread | None = None
@@ -307,6 +547,12 @@ class QccBridgeServer:
         self,
     ) -> QccContextStore:
         return self._context_store
+
+    @property
+    def action_store(
+        self,
+    ) -> QccActionStore:
+        return self._action_store
 
     @property
     def is_running(self) -> bool:
