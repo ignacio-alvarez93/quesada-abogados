@@ -68,22 +68,115 @@
     </section>
 
     <section class="qcc-context-card">
-      <div class="qcc-section-label">
-        ACTIVIDAD
+      <div class="qcc-context-header">
+        <div class="qcc-section-label">
+          PRESENTACIÓN
+        </div>
+
+        <span
+          class="qcc-provider-badge qcc-hidden"
+          id="session-provider"
+        ></span>
       </div>
 
-      <div class="qcc-empty-state">
+      <div
+        class="qcc-empty-state"
+        id="qcc-empty-state"
+      >
         <div class="qcc-empty-icon">
           ◌
         </div>
 
-        <div class="qcc-empty-title">
+        <div
+          class="qcc-empty-title"
+          id="qcc-empty-title"
+        >
           Sin actividad en curso
         </div>
 
-        <div class="qcc-empty-description">
+        <div
+          class="qcc-empty-description"
+          id="qcc-empty-description"
+        >
           Cuando una presentación o automatización
           se conecte a QCC, aparecerá aquí su contexto.
+        </div>
+      </div>
+
+      <div
+        class="qcc-session-state qcc-hidden"
+        id="qcc-session-state"
+      >
+        <div
+          class="qcc-session-procedure"
+          id="session-procedure"
+        >
+          —
+        </div>
+
+        <div class="qcc-meta-grid">
+          <span>Expediente</span>
+          <strong id="session-expedient">—</strong>
+
+          <span>Cliente</span>
+          <strong id="session-client">—</strong>
+
+          <span>Runtime</span>
+          <strong id="session-runtime">—</strong>
+        </div>
+
+        <div class="qcc-progress-header">
+          <span>Progreso</span>
+          <strong id="session-progress-label">
+            0 %
+          </strong>
+        </div>
+
+        <div class="qcc-progress-track">
+          <div
+            class="qcc-progress-value"
+            id="session-progress-value"
+          ></div>
+        </div>
+
+        <div class="qcc-session-block">
+          <div class="qcc-session-block-label">
+            ESTADO
+          </div>
+
+          <div
+            class="qcc-session-status"
+            id="session-status"
+          >
+            —
+          </div>
+        </div>
+
+        <div class="qcc-session-block">
+          <div class="qcc-session-block-label">
+            PASO ACTUAL
+          </div>
+
+          <div
+            class="qcc-session-step"
+            id="session-step"
+          >
+            —
+          </div>
+        </div>
+
+        <div
+          class="qcc-user-action qcc-hidden"
+          id="user-action-warning"
+        >
+          <div class="qcc-user-action-title">
+            Intervención humana requerida
+          </div>
+
+          <div class="qcc-user-action-text">
+            La presentación está esperando
+            una acción manual antes de continuar.
+          </div>
         </div>
       </div>
     </section>

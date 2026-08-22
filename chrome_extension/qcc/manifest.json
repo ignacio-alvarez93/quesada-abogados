@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Quesada Chrome Companion",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Interfaz contextual de Quesada Abogados ERP dentro de Chrome.",
   "permissions": [
     "sidePanel"

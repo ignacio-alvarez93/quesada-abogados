@@ -24,7 +24,7 @@ def test_qcc_manifest_is_v3_side_panel_extension():
     assert manifest["name"] == (
         "Quesada Chrome Companion"
     )
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.3.0"
 
     assert manifest["permissions"] == [
         "sidePanel"
@@ -137,10 +137,68 @@ def test_qcc_sidepanel_uses_bridge_health_contract():
     )
 
     assert (
-        "http://127.0.0.1:8766/qcc/health"
+        '"http://127.0.0.1:8766"'
         in script
     )
 
+    assert "/qcc/health" in script
     assert '"qcc_bridge"' in script
     assert '"CRM conectado"' in script
     assert '"CRM desconectado"' in script
+
+
+
+def test_qcc_sidepanel_consumes_context_endpoint():
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert "/qcc/context" in script
+    assert "active_session" in script
+    assert "requires_user_action" in script
+    assert '"WAITING_USER"' in script
+
+
+def test_qcc_sidepanel_has_session_projection_fields():
+    html = (
+        QCC_DIR
+        / "sidepanel"
+        / "index.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    required_ids = (
+        "session-provider",
+        "session-procedure",
+        "session-expedient",
+        "session-client",
+        "session-runtime",
+        "session-progress-label",
+        "session-progress-value",
+        "session-status",
+        "session-step",
+        "user-action-warning",
+    )
+
+    for field_id in required_ids:
+        assert f'id="{field_id}"' in html
+
+
+def test_qcc_sidepanel_remains_runtime_agnostic():
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert "SELENIUMBASE_ASSISTED" not in script
+    assert "DESKTOP_GUI_ASSISTED" not in script
+    assert '"MERCURIO"' not in script
+    assert '"ICP_PLUS"' not in script

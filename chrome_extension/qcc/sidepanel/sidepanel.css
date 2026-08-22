@@ -189,3 +189,135 @@ body {
   color: var(--qcc-muted);
   font-size: 10px;
 }
+
+
+.qcc-hidden {
+  display: none !important;
+}
+
+.qcc-context-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.qcc-context-header .qcc-section-label {
+  margin-bottom: 0;
+}
+
+.qcc-provider-badge {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--qcc-primary-soft);
+  color: var(--qcc-primary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.qcc-session-state {
+  margin-top: 14px;
+}
+
+.qcc-session-procedure {
+  margin-bottom: 14px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.qcc-meta-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 7px 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--qcc-bg);
+  font-size: 11px;
+}
+
+.qcc-meta-grid span {
+  color: var(--qcc-muted);
+}
+
+.qcc-meta-grid strong {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.qcc-progress-header {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 16px;
+  margin-bottom: 7px;
+  font-size: 11px;
+}
+
+.qcc-progress-header span {
+  color: var(--qcc-muted);
+}
+
+.qcc-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--qcc-border);
+}
+
+.qcc-progress-value {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--qcc-primary);
+  transition: width 180ms ease;
+}
+
+.qcc-session-block {
+  margin-top: 15px;
+}
+
+.qcc-session-block-label {
+  margin-bottom: 5px;
+  color: var(--qcc-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.qcc-session-status {
+  display: inline-flex;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--qcc-primary-soft);
+  color: var(--qcc-primary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.qcc-session-step {
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.qcc-user-action {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #f5c26b;
+  border-radius: 10px;
+  background: #fff8e8;
+}
+
+.qcc-user-action-title {
+  color: #8a4b08;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.qcc-user-action-text {
+  margin-top: 4px;
+  color: #8a4b08;
+  font-size: 10px;
+  line-height: 1.45;
+}
