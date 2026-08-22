@@ -23,11 +23,13 @@ from http.server import (
 )
 from typing import Any
 
+from backend.qcc.contracts.protocol import (
+    QCC_PROTOCOL_VERSION,
+)
+
 
 QCC_BRIDGE_HOST = "127.0.0.1"
 QCC_BRIDGE_PORT = 8766
-
-QCC_PROTOCOL_VERSION = 1
 
 
 def _health_payload() -> dict[str, Any]:
