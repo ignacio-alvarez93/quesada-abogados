@@ -224,6 +224,93 @@ def _capture_browser_payload(
     }
 
 
+    function interactionSignalsOf(
+        element,
+        documentObject
+    ) {
+        try {
+            const rect =
+                element.getBoundingClientRect();
+
+            const view =
+                documentObject.defaultView;
+
+            const style =
+                view
+                ? view.getComputedStyle(element)
+                : null;
+
+            const root =
+                documentObject.documentElement;
+
+            const viewportWidth =
+                Number(
+                    view?.innerWidth
+                    || root?.clientWidth
+                    || 0
+                );
+
+            const viewportHeight =
+                Number(
+                    view?.innerHeight
+                    || root?.clientHeight
+                    || 0
+                );
+
+            return {
+                hidden:
+                    Boolean(element.hidden),
+
+                aria_hidden:
+                    String(
+                        element.getAttribute?.("aria-hidden")
+                        || ""
+                    ).toLowerCase() === "true",
+
+                aria_disabled:
+                    String(
+                        element.getAttribute?.("aria-disabled")
+                        || ""
+                    ).toLowerCase() === "true",
+
+                readonly:
+                    Boolean(element.readOnly),
+
+                in_viewport:
+                    Boolean(
+                        rect.width > 0
+                        && rect.height > 0
+                        && rect.right > 0
+                        && rect.bottom > 0
+                        && rect.left < viewportWidth
+                        && rect.top < viewportHeight
+                    ),
+
+                opacity:
+                    style
+                    ? String(style.opacity || "")
+                    : null,
+
+                pointer_events:
+                    style
+                    ? String(style.pointerEvents || "")
+                    : null
+            };
+
+        } catch (_) {
+            return {
+                hidden: Boolean(element.hidden),
+                aria_hidden: false,
+                aria_disabled: false,
+                readonly: Boolean(element.readOnly),
+                in_viewport: null,
+                opacity: null,
+                pointer_events: null
+            };
+        }
+    }
+
+
     function elementRecord(
         element,
         index,
@@ -303,6 +390,12 @@ def _capture_browser_payload(
             disabled:
                 Boolean(
                     element.disabled
+                ),
+
+            interaction_signals:
+                interactionSignalsOf(
+                    element,
+                    documentObject
                 ),
 
             shadow_root:
@@ -480,6 +573,76 @@ def _capture_browser_payload(
                 String(
                     document.characterSet
                     || ""
+                )
+        },
+
+        viewport: {
+            inner_width:
+                Number(
+                    window.innerWidth
+                    || 0
+                ),
+
+            inner_height:
+                Number(
+                    window.innerHeight
+                    || 0
+                ),
+
+            client_width:
+                Number(
+                    document.documentElement
+                        ?.clientWidth
+                    || 0
+                ),
+
+            client_height:
+                Number(
+                    document.documentElement
+                        ?.clientHeight
+                    || 0
+                ),
+
+            scroll_x:
+                Number(
+                    window.scrollX
+                    || 0
+                ),
+
+            scroll_y:
+                Number(
+                    window.scrollY
+                    || 0
+                ),
+
+            device_pixel_ratio:
+                Number(
+                    window.devicePixelRatio
+                    || 1
+                ),
+
+            screen_x:
+                Number(
+                    window.screenX
+                    || 0
+                ),
+
+            screen_y:
+                Number(
+                    window.screenY
+                    || 0
+                ),
+
+            outer_width:
+                Number(
+                    window.outerWidth
+                    || 0
+                ),
+
+            outer_height:
+                Number(
+                    window.outerHeight
+                    || 0
                 )
         },
 
@@ -1002,6 +1165,13 @@ def capture_dom_snapshot(
         or {}
     )
 
+    viewport = dict(
+        payload.get(
+            "viewport"
+        )
+        or {}
+    )
+
     page_path = (
         capture_dir
         / "page.html"
@@ -1137,6 +1307,9 @@ def capture_dom_snapshot(
         "metadata":
             metadata,
 
+        "viewport":
+            viewport,
+
         "counts":
             counts,
 
@@ -1196,6 +1369,9 @@ def capture_dom_snapshot(
             metadata.get(
                 "title"
             ),
+
+        "viewport":
+            viewport,
 
         "counts":
             counts,

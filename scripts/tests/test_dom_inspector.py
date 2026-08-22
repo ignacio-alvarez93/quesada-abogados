@@ -57,6 +57,20 @@ def _payload():
                 "UTF-8",
         },
 
+        "viewport": {
+            "inner_width": 1280,
+            "inner_height": 720,
+            "client_width": 1265,
+            "client_height": 705,
+            "scroll_x": 120,
+            "scroll_y": 340,
+            "device_pixel_ratio": 1.25,
+            "screen_x": 40,
+            "screen_y": 20,
+            "outer_width": 1296,
+            "outer_height": 839,
+        },
+
         "html":
             (
                 "<html><body>"
@@ -757,3 +771,95 @@ def test_inspector_webdriver_path_adds_return():
     assert script.startswith(
         "return (function () {"
     )
+
+
+def test_inventory_persists_viewport_geometry(
+    tmp_path,
+):
+    browser = FakeBrowser(
+        _payload()
+    )
+
+    result = (
+        dom_inspector
+        .capture_dom_snapshot(
+            browser,
+            tmp_path,
+        )
+    )
+
+    inventory = json.loads(
+        result[
+            "inventory_path"
+        ].read_text(
+            encoding="utf-8"
+        )
+    )
+
+    viewport = inventory["viewport"]
+
+    assert viewport["inner_width"] == 1280
+    assert viewport["inner_height"] == 720
+    assert viewport["scroll_x"] == 120
+    assert viewport["scroll_y"] == 340
+    assert viewport["device_pixel_ratio"] == 1.25
+    assert viewport["screen_x"] == 40
+    assert viewport["screen_y"] == 20
+
+
+def test_inspector_javascript_captures_browser_geometry():
+    browser = FakeBrowser(
+        _payload()
+    )
+
+    (
+        dom_inspector
+        ._capture_browser_payload(
+            browser
+        )
+    )
+
+    script = browser.scripts[0]
+
+    required = (
+        "window.innerWidth",
+        "window.innerHeight",
+        "clientWidth",
+        "clientHeight",
+        "window.scrollX",
+        "window.scrollY",
+        "window.devicePixelRatio",
+        "window.screenX",
+        "window.screenY",
+        "window.outerWidth",
+        "window.outerHeight",
+    )
+
+    for token in required:
+        assert token in script
+
+
+def test_inspector_javascript_captures_interaction_signals():
+    browser = FakeBrowser(
+        _payload()
+    )
+
+    dom_inspector._capture_browser_payload(
+        browser
+    )
+
+    script = browser.scripts[0]
+
+    required = (
+        "interaction_signals",
+        "aria-hidden",
+        "aria-disabled",
+        "element.readOnly",
+        "pointerEvents",
+        "style.opacity",
+        "rect.right",
+        "rect.bottom",
+    )
+
+    for token in required:
+        assert token in script
