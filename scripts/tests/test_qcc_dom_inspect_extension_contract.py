@@ -271,3 +271,82 @@ def test_dom_inspect_requests_permission_before_capture_message():
         permission_position
         < capture_position
     )
+
+
+def test_dom_capture_posts_to_site_architecture_bridge():
+    source = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    required = (
+        "QCC_SITE_ARCHITECTURE_CAPTURE_URL",
+        "/qcc/site-architecture/capture",
+        "submitSiteArchitectureCapture",
+        "protocol_version: 1",
+        "capture",
+    )
+
+    for token in required:
+        assert token in source
+
+
+def test_site_architecture_upload_has_dedicated_timeout():
+    source = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "QCC_SITE_ARCHITECTURE_REQUEST_TIMEOUT_MS"
+        in source
+    )
+
+    assert "30000" in source
+
+    assert (
+        "timeoutMs = QCC_REQUEST_TIMEOUT_MS"
+        in source
+    )
+
+
+def test_dom_capture_keeps_local_download_as_fail_open_fallback():
+    source = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    start = source.index(
+        "async function handleDomInspect()"
+    )
+
+    block = source[start:]
+
+    submit_position = block.index(
+        "submitSiteArchitectureCapture"
+    )
+
+    download_position = block.index(
+        "downloadDomCapture"
+    )
+
+    assert (
+        submit_position
+        < download_position
+    )
+
+    assert "backendResult" in block
+
+    assert (
+        "Bridge no disponible"
+        in block
+    )

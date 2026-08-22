@@ -149,12 +149,14 @@ def normalize_interaction_state(
         state = InteractionState.HIDDEN
     elif disabled:
         state = InteractionState.DISABLED
-    elif in_viewport is False:
-        state = InteractionState.OFF_VIEWPORT
-    elif pointer_events == "none":
-        state = InteractionState.NOT_INTERACTABLE
     elif readonly_blocks:
         state = InteractionState.READONLY
+    elif in_viewport is False:
+        state = InteractionState.OFF_VIEWPORT
+    elif in_viewport is None:
+        state = InteractionState.NOT_INTERACTABLE
+    elif pointer_events == "none":
+        state = InteractionState.NOT_INTERACTABLE
     elif semantics & _ACTIONABLE_SEMANTICS:
         state = InteractionState.INTERACTABLE
     else:

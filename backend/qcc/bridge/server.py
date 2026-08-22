@@ -46,10 +46,18 @@ from backend.qcc.contracts.protocol import (
 from backend.qcc.context.store import (
     QccContextStore,
 )
+from backend.qcc.site_architecture import (
+    QccSiteArchitectureIngestor,
+)
 
 
 QCC_BRIDGE_HOST = "127.0.0.1"
 QCC_BRIDGE_PORT = 8766
+
+QCC_REQUEST_MAX_BYTES = 65536
+QCC_SITE_ARCHITECTURE_MAX_BYTES = (
+    64 * 1024 * 1024
+)
 
 
 def _health_payload() -> dict[str, Any]:
@@ -91,8 +99,35 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
 
         self.wfile.write(body)
 
-    def _read_json(
+    def _drain_request_body(
         self,
+        length,
+    ) -> None:
+        """Descarta un body pendiente sin cargarlo completo en memoria."""
+
+        remaining = max(
+            int(length),
+            0,
+        )
+
+        while remaining > 0:
+            chunk = self.rfile.read(
+                min(
+                    65536,
+                    remaining,
+                )
+            )
+
+            if not chunk:
+                break
+
+            remaining -= len(chunk)
+
+    def _read_json_with_limit(
+        self,
+        *,
+        max_bytes,
+        length_error,
     ) -> dict[str, Any]:
         raw_length = self.headers.get(
             "Content-Length",
@@ -103,15 +138,21 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             length = int(raw_length)
         except ValueError as exc:
             raise ValueError(
-                "QCC_REQUEST_LENGTH_INVALID"
+                length_error
             ) from exc
 
-        if (
-            length <= 0
-            or length > 65536
-        ):
+        if length <= 0:
             raise ValueError(
-                "QCC_REQUEST_LENGTH_INVALID"
+                length_error
+            )
+
+        if length > max_bytes:
+            self._drain_request_body(
+                length
+            )
+
+            raise ValueError(
+                length_error
             )
 
         raw = self.rfile.read(
@@ -141,6 +182,14 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             )
 
         return payload
+
+    def _read_json(
+        self,
+    ) -> dict[str, Any]:
+        return self._read_json_with_limit(
+            max_bytes=QCC_REQUEST_MAX_BYTES,
+            length_error="QCC_REQUEST_LENGTH_INVALID",
+        )
 
     def do_GET(self) -> None:
         if self.path == "/qcc/health":
@@ -207,6 +256,103 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             "qcc_tool_store",
             None,
         )
+
+        # ---------------------------------------------
+        # QCC Extension -> Bridge:
+        # POST /qcc/site-architecture/capture
+        #
+        # Funciona con Chrome manual o con una
+        # presentación asistida activa.
+        # ---------------------------------------------
+        if path == "/qcc/site-architecture/capture":
+            ingestor = getattr(
+                self.server,
+                "qcc_site_architecture_ingestor",
+                None,
+            )
+
+            if ingestor is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_SITE_ARCHITECTURE_UNAVAILABLE",
+                    },
+                )
+                return
+
+            try:
+                payload = self._read_json_with_limit(
+                    max_bytes=(
+                        QCC_SITE_ARCHITECTURE_MAX_BYTES
+                    ),
+                    length_error=(
+                        "QCC_SITE_ARCHITECTURE_REQUEST_TOO_LARGE"
+                    ),
+                )
+
+                if (
+                    payload.get("protocol_version")
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                capture = payload.get(
+                    "capture"
+                )
+
+                if not isinstance(
+                    capture,
+                    dict,
+                ):
+                    raise ValueError(
+                        "QCC_SITE_ARCHITECTURE_CAPTURE_INVALID"
+                    )
+
+                context = (
+                    context_store.snapshot()
+                    if context_store is not None
+                    else None
+                )
+
+                result = ingestor.ingest(
+                    capture,
+                    context=context,
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+                    "capture_id":
+                        result["capture_id"],
+                    "context_mode":
+                        result["context_mode"],
+                    "session_id":
+                        result["session_id"],
+                    "page":
+                        result["page"],
+                    "counts":
+                        result["counts"],
+                },
+            )
+            return
 
         # ---------------------------------------------
         # Runtime -> Bridge: snapshot de sesión
@@ -698,6 +844,10 @@ class QccBridgeServer:
             QccToolStore
             | None
         ) = None,
+        site_architecture_ingestor: (
+            QccSiteArchitectureIngestor
+            | None
+        ) = None,
     ) -> None:
         if host != QCC_BRIDGE_HOST:
             raise ValueError(
@@ -722,6 +872,12 @@ class QccBridgeServer:
             else QccToolStore()
         )
 
+        self._site_architecture_ingestor = (
+            site_architecture_ingestor
+            if site_architecture_ingestor is not None
+            else QccSiteArchitectureIngestor()
+        )
+
         self._server = ThreadingHTTPServer(
             (host, port),
             _QccBridgeHandler,
@@ -737,6 +893,10 @@ class QccBridgeServer:
 
         self._server.qcc_tool_store = (
             self._tool_store
+        )
+
+        self._server.qcc_site_architecture_ingestor = (
+            self._site_architecture_ingestor
         )
 
         self._thread: threading.Thread | None = None
