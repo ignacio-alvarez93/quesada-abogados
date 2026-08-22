@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  >
+  <title>Quesada Chrome Companion</title>
+  <link
+    rel="stylesheet"
+    href="sidepanel.css"
+  >
+</head>
+
+<body>
+  <main class="qcc-shell">
+
+    <header class="qcc-header">
+      <div class="qcc-brand">
+        <div class="qcc-logo">
+          Q
+        </div>
+
+        <div>
+          <div class="qcc-title">
+            Quesada Chrome Companion
+          </div>
+
+          <div class="qcc-subtitle">
+            Quesada Abogados
+          </div>
+        </div>
+      </div>
+
+      <span class="qcc-version" id="qcc-version">
+        QCC
+      </span>
+    </header>
+
+    <section class="qcc-status-card">
+      <div class="qcc-section-label">
+        ESTADO
+      </div>
+
+      <div class="qcc-status-row">
+        <span
+          class="qcc-status-dot qcc-status-dot--offline"
+          id="bridge-dot"
+        ></span>
+
+        <div>
+          <div
+            class="qcc-status-title"
+            id="bridge-status"
+          >
+            CRM desconectado
+          </div>
+
+          <div class="qcc-status-description">
+            QCC Bridge todavía no está disponible.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="qcc-context-card">
+      <div class="qcc-section-label">
+        ACTIVIDAD
+      </div>
+
+      <div class="qcc-empty-state">
+        <div class="qcc-empty-icon">
+          ◌
+        </div>
+
+        <div class="qcc-empty-title">
+          Sin actividad en curso
+        </div>
+
+        <div class="qcc-empty-description">
+          Cuando una presentación o automatización
+          se conecte a QCC, aparecerá aquí su contexto.
+        </div>
+      </div>
+    </section>
+
+    <section class="qcc-info-card">
+      <div class="qcc-section-label">
+        QUESADA CHROME COMPANION
+      </div>
+
+      <div class="qcc-info-text">
+        Interfaz contextual del ERP para
+        presentaciones y automatizaciones
+        administrativas.
+      </div>
+    </section>
+
+    <footer class="qcc-footer">
+      <span>
+        Quesada Abogados
+      </span>
+
+      <span id="qcc-build">
+        Extension Shell
+      </span>
+    </footer>
+
+  </main>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
