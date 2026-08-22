@@ -186,3 +186,85 @@ def test_normalize_dom_capture_adds_element_semantics():
         snapshot.elements[2]["semantics"]
         == ("BUTTON",)
     )
+
+
+def test_normalize_dom_capture_adds_selector_profile():
+    payload = _payload()
+
+    payload["elements"] = [
+        {
+            "index": 0,
+            "frame_path": "main",
+            "tag": "input",
+            "id": "documento",
+            "name": "documento",
+            "type": "file",
+            "role": "",
+            "attributes": {},
+        },
+    ]
+
+    snapshot = normalize_dom_capture(
+        payload
+    )
+
+    selectors = (
+        snapshot.elements[0]["selectors"]
+    )
+
+    assert selectors["frame_path"] == "main"
+
+    assert (
+        selectors["primary"]["selector"]
+        == "#documento"
+    )
+
+    assert (
+        selectors["primary"]["unique"]
+        is True
+    )
+
+    assert selectors["confidence"] == "HIGH"
+
+    assert (
+        selectors["fallbacks"][0]["selector"]
+        == '[name="documento"]'
+    )
+
+
+def test_normalizer_does_not_promote_ambiguous_selector():
+    payload = _payload()
+
+    payload["elements"] = [
+        {
+            "index": 0,
+            "frame_path": "main",
+            "tag": "button",
+            "role": "button",
+            "attributes": {},
+        },
+        {
+            "index": 1,
+            "frame_path": "main",
+            "tag": "button",
+            "role": "button",
+            "attributes": {},
+        },
+    ]
+
+    snapshot = normalize_dom_capture(
+        payload
+    )
+
+    selectors = (
+        snapshot.elements[0]["selectors"]
+    )
+
+    assert selectors["primary"] is None
+    assert selectors["fallbacks"] == ()
+    assert selectors["confidence"] is None
+
+    assert (
+        selectors["candidates"][0]["unique"]
+        is False
+    )

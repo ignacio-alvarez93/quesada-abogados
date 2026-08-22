@@ -21,6 +21,10 @@ from .semantics import (
     classify_element_semantics,
 )
 
+from .selectors import (
+    resolve_selector_profile,
+)
+
 
 def _require_dom_capture_payload(
     payload,
@@ -75,13 +79,24 @@ def _query_from_metadata(
     return urlsplit(url).query
 
 
-def _normalize_element(item):
+def _normalize_element(
+    item,
+    *,
+    elements,
+):
     record = dict(item)
 
     record["semantics"] = (
         classify_element_semantics(
             record
         )
+    )
+
+    record["selectors"] = (
+        resolve_selector_profile(
+            record,
+            elements,
+        ).to_dict()
     )
 
     return record
@@ -151,7 +166,13 @@ def normalize_dom_capture(
             )
         ),
         elements=tuple(
-            _normalize_element(item)
+            _normalize_element(
+                item,
+                elements=(
+                    payload.get("elements")
+                    or []
+                ),
+            )
             for item in (
                 payload.get("elements")
                 or []

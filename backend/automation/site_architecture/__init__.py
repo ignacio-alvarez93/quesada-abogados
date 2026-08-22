@@ -38,3 +38,21 @@ __all__ += (
     "SiteElementSemantic",
     "classify_element_semantics",
 )
+
+from .selectors import (
+    SelectorCandidate,
+    SelectorConfidence,
+    SelectorProfile,
+    SelectorStrategy,
+    build_selector_candidates,
+    resolve_selector_profile,
+)
+
+__all__ += (
+    "SelectorCandidate",
+    "SelectorConfidence",
+    "SelectorProfile",
+    "SelectorStrategy",
+    "build_selector_candidates",
+    "resolve_selector_profile",
+)
