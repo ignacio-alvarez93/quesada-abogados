@@ -66,3 +66,13 @@ __all__ += (
     "build_normalized_snapshot_payload",
     "write_normalized_snapshot",
 )
+
+from .contract_diff import (
+    ContractChange,
+    diff_site_architecture,
+)
+
+__all__ += (
+    "ContractChange",
+    "diff_site_architecture",
+)
