@@ -24,10 +24,12 @@ def test_qcc_manifest_is_v3_side_panel_extension():
     assert manifest["name"] == (
         "Quesada Chrome Companion"
     )
-    assert manifest["version"] == "0.6.0"
+    assert manifest["version"] == "0.7.0"
 
     assert manifest["permissions"] == [
-        "sidePanel"
+        "sidePanel",
+        "scripting",
+        "activeTab",
     ]
 
     assert manifest["side_panel"] == {

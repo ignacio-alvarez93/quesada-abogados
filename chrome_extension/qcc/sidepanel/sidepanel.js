@@ -1060,3 +1060,302 @@ document.addEventListener(
   "DOMContentLoaded",
   initializeQccShell
 );
+
+
+function sanitizeDownloadToken(
+  value
+) {
+  return (
+    String(
+      value
+      || "pagina"
+    )
+      .trim()
+      .replace(
+        /[^A-Za-z0-9._-]+/g,
+        "_"
+      )
+      .replace(
+        /^[_\-.]+|[_\-.]+$/g,
+        ""
+      )
+    || "pagina"
+  );
+}
+
+
+function buildDomCaptureFilename(
+  capture
+) {
+  const mainFrame =
+    (
+      capture?.frames
+      || []
+    ).find(
+      (frame) =>
+        frame?.frame_id === 0
+    );
+
+  const hostname =
+    sanitizeDownloadToken(
+      mainFrame
+        ?.result
+        ?.hostname
+        || "pagina"
+    );
+
+  const timestamp =
+    String(
+      capture?.captured_at
+      || new Date()
+        .toISOString()
+    )
+      .replace(
+        /[:.]/g,
+        "-"
+      );
+
+  return (
+    "qcc_dom_capture_"
+    + hostname
+    + "_"
+    + timestamp
+    + ".json"
+  );
+}
+
+
+function downloadDomCapture(
+  capture
+) {
+  const serialized =
+    JSON.stringify(
+      capture,
+      null,
+      2
+    );
+
+  const blob =
+    new Blob(
+      [
+        serialized
+      ],
+      {
+        type:
+          "application/json;charset=utf-8"
+      }
+    );
+
+  const objectUrl =
+    URL.createObjectURL(
+      blob
+    );
+
+  const anchor =
+    document.createElement(
+      "a"
+    );
+
+  anchor.href =
+    objectUrl;
+
+  anchor.download =
+    buildDomCaptureFilename(
+      capture
+    );
+
+  anchor.style.display =
+    "none";
+
+  document.body.appendChild(
+    anchor
+  );
+
+  anchor.click();
+  anchor.remove();
+
+  window.setTimeout(
+    () => {
+      URL.revokeObjectURL(
+        objectUrl
+      );
+    },
+    1500
+  );
+
+  return {
+    filename:
+      anchor.download,
+
+    bytes:
+      new TextEncoder()
+        .encode(
+          serialized
+        )
+        .length
+  };
+}
+
+
+const QCC_DOM_OPTIONAL_ORIGINS = [
+  "http://*/*",
+  "https://*/*"
+];
+
+
+async function requestDomInspectionPermission() {
+  /*
+   * Debe ejecutarse directamente como consecuencia
+   * del click del usuario.
+   *
+   * El permiso es opcional: QCC no obtiene acceso
+   * permanente a sitios web simplemente por instalarse.
+   */
+  const granted =
+    await chrome.permissions.request({
+      origins:
+        QCC_DOM_OPTIONAL_ORIGINS
+    });
+
+  return Boolean(
+    granted
+  );
+}
+
+
+async function handleDomInspect() {
+  const button =
+    element(
+      "tool-dom-inspect"
+    );
+
+  if (!button) {
+    return;
+  }
+
+  button.disabled =
+    true;
+
+  setText(
+    "dom-inspect-feedback",
+    "Leyendo DOM de la pestaña activa..."
+  );
+
+
+  try {
+    /*
+     * Primera operación privilegiada:
+     * conservar el gesto explícito del usuario
+     * para chrome.permissions.request().
+     */
+    const permissionGranted =
+      await requestDomInspectionPermission();
+
+    if (!permissionGranted) {
+      throw new Error(
+        "QCC_DOM_HOST_PERMISSION_DENIED"
+      );
+    }
+
+    setText(
+      "dom-inspect-feedback",
+      "Permiso concedido · leyendo DOM..."
+    );
+
+    const capture =
+      await chrome.runtime.sendMessage({
+        type:
+          "QCC_DOM_INSPECT"
+      });
+
+
+    if (
+      !capture
+      || capture.ok !== true
+    ) {
+      throw new Error(
+        capture?.error
+        || "QCC_DOM_CAPTURE_INVALID"
+      );
+    }
+
+
+    const saved =
+      downloadDomCapture(
+        capture
+      );
+
+
+    const mainFrame =
+      (
+        capture.frames
+        || []
+      ).find(
+        (frame) =>
+          frame?.frame_id === 0
+      );
+
+
+    const mainCounts =
+      (
+        mainFrame
+        ?.result
+        ?.counts
+        || {}
+      );
+
+
+    setText(
+      "dom-inspect-feedback",
+      (
+        "Captura guardada · "
+        + `${capture.captured_frames} frame(s) · `
+        + `${mainCounts.elements || 0} elementos · `
+        + saved.filename
+      )
+    );
+
+  } catch (error) {
+    console.error(
+      "[QCC] DOM inspect:",
+      error
+    );
+
+    const errorDetail =
+      String(
+        error?.message
+        || error
+        || "QCC_DOM_INSPECT_FAILED"
+      );
+
+    setText(
+      "dom-inspect-feedback",
+      (
+        "No se pudo inspeccionar esta pestaña · "
+        + errorDetail
+      )
+    );
+
+  } finally {
+    button.disabled =
+      false;
+  }
+}
+
+
+document.addEventListener(
+  "DOMContentLoaded",
+  () => {
+    const domInspect =
+      element(
+        "tool-dom-inspect"
+      );
+
+    if (domInspect) {
+      domInspect.addEventListener(
+        "click",
+        handleDomInspect
+      );
+    }
+  }
+);
