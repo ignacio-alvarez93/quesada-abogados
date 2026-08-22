@@ -9,6 +9,7 @@
   --qcc-primary: #3157d5;
   --qcc-primary-soft: #eef2ff;
   --qcc-offline: #98a2b3;
+  --qcc-online: #12b76a;
   --qcc-shadow:
     0 1px 2px rgba(16, 24, 40, 0.04);
 }
@@ -126,6 +127,10 @@ body {
 
 .qcc-status-dot--offline {
   background: var(--qcc-offline);
+}
+
+.qcc-status-dot--online {
+  background: var(--qcc-online);
 }
 
 .qcc-status-title {

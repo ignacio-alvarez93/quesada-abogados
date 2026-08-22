@@ -24,7 +24,7 @@ def test_qcc_manifest_is_v3_side_panel_extension():
     assert manifest["name"] == (
         "Quesada Chrome Companion"
     )
-    assert manifest["version"] == "0.1.0"
+    assert manifest["version"] == "0.2.0"
 
     assert manifest["permissions"] == [
         "sidePanel"
@@ -49,12 +49,14 @@ def test_qcc_v1_shell_has_no_content_scripts():
     assert "content_scripts" not in manifest
 
 
-def test_qcc_v1_shell_has_no_host_permissions():
+def test_qcc_has_only_local_bridge_host_permission():
     manifest = _load_manifest(
         QCC_DIR / "manifest.json"
     )
 
-    assert "host_permissions" not in manifest
+    assert manifest["host_permissions"] == [
+        "http://127.0.0.1:8766/*"
+    ]
 
 
 def test_qcc_required_shell_files_exist():
@@ -123,3 +125,22 @@ def test_icpplus_observer_remains_independent():
     assert (
         ICPPLUS_DIR / "semantic.js"
     ).is_file()
+
+
+def test_qcc_sidepanel_uses_bridge_health_contract():
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "http://127.0.0.1:8766/qcc/health"
+        in script
+    )
+
+    assert '"qcc_bridge"' in script
+    assert '"CRM conectado"' in script
+    assert '"CRM desconectado"' in script
