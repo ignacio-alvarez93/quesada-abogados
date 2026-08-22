@@ -7,8 +7,14 @@ const QCC_BRIDGE_HEALTH_URL =
 const QCC_CONTEXT_URL =
   `${QCC_BRIDGE_BASE_URL}/qcc/context`;
 
+const QCC_SITE_ARCHITECTURE_CAPTURE_URL =
+  `${QCC_BRIDGE_BASE_URL}/qcc/site-architecture/capture`;
+
 const QCC_HEALTH_INTERVAL_MS = 2000;
 const QCC_REQUEST_TIMEOUT_MS = 1200;
+
+const QCC_SITE_ARCHITECTURE_REQUEST_TIMEOUT_MS =
+  10000;
 
 let qccActiveSessionId = null;
 
@@ -83,7 +89,8 @@ async function fetchJson(url) {
 
 async function postJson(
   url,
-  payload
+  payload,
+  timeoutMs = QCC_REQUEST_TIMEOUT_MS
 ) {
   const controller =
     new AbortController();
@@ -91,7 +98,7 @@ async function postJson(
   const timeoutId =
     setTimeout(
       () => controller.abort(),
-      QCC_REQUEST_TIMEOUT_MS
+      timeoutMs
     );
 
   try {
@@ -126,6 +133,20 @@ async function postJson(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+
+async function submitSiteArchitectureCapture(
+  capture
+) {
+  return await postJson(
+    QCC_SITE_ARCHITECTURE_CAPTURE_URL,
+    {
+      protocol_version: 1,
+      capture
+    },
+    QCC_SITE_ARCHITECTURE_REQUEST_TIMEOUT_MS
+  );
 }
 
 
@@ -1280,10 +1301,41 @@ async function handleDomInspect() {
     }
 
 
-    const saved =
-      downloadDomCapture(
-        capture
+    let backendResult = null;
+    let saved = null;
+
+    try {
+      backendResult =
+        await submitSiteArchitectureCapture(
+          capture
+        );
+
+      if (
+        !backendResult
+        || backendResult.ok !== true
+      ) {
+        throw new Error(
+          "QCC_SITE_ARCHITECTURE_RESPONSE_INVALID"
+        );
+      }
+
+    } catch (error) {
+      /*
+       * Fail-open:
+       * QCC debe seguir siendo útil incluso si
+       * CRM/Bridge no está abierto o rechaza
+       * la captura.
+       */
+      console.warn(
+        "[QCC] Site Architecture backend:",
+        error
       );
+
+      saved =
+        downloadDomCapture(
+          capture
+        );
+    }
 
 
     const mainFrame =
@@ -1305,15 +1357,34 @@ async function handleDomInspect() {
       );
 
 
-    setText(
-      "dom-inspect-feedback",
-      (
-        "Captura guardada · "
-        + `${capture.captured_frames} frame(s) · `
-        + `${mainCounts.elements || 0} elementos · `
-        + saved.filename
-      )
-    );
+    if (backendResult) {
+      const mode =
+        backendResult.context_mode
+        || "MANUAL";
+
+      setText(
+        "dom-inspect-feedback",
+        (
+          "Site Architecture integrada · "
+          + `${capture.captured_frames} frame(s) · `
+          + `${mainCounts.elements || 0} elementos · `
+          + `${mode} · `
+          + backendResult.capture_id
+        )
+      );
+
+    } else {
+      setText(
+        "dom-inspect-feedback",
+        (
+          "Bridge no disponible · "
+          + "captura guardada localmente · "
+          + `${capture.captured_frames} frame(s) · `
+          + `${mainCounts.elements || 0} elementos · `
+          + saved.filename
+        )
+      );
+    }
 
   } catch (error) {
     console.error(
