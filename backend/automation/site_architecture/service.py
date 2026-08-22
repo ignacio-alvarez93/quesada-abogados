@@ -8,6 +8,9 @@ from backend.automation.dom_inspector import (
     capture_dom_snapshot,
 )
 
+from .qcc_capture_adapter import (
+    adapt_qcc_extension_capture,
+)
 from .normalizer import (
     normalize_dom_capture,
 )
@@ -92,3 +95,26 @@ def capture_site_architecture(
         **capture,
         **normalized,
     }
+
+
+def persist_site_architecture_from_qcc_capture(
+    qcc_capture,
+    output_dir,
+    *,
+    filename=DEFAULT_SITE_ARCHITECTURE_FILENAME,
+):
+    """Adapta captura QCC y persiste el contrato canónico."""
+
+    raw_payload = (
+        adapt_qcc_extension_capture(
+            qcc_capture
+        )
+    )
+
+    return (
+        persist_site_architecture_from_raw(
+            raw_payload,
+            output_dir,
+            filename=filename,
+        )
+    )

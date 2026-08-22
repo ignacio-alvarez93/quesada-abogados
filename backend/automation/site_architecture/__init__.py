@@ -86,3 +86,15 @@ __all__ += (
     "capture_site_architecture",
     "persist_site_architecture_from_raw",
 )
+
+from .qcc_capture_adapter import (
+    adapt_qcc_extension_capture,
+)
+from .service import (
+    persist_site_architecture_from_qcc_capture,
+)
+
+__all__ += (
+    "adapt_qcc_extension_capture",
+    "persist_site_architecture_from_qcc_capture",
+)

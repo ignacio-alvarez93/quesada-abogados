@@ -104,3 +104,23 @@ def test_visible_non_actionable_element_is_not_interactable():
         state["state"]
         == "NOT_INTERACTABLE"
     )
+
+
+def test_unknown_viewport_does_not_claim_interactable():
+    element = _button()
+
+    element["interaction_signals"] = dict(
+        element["interaction_signals"],
+        in_viewport=None,
+    )
+
+    state = normalize_interaction_state(
+        element
+    )
+
+    assert (
+        state["state"]
+        == "NOT_INTERACTABLE"
+    )
+
+    assert state["interactable"] is False
