@@ -10,6 +10,11 @@ const QCC_CONTEXT_URL =
 const QCC_HEALTH_INTERVAL_MS = 2000;
 const QCC_REQUEST_TIMEOUT_MS = 1200;
 
+let qccActiveSessionId = null;
+
+const qccPendingActionIds =
+  new Map();
+
 
 function element(id) {
   return document.getElementById(id);
@@ -76,6 +81,119 @@ async function fetchJson(url) {
 }
 
 
+async function postJson(
+  url,
+  payload
+) {
+  const controller =
+    new AbortController();
+
+  const timeoutId =
+    setTimeout(
+      () => controller.abort(),
+      QCC_REQUEST_TIMEOUT_MS
+    );
+
+  try {
+    const response =
+      await fetch(
+        url,
+        {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+          body: JSON.stringify(
+            payload
+          ),
+          signal: controller.signal
+        }
+      );
+
+    const responsePayload =
+      await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        responsePayload?.error
+        || `HTTP_${response.status}`
+      );
+    }
+
+    return responsePayload;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+
+function getClientActionId(
+  sessionId,
+  action
+) {
+  const key =
+    `${sessionId}:${action}`;
+
+  let clientActionId =
+    qccPendingActionIds.get(
+      key
+    );
+
+  if (!clientActionId) {
+    clientActionId =
+      crypto.randomUUID();
+
+    qccPendingActionIds.set(
+      key,
+      clientActionId
+    );
+  }
+
+  return clientActionId;
+}
+
+
+async function submitSessionAction(
+  action,
+  payload = {}
+) {
+  const sessionId =
+    qccActiveSessionId;
+
+  if (!sessionId) {
+    throw new Error(
+      "QCC_SESSION_NOT_AVAILABLE"
+    );
+  }
+
+  const clientActionId =
+    getClientActionId(
+      sessionId,
+      action
+    );
+
+  const url =
+    (
+      `${QCC_BRIDGE_BASE_URL}`
+      + `/qcc/session/${encodeURIComponent(sessionId)}`
+      + "/action"
+    );
+
+  return await postJson(
+    url,
+    {
+      protocol_version: 1,
+      client_action_id:
+        clientActionId,
+      action,
+      payload
+    }
+  );
+}
+
+
 function setBridgeState(
   connected,
   description
@@ -115,6 +233,8 @@ function showEmptyContext(
     + "se conecte a QCC, aparecerá aquí su contexto."
   )
 ) {
+  qccActiveSessionId = null;
+
   const empty =
     element("qcc-empty-state");
 
@@ -155,6 +275,9 @@ function showEmptyContext(
 
 
 function renderSession(session) {
+  qccActiveSessionId =
+    session.session_id || null;
+
   const empty =
     element("qcc-empty-state");
 
@@ -314,6 +437,58 @@ function renderSession(session) {
       !requiresUserAction
     );
   }
+
+  const actionControls =
+    element(
+      "session-action-controls"
+    );
+
+  const startDocuments =
+    element(
+      "action-documents-start"
+    );
+
+  const canStartDocuments =
+    (
+      requiresUserAction
+      && session.current_step
+        === "DOCUMENTS_READY"
+    );
+
+  if (actionControls) {
+    actionControls.classList.toggle(
+      "qcc-hidden",
+      !canStartDocuments
+    );
+  }
+
+  if (startDocuments) {
+    startDocuments.disabled =
+      !canStartDocuments;
+  }
+
+  if (canStartDocuments) {
+    setText(
+      "user-action-text",
+      (
+        "Mercurio está preparado para "
+        + "iniciar la fase documental."
+      )
+    );
+  } else {
+    setText(
+      "user-action-text",
+      (
+        "La presentación está esperando "
+        + "una acción manual antes de continuar."
+      )
+    );
+
+    setText(
+      "action-feedback",
+      ""
+    );
+  }
 }
 
 
@@ -398,6 +573,60 @@ async function checkBridgeHealth() {
 }
 
 
+async function handleDocumentsStart() {
+  const button =
+    element(
+      "action-documents-start"
+    );
+
+  if (!button) {
+    return;
+  }
+
+  button.disabled = true;
+
+  setText(
+    "action-feedback",
+    "Enviando acción..."
+  );
+
+  try {
+    const result =
+      await submitSessionAction(
+        "DOCUMENTS_START",
+        {}
+      );
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        "QCC_ACTION_RESPONSE_INVALID"
+      );
+    }
+
+    setText(
+      "action-feedback",
+      "Acción enviada al runtime."
+    );
+
+  } catch (_) {
+    // Conservamos client_action_id para que
+    // un reintento manual sea idempotente.
+    setText(
+      "action-feedback",
+      (
+        "No se pudo confirmar la acción. "
+        + "Puedes volver a intentarlo."
+      )
+    );
+
+    button.disabled = false;
+  }
+}
+
+
 function initializeQccShell() {
   const manifest =
     chrome.runtime.getManifest();
@@ -411,6 +640,18 @@ function initializeQccShell() {
     "qcc-build",
     "Presentation Context"
   );
+
+  const documentsStartButton =
+    element(
+      "action-documents-start"
+    );
+
+  if (documentsStartButton) {
+    documentsStartButton.addEventListener(
+      "click",
+      handleDocumentsStart
+    );
+  }
 
   checkBridgeHealth();
 

@@ -24,7 +24,7 @@ def test_qcc_manifest_is_v3_side_panel_extension():
     assert manifest["name"] == (
         "Quesada Chrome Companion"
     )
-    assert manifest["version"] == "0.4.0"
+    assert manifest["version"] == "0.5.0"
 
     assert manifest["permissions"] == [
         "sidePanel"
@@ -251,3 +251,87 @@ def test_qcc_sidepanel_projects_last_event():
         'id="session-last-event"'
         in html
     )
+
+
+def test_qcc_sidepanel_exposes_documents_start_action():
+    html = (
+        QCC_DIR
+        / "sidepanel"
+        / "index.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'id="action-documents-start"'
+        in html
+    )
+
+    assert (
+        'id="session-action-controls"'
+        in html
+    )
+
+    assert (
+        "Iniciar documentación"
+        in html
+    )
+
+    assert (
+        '"DOCUMENTS_START"'
+        in script
+    )
+
+    assert (
+        "client_action_id"
+        in script
+    )
+
+    assert (
+        "crypto.randomUUID()"
+        in script
+    )
+
+    assert (
+        'method: "POST"'
+        in script
+    )
+
+    assert (
+        "/qcc/session/"
+        in script
+    )
+
+    assert (
+        '=== "DOCUMENTS_READY"'
+        in script
+    )
+
+
+def test_qcc_sidepanel_action_does_not_control_browser():
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    forbidden = (
+        "executeScript",
+        "chrome.scripting",
+        "querySelector(",
+        "getElementById('btn",
+        "seleniumbase",
+    )
+
+    for token in forbidden:
+        assert token not in script
