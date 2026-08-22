@@ -147,52 +147,68 @@ def test_presenter_continue_contains_no_browser_click():
     assert "NO CDP click" in block
 
 
-def test_final_pause_exposes_waiting_user_to_qcc(
+def test_final_pause_delegates_to_dom_wait(
     tmp_path,
 ):
     reporter = Mock()
 
-    with patch(
-        "builtins.input",
-        return_value="",
-    ):
-        runner.pause_humana_final_presentacion(
-            object(),
-            str(tmp_path),
-            reporter=reporter,
+    expected = {
+        "ok": True,
+        "mode": "human_dom_detected",
+    }
+
+    with patch.object(
+        runner,
+        "wait_for_human_navigation",
+        return_value=expected,
+    ) as wait:
+        result = (
+            runner.pause_humana_final_presentacion(
+                object(),
+                str(tmp_path),
+                reporter=reporter,
+            )
         )
 
-    reporter.waiting_user.assert_called_once_with(
-        step="FINAL_REVIEW",
-        progress=82,
-        message=(
-            "Revisa la solicitud y pulsa "
-            "CONCLUIR manualmente en Mercurio"
-        ),
-    )
+    assert result is expected
 
-    reporter.resuming.assert_called_once_with(
-        step="FINAL_REVIEW",
-        progress=85,
-        message=(
-            "Finalización manual confirmada "
-            "por el usuario"
-        ),
-    )
+    kwargs = wait.call_args.kwargs
+
+    assert kwargs[
+        "qcc_reporter"
+    ] is reporter
+
+    assert kwargs[
+        "qcc_step"
+    ] == "FINAL_REVIEW"
+
+    assert kwargs[
+        "qcc_progress"
+    ] == 82
 
 
 def test_final_pause_still_works_without_qcc(
     tmp_path,
 ):
-    with patch(
-        "builtins.input",
-        return_value="",
+    expected = {
+        "ok": True,
+        "mode": "human_dom_detected",
+    }
+
+    with patch.object(
+        runner,
+        "wait_for_human_navigation",
+        return_value=expected,
     ):
-        runner.pause_humana_final_presentacion(
-            object(),
-            str(tmp_path),
-            reporter=None,
+        result = (
+            runner.pause_humana_final_presentacion(
+                object(),
+                str(tmp_path),
+                reporter=None,
+            )
         )
+
+    assert result is expected
 
 
 def test_run_auto_threads_reporter_to_final_human_steps():

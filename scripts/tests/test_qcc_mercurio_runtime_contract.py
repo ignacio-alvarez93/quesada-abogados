@@ -171,7 +171,9 @@ def test_runner_qcc_reporter_is_optional(
     assert reporter is None
 
 
-def test_runner_auto_envelope_reports_completion():
+def test_runner_auto_envelope_does_not_complete_before_documents(
+    tmp_path,
+):
     reporter = Mock()
 
     with patch.object(
@@ -184,7 +186,7 @@ def test_runner_auto_envelope_reports_completion():
                 object(),
                 "33",
                 {},
-                ".",
+                str(tmp_path),
                 reporter=reporter,
             )
         )
@@ -193,7 +195,7 @@ def test_runner_auto_envelope_reports_completion():
 
     reporter.automating.assert_called_once()
 
-    reporter.completed.assert_called_once()
+    reporter.completed.assert_not_called()
 
     reporter.error.assert_not_called()
 

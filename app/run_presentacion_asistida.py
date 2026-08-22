@@ -188,12 +188,12 @@ def run_auto_with_qcc(
 
         raise
 
-    qcc_report(
-        reporter,
-        "completed",
+    write_log(
         session_dir,
-        message=(
-            "Flujo asistido Mercurio completado"
+        (
+            "QCC auto flow finalizado sin "
+            "marcar COMPLETED: la fase "
+            "documental continúa aparte"
         ),
     )
 
@@ -1741,67 +1741,137 @@ def click_continuar_presentador(
 
     return result
 
+DOCUMENT_UPLOAD_READY_JS = """
+(() => {
+    const container =
+        document.getElementById(
+            'tbAdjuntos'
+        );
+
+    const fileInput =
+        document.getElementById(
+            'fileDocumentoAdjuntos'
+        );
+
+    const browse =
+        document.getElementById(
+            'addDou'
+        );
+
+    const documentType =
+        document.getElementById(
+            'docAdjuntarAdjuntos'
+        );
+
+    if (
+        !container
+        || !fileInput
+        || !browse
+        || !documentType
+    ) {
+        return false;
+    }
+
+    const visible = (element) => {
+        const style =
+            window.getComputedStyle(
+                element
+            );
+
+        return (
+            style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && element.getClientRects().length > 0
+        );
+    };
+
+    return (
+        visible(container)
+        && visible(fileInput)
+        && visible(browse)
+        && visible(documentType)
+    );
+})()
+""".strip()
+
+
 def pause_humana_final_presentacion(
     browser,
     session_dir,
     reporter=None,
 ):
     """
-    Pausa humana final SIN disconnect.
+    Espera la acción humana CONCLUIR.
 
-    Mantiene Chrome abierto y conectado.
-    El bot deja de actuar y el humano pulsa CONCLUIR manualmente.
+    QCC/SeleniumBase no pulsan CONCLUIR.
+    El avance se confirma observando la pantalla
+    documental real de Mercurio.
     """
+
     print()
     print("=" * 80)
     print("PAUSA HUMANA FINAL")
-    print("El bot ha terminado el volcado de datos.")
-    print("NO se ejecuta browser.disconnect().")
-    print("NO se ejecuta quit(), close() ni stop().")
-    print("Chrome queda abierto y conectado.")
-    print("Revisa la pantalla y pulsa CONCLUIR manualmente en Mercurio.")
+    print(
+        "El bot ha terminado el volcado "
+        "de datos."
+    )
+    print(
+        "Revisa la solicitud y pulsa "
+        "CONCLUIR manualmente en Mercurio."
+    )
+    print(
+        "El script continuará al detectar "
+        "la pantalla documental."
+    )
     print("=" * 80)
 
     write_log(
         session_dir,
         (
-            "Pausa humana final SIN disconnect: "
-            "control humano para concluir"
+            "Pausa humana final: "
+            "esperando CONCLUIR -> "
+            "pantalla documental"
         ),
+    )
+
+    result = wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Documentación de la solicitud",
+        DOCUMENT_UPLOAD_READY_JS,
+        timeout=300,
+        interval=0.5,
+        fallback_prompt=(
+            "Pulsa ENTER solo si ya estás "
+            "en la pantalla de documentación "
+            "de Mercurio..."
+        ),
+        qcc_reporter=reporter,
+        qcc_step="FINAL_REVIEW",
+        qcc_progress=82,
     )
 
     qcc_report(
         reporter,
         "waiting_user",
         session_dir,
-        step="FINAL_REVIEW",
-        progress=82,
+        step="DOCUMENTS_READY",
+        progress=88,
         message=(
-            "Revisa la solicitud y pulsa "
-            "CONCLUIR manualmente en Mercurio"
+            "Pantalla documental preparada; "
+            "documentación pendiente"
         ),
     )
 
-    print()
-
-    input(
-        "CONTROL HUMANO: pulsa ENTER aquí "
-        "solo cuando hayas terminado "
-        "manualmente en Chrome..."
-    )
-
-    qcc_report(
-        reporter,
-        "resuming",
+    write_log(
         session_dir,
-        step="FINAL_REVIEW",
-        progress=85,
-        message=(
-            "Finalización manual confirmada "
-            "por el usuario"
+        (
+            "Pantalla documental confirmada "
+            f"por modo={result.get('mode')}"
         ),
     )
 
+    return result
 
 
 # =============================================================================
@@ -2403,7 +2473,11 @@ def main(
                 fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir)
 
         elif cmd in ("human", "humano", "pausa"):
-            pause_humana_final_presentacion(browser, session_dir)
+            pause_humana_final_presentacion(
+                browser,
+                session_dir,
+                reporter=qcc_reporter,
+            )
 
         elif cmd in ("docs", "documentos", "upload"):
             documentos_dir = resolve_para_presentar_dir(args, datos_mercurio, session_dir)
