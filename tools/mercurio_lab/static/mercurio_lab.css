@@ -1,0 +1,192 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: #f4f4f4;
+    color: #333;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+}
+
+#container {
+    min-height: 100vh;
+}
+
+.lab-header {
+    background: #fff;
+    border-bottom: 1px solid #ccc;
+}
+
+.lab-sede {
+    padding: 18px 32px 8px;
+    color: #555;
+    font-size: 18px;
+}
+
+.lab-sede span {
+    margin-left: 12px;
+    color: #777;
+    font-size: 14px;
+}
+
+nav {
+    padding: 11px 32px;
+    background: #eeeeee;
+    border-top: 1px solid #ddd;
+    border-bottom: 1px solid #ccc;
+    color: #444;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+main {
+    width: min(1180px, calc(100% - 48px));
+    margin: 24px auto 60px;
+}
+
+.lab-banner {
+    margin-bottom: 18px;
+    padding: 10px 14px;
+    border: 1px solid #c5c5c5;
+    background: #fff6d7;
+}
+
+h1 {
+    margin: 0 0 20px;
+    font-size: 24px;
+    font-weight: normal;
+}
+
+.mf-layout--module {
+    margin: 0 0 18px;
+    padding: 20px;
+    background: white;
+    border: 1px solid #d3d3d3;
+}
+
+.mf-layout--module h2 {
+    margin: 0 0 18px;
+    font-size: 16px;
+}
+
+.listaObligatoria ul {
+    margin: 0;
+    padding-left: 22px;
+}
+
+.listaObligatoria li {
+    margin: 7px 0;
+}
+
+.field {
+    margin: 0 0 18px;
+}
+
+.field label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: bold;
+}
+
+.mf-input__l,
+input[type="text"] {
+    width: 100%;
+    min-height: 36px;
+    padding: 7px 9px;
+    border: 1px solid #999;
+    background: white;
+}
+
+.file-row {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+}
+
+.moxie-shim {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
+}
+
+.moxie-shim input[type="file"] {
+    display: block;
+}
+
+.simbutton {
+    min-height: 36px;
+    padding: 7px 15px;
+    border: 1px solid #666;
+    background: #eee;
+    cursor: pointer;
+}
+
+.simbutton.primary {
+    padding-left: 30px;
+    padding-right: 30px;
+}
+
+.actions {
+    margin-top: 10px;
+    text-align: right;
+}
+
+.bottom-actions {
+    margin: 26px 0;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th,
+td {
+    padding: 9px 8px;
+    border: 1px solid #bbb;
+    text-align: left;
+    vertical-align: top;
+}
+
+th {
+    background: #eee;
+}
+
+.code-column {
+    width: 90px;
+}
+
+.lblObligaCl {
+    border-color: #a40000 !important;
+    background: #fff0f0 !important;
+}
+
+.dvReError {
+    margin-top: 4px;
+    color: #a40000;
+    font-size: 12px;
+}
+
+.dvReError::after {
+    content: "Campo obligatorio";
+}
+
+.hidden {
+    display: none;
+}
+
+.lab-diagnostics {
+    margin-top: 28px;
+    padding: 14px;
+    border: 1px dashed #777;
+    background: #f9f9f9;
+}
+
+.lab-diagnostics pre {
+    white-space: pre-wrap;
+}
