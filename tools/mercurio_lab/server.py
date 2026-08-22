@@ -7,7 +7,13 @@ from http.server import (
     ThreadingHTTPServer,
 )
 from pathlib import Path
+from threading import Lock
 from urllib.parse import urlsplit
+
+from tools.mercurio_lab.upload_backend import (
+    parse_multipart_upload,
+    render_upload_table,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -21,12 +27,28 @@ DOCUMENT_PATH = (
     "presentacionTelematicaDocumentacion.html"
 )
 
+UPLOAD_PATH = (
+    "/mercurio/"
+    "uploadDocumento"
+)
+
+UPLOAD_RENOVA_PATH = (
+    "/mercurio/"
+    "uploadDocumentoRenova"
+)
+
+MAX_UPLOAD_BODY_BYTES = 12 * 1024 * 1024
+
 ROUTES = {
     DOCUMENT_PATH:
         (
             STATIC_ROOT
             / "documentacion.html"
         ),
+
+    "/mercurio/resources/js/"
+    "plupload.full.min.js":
+        STATIC_ROOT / "vendor" / "plupload.full.min.js",
 
     "/mercurio/resources/lab/"
     "mercurio_lab.css":
@@ -60,6 +82,16 @@ class MercurioLabServer(
     ThreadingHTTPServer
 ):
     allow_reuse_address = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._upload_lock = Lock()
+        self._uploads = []
+
+    def record_upload(self, upload):
+        with self._upload_lock:
+            self._uploads.append(upload)
+            return tuple(self._uploads)
 
 
 class MercurioLabHandler(
@@ -214,9 +246,38 @@ class MercurioLabHandler(
     ):
         self._serve()
 
+    def _handle_upload_post(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0 or length > MAX_UPLOAD_BODY_BYTES:
+            raise ValueError("MERCURIO_LAB_UPLOAD_SIZE_INVALID")
+
+        upload = parse_multipart_upload(
+            content_type=self.headers.get("Content-Type", ""),
+            body=self.rfile.read(length),
+        )
+        uploads = self.server.record_upload(upload)
+        self._send_bytes(
+            status=200,
+            content_type="text/html; charset=utf-8",
+            body=render_upload_table(uploads).encode("utf-8"),
+        )
+
     def do_POST(
         self,
     ):
+        path = urlsplit(self.path).path
+
+        if path in {UPLOAD_PATH, UPLOAD_RENOVA_PATH}:
+            try:
+                self._handle_upload_post()
+            except ValueError as exc:
+                self._send_bytes(
+                    status=400,
+                    content_type="application/json; charset=utf-8",
+                    body=json.dumps({"ok": False, "error": str(exc)}).encode("utf-8"),
+                )
+            return
+
         # Blindaje deliberado:
         # el LAB nunca recibe ni remite
         # presentaciones administrativas.

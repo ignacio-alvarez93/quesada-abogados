@@ -45,3 +45,6 @@ tmp/
 
 # Local database safety backups
 backups/
+
+# Mercurio Lab third-party runtime asset
+tools/mercurio_lab/static/vendor/plupload.full.min.js

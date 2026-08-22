@@ -5,7 +5,7 @@
 
     const state = {
         sequence: 0,
-        selectedFile: null
+        uploader: null
     };
 
 
@@ -177,50 +177,6 @@
     }
 
 
-    async function sha256File(file) {
-        try {
-            if (
-                window.crypto
-                && window.crypto.subtle
-            ) {
-                const buffer =
-                    await file.arrayBuffer();
-
-                const digest =
-                    await window.crypto.subtle.digest(
-                        "SHA-256",
-                        buffer
-                    );
-
-                return Array
-                    .from(
-                        new Uint8Array(
-                            digest
-                        )
-                    )
-                    .map(function (value) {
-                        return value
-                            .toString(16)
-                            .padStart(2, "0");
-                    })
-                    .join("")
-                    .toUpperCase();
-            }
-        } catch (error) {
-            // Fallback below.
-        }
-
-        return (
-            "LAB-"
-            + String(file.size)
-            + "-"
-            + String(
-                file.lastModified || 0
-            )
-        );
-    }
-
-
     function resetAttachForm() {
         byId(
             "fileDocumentoAdjuntos"
@@ -233,12 +189,6 @@
         byId(
             "desDocumentoAdjuntos"
         ).value = "";
-
-        byId(
-            "labPluploadInput"
-        ).value = "";
-
-        state.selectedFile = null;
 
         setDocAdjuntarAdjuntos();
 
@@ -277,11 +227,12 @@
 
 
     function appendUploadedRow(
-        *,
-        filename,
-        description,
-        hash,
-        code
+        {
+            filename,
+            description,
+            hash,
+            code
+        }
     ) {
         state.sequence += 1;
 
@@ -375,7 +326,9 @@
 
         if (
             !filename
-            || !state.selectedFile
+            || !state.uploader
+            || !state.uploader.files
+            || !state.uploader.files.length
         ) {
             markRequired(
                 fileNameField
@@ -412,105 +365,106 @@
         const description =
             selectedDescription();
 
-        const hash =
-            await sha256File(
-                state.selectedFile
-            );
+        state.uploader.settings.multipart_params.id_tipo_documento =
+            code;
 
-        appendUploadedRow(
-            {
-                filename:
-                    filename,
+        state.uploader.settings.multipart_params.de_documento =
+            description;
 
-                description:
-                    description,
-
-                hash:
-                    hash,
-
-                code:
-                    code
-            }
-        );
+        state.uploader.settings.multipart_params.texto_otros =
+            otherText;
 
         setStatus(
-            "FILE_UPLOADED",
+            "UPLOAD_STARTING",
             {
-                filename:
-                    filename,
-
-                description:
-                    description,
-
-                hash:
-                    hash,
-
-                code:
-                    code
+                filename: filename,
+                description: description,
+                code: code
             }
         );
 
-        /*
-         * Mercurio real reemplaza
-         * #cont_tabla_datos_adj con la respuesta
-         * del upload y después limpia:
-         *
-         * #tbAdjuntos input,#tbAdjuntos select
-         *
-         * Aquí conservamos la misma semántica
-         * observable para el automation contract.
-         */
-        resetAttachForm();
+        state.uploader.start();
     }
 
 
-    function fileAdded(event) {
-        const input =
-            event.currentTarget;
-
-        const files =
-            Array.from(
-                input.files || []
-            );
-
-        if (!files.length) {
-            state.selectedFile = null;
-
-            byId(
-                "fileDocumentoAdjuntos"
-            ).value = "";
-
-            return;
+    function initializeUploader() {
+        if (!window.plupload) {
+            throw new Error("MERCURIO_LAB_PLUPLOAD_MISSING");
         }
 
-        /*
-         * Mercurio:
-         * multi_selection=false
-         * y conserva un único fichero.
-         */
-        state.selectedFile =
-            files[
-                files.length - 1
-            ];
+        const uploader = new window.plupload.Uploader({
+            runtimes: "html5,html4",
+            browse_button: "addDou",
+            url: "uploadDocumento",
+            multi_selection: false,
+            maxNumberOfFiles: 6,
+            filters: {
+                max_file_size: "6mb",
+                mime_types: [
+                    {
+                        title: "Image files",
+                        extensions: "jpg,jpeg,gif,png,bmp,tif,tiff,JPG,JPEG,GIF,PNG,BMP,TIF,TIFF"
+                    },
+                    {
+                        title: "PDF files",
+                        extensions: "pdf"
+                    }
+                ]
+            },
+            init: {
+                PostInit: function () {
+                    byId("btnOpeAdjuntar").onclick = function () {
+                        attachCurrentFile().catch(function (error) {
+                            setStatus("UPLOAD_ERROR", {
+                                error: String(error)
+                            });
+                        });
+                    };
+                },
 
-        byId(
-            "fileDocumentoAdjuntos"
-        ).value =
-            state.selectedFile.name;
+                FilesAdded: function (up, files) {
+                    while (up.files.length > 1) {
+                        up.removeFile(up.files[0]);
+                    }
 
-        setStatus(
-            "FILE_SELECTED",
-            {
-                filename:
-                    state.selectedFile.name,
+                    const file = files[files.length - 1];
 
-                size:
-                    state.selectedFile.size,
+                    byId("fileDocumentoAdjuntos").value =
+                        file ? file.name : "";
 
-                type:
-                    state.selectedFile.type
+                    setStatus("FILE_SELECTED", {
+                        filename: file ? file.name : "",
+                        size: file ? file.size : 0
+                    });
+                },
+
+                FileUploaded: function (up, file, result) {
+                    byId("cont_tabla_datos_adj").innerHTML =
+                        String(result.response || "");
+
+                    setStatus("FILE_UPLOADED", {
+                        filename: file.name,
+                        status: result.status
+                    });
+
+                    resetAttachForm();
+                },
+
+                UploadComplete: function (up, files) {
+                    state.lastUploadComplete = true;
+                },
+
+                Error: function (up, error) {
+                    setStatus("UPLOAD_ERROR", {
+                        code: error.code,
+                        message: error.message
+                    });
+                }
             }
-        );
+        });
+
+        state.uploader = uploader;
+        uploader.init();
     }
 
 
@@ -730,70 +684,30 @@
     document.addEventListener(
         "DOMContentLoaded",
         function () {
-            const fileInput =
-                byId(
-                    "labPluploadInput"
-                );
+            try {
+                initializeUploader();
+            } catch (error) {
+                setStatus("INIT_ERROR", {
+                    error: String(
+                        error && (error.stack || error.message) || error
+                    )
+                });
 
-            /*
-             * El browse_button real de Plupload
-             * es #addDou.
-             */
-            byId(
-                "addDou"
-            )
-                .addEventListener(
-                    "click",
-                    function () {
-                        fileInput.click();
-                    }
-                );
-
-            fileInput.addEventListener(
-                "change",
-                fileAdded
-            );
-
-            byId(
-                "btnOpeAdjuntar"
-            )
-                .addEventListener(
-                    "click",
-                    function () {
-                        attachCurrentFile()
-                            .catch(
-                                function (error) {
-                                    setStatus(
-                                        "UPLOAD_ERROR",
-                                        {
-                                            error:
-                                                String(
-                                                    error
-                                                )
-                                        }
-                                    );
-                                }
-                            );
-                    }
-                );
+                return;
+            }
 
             setDocAdjuntarAdjuntos();
-
             applyFixture();
 
             setStatus(
                 "READY",
                 {
-                    version:
-                        LAB_VERSION,
-
-                    required:
-                        requiredCodes(),
-
-                    uploaded:
-                        uploadedCodes()
+                    version: LAB_VERSION,
+                    required: requiredCodes(),
+                    uploaded: uploadedCodes()
                 }
             );
         }
     );
+
 })();

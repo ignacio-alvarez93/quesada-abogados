@@ -1,4 +1,12 @@
 from pathlib import Path
+import threading
+import urllib.error
+import urllib.request
+
+from tools.mercurio_lab.server import (
+    MercurioLabHandler,
+    MercurioLabServer,
+)
 
 
 ROOT = (
@@ -57,9 +65,7 @@ def test_lab_reproduces_document_dom_contract():
         'id="tabla_datos_adj"',
         'id="continuaNot"',
         'id="FrmDatos"',
-        "input",
-        'type="file"',
-        'class="moxie-shim"',
+        'src="/mercurio/resources/js/plupload.full.min.js"',
     )
 
     for token in required:
@@ -129,20 +135,24 @@ def test_lab_required_document_contract_matches_capture():
 
 
 def test_lab_mimics_plupload_file_added_semantics():
-    assert (
-        'byId(\n                "fileDocumentoAdjuntos"\n            ).value ='
-        in JS
+    expected = (
+        "new window.plupload.Uploader",
+        'browse_button: "addDou"',
+        'url: "uploadDocumento"',
+        "multi_selection: false",
+        "FilesAdded:",
+        "FileUploaded:",
+        "state.uploader.start()",
+        'byId("fileDocumentoAdjuntos").value =',
     )
 
-    assert (
-        "state.selectedFile.name"
-        in JS
-    )
+    for token in expected:
+        assert token in JS
 
-    assert (
-        '"labPluploadInput"'
-        in JS
-    )
+    assert "labPluploadInput" not in HTML
+    assert "labPluploadInput" not in JS
+    assert "state.selectedFile" not in JS
+
 
 
 def test_lab_mimics_duplicate_document_type_rule():
@@ -287,3 +297,91 @@ def test_lab_has_empty_partial_and_complete_fixtures():
         '"51"'
         in JS
     )
+
+
+def test_lab_allows_only_document_upload_posts():
+    server = MercurioLabServer(
+        ("127.0.0.1", 0),
+        MercurioLabHandler,
+    )
+    thread = threading.Thread(
+        target=server.serve_forever,
+        daemon=True,
+    )
+    thread.start()
+
+    base = "http://127.0.0.1:" + str(server.server_port)
+    crlf = bytes((13, 10))
+    boundary = "----MercurioLabContract"
+    pdf = b"%PDF-1.4 CONTRACT"
+
+    parts = [
+        b"--" + boundary.encode(),
+        b"Content-Disposition: form-data; name=\"id_tipo_documento\"",
+        b"",
+        b"47",
+        b"--" + boundary.encode(),
+        b"Content-Disposition: form-data; name=\"de_documento\"",
+        b"",
+        b"Seguro de enfermedad",
+        b"--" + boundary.encode(),
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"contract.pdf\"",
+        b"Content-Type: application/pdf",
+        b"",
+    ]
+
+    body = (
+        crlf.join(parts)
+        + crlf
+        + pdf
+        + crlf
+        + b"--"
+        + boundary.encode()
+        + b"--"
+        + crlf
+    )
+
+    def post(path, data):
+        request = urllib.request.Request(
+            base + path,
+            data=data,
+            headers={
+                "Content-Type":
+                    "multipart/form-data; boundary=" + boundary
+            },
+            method="POST",
+        )
+        return urllib.request.urlopen(request)
+
+    try:
+        for path in (
+            "/mercurio/uploadDocumento",
+            "/mercurio/uploadDocumentoRenova",
+        ):
+            with post(path, body) as response:
+                result = response.read().decode("utf-8")
+                assert response.status == 200
+                assert "contract.pdf" in result
+                assert ">47</td>" in result
+
+        for path in (
+            "/mercurio/registroEntrada.html",
+            "/mercurio/otroPost",
+        ):
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        base + path,
+                        data=b"x",
+                        method="POST",
+                    )
+                )
+                raise AssertionError(
+                    "POST should be blocked: " + path
+                )
+            except urllib.error.HTTPError as exc:
+                assert exc.code == 405
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
