@@ -1608,39 +1608,144 @@ def fill_datos_presentador(browser, datos_mercurio, session_dir):
     return True
 
 
-def click_continuar_presentador(browser, session_dir):
-    """
-    Avance seguro desde Datos del presentador a la siguiente pantalla.
+POST_PRESENTER_NOTIFICATION_READY_JS = """
+(() => {
+    const notification =
+        document.getElementById(
+            'tab-datos_notificacion'
+        );
 
-    Mercurio también genera error cuando este CONTINUAR se automatiza.
-    Por tanto, este punto queda estrictamente humano:
+    const presenter =
+        document.getElementById(
+            'tab-datos_presentador'
+        );
+
+    const conclude =
+        document.getElementById(
+            'btnConcluirSup'
+        );
+
+    if (!notification || !conclude) {
+        return false;
+    }
+
+    const visible = (element) => {
+        const style =
+            window.getComputedStyle(
+                element
+            );
+
+        return (
+            style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && element.getClientRects().length > 0
+        );
+    };
+
+    const notificationActive = (
+        notification.classList.contains(
+            'r-tabs-state-active'
+        )
+        && visible(notification)
+    );
+
+    const concludeVisible =
+        visible(conclude);
+
+    const presenterInactive = (
+        !presenter
+        || !presenter.classList.contains(
+            'r-tabs-state-active'
+        )
+        || !visible(presenter)
+    );
+
+    return (
+        notificationActive
+        && concludeVisible
+        && presenterInactive
+    );
+})()
+""".strip()
+
+
+def click_continuar_presentador(
+    browser,
+    session_dir,
+    reporter=None,
+):
+    """
+    Espera el CONTINUAR manual desde Datos del presentador.
+
+    QCC/SeleniumBase solo observan la transición:
     - NO click JS
     - NO keyboard
     - NO CDP click
     - NO Selenium click
 
-    El usuario pulsa CONTINUAR manualmente y el script solo espera confirmación.
+    La transición se considera confirmada cuando:
+    - Notificación está activa y visible.
+    - CONCLUIR está visible.
+    - Presentador ya no está activo/visible.
     """
-    print("[10] PAUSA HUMANA - CONTINUAR desde DATOS DEL PRESENTADOR")
-    write_log(session_dir, "Pausa humana obligatoria: continuar presentador -> siguiente pantalla")
+
+    print(
+        "[10] PAUSA HUMANA - "
+        "CONTINUAR desde DATOS DEL PRESENTADOR"
+    )
+
+    write_log(
+        session_dir,
+        "Pausa humana obligatoria: "
+        "continuar presentador -> notificación",
+    )
 
     print()
     print("=" * 80)
     print("PAUSA HUMANA")
-    print("Pulsa MANUALMENTE el botón CONTINUAR en Mercurio")
-    print("desde Datos del presentador.")
-    print()
-    print("Cuando hayas avanzado a la siguiente pantalla, vuelve aquí y pulsa ENTER.")
+    print(
+        "Pulsa MANUALMENTE CONTINUAR "
+        "desde Datos del presentador."
+    )
+    print(
+        "El script continuará al detectar "
+        "la pantalla de notificación / CONCLUIR."
+    )
     print("=" * 80)
 
-    input("Pulsa ENTER cuando hayas avanzado desde Datos del presentador...")
+    result = wait_for_human_navigation(
+        browser,
+        session_dir,
+        (
+            "Domicilio de notificación / "
+            "CONCLUIR"
+        ),
+        POST_PRESENTER_NOTIFICATION_READY_JS,
+        timeout=300,
+        interval=0.5,
+        fallback_prompt=(
+            "Pulsa ENTER solo si ya estás "
+            "en la pantalla de notificación "
+            "y ves CONCLUIR..."
+        ),
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_FROM_PRESENTER",
+        qcc_progress=78,
+    )
 
-    write_log(session_dir, "Continuar presentador realizado manualmente por usuario")
-    return {"ok": True, "mode": "human_required"}
+    write_log(
+        session_dir,
+        "Continuar presentador confirmado "
+        f"por modo={result.get('mode')}",
+    )
 
+    return result
 
-
-def pause_humana_final_presentacion(browser, session_dir):
+def pause_humana_final_presentacion(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """
     Pausa humana final SIN disconnect.
 
@@ -1657,10 +1762,45 @@ def pause_humana_final_presentacion(browser, session_dir):
     print("Revisa la pantalla y pulsa CONCLUIR manualmente en Mercurio.")
     print("=" * 80)
 
-    write_log(session_dir, "Pausa humana final SIN disconnect: control humano para concluir")
+    write_log(
+        session_dir,
+        (
+            "Pausa humana final SIN disconnect: "
+            "control humano para concluir"
+        ),
+    )
+
+    qcc_report(
+        reporter,
+        "waiting_user",
+        session_dir,
+        step="FINAL_REVIEW",
+        progress=82,
+        message=(
+            "Revisa la solicitud y pulsa "
+            "CONCLUIR manualmente en Mercurio"
+        ),
+    )
 
     print()
-    input("CONTROL HUMANO: pulsa ENTER aquí solo cuando hayas terminado manualmente en Chrome...")
+
+    input(
+        "CONTROL HUMANO: pulsa ENTER aquí "
+        "solo cuando hayas terminado "
+        "manualmente en Chrome..."
+    )
+
+    qcc_report(
+        reporter,
+        "resuming",
+        session_dir,
+        step="FINAL_REVIEW",
+        progress=85,
+        message=(
+            "Finalización manual confirmada "
+            "por el usuario"
+        ),
+    )
 
 
 
@@ -2061,8 +2201,17 @@ def run_auto(
                     reporter=reporter,
                 )
         fill_datos_presentador(browser, datos_mercurio, session_dir)
-        click_continuar_presentador(browser, session_dir)
-        pause_humana_final_presentacion(browser, session_dir)
+        click_continuar_presentador(
+            browser,
+            session_dir,
+            reporter=reporter,
+        )
+
+        pause_humana_final_presentacion(
+            browser,
+            session_dir,
+            reporter=reporter,
+        )
 
 def main(
     lifecycle=None,
