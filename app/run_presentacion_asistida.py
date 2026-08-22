@@ -171,6 +171,7 @@ def run_auto_with_qcc(
             provincia_codigo,
             datos_mercurio,
             session_dir,
+            reporter=reporter,
         )
 
     except Exception as exc:
@@ -505,7 +506,18 @@ def get_mercurio_mapper_mode(datos_mercurio):
     }
 
 
-def wait_for_human_navigation(browser, session_dir, label, ready_js, timeout=300, interval=0.5, fallback_prompt=None):
+def wait_for_human_navigation(
+    browser,
+    session_dir,
+    label,
+    ready_js,
+    timeout=300,
+    interval=0.5,
+    fallback_prompt=None,
+    qcc_reporter=None,
+    qcc_step="HUMAN_NAVIGATION",
+    qcc_progress=0,
+):
     """
     Espera a que el usuario pulse CONTINUAR manualmente en Mercurio y a que
     la pantalla destino esté lista.
@@ -521,11 +533,49 @@ def wait_for_human_navigation(browser, session_dir, label, ready_js, timeout=300
     print("=" * 80)
     write_log(session_dir, f"Espera humana asistida iniciada: {label}")
 
+    qcc_report(
+        qcc_reporter,
+        "waiting_user",
+        session_dir,
+        step=qcc_step,
+        progress=qcc_progress,
+        message=(
+            f"Acción manual requerida: {label}"
+        ),
+    )
+
     try:
         wait_for_js(browser, ready_js, timeout=timeout, interval=interval)
         write_log(session_dir, f"Espera humana asistida OK: {label}")
         print(f"[OK] Pantalla detectada: {label}")
-        return {"ok": True, "mode": "human_dom_detected", "label": label}
+
+        qcc_report(
+            qcc_reporter,
+            "user_action_detected",
+            session_dir,
+            step=qcc_step,
+            progress=qcc_progress,
+            message=(
+                f"Acción manual detectada: {label}"
+            ),
+        )
+
+        qcc_report(
+            qcc_reporter,
+            "resuming",
+            session_dir,
+            step=qcc_step,
+            progress=qcc_progress,
+            message=(
+                f"Reanudando tras: {label}"
+            ),
+        )
+
+        return {
+            "ok": True,
+            "mode": "human_dom_detected",
+            "label": label,
+        }
     except Exception as exc:
         write_log(session_dir, f"Espera humana asistida timeout/fallo: {label}: {repr(exc)}")
         print()
@@ -537,7 +587,35 @@ def wait_for_human_navigation(browser, session_dir, label, ready_js, timeout=300
         try:
             wait_for_js(browser, ready_js, timeout=10, interval=0.5)
             write_log(session_dir, f"Fallback ENTER confirmado por DOM: {label}")
-            return {"ok": True, "mode": "human_enter_fallback_confirmed", "label": label}
+
+            qcc_report(
+                qcc_reporter,
+                "user_action_detected",
+                session_dir,
+                step=qcc_step,
+                progress=qcc_progress,
+                message=(
+                    f"Acción manual confirmada: {label}"
+                ),
+            )
+
+            qcc_report(
+                qcc_reporter,
+                "resuming",
+                session_dir,
+                step=qcc_step,
+                progress=qcc_progress,
+                message=(
+                    f"Reanudando tras fallback: {label}"
+                ),
+            )
+
+            return {
+                "ok": True,
+                "mode":
+                    "human_enter_fallback_confirmed",
+                "label": label,
+            }
         except Exception as confirm_exc:
             write_log(session_dir, f"Fallback ENTER sin confirmación DOM: {label}: {repr(confirm_exc)}")
             return {
@@ -562,7 +640,11 @@ def step_continuar_abogacia(browser, session_dir):
     js(browser, "validarYEnviar('AB');")
 
 
-def pause_certificado(browser, session_dir):
+def pause_certificado(
+    browser,
+    session_dir,
+    reporter=None,
+):
     print()
     print("=" * 80)
     print("PAUSA HUMANA: selecciona el certificado digital manualmente.")
@@ -576,6 +658,9 @@ def pause_certificado(browser, session_dir):
         "typeof mostrarOpcion === 'function'",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando Mercurio esté en Opciones disponibles...",
+        qcc_reporter=reporter,
+        qcc_step="CERTIFICATE_SELECTION",
+        qcc_progress=12,
     )
 
 
@@ -619,7 +704,12 @@ def step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_
         write_log(session_dir, f"No se pudo guardar HTML tras aviso Mercurio: {repr(exc)}")
 
 
-def pause_supuesto(browser, session_dir, tipo_formulario_objetivo=""):
+def pause_supuesto(
+    browser,
+    session_dir,
+    tipo_formulario_objetivo="",
+    reporter=None,
+):
     tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
     print()
     print("=" * 80)
@@ -640,6 +730,9 @@ def pause_supuesto(browser, session_dir, tipo_formulario_objetivo=""):
         "document.getElementById('extNombre') || document.getElementById('extNie') || document.getElementById('extPasaporte') || document.getElementById('extNacionalidad')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del extranjero/a...",
+        qcc_reporter=reporter,
+        qcc_step="PROCEDURE_SELECTION",
+        qcc_progress=30,
     )
 
 
@@ -1239,7 +1332,11 @@ def fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir):
     write_log(session_dir, "Datos del reagrupante EX02 rellenados")
     return True
 
-def click_continuar_ex02_extranjero_to_reagrupante(browser, session_dir):
+def click_continuar_ex02_extranjero_to_reagrupante(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """Espera humana desde Datos del extranjero/reagrupado a Datos del reagrupante."""
     print("[8] ESPERA HUMANA - CONTINUAR a DATOS DEL REAGRUPANTE EX02")
     write_log(session_dir, "Espera humana EX02: extranjero/reagrupado -> reagrupante")
@@ -1250,10 +1347,17 @@ def click_continuar_ex02_extranjero_to_reagrupante(browser, session_dir):
         "document.getElementById('reaNombreReagrupante') || document.getElementById('reaNieReagrupante') || document.getElementById('reaPasaporteReagrupante')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del reagrupante...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_SPONSOR",
+        qcc_progress=42,
     )
 
 
-def click_continuar_ex02_reagrupante_to_presentador(browser, session_dir):
+def click_continuar_ex02_reagrupante_to_presentador(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """Espera humana desde Datos del reagrupante a Datos del presentador."""
     print("[9] ESPERA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
     write_log(session_dir, "Espera humana EX02: reagrupante -> presentador")
@@ -1264,9 +1368,16 @@ def click_continuar_ex02_reagrupante_to_presentador(browser, session_dir):
         "document.getElementById('preNombrePresentador')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_PRESENTER",
+        qcc_progress=68,
     )
 
-def click_continuar_ex02_reagrupante_to_reagrupado(browser, session_dir):
+def click_continuar_ex02_reagrupante_to_reagrupado(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """Espera humana desde Datos del reagrupante a Datos del reagrupado/solicitante."""
     print("[8] ESPERA HUMANA - CONTINUAR a DATOS DEL REAGRUPADO/SOLICITANTE")
     write_log(session_dir, "Espera humana EX02: reagrupante -> reagrupado/solicitante")
@@ -1277,10 +1388,17 @@ def click_continuar_ex02_reagrupante_to_reagrupado(browser, session_dir):
         "document.getElementById('extNombre') || document.getElementById('extNie') || document.getElementById('extPasaporte') || document.getElementById('extNacionalidad')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del reagrupado/solicitante...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_APPLICANT",
+        qcc_progress=52,
     )
 
 
-def click_continuar_ex02_reagrupado_to_presentador(browser, session_dir):
+def click_continuar_ex02_reagrupado_to_presentador(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """Espera humana desde Datos del reagrupado/solicitante a Datos del presentador."""
     print("[9] ESPERA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
     write_log(session_dir, "Espera humana EX02: reagrupado/solicitante -> presentador")
@@ -1291,10 +1409,17 @@ def click_continuar_ex02_reagrupado_to_presentador(browser, session_dir):
         "document.getElementById('preNombrePresentador')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_PRESENTER",
+        qcc_progress=68,
     )
 
 
-def click_continuar_extranjero_to_familiar(browser, session_dir):
+def click_continuar_extranjero_to_familiar(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """
     Avance humano desde Datos del extranjero/a a Datos del familiar en EX01 familiar.
     """
@@ -1315,10 +1440,17 @@ def click_continuar_extranjero_to_familiar(browser, session_dir):
         "document.getElementById('reaNombreReagrupante') || document.getElementById('reaDocumentoReagrupante') || document.getElementById('reaNieReagrupante')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del familiar...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_FAMILY_MEMBER",
+        qcc_progress=52,
     )
 
 
-def click_continuar_familiar_to_presentador(browser, session_dir):
+def click_continuar_familiar_to_presentador(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """
     Avance humano desde Datos del familiar a Datos del presentador en EX01 familiar.
     """
@@ -1339,11 +1471,18 @@ def click_continuar_familiar_to_presentador(browser, session_dir):
         "document.getElementById('preNombrePresentador')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_PRESENTER",
+        qcc_progress=68,
     )
 
 
 
-def click_continuar(browser, session_dir):
+def click_continuar(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """
     Avance seguro desde Datos del extranjero/a a Datos del presentador.
 
@@ -1375,6 +1514,9 @@ def click_continuar(browser, session_dir):
         "document.getElementById('preNombrePresentador')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_PRESENTER",
+        qcc_progress=68,
     )
 
 
@@ -1856,15 +1998,30 @@ def upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio,
     return True
 
 
-def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
+def run_auto(
+    browser,
+    provincia_codigo,
+    datos_mercurio,
+    session_dir,
+    reporter=None,
+):
     tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
     mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
     write_log(session_dir, f"Mapper interno Mercurio: {describe_mapper_codigo(mapper_mode.get('mapper_codigo'))}")
     step_continuar_inicial(browser, session_dir)
     step_continuar_abogacia(browser, session_dir)
-    pause_certificado(browser, session_dir)
+    pause_certificado(
+        browser,
+        session_dir,
+        reporter=reporter,
+    )
     step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
-    pause_supuesto(browser, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
+    pause_supuesto(
+        browser,
+        session_dir,
+        tipo_formulario_objetivo=tipo_formulario_objetivo,
+        reporter=reporter,
+    )
     if datos_mercurio:
         if mapper_mode.get("is_ex02"):
             # Orden real Mercurio EX02:
@@ -1872,17 +2029,37 @@ def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
             # 2) reagrupado/solicitante desde cliente del expediente
             # 3) presentador profesional
             fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir)
-            click_continuar_ex02_reagrupante_to_reagrupado(browser, session_dir)
+            click_continuar_ex02_reagrupante_to_reagrupado(
+                browser,
+                session_dir,
+                reporter=reporter,
+            )
             fill_datos_reagrupado_ex02(browser, datos_mercurio, session_dir)
-            click_continuar_ex02_reagrupado_to_presentador(browser, session_dir)
+            click_continuar_ex02_reagrupado_to_presentador(
+                browser,
+                session_dir,
+                reporter=reporter,
+            )
         else:
             fill_datos_extranjero(browser, datos_mercurio, session_dir)
             if mapper_mode.get("is_ex01_familiar"):
-                click_continuar_extranjero_to_familiar(browser, session_dir)
+                click_continuar_extranjero_to_familiar(
+                    browser,
+                    session_dir,
+                    reporter=reporter,
+                )
                 fill_datos_familiar_ex01(browser, datos_mercurio, session_dir)
-                click_continuar_familiar_to_presentador(browser, session_dir)
+                click_continuar_familiar_to_presentador(
+                    browser,
+                    session_dir,
+                    reporter=reporter,
+                )
             else:
-                click_continuar(browser, session_dir)
+                click_continuar(
+                    browser,
+                    session_dir,
+                    reporter=reporter,
+                )
         fill_datos_presentador(browser, datos_mercurio, session_dir)
         click_continuar_presentador(browser, session_dir)
         pause_humana_final_presentacion(browser, session_dir)
