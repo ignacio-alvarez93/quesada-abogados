@@ -42,6 +42,9 @@ from backend.services.dehu_runtime_service import (
 from backend.services.icpplus_availability_service import (
     IcpPlusAvailabilityService,
 )
+from backend.qcc.bridge.server import (
+    QccBridgeServer,
+)
 from backend.services import (
     icpplus_scheduler_service,
     icpplus_ui_presence_service,
@@ -994,6 +997,124 @@ async def main(page: ft.Page):
         "value": False,
     }
 
+    # QCC Bridge pertenece al lifecycle global del ERP.
+    #
+    # No pertenece a Mercurio, SeleniumBase ni a una vista Flet.
+    # Debe estar disponible antes de que cualquier presentación
+    # asistida publique su primera sesión.
+    #
+    # El owner se conserva explícitamente para garantizar:
+    # - un único Bridge por sesión ERP;
+    # - cierre gobernado;
+    # - retry posible si un shutdown excepcional falla.
+    qcc_bridge_owner = {
+        "server": None,
+    }
+
+
+    def start_qcc_bridge_session_services():
+        """Inicia QCC Bridge sin bloquear el arranque del ERP."""
+
+        current = qcc_bridge_owner[
+            "server"
+        ]
+
+        if (
+            current is not None
+            and current.is_running
+        ):
+            return True
+
+        server = None
+
+        try:
+            server = QccBridgeServer()
+
+            server.start()
+
+            if not server.is_running:
+                raise RuntimeError(
+                    "QCC_BRIDGE_START_FAILED"
+                )
+
+            qcc_bridge_owner[
+                "server"
+            ] = server
+
+            print(
+                "[QCC-BRIDGE] ERP lifecycle listening",
+                (
+                    f"http://{server.host}:"
+                    f"{server.port}"
+                ),
+                flush=True,
+            )
+
+            return True
+
+        except Exception as exc:
+            # QCC es una capa auxiliar/contextual.
+            # Su indisponibilidad no debe impedir utilizar
+            # el resto del ERP.
+            if server is not None:
+                try:
+                    server.close()
+                except Exception:
+                    pass
+
+            qcc_bridge_owner[
+                "server"
+            ] = None
+
+            print(
+                "[QCC-BRIDGE] no se pudo iniciar:",
+                repr(exc),
+                flush=True,
+            )
+
+            return False
+
+
+    def close_qcc_bridge_session_services():
+        """Cierre idempotente del Bridge propiedad del ERP."""
+
+        server = qcc_bridge_owner[
+            "server"
+        ]
+
+        if server is None:
+            return False
+
+        try:
+            was_running = bool(
+                server.is_running
+            )
+
+            server.close()
+
+            qcc_bridge_owner[
+                "server"
+            ] = None
+
+            print(
+                "[QCC-BRIDGE] ERP lifecycle closed",
+                flush=True,
+            )
+
+            return was_running
+
+        except Exception as exc:
+            # Conservamos ownership para permitir retry.
+            print(
+                "[QCC-BRIDGE] error cerrando "
+                "Bridge de sesión:",
+                repr(exc),
+                flush=True,
+            )
+
+            return False
+
+
     def on_whatsapp_startup_history_done(
         future,
     ):
@@ -1356,6 +1477,7 @@ async def main(page: ft.Page):
         whatsapp_result = False
         dehu_result = False
         icpplus_result = False
+        qcc_result = False
 
         try:
             whatsapp_result = (
@@ -1399,14 +1521,41 @@ async def main(page: ft.Page):
                 flush=True,
             )
 
+        # QCC se cierra el último.
+        #
+        # De esta forma cualquier runtime que emita un
+        # último estado durante su shutdown todavía puede
+        # utilizar el Bridge.
+        try:
+            qcc_result = (
+                close_qcc_bridge_session_services()
+            )
+        except Exception as exc:
+            print(
+                "[QCC-BRIDGE] error inesperado "
+                "en cierre global:",
+                repr(
+                    exc
+                ),
+                flush=True,
+            )
+
         return bool(
             whatsapp_result
             or dehu_result
             or icpplus_result
+            or qcc_result
         )
 
 
     page.on_close = on_page_close
+
+    # El handler de cierre queda instalado ANTES de adquirir
+    # ownership del Bridge.
+    #
+    # QCC debe existir desde el arranque del ERP y no únicamente
+    # cuando se inicia una presentación.
+    start_qcc_bridge_session_services()
 
 
     def return_to_context(
