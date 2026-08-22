@@ -837,3 +837,29 @@ def test_inspector_javascript_captures_browser_geometry():
 
     for token in required:
         assert token in script
+
+
+def test_inspector_javascript_captures_interaction_signals():
+    browser = FakeBrowser(
+        _payload()
+    )
+
+    dom_inspector._capture_browser_payload(
+        browser
+    )
+
+    script = browser.scripts[0]
+
+    required = (
+        "interaction_signals",
+        "aria-hidden",
+        "aria-disabled",
+        "element.readOnly",
+        "pointerEvents",
+        "style.opacity",
+        "rect.right",
+        "rect.bottom",
+    )
+
+    for token in required:
+        assert token in script

@@ -224,6 +224,93 @@ def _capture_browser_payload(
     }
 
 
+    function interactionSignalsOf(
+        element,
+        documentObject
+    ) {
+        try {
+            const rect =
+                element.getBoundingClientRect();
+
+            const view =
+                documentObject.defaultView;
+
+            const style =
+                view
+                ? view.getComputedStyle(element)
+                : null;
+
+            const root =
+                documentObject.documentElement;
+
+            const viewportWidth =
+                Number(
+                    view?.innerWidth
+                    || root?.clientWidth
+                    || 0
+                );
+
+            const viewportHeight =
+                Number(
+                    view?.innerHeight
+                    || root?.clientHeight
+                    || 0
+                );
+
+            return {
+                hidden:
+                    Boolean(element.hidden),
+
+                aria_hidden:
+                    String(
+                        element.getAttribute?.("aria-hidden")
+                        || ""
+                    ).toLowerCase() === "true",
+
+                aria_disabled:
+                    String(
+                        element.getAttribute?.("aria-disabled")
+                        || ""
+                    ).toLowerCase() === "true",
+
+                readonly:
+                    Boolean(element.readOnly),
+
+                in_viewport:
+                    Boolean(
+                        rect.width > 0
+                        && rect.height > 0
+                        && rect.right > 0
+                        && rect.bottom > 0
+                        && rect.left < viewportWidth
+                        && rect.top < viewportHeight
+                    ),
+
+                opacity:
+                    style
+                    ? String(style.opacity || "")
+                    : null,
+
+                pointer_events:
+                    style
+                    ? String(style.pointerEvents || "")
+                    : null
+            };
+
+        } catch (_) {
+            return {
+                hidden: Boolean(element.hidden),
+                aria_hidden: false,
+                aria_disabled: false,
+                readonly: Boolean(element.readOnly),
+                in_viewport: null,
+                opacity: null,
+                pointer_events: null
+            };
+        }
+    }
+
+
     function elementRecord(
         element,
         index,
@@ -303,6 +390,12 @@ def _capture_browser_payload(
             disabled:
                 Boolean(
                     element.disabled
+                ),
+
+            interaction_signals:
+                interactionSignalsOf(
+                    element,
+                    documentObject
                 ),
 
             shadow_root:

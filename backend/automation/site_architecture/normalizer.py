@@ -30,6 +30,10 @@ from .selectors import (
     resolve_selector_profile,
 )
 
+from .visibility import (
+    normalize_interaction_state,
+)
+
 
 def _require_dom_capture_payload(
     payload,
@@ -106,6 +110,12 @@ def _normalize_element(
 
     record["geometry"] = (
         normalize_element_geometry(
+            record
+        )
+    )
+
+    record["interaction"] = (
+        normalize_interaction_state(
             record
         )
     )

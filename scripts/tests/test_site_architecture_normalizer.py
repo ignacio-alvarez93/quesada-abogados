@@ -312,3 +312,38 @@ def test_normalizer_maps_viewport_and_element_geometry():
     )
     assert geometry["center"]["x"] == 360.0
     assert geometry["center"]["y"] == 420.0
+
+
+def test_normalizer_adds_interaction_state():
+    payload = _payload()
+
+    payload["elements"] = [{
+        "index": 0,
+        "frame_path": "main",
+        "tag": "button",
+        "id": "continuar",
+        "visible": True,
+        "disabled": False,
+        "attributes": {},
+        "interaction_signals": {
+            "hidden": False,
+            "aria_hidden": False,
+            "aria_disabled": False,
+            "readonly": False,
+            "in_viewport": True,
+            "opacity": "1",
+            "pointer_events": "auto",
+        },
+    }]
+
+    snapshot = normalize_dom_capture(
+        payload
+    )
+
+    interaction = (
+        snapshot.elements[0]["interaction"]
+    )
+
+    assert interaction["visible"] is True
+    assert interaction["interactable"] is True
+    assert interaction["state"] == "INTERACTABLE"
