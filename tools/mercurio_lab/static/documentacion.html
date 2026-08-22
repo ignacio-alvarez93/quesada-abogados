@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta
+        http-equiv="cache-control"
+        content="no-store, no-cache, must-revalidate,max-age=0"
+    >
+    <meta
+        http-equiv="pragma"
+        content="no-cache"
+    >
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <title>Autorizaciones de Extranjería</title>
+
+    <link
+        rel="stylesheet"
+        href="/mercurio/resources/lab/mercurio_lab.css"
+    >
+</head>
+
+<body class="sede">
+
+<div id="container">
+
+    <header class="lab-header">
+        <div class="lab-sede">
+            Sede electrónica
+            <span>Administraciones Públicas</span>
+        </div>
+
+        <nav>
+            INICIO
+            &nbsp;&nbsp;
+            PROCEDIMIENTOS
+            &nbsp;&nbsp;
+            MIS EXPEDIENTES
+            &nbsp;&nbsp;
+            MIS NOTIFICACIONES
+            &nbsp;&nbsp;
+            AYUDA
+        </nav>
+    </header>
+
+    <main>
+
+        <div class="lab-banner">
+            <strong>MERCURIO LAB</strong>
+            · entorno local sin conexión administrativa
+        </div>
+
+        <h1>Presentación documentación</h1>
+
+        <section class="mf-layout--module">
+            <h2>
+                SOLICITUD INICIAL:
+                EX01 - Solicitud de autorización
+                de residencia temporal no lucrativa.
+            </h2>
+
+            <p>
+                Id formulario inicial:
+                <strong>LAB-000000</strong>
+            </p>
+        </section>
+
+        <form
+            id="FrmDatos"
+            method="post"
+            action="/mercurio/registroEntrada.html"
+            onsubmit="return false;"
+        >
+
+            <input
+                type="hidden"
+                id="listaIdsDocOb"
+                value="1|39|47"
+            >
+
+            <input
+                type="hidden"
+                id="supuestoSeleccionadoSup"
+                value="EX-01-2-01"
+            >
+
+            <input
+                type="hidden"
+                id="esDesarrollo"
+                value="N"
+            >
+
+            <input
+                type="hidden"
+                id="renova"
+                value=""
+            >
+
+            <div
+                id="documentoYaAdjunto"
+                hidden
+            >
+                El documento seleccionado ya ha sido adjuntado.
+            </div>
+
+            <div
+                id="documentosObligatorios"
+                hidden
+            >
+                Debe adjuntar todos los documentos obligatorios.
+            </div>
+
+            <section class="mf-layout--module">
+                <h2>
+                    Documentación obligatoria
+                </h2>
+
+                <div class="listaObligatoria">
+                    <ul>
+                        <li iddocob="1">
+                            Pasaporte, título de viaje o
+                            cédula de inscripción completos,
+                            válidos y en vigor de la persona
+                            extranjera.
+                        </li>
+
+                        <li iddocob="39">
+                            Recursos económicos
+                        </li>
+
+                        <li iddocob="47">
+                            Documentación acreditativa de
+                            seguro de enfermedad
+                        </li>
+                    </ul>
+                </div>
+            </section>
+
+
+            <section
+                id="zonaadj"
+                class="mf-layout--module"
+            >
+                <h2>
+                    Adjuntar documentación
+                </h2>
+
+                <div id="tbAdjuntos">
+
+                    <div class="field">
+                        <label
+                            for="docAdjuntarAdjuntos"
+                        >
+                            Descripcion
+                        </label>
+
+                        <select
+                            class="mf-input__l"
+                            id="docAdjuntarAdjuntos"
+                            onchange="setDocAdjuntarAdjuntos();"
+                        >
+                            <option
+                                value=""
+                                selected
+                            >
+                                Seleccione tipo de documento...
+                            </option>
+
+                            <option value="1">
+                                Pasaporte, título de viaje o cédula de inscripción completos, válidos y en vigor de la persona extranjera.
+                            </option>
+
+                            <option value="25">
+                                En su caso, informe sobre escolarización de menores a cargo en españa
+                            </option>
+
+                            <option value="39">
+                                Recursos económicos
+                            </option>
+
+                            <option value="47">
+                                Documentación acreditativa de seguro de enfermedad
+                            </option>
+
+                            <option value="51">
+                                Tasa (mod. 790 cód. 052)
+                            </option>
+
+                            <option value="119">
+                                Informe positivo de esfuerzo de integración de la CCAA.
+                            </option>
+
+                            <option value="999">
+                                Otros documentos que desee aportar
+                            </option>
+                        </select>
+                    </div>
+
+
+                    <div
+                        id="otrosDocumentoContainer"
+                        class="field hidden"
+                    >
+                        <label
+                            for="desDocumentoAdjuntos"
+                        >
+                            Otros documentos
+                        </label>
+
+                        <input
+                            id="desDocumentoAdjuntos"
+                            type="text"
+                            value=""
+                        >
+                    </div>
+
+
+                    <div class="field">
+                        <label
+                            for="fileDocumentoAdjuntos"
+                        >
+                            Fichero
+                        </label>
+
+                        <div class="file-row">
+
+                            <input
+                                id="fileDocumentoAdjuntos"
+                                type="text"
+                                readonly
+                                value=""
+                            >
+
+                            <button
+                                id="addDou"
+                                type="button"
+                                class="simbutton"
+                            >
+                                Examinar ...
+                            </button>
+
+                        </div>
+                    </div>
+
+
+                    <div class="actions">
+                        <button
+                            id="btnOpeAdjuntar"
+                            type="button"
+                            class="simbutton"
+                        >
+                            ADJUNTAR DOCUMENTO
+                        </button>
+                    </div>
+
+                </div>
+            </section>
+
+
+            <section
+                id="cont_tabla_datos_adj"
+                class="mf-layout--module"
+            >
+                <table id="tabla_datos_adj">
+                    <thead>
+                        <tr>
+                            <th></th>
+                            <th>Nombre fichero</th>
+                            <th>Descripción</th>
+                            <th>Huella digital</th>
+                            <th class="code-column">
+                                Código
+                            </th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                    </tbody>
+                </table>
+            </section>
+
+
+            <div class="actions bottom-actions">
+                <button
+                    id="continuaNot"
+                    type="button"
+                    class="simbutton primary"
+                    onclick="continuarPre();"
+                >
+                    CONTINUAR
+                </button>
+            </div>
+
+        </form>
+
+
+        <section
+            id="labDiagnostics"
+            class="lab-diagnostics"
+        >
+            <strong>
+                MERCURIO LAB · diagnóstico
+            </strong>
+
+            <pre id="labStatus">READY</pre>
+        </section>
+
+    </main>
+</div>
+
+<script
+    src="/mercurio/resources/js/plupload.full.min.js"
+></script>
+
+<script
+    src="/mercurio/resources/lab/mercurio_lab.js"
+></script>
+
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Quesada Chrome Companion",
+  "version": "0.7.0",
+  "description": "Interfaz contextual de Quesada Abogados ERP dentro de Chrome.",
+  "permissions": [
+    "sidePanel",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8766/*"
+  ],
+  "background": {
+    "service_worker": "background/service_worker.js"
+  },
+  "action": {
+    "default_title": "Abrir Quesada Chrome Companion"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
+}

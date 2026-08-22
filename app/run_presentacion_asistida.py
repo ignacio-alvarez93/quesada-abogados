@@ -25,6 +25,229 @@ from backend.automation.automation_logger import write_log
 from backend.automation.browser_actions import click_js, field_exists, js, wait_for_js
 from backend.automation.browser_session import get_session_dir
 from backend.automation.connectors.mercurio_connector import MercurioConnector
+from backend.qcc.client.action_client import (
+    QccActionClient,
+)
+from backend.qcc.client.presentation_reporter import (
+    QccPresentationReporter,
+)
+
+
+def build_qcc_reporter(
+    args,
+    session_dir,
+):
+    """Construye QCC sin convertirlo en dependencia del runner.
+
+    Si la identidad no está disponible o cualquier validación
+    QCC falla, Mercurio continúa sin reporter.
+    """
+
+    try:
+        session_id = str(
+            getattr(
+                args,
+                "qcc_session_id",
+                "",
+            )
+            or ""
+        ).strip()
+
+        expediente_id = int(
+            getattr(
+                args,
+                "expediente_id",
+                0,
+            )
+            or 0
+        )
+
+        client_id = int(
+            getattr(
+                args,
+                "cliente_id",
+                0,
+            )
+            or 0
+        )
+
+        if (
+            not session_id
+            or expediente_id <= 0
+            or client_id <= 0
+        ):
+            write_log(
+                session_dir,
+                "QCC reporter deshabilitado: "
+                "identidad incompleta",
+            )
+            return None
+
+        procedure = str(
+            getattr(
+                args,
+                "tipo",
+                "",
+            )
+            or "MERCURIO"
+        ).strip() or "MERCURIO"
+
+        return QccPresentationReporter(
+            session_id=session_id,
+            expedient_id=expediente_id,
+            client_id=client_id,
+            procedure=procedure,
+            provider="MERCURIO",
+            runtime="SELENIUMBASE_ASSISTED",
+        )
+
+    except Exception as exc:
+        write_log(
+            session_dir,
+            "QCC reporter no disponible: "
+            f"{type(exc).__name__}",
+        )
+
+        return None
+
+
+
+def build_qcc_action_client(
+    args,
+    session_dir,
+):
+    """Construye el consumidor de acciones QCC.
+
+    No conoce ni controla SeleniumBase.
+    """
+
+    session_id = str(
+        getattr(
+            args,
+            "qcc_session_id",
+            "",
+        )
+        or ""
+    ).strip()
+
+    if not session_id:
+        write_log(
+            session_dir,
+            (
+                "QCC action client deshabilitado: "
+                "qcc_session_id ausente"
+            ),
+        )
+        return None
+
+    try:
+        return QccActionClient(
+            session_id=session_id,
+        )
+
+    except Exception as exc:
+        write_log(
+            session_dir,
+            (
+                "QCC action client no disponible: "
+                f"{type(exc).__name__}"
+            ),
+        )
+
+        return None
+
+
+
+def qcc_report(
+    reporter,
+    method_name,
+    session_dir,
+    **kwargs,
+):
+    """Invocación QCC absolutamente fail-open."""
+
+    if reporter is None:
+        return False
+
+    try:
+        method = getattr(
+            reporter,
+            method_name,
+        )
+
+        return bool(
+            method(
+                **kwargs
+            )
+        )
+
+    except Exception as exc:
+        write_log(
+            session_dir,
+            "QCC publish omitido "
+            f"{method_name}: "
+            f"{type(exc).__name__}",
+        )
+
+        return False
+
+
+def run_auto_with_qcc(
+    browser,
+    provincia_codigo,
+    datos_mercurio,
+    session_dir,
+    reporter=None,
+):
+    """Envelope observacional sobre run_auto().
+
+    No cambia ninguna interacción Mercurio.
+    """
+
+    qcc_report(
+        reporter,
+        "automating",
+        session_dir,
+        step="AUTO_FLOW",
+        progress=5,
+        message=(
+            "Iniciando flujo asistido Mercurio"
+        ),
+    )
+
+    try:
+        result = run_auto(
+            browser,
+            provincia_codigo,
+            datos_mercurio,
+            session_dir,
+            reporter=reporter,
+        )
+
+    except Exception as exc:
+        qcc_report(
+            reporter,
+            "error",
+            session_dir,
+            step="AUTO_FLOW",
+            message=(
+                "Error durante presentación: "
+                f"{type(exc).__name__}"
+            ),
+        )
+
+        raise
+
+    write_log(
+        session_dir,
+        (
+            "QCC auto flow finalizado sin "
+            "marcar COMPLETED: la fase "
+            "documental continúa aparte"
+        ),
+    )
+
+    return result
 
 
 def normalize(value):
@@ -333,7 +556,18 @@ def get_mercurio_mapper_mode(datos_mercurio):
     }
 
 
-def wait_for_human_navigation(browser, session_dir, label, ready_js, timeout=300, interval=0.5, fallback_prompt=None):
+def wait_for_human_navigation(
+    browser,
+    session_dir,
+    label,
+    ready_js,
+    timeout=300,
+    interval=0.5,
+    fallback_prompt=None,
+    qcc_reporter=None,
+    qcc_step="HUMAN_NAVIGATION",
+    qcc_progress=0,
+):
     """
     Espera a que el usuario pulse CONTINUAR manualmente en Mercurio y a que
     la pantalla destino esté lista.
@@ -349,11 +583,49 @@ def wait_for_human_navigation(browser, session_dir, label, ready_js, timeout=300
     print("=" * 80)
     write_log(session_dir, f"Espera humana asistida iniciada: {label}")
 
+    qcc_report(
+        qcc_reporter,
+        "waiting_user",
+        session_dir,
+        step=qcc_step,
+        progress=qcc_progress,
+        message=(
+            f"Acción manual requerida: {label}"
+        ),
+    )
+
     try:
         wait_for_js(browser, ready_js, timeout=timeout, interval=interval)
         write_log(session_dir, f"Espera humana asistida OK: {label}")
         print(f"[OK] Pantalla detectada: {label}")
-        return {"ok": True, "mode": "human_dom_detected", "label": label}
+
+        qcc_report(
+            qcc_reporter,
+            "user_action_detected",
+            session_dir,
+            step=qcc_step,
+            progress=qcc_progress,
+            message=(
+                f"Acción manual detectada: {label}"
+            ),
+        )
+
+        qcc_report(
+            qcc_reporter,
+            "resuming",
+            session_dir,
+            step=qcc_step,
+            progress=qcc_progress,
+            message=(
+                f"Reanudando tras: {label}"
+            ),
+        )
+
+        return {
+            "ok": True,
+            "mode": "human_dom_detected",
+            "label": label,
+        }
     except Exception as exc:
         write_log(session_dir, f"Espera humana asistida timeout/fallo: {label}: {repr(exc)}")
         print()
@@ -365,7 +637,35 @@ def wait_for_human_navigation(browser, session_dir, label, ready_js, timeout=300
         try:
             wait_for_js(browser, ready_js, timeout=10, interval=0.5)
             write_log(session_dir, f"Fallback ENTER confirmado por DOM: {label}")
-            return {"ok": True, "mode": "human_enter_fallback_confirmed", "label": label}
+
+            qcc_report(
+                qcc_reporter,
+                "user_action_detected",
+                session_dir,
+                step=qcc_step,
+                progress=qcc_progress,
+                message=(
+                    f"Acción manual confirmada: {label}"
+                ),
+            )
+
+            qcc_report(
+                qcc_reporter,
+                "resuming",
+                session_dir,
+                step=qcc_step,
+                progress=qcc_progress,
+                message=(
+                    f"Reanudando tras fallback: {label}"
+                ),
+            )
+
+            return {
+                "ok": True,
+                "mode":
+                    "human_enter_fallback_confirmed",
+                "label": label,
+            }
         except Exception as confirm_exc:
             write_log(session_dir, f"Fallback ENTER sin confirmación DOM: {label}: {repr(confirm_exc)}")
             return {
@@ -390,7 +690,11 @@ def step_continuar_abogacia(browser, session_dir):
     js(browser, "validarYEnviar('AB');")
 
 
-def pause_certificado(browser, session_dir):
+def pause_certificado(
+    browser,
+    session_dir,
+    reporter=None,
+):
     print()
     print("=" * 80)
     print("PAUSA HUMANA: selecciona el certificado digital manualmente.")
@@ -404,6 +708,9 @@ def pause_certificado(browser, session_dir):
         "typeof mostrarOpcion === 'function'",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando Mercurio esté en Opciones disponibles...",
+        qcc_reporter=reporter,
+        qcc_step="CERTIFICATE_SELECTION",
+        qcc_progress=12,
     )
 
 
@@ -447,7 +754,12 @@ def step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_
         write_log(session_dir, f"No se pudo guardar HTML tras aviso Mercurio: {repr(exc)}")
 
 
-def pause_supuesto(browser, session_dir, tipo_formulario_objetivo=""):
+def pause_supuesto(
+    browser,
+    session_dir,
+    tipo_formulario_objetivo="",
+    reporter=None,
+):
     tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
     print()
     print("=" * 80)
@@ -468,6 +780,9 @@ def pause_supuesto(browser, session_dir, tipo_formulario_objetivo=""):
         "document.getElementById('extNombre') || document.getElementById('extNie') || document.getElementById('extPasaporte') || document.getElementById('extNacionalidad')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del extranjero/a...",
+        qcc_reporter=reporter,
+        qcc_step="PROCEDURE_SELECTION",
+        qcc_progress=30,
     )
 
 
@@ -1067,7 +1382,11 @@ def fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir):
     write_log(session_dir, "Datos del reagrupante EX02 rellenados")
     return True
 
-def click_continuar_ex02_extranjero_to_reagrupante(browser, session_dir):
+def click_continuar_ex02_extranjero_to_reagrupante(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """Espera humana desde Datos del extranjero/reagrupado a Datos del reagrupante."""
     print("[8] ESPERA HUMANA - CONTINUAR a DATOS DEL REAGRUPANTE EX02")
     write_log(session_dir, "Espera humana EX02: extranjero/reagrupado -> reagrupante")
@@ -1078,10 +1397,17 @@ def click_continuar_ex02_extranjero_to_reagrupante(browser, session_dir):
         "document.getElementById('reaNombreReagrupante') || document.getElementById('reaNieReagrupante') || document.getElementById('reaPasaporteReagrupante')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del reagrupante...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_SPONSOR",
+        qcc_progress=42,
     )
 
 
-def click_continuar_ex02_reagrupante_to_presentador(browser, session_dir):
+def click_continuar_ex02_reagrupante_to_presentador(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """Espera humana desde Datos del reagrupante a Datos del presentador."""
     print("[9] ESPERA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
     write_log(session_dir, "Espera humana EX02: reagrupante -> presentador")
@@ -1092,9 +1418,16 @@ def click_continuar_ex02_reagrupante_to_presentador(browser, session_dir):
         "document.getElementById('preNombrePresentador')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_PRESENTER",
+        qcc_progress=68,
     )
 
-def click_continuar_ex02_reagrupante_to_reagrupado(browser, session_dir):
+def click_continuar_ex02_reagrupante_to_reagrupado(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """Espera humana desde Datos del reagrupante a Datos del reagrupado/solicitante."""
     print("[8] ESPERA HUMANA - CONTINUAR a DATOS DEL REAGRUPADO/SOLICITANTE")
     write_log(session_dir, "Espera humana EX02: reagrupante -> reagrupado/solicitante")
@@ -1105,10 +1438,17 @@ def click_continuar_ex02_reagrupante_to_reagrupado(browser, session_dir):
         "document.getElementById('extNombre') || document.getElementById('extNie') || document.getElementById('extPasaporte') || document.getElementById('extNacionalidad')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del reagrupado/solicitante...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_APPLICANT",
+        qcc_progress=52,
     )
 
 
-def click_continuar_ex02_reagrupado_to_presentador(browser, session_dir):
+def click_continuar_ex02_reagrupado_to_presentador(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """Espera humana desde Datos del reagrupado/solicitante a Datos del presentador."""
     print("[9] ESPERA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
     write_log(session_dir, "Espera humana EX02: reagrupado/solicitante -> presentador")
@@ -1119,10 +1459,17 @@ def click_continuar_ex02_reagrupado_to_presentador(browser, session_dir):
         "document.getElementById('preNombrePresentador')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_PRESENTER",
+        qcc_progress=68,
     )
 
 
-def click_continuar_extranjero_to_familiar(browser, session_dir):
+def click_continuar_extranjero_to_familiar(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """
     Avance humano desde Datos del extranjero/a a Datos del familiar en EX01 familiar.
     """
@@ -1143,10 +1490,17 @@ def click_continuar_extranjero_to_familiar(browser, session_dir):
         "document.getElementById('reaNombreReagrupante') || document.getElementById('reaDocumentoReagrupante') || document.getElementById('reaNieReagrupante')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del familiar...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_FAMILY_MEMBER",
+        qcc_progress=52,
     )
 
 
-def click_continuar_familiar_to_presentador(browser, session_dir):
+def click_continuar_familiar_to_presentador(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """
     Avance humano desde Datos del familiar a Datos del presentador en EX01 familiar.
     """
@@ -1167,11 +1521,18 @@ def click_continuar_familiar_to_presentador(browser, session_dir):
         "document.getElementById('preNombrePresentador')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_PRESENTER",
+        qcc_progress=68,
     )
 
 
 
-def click_continuar(browser, session_dir):
+def click_continuar(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """
     Avance seguro desde Datos del extranjero/a a Datos del presentador.
 
@@ -1203,6 +1564,9 @@ def click_continuar(browser, session_dir):
         "document.getElementById('preNombrePresentador')",
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_PRESENTER",
+        qcc_progress=68,
     )
 
 
@@ -1294,59 +1658,458 @@ def fill_datos_presentador(browser, datos_mercurio, session_dir):
     return True
 
 
-def click_continuar_presentador(browser, session_dir):
-    """
-    Avance seguro desde Datos del presentador a la siguiente pantalla.
+POST_PRESENTER_NOTIFICATION_READY_JS = """
+(() => {
+    const notification =
+        document.getElementById(
+            'tab-datos_notificacion'
+        );
 
-    Mercurio también genera error cuando este CONTINUAR se automatiza.
-    Por tanto, este punto queda estrictamente humano:
+    const presenter =
+        document.getElementById(
+            'tab-datos_presentador'
+        );
+
+    const conclude =
+        document.getElementById(
+            'btnConcluirSup'
+        );
+
+    if (!notification || !conclude) {
+        return false;
+    }
+
+    const visible = (element) => {
+        const style =
+            window.getComputedStyle(
+                element
+            );
+
+        return (
+            style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && element.getClientRects().length > 0
+        );
+    };
+
+    const notificationActive = (
+        notification.classList.contains(
+            'r-tabs-state-active'
+        )
+        && visible(notification)
+    );
+
+    const concludeVisible =
+        visible(conclude);
+
+    const presenterInactive = (
+        !presenter
+        || !presenter.classList.contains(
+            'r-tabs-state-active'
+        )
+        || !visible(presenter)
+    );
+
+    return (
+        notificationActive
+        && concludeVisible
+        && presenterInactive
+    );
+})()
+""".strip()
+
+
+def _presenter_transition_ready_js():
+    """
+    Acepta tanto la pantalla intermedia
+    Notificación/CONCLUIR como el destino documental.
+
+    Esto evita perder una transición si el usuario
+    avanza más rápido que el polling del runner.
+    """
+
+    from backend.automation.mercurio_document_dom_reader import (
+        MERCURIO_DOCUMENT_PAGE_READY_EXPRESSION,
+    )
+
+    return (
+        "("
+        + POST_PRESENTER_NOTIFICATION_READY_JS
+        + ") || ("
+        + MERCURIO_DOCUMENT_PAGE_READY_EXPRESSION
+        + ")"
+    )
+
+
+def _read_mercurio_document_page_state(
+    browser,
+):
+    """
+    Devuelve estado documental únicamente cuando
+    la pantalla documental está realmente reconocida.
+
+    Fallos de lectura se tratan como ausencia de
+    pantalla documental; nunca provocan navegación.
+    """
+
+    from backend.automation.mercurio_document_dom_reader import (
+        read_mercurio_document_state,
+    )
+
+    try:
+        state = (
+            read_mercurio_document_state(
+                browser
+            )
+        )
+
+    except Exception:
+        return None
+
+    if (
+        state.page_detected
+        and state.contract_compatible
+    ):
+        return state
+
+    return None
+
+
+def click_continuar_presentador(
+    browser,
+    session_dir,
+    reporter=None,
+):
+    """
+    Espera el CONTINUAR manual desde Datos del presentador.
+
+    QCC/SeleniumBase solo observan la transición:
     - NO click JS
     - NO keyboard
     - NO CDP click
     - NO Selenium click
 
-    El usuario pulsa CONTINUAR manualmente y el script solo espera confirmación.
+    La transición se considera confirmada cuando:
+    - Notificación está activa y visible.
+    - CONCLUIR está visible.
+    - Presentador ya no está activo/visible.
     """
-    print("[10] PAUSA HUMANA - CONTINUAR desde DATOS DEL PRESENTADOR")
-    write_log(session_dir, "Pausa humana obligatoria: continuar presentador -> siguiente pantalla")
+
+    print(
+        "[10] PAUSA HUMANA - "
+        "CONTINUAR desde DATOS DEL PRESENTADOR"
+    )
+
+    write_log(
+        session_dir,
+        "Pausa humana obligatoria: "
+        "continuar presentador -> notificación",
+    )
 
     print()
     print("=" * 80)
     print("PAUSA HUMANA")
-    print("Pulsa MANUALMENTE el botón CONTINUAR en Mercurio")
-    print("desde Datos del presentador.")
-    print()
-    print("Cuando hayas avanzado a la siguiente pantalla, vuelve aquí y pulsa ENTER.")
+    print(
+        "Pulsa MANUALMENTE CONTINUAR "
+        "desde Datos del presentador."
+    )
+    print(
+        "El script continuará al detectar "
+        "la pantalla de notificación / CONCLUIR."
+    )
     print("=" * 80)
 
-    input("Pulsa ENTER cuando hayas avanzado desde Datos del presentador...")
+    result = wait_for_human_navigation(
+        browser,
+        session_dir,
+        (
+            "Domicilio de notificación / "
+            "CONCLUIR"
+        ),
+        _presenter_transition_ready_js(),
+        timeout=300,
+        interval=0.5,
+        fallback_prompt=(
+            "Pulsa ENTER solo si ya estás "
+            "en la pantalla de notificación "
+            "y ves CONCLUIR..."
+        ),
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_FROM_PRESENTER",
+        qcc_progress=78,
+    )
 
-    write_log(session_dir, "Continuar presentador realizado manualmente por usuario")
-    return {"ok": True, "mode": "human_required"}
+    write_log(
+        session_dir,
+        "Continuar presentador confirmado "
+        f"por modo={result.get('mode')}",
+    )
+
+    return result
+
+DOCUMENT_UPLOAD_READY_JS = """
+(() => {
+    const container =
+        document.getElementById(
+            'tbAdjuntos'
+        );
+
+    const fileInput =
+        document.getElementById(
+            'fileDocumentoAdjuntos'
+        );
+
+    const browse =
+        document.getElementById(
+            'addDou'
+        );
+
+    const documentType =
+        document.getElementById(
+            'docAdjuntarAdjuntos'
+        );
+
+    if (
+        !container
+        || !fileInput
+        || !browse
+        || !documentType
+    ) {
+        return false;
+    }
+
+    const visible = (element) => {
+        const style =
+            window.getComputedStyle(
+                element
+            );
+
+        return (
+            style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && element.getClientRects().length > 0
+        );
+    };
+
+    return (
+        visible(container)
+        && visible(fileInput)
+        && visible(browse)
+        && visible(documentType)
+    );
+})()
+""".strip()
 
 
-
-def pause_humana_final_presentacion(browser, session_dir):
+def pause_humana_final_presentacion(
+    browser,
+    session_dir,
+    reporter=None,
+):
     """
-    Pausa humana final SIN disconnect.
+    Espera la acción humana CONCLUIR.
 
-    Mantiene Chrome abierto y conectado.
-    El bot deja de actuar y el humano pulsa CONCLUIR manualmente.
+    QCC/SeleniumBase no pulsan CONCLUIR.
+    El avance se confirma observando la pantalla
+    documental real de Mercurio.
     """
+
     print()
     print("=" * 80)
     print("PAUSA HUMANA FINAL")
-    print("El bot ha terminado el volcado de datos.")
-    print("NO se ejecuta browser.disconnect().")
-    print("NO se ejecuta quit(), close() ni stop().")
-    print("Chrome queda abierto y conectado.")
-    print("Revisa la pantalla y pulsa CONCLUIR manualmente en Mercurio.")
+    print(
+        "El bot ha terminado el volcado "
+        "de datos."
+    )
+    print(
+        "Revisa la solicitud y pulsa "
+        "CONCLUIR manualmente en Mercurio."
+    )
+    print(
+        "El script continuará al detectar "
+        "la pantalla documental."
+    )
     print("=" * 80)
 
-    write_log(session_dir, "Pausa humana final SIN disconnect: control humano para concluir")
+    write_log(
+        session_dir,
+        (
+            "Pausa humana final: "
+            "esperando CONCLUIR -> "
+            "pantalla documental"
+        ),
+    )
+
+    document_state = (
+        _read_mercurio_document_page_state(
+            browser
+        )
+    )
+
+    if document_state is not None:
+        result = {
+            "ok": True,
+            "mode":
+                "document_dom_already_ready",
+            "label":
+                "Documentación de la solicitud",
+        }
+
+        write_log(
+            session_dir,
+            (
+                "Pantalla documental ya presente; "
+                "se omite espera FINAL_REVIEW"
+            ),
+        )
+
+    else:
+        result = wait_for_human_navigation(
+            browser,
+            session_dir,
+            "Documentación de la solicitud",
+            DOCUMENT_UPLOAD_READY_JS,
+            timeout=300,
+            interval=0.5,
+            fallback_prompt=(
+                "Pulsa ENTER solo si ya estás "
+                "en la pantalla de documentación "
+                "de Mercurio..."
+            ),
+            qcc_reporter=reporter,
+            qcc_step="FINAL_REVIEW",
+            qcc_progress=82,
+        )
+
+    qcc_report(
+        reporter,
+        "waiting_user",
+        session_dir,
+        step="DOCUMENTS_READY",
+        progress=88,
+        message=(
+            "Pantalla documental preparada; "
+            "documentación pendiente"
+        ),
+    )
+
+    write_log(
+        session_dir,
+        (
+            "Pantalla documental confirmada "
+            f"por modo={result.get('mode')}"
+        ),
+    )
+
+    return result
+
+
+def wait_for_qcc_documents_start(
+    action_client,
+    session_dir,
+    reporter=None,
+    *,
+    poll_interval=0.25,
+):
+    """Espera DOCUMENTS_START desde QCC.
+
+    La espera ocurre en el hilo principal.
+    QCC no controla directamente SeleniumBase.
+    """
+
+    if action_client is None:
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTOS QCC: "
+                "action client no disponible"
+            ),
+        )
+
+        return None
 
     print()
-    input("CONTROL HUMANO: pulsa ENTER aquí solo cuando hayas terminado manualmente en Chrome...")
+    print("=" * 80)
+    print("DOCUMENTACIÓN PREPARADA")
+    print(
+        "Esperando 'Iniciar documentación' "
+        "en Quesada Chrome Companion..."
+    )
+    print("=" * 80)
+
+    write_log(
+        session_dir,
+        (
+            "DOCUMENTOS QCC: "
+            "esperando DOCUMENTS_START"
+        ),
+    )
+
+    while True:
+        action = (
+            action_client
+            .consume_next()
+        )
+
+        if action is None:
+            time.sleep(
+                poll_interval
+            )
+            continue
+
+        action_name = str(
+            action.get(
+                "action",
+                "",
+            )
+        ).strip()
+
+        if action_name != "DOCUMENTS_START":
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTOS QCC: "
+                    "acción inesperada descartada "
+                    f"{action_name or '-'}"
+                ),
+            )
+            continue
+
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTOS QCC: "
+                "DOCUMENTS_START recibido "
+                f"action_id="
+                f"{action.get('action_id')}"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "user_action_detected",
+            session_dir,
+            step="DOCUMENTS_START",
+            progress=89,
+            message=(
+                "Inicio documental solicitado "
+                "desde QCC"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "resuming",
+            session_dir,
+            step="DOCUMENTS_RUNNING",
+            progress=90,
+            message=(
+                "Iniciando subida documental "
+                "asistida"
+            ),
+        )
+
+        return action
 
 
 
@@ -1583,7 +2346,7 @@ def classify_documento_mercurio(path):
         ("3", ["vinculo", "familiar", "familia", "matrimonio", "nacimiento", "parentesco"]),
         ("186", ["convivencia", "unidad familiar"]),
         ("187", ["permanencia", "padron", "padrón", "empadronamiento", "historico", "histórico"]),
-        ("43", ["tasa", "790", "052", "pago", "justificante"]),
+        ("51", ["tasa", "790", "052"]),
     ]
     for code, keywords in rules:
         for kw in keywords:
@@ -1611,7 +2374,446 @@ def preparar_documento_mercurio(browser, path, code, session_dir):
 
 
 
-def upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir):
+def wait_for_qcc_document_action(
+    action_client,
+    *,
+    document_index,
+    document_total,
+    document_name,
+    proposed_code,
+    session_dir,
+    reporter=None,
+    poll_interval=0.25,
+):
+    """Publica documento actual y espera decisión humana QCC.
+
+    QCC transporta la intención del usuario.
+    Este helper NO controla SeleniumBase ni el DOM.
+    """
+
+    if action_client is None:
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTO QCC: "
+                "action client no disponible"
+            ),
+        )
+
+        return None
+
+    progress = min(
+        96,
+        90
+        + max(
+            1,
+            int(
+                document_index
+                * 6
+                / max(
+                    document_total,
+                    1,
+                )
+            ),
+        ),
+    )
+
+    qcc_report(
+        reporter,
+        "waiting_user",
+        session_dir,
+        step="DOCUMENT_READY",
+        progress=progress,
+        message=(
+            f"Documento {document_index}/"
+            f"{document_total}: "
+            f"{document_name}"
+        ),
+        event_details={
+            "document_index":
+                document_index,
+            "document_total":
+                document_total,
+            "document_name":
+                document_name,
+            "document_type_code":
+                proposed_code,
+        },
+    )
+
+    write_log(
+        session_dir,
+        (
+            "DOCUMENTO QCC: esperando decisión "
+            f"index={document_index} "
+            f"name={document_name} "
+            f"code={proposed_code}"
+        ),
+    )
+
+    while True:
+        action = (
+            action_client
+            .consume_next()
+        )
+
+        if action is None:
+            time.sleep(
+                poll_interval
+            )
+            continue
+
+        action_name = str(
+            action.get(
+                "action",
+                "",
+            )
+        ).strip()
+
+        payload = (
+            action.get(
+                "payload",
+                {},
+            )
+            or {}
+        )
+
+        if not isinstance(
+            payload,
+            dict,
+        ):
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO QCC: payload "
+                    "inválido descartado"
+                ),
+            )
+            continue
+
+        action_index = payload.get(
+            "document_index"
+        )
+
+        if action_index != document_index:
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO QCC: acción "
+                    "de otro documento descartada "
+                    f"action={action_name or '-'} "
+                    f"index={action_index} "
+                    f"expected={document_index}"
+                ),
+            )
+            continue
+
+        if action_name not in (
+            "DOCUMENT_PREPARE",
+            "DOCUMENT_SKIP",
+            "DOCUMENT_FORCE_TYPE",
+        ):
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO QCC: acción "
+                    "no aplicable descartada "
+                    f"{action_name or '-'}"
+                ),
+            )
+            continue
+
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTO QCC: decisión recibida "
+                f"action={action_name} "
+                f"index={document_index}"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "user_action_detected",
+            session_dir,
+            step="DOCUMENT_ACTION",
+            progress=progress,
+            message=(
+                "Decisión documental recibida "
+                f"para {document_name}"
+            ),
+        )
+
+        return action
+
+
+def _count_confirmed_mercurio_uploads(
+    state,
+    *,
+    filename,
+    code,
+):
+    """
+    Cuenta filas que confirman el documento esperado.
+
+    Contrato:
+    - mismo nombre de archivo;
+    - mismo código documental Mercurio;
+    - hash no vacío.
+
+    No depende del id dinámico de la fila.
+    """
+
+    expected_filename = (
+        Path(
+            str(
+                filename
+                or ""
+            )
+        )
+        .name
+        .casefold()
+    )
+
+    expected_code = str(
+        code
+        or ""
+    ).strip()
+
+    if (
+        not expected_filename
+        or not expected_code
+    ):
+        return 0
+
+    return sum(
+        1
+        for document
+        in getattr(
+            state,
+            "uploaded_documents",
+            (),
+        )
+        if (
+            str(
+                getattr(
+                    document,
+                    "filename",
+                    "",
+                )
+            )
+            .strip()
+            .casefold()
+            == expected_filename
+        )
+        and (
+            str(
+                getattr(
+                    document,
+                    "code",
+                    "",
+                )
+            ).strip()
+            == expected_code
+        )
+        and bool(
+            str(
+                getattr(
+                    document,
+                    "hash_value",
+                    "",
+                )
+            ).strip()
+        )
+    )
+
+
+def get_mercurio_document_upload_baseline(
+    browser,
+    *,
+    filename,
+    code,
+):
+    """
+    Captura cuántas coincidencias válidas existen
+    ANTES de preparar la nueva subida.
+
+    El baseline impide confirmar accidentalmente
+    una fila antigua del mismo archivo.
+    """
+
+    from backend.automation.mercurio_document_dom_reader import (
+        read_mercurio_document_state,
+    )
+
+    state = (
+        read_mercurio_document_state(
+            browser
+        )
+    )
+
+    if not (
+        state.page_detected
+        and state.contract_compatible
+    ):
+        raise RuntimeError(
+            "MERCURIO_DOCUMENT_BASELINE_"
+            "CONTRACT_NOT_READY"
+        )
+
+    return (
+        _count_confirmed_mercurio_uploads(
+            state,
+            filename=filename,
+            code=code,
+        )
+    )
+
+
+def wait_for_mercurio_document_upload(
+    browser,
+    *,
+    filename,
+    code,
+    baseline_count,
+    timeout=180,
+    poll_interval=0.5,
+    state_reader=None,
+):
+    """
+    Espera exclusivamente observando el DOM.
+
+    Confirma la subida cuando Mercurio muestra una
+    nueva fila válida para:
+        filename + code + hash.
+
+    No:
+    - pulsa botones;
+    - modifica campos;
+    - usa teclado;
+    - usa ENTER;
+    - controla el diálogo de archivos.
+    """
+
+    if state_reader is None:
+        from backend.automation.mercurio_document_dom_reader import (
+            read_mercurio_document_state,
+        )
+
+        state_reader = (
+            read_mercurio_document_state
+        )
+
+    baseline_count = max(
+        0,
+        int(
+            baseline_count
+            or 0
+        ),
+    )
+
+    deadline = (
+        time.monotonic()
+        + max(
+            0,
+            float(
+                timeout
+            ),
+        )
+    )
+
+    last_error = None
+
+    while True:
+        try:
+            state = state_reader(
+                browser
+            )
+
+            if (
+                state.page_detected
+                and state.contract_compatible
+            ):
+                current_count = (
+                    _count_confirmed_mercurio_uploads(
+                        state,
+                        filename=filename,
+                        code=code,
+                    )
+                )
+
+                if (
+                    current_count
+                    > baseline_count
+                ):
+                    return {
+                        "ok": True,
+                        "mode":
+                            "document_dom_confirmed",
+                        "filename":
+                            Path(
+                                str(
+                                    filename
+                                )
+                            ).name,
+                        "code":
+                            str(
+                                code
+                            ),
+                        "baseline_count":
+                            baseline_count,
+                        "current_count":
+                            current_count,
+                    }
+
+        except Exception as exc:
+            last_error = repr(
+                exc
+            )
+
+        if (
+            time.monotonic()
+            >= deadline
+        ):
+            return {
+                "ok": False,
+                "mode":
+                    "document_dom_timeout",
+                "filename":
+                    Path(
+                        str(
+                            filename
+                        )
+                    ).name,
+                "code":
+                    str(
+                        code
+                    ),
+                "baseline_count":
+                    baseline_count,
+                "last_error":
+                    last_error,
+            }
+
+        time.sleep(
+            max(
+                0,
+                float(
+                    poll_interval
+                ),
+            )
+        )
+
+
+def upload_documentos_mercurio_asistido(
+    browser,
+    documentos_dir,
+    datos_mercurio,
+    session_dir,
+    *,
+    reporter=None,
+    action_client=None,
+):
     print()
     print("=" * 80)
     print("SUBIDA DOCUMENTAL ASISTIDA - PARA PRESENTAR")
@@ -1626,10 +2828,13 @@ def upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio,
     for i, p in enumerate(docs, 1):
         print(f"  {i}. {p}")
 
-    ans = input("Iniciar preparación asistida? [ENTER=sí / n=no]: ").strip().lower()
-    if ans in ("n", "no"):
-        write_log(session_dir, "DOCUMENTOS cancelado por usuario antes de iniciar")
-        return False
+    write_log(
+        session_dir,
+        (
+            "DOCUMENTOS: inicio autorizado "
+            "desde QCC"
+        ),
+    )
 
     resultados = []
     for idx, path in enumerate(docs, 1):
@@ -1642,37 +2847,293 @@ def upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio,
         print(f"Tipo Mercurio propuesto: {code}")
         print("-" * 80)
 
-        ans = input("Preparar este documento? [ENTER=sí / s=saltar / código=forzar tipo]: ").strip().lower()
-        if ans in ("s", "skip", "no", "n"):
-            resultados.append((str(path), "SALTADO"))
-            write_log(session_dir, f"DOCUMENTO saltado: {path}")
-            continue
-        if ans:
-            code = ans
-            write_log(session_dir, f"DOCUMENTO código forzado {path}: {code}")
+        action = wait_for_qcc_document_action(
+            action_client,
+            document_index=idx,
+            document_total=len(docs),
+            document_name=path.name,
+            proposed_code=code,
+            session_dir=session_dir,
+            reporter=reporter,
+        )
 
-        clipboard_ok = copy_text_to_clipboard(str(path), session_dir=session_dir)
-        preparar_documento_mercurio(browser, path, code, session_dir)
-        copy_text_to_clipboard(str(path), session_dir=session_dir)
+        if action is None:
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO no procesado: "
+                    "QCC Action Channel no disponible "
+                    f"path={path}"
+                ),
+            )
+
+            return False
+
+        action_name = str(
+            action.get(
+                "action",
+                "",
+            )
+        ).strip()
+
+        if action_name == "DOCUMENT_SKIP":
+            resultados.append(
+                (
+                    str(path),
+                    "SALTADO",
+                )
+            )
+
+            write_log(
+                session_dir,
+                f"DOCUMENTO saltado: {path}",
+            )
+
+            continue
+
+        if (
+            action_name
+            == "DOCUMENT_FORCE_TYPE"
+        ):
+            payload = (
+                action.get(
+                    "payload",
+                    {},
+                )
+                or {}
+            )
+
+            forced_code = str(
+                payload.get(
+                    "value",
+                    "",
+                )
+            ).strip()
+
+            if not forced_code:
+                write_log(
+                    session_dir,
+                    (
+                        "DOCUMENTO código forzado "
+                        "vacío; documento no procesado "
+                        f"path={path}"
+                    ),
+                )
+
+                return False
+
+            code = forced_code
+
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO código forzado "
+                    f"{path}: {code}"
+                ),
+            )
+
+        document_progress = min(
+            97,
+            91
+            + int(
+                idx
+                * 6
+                / max(
+                    len(docs),
+                    1,
+                )
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "resuming",
+            session_dir,
+            step="DOCUMENT_PREPARING",
+            progress=document_progress,
+            message=(
+                f"Preparando {path.name}"
+            ),
+        )
+
+        try:
+            upload_baseline = (
+                get_mercurio_document_upload_baseline(
+                    browser,
+                    filename=path.name,
+                    code=code,
+                )
+            )
+
+        except Exception as exc:
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO baseline DOM fallido "
+                    f"path={path} "
+                    f"code={code} "
+                    f"error={repr(exc)}"
+                ),
+            )
+
+            qcc_report(
+                reporter,
+                "error",
+                session_dir,
+                step="DOCUMENT_BASELINE_ERROR",
+                progress=document_progress,
+                message=(
+                    "No se pudo validar el estado "
+                    f"previo de {path.name}"
+                ),
+            )
+
+            return False
+
+        clipboard_ok = copy_text_to_clipboard(
+            str(path),
+            session_dir=session_dir,
+        )
+
+        preparar_documento_mercurio(
+            browser,
+            path,
+            code,
+            session_dir,
+        )
+
+        copy_text_to_clipboard(
+            str(path),
+            session_dir=session_dir,
+        )
 
         print()
         print("=" * 80)
         print("ACCIÓN HUMANA")
-        print("Se ha pulsado 'Añadir documentación' en Mercurio.")
+        print(
+            "Se ha pulsado 'Añadir documentación' "
+            "en Mercurio."
+        )
         print("Ruta copiada al portapapeles:")
         print(str(path))
         print()
-        print("1) Pega la ruta en el explorador con CTRL+V y abre el archivo.")
-        print("2) Pulsa SUBIR / ADJUNTAR DOCUMENTO en Mercurio.")
-        print("3) Comprueba que aparece en la tabla.")
+        print(
+            "1) Pega la ruta en el explorador "
+            "con CTRL+V y abre el archivo."
+        )
+        print(
+            "2) Pulsa SUBIR / ADJUNTAR DOCUMENTO "
+            "en Mercurio."
+        )
+        print(
+            "3) No vuelvas a CMD: el CRM detectará "
+            "automáticamente la fila subida."
+        )
         print("=" * 80)
-        if not clipboard_ok:
-            print("AVISO: no se pudo verificar el copiado al portapapeles.")
-            print("Copia manualmente la ruta mostrada antes de abrir el archivo.")
 
-        input("Pulsa ENTER aquí cuando ESTE documento esté adjuntado en Mercurio...")
-        resultados.append((str(path), "ADJUNTADO_HUMANO"))
-        write_log(session_dir, f"DOCUMENTO adjuntado por humano: {path}")
+        if not clipboard_ok:
+            print(
+                "AVISO: no se pudo verificar "
+                "el copiado al portapapeles."
+            )
+            print(
+                "Copia manualmente la ruta mostrada "
+                "antes de abrir el archivo."
+            )
+
+        qcc_report(
+            reporter,
+            "waiting_user",
+            session_dir,
+            step="DOCUMENT_ATTACHING",
+            progress=document_progress,
+            message=(
+                "Adjunta manualmente "
+                f"{path.name}; "
+                "el CRM confirmará la subida"
+            ),
+        )
+
+        confirmation = (
+            wait_for_mercurio_document_upload(
+                browser,
+                filename=path.name,
+                code=code,
+                baseline_count=(
+                    upload_baseline
+                ),
+                timeout=180,
+                poll_interval=0.5,
+            )
+        )
+
+        if not confirmation.get(
+            "ok"
+        ):
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO no confirmado por DOM "
+                    f"path={path} "
+                    f"code={code} "
+                    f"result={confirmation}"
+                ),
+            )
+
+            qcc_report(
+                reporter,
+                "error",
+                session_dir,
+                step="DOCUMENT_UPLOAD_TIMEOUT",
+                progress=document_progress,
+                message=(
+                    "Mercurio no confirmó "
+                    f"la subida de {path.name}"
+                ),
+            )
+
+            return False
+
+        resultados.append(
+            (
+                str(path),
+                "ADJUNTADO_DOM",
+            )
+        )
+
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTO confirmado por DOM: "
+                f"path={path} "
+                f"code={code} "
+                f"result={confirmation}"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "user_action_detected",
+            session_dir,
+            step="DOCUMENT_UPLOADED",
+            progress=document_progress,
+            message=(
+                "Documento confirmado en Mercurio: "
+                f"{path.name}"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "resuming",
+            session_dir,
+            step="DOCUMENTS_RUNNING",
+            progress=document_progress,
+            message=(
+                "Continuando con el siguiente "
+                "documento"
+            ),
+        )
 
     print()
     print("=" * 80)
@@ -1684,15 +3145,114 @@ def upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio,
     return True
 
 
-def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
+def run_auto_and_documents_with_qcc(
+    browser,
+    provincia_codigo,
+    datos_mercurio,
+    documentos_dir,
+    session_dir,
+    *,
+    reporter=None,
+    action_client=None,
+):
+    """Ejecuta presentación y espera inicio documental QCC."""
+
+    auto_result = run_auto_with_qcc(
+        browser,
+        provincia_codigo,
+        datos_mercurio,
+        session_dir,
+        reporter=reporter,
+    )
+
+    if not documentos_dir:
+        print()
+        print(
+            "No se ha encontrado carpeta "
+            "PARA PRESENTAR."
+        )
+
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTOS no iniciados: "
+                "carpeta PARA PRESENTAR ausente"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "error",
+            session_dir,
+            step="DOCUMENTS_FOLDER_MISSING",
+            progress=88,
+            message=(
+                "No se ha encontrado la carpeta "
+                "PARA PRESENTAR"
+            ),
+        )
+
+        return auto_result
+
+    action = wait_for_qcc_documents_start(
+        action_client,
+        session_dir,
+        reporter=reporter,
+    )
+
+    if action is None:
+        print()
+        print(
+            "QCC Action Channel no disponible. "
+            "La documentación no se inicia."
+        )
+
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTOS no iniciados: "
+                "QCC Action Channel no disponible"
+            ),
+        )
+
+        return auto_result
+
+    return upload_documentos_mercurio_asistido(
+        browser,
+        documentos_dir,
+        datos_mercurio,
+        session_dir,
+        reporter=reporter,
+        action_client=action_client,
+    )
+
+
+
+
+def run_auto(
+    browser,
+    provincia_codigo,
+    datos_mercurio,
+    session_dir,
+    reporter=None,
+):
     tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
     mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
     write_log(session_dir, f"Mapper interno Mercurio: {describe_mapper_codigo(mapper_mode.get('mapper_codigo'))}")
     step_continuar_inicial(browser, session_dir)
     step_continuar_abogacia(browser, session_dir)
-    pause_certificado(browser, session_dir)
+    pause_certificado(
+        browser,
+        session_dir,
+        reporter=reporter,
+    )
     step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
-    pause_supuesto(browser, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
+    pause_supuesto(
+        browser,
+        session_dir,
+        tipo_formulario_objetivo=tipo_formulario_objetivo,
+        reporter=reporter,
+    )
     if datos_mercurio:
         if mapper_mode.get("is_ex02"):
             # Orden real Mercurio EX02:
@@ -1700,20 +3260,49 @@ def run_auto(browser, provincia_codigo, datos_mercurio, session_dir):
             # 2) reagrupado/solicitante desde cliente del expediente
             # 3) presentador profesional
             fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir)
-            click_continuar_ex02_reagrupante_to_reagrupado(browser, session_dir)
+            click_continuar_ex02_reagrupante_to_reagrupado(
+                browser,
+                session_dir,
+                reporter=reporter,
+            )
             fill_datos_reagrupado_ex02(browser, datos_mercurio, session_dir)
-            click_continuar_ex02_reagrupado_to_presentador(browser, session_dir)
+            click_continuar_ex02_reagrupado_to_presentador(
+                browser,
+                session_dir,
+                reporter=reporter,
+            )
         else:
             fill_datos_extranjero(browser, datos_mercurio, session_dir)
             if mapper_mode.get("is_ex01_familiar"):
-                click_continuar_extranjero_to_familiar(browser, session_dir)
+                click_continuar_extranjero_to_familiar(
+                    browser,
+                    session_dir,
+                    reporter=reporter,
+                )
                 fill_datos_familiar_ex01(browser, datos_mercurio, session_dir)
-                click_continuar_familiar_to_presentador(browser, session_dir)
+                click_continuar_familiar_to_presentador(
+                    browser,
+                    session_dir,
+                    reporter=reporter,
+                )
             else:
-                click_continuar(browser, session_dir)
+                click_continuar(
+                    browser,
+                    session_dir,
+                    reporter=reporter,
+                )
         fill_datos_presentador(browser, datos_mercurio, session_dir)
-        click_continuar_presentador(browser, session_dir)
-        pause_humana_final_presentacion(browser, session_dir)
+        click_continuar_presentador(
+            browser,
+            session_dir,
+            reporter=reporter,
+        )
+
+        pause_humana_final_presentacion(
+            browser,
+            session_dir,
+            reporter=reporter,
+        )
 
 def main(
     lifecycle=None,
@@ -1721,6 +3310,9 @@ def main(
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
     parser.add_argument("--expediente-id", default="")
+    parser.add_argument("--cliente-id", default="")
+    parser.add_argument("--qcc-session-id", default="")
+    parser.add_argument("--browser-profile-key", default="")
     parser.add_argument("--numero-expediente", default="")
     parser.add_argument("--tipo", default="")
     parser.add_argument("--provincia-codigo", required=True)
@@ -1735,7 +3327,32 @@ def main(
     tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
     mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
     mapper_codigo = mapper_mode.get("mapper_codigo")
-    documentos_dir = resolve_para_presentar_dir(args, datos_mercurio, session_dir)
+    documentos_dir = resolve_para_presentar_dir(
+        args,
+        datos_mercurio,
+        session_dir,
+    )
+
+    qcc_reporter = build_qcc_reporter(
+        args,
+        session_dir,
+    )
+
+    qcc_action_client = (
+        build_qcc_action_client(
+            args,
+            session_dir,
+        )
+    )
+
+    if lifecycle is not None:
+        lifecycle[
+            "qcc_reporter"
+        ] = qcc_reporter
+
+        lifecycle[
+            "qcc_action_client"
+        ] = qcc_action_client
 
     url = (args.url or "").strip()
     if not url:
@@ -1762,9 +3379,19 @@ def main(
         f"Formulario objetivo={describe_tipo_formulario_objetivo(tipo_formulario_objetivo)}. "
         f"Mapper interno={describe_mapper_codigo(mapper_codigo)}"
     )
+    qcc_report(
+        qcc_reporter,
+        "started",
+        session_dir,
+    )
+
     connector = MercurioConnector(
         session_dir=session_dir,
         expediente_id=args.expediente_id,
+        profile_key=(
+            args.browser_profile_key
+            or None
+        ),
         headless=False,
     )
 
@@ -1778,13 +3405,42 @@ def main(
             "connector"
         ] = connector
 
-    browser = connector.start_browser(
-        url
-    )
+    try:
+        browser = connector.start_browser(
+            url
+        )
+
+    except Exception as exc:
+        qcc_report(
+            qcc_reporter,
+            "error",
+            session_dir,
+            step="BROWSER_START",
+            message=(
+                "Error iniciando navegador: "
+                f"{type(exc).__name__}"
+            ),
+        )
+
+        raise
 
     if args.auto:
-        connector.safe_execute('auto inicial', lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir))
-        print("Flujo auto finalizado. Si se ha ejecutado la pausa humana, Chrome queda bajo control manual.")
+        connector.safe_execute(
+            "auto inicial",
+            lambda: run_auto_and_documents_with_qcc(
+                browser,
+                args.provincia_codigo,
+                datos_mercurio,
+                documentos_dir,
+                session_dir,
+                reporter=qcc_reporter,
+                action_client=qcc_action_client,
+            ),
+        )
+        print(
+            "Flujo automático/documental finalizado. "
+            "Chrome permanece bajo control gobernado."
+        )
 
     print()
     print("MENÚ:")
@@ -1795,7 +3451,6 @@ def main(
     print("  fillfam    -> rellenar solo datos del familiar EX01")
     print("  fillrea    -> rellenar solo datos del reagrupante EX02")
     print("  human      -> pausa humana final sin disconnect")
-    print("  docs       -> subida documental asistida")
     print("  q          -> salir")
     print()
 
@@ -1810,7 +3465,18 @@ def main(
                 print(f"ERROR guardando HTML: {exc}")
 
         elif cmd == "auto":
-            connector.safe_execute("auto", lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir))
+            connector.safe_execute(
+                "auto",
+                lambda: run_auto_and_documents_with_qcc(
+                browser,
+                args.provincia_codigo,
+                datos_mercurio,
+                documentos_dir,
+                session_dir,
+                reporter=qcc_reporter,
+                action_client=qcc_action_client,
+            ),
+            )
 
         elif cmd == "fill":
             if not datos_mercurio:
@@ -1854,15 +3520,11 @@ def main(
                 fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir)
 
         elif cmd in ("human", "humano", "pausa"):
-            pause_humana_final_presentacion(browser, session_dir)
-
-        elif cmd in ("docs", "documentos", "upload"):
-            documentos_dir = resolve_para_presentar_dir(args, datos_mercurio, session_dir)
-            if not documentos_dir:
-                print("No se ha encontrado carpeta PARA PRESENTAR. Revisa --documentos-dir o la ruta exportada del expediente.")
-            else:
-                print(f"Usando carpeta PARA PRESENTAR: {documentos_dir}")
-                connector.safe_execute("docs", lambda: upload_documentos_mercurio_asistido(browser, documentos_dir, datos_mercurio, session_dir))
+            pause_humana_final_presentacion(
+                browser,
+                session_dir,
+                reporter=qcc_reporter,
+            )
 
         elif cmd in ("q", "quit", "exit", "salir"):
             print(
