@@ -1,0 +1,13 @@
+{
+  "url": "https://example.invalid/mercurio/presentacionTelematicaDocumentacion.html",
+  "markers": {
+    "required_codes_field": true,
+    "document_type_select": true,
+    "uploaded_table": true,
+    "file_input": true,
+    "continue_button": true
+  },
+  "required_codes_raw": "",
+  "required_items": [],
+  "uploaded_rows": []
+}

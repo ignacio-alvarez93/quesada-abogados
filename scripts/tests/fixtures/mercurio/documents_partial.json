@@ -1,0 +1,48 @@
+{
+  "url": "https://example.invalid/mercurio/presentacionTelematicaDocumentacion.html",
+  "markers": {
+    "required_codes_field": true,
+    "document_type_select": true,
+    "uploaded_table": true,
+    "file_input": true,
+    "continue_button": true
+  },
+  "required_codes_raw": "1|39|47",
+  "required_items": [
+    {
+      "code": "1",
+      "label": "Pasaporte"
+    },
+    {
+      "code": "39",
+      "label": "Recursos económicos"
+    },
+    {
+      "code": "47",
+      "label": "Seguro de enfermedad"
+    }
+  ],
+  "uploaded_rows": [
+    {
+      "row_id": "1001",
+      "filename": "pasaporte_prueba.pdf",
+      "description": "Pasaporte",
+      "hash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "code": "1"
+    },
+    {
+      "row_id": "1002",
+      "filename": "tasa_prueba.pdf",
+      "description": "Tasa 052",
+      "hash": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "code": "51"
+    },
+    {
+      "row_id": "1003",
+      "filename": "recursos_prueba.pdf",
+      "description": "Recursos económicos",
+      "hash": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "code": "39"
+    }
+  ]
+}
