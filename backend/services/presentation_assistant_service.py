@@ -22,6 +22,10 @@ DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNNER_PATH = PROJECT_ROOT / "app" / "run_presentacion_asistida.py"
 
+QCC_ASSISTED_BROWSER_PROFILE_KEY = (
+    "qcc_assisted"
+)
+
 
 def _connect():
     conn = sqlite3.connect(DB_PATH)
@@ -168,6 +172,8 @@ def start_presentation_external(config, auto=True):
         str(config.get("cliente_id") or ""),
         "--qcc-session-id",
         str(config.get("qcc_session_id") or ""),
+        "--browser-profile-key",
+        str(config.get("browser_profile_key") or ""),
         "--numero-expediente",
         str(config.get("numero_expediente") or ""),
         "--tipo",
@@ -203,6 +209,12 @@ def start_presentation_for_expediente(expediente):
                 "expediente_id"
             )
         )
+    )
+
+    config[
+        "browser_profile_key"
+    ] = (
+        QCC_ASSISTED_BROWSER_PROFILE_KEY
     )
 
     process = start_presentation_external(

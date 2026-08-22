@@ -36,6 +36,8 @@ def test_parent_command_passes_qcc_runtime_identity():
             321,
         "qcc_session_id":
             "qcc-mercurio-1842-test",
+        "browser_profile_key":
+            "qcc_assisted",
         "numero_expediente":
             "EXP-1842",
         "tipo_nombre":
@@ -88,6 +90,10 @@ def test_parent_command_passes_qcc_runtime_identity():
     assert value_after(
         "--qcc-session-id"
     ) == "qcc-mercurio-1842-test"
+
+    assert value_after(
+        "--browser-profile-key"
+    ) == "qcc_assisted"
 
     assert "--auto" in command
 
@@ -150,6 +156,13 @@ def test_parent_generates_qcc_session_identity():
     assert (
         context["qcc_session_id"]
         == session_id
+    )
+
+    assert (
+        captured[
+            "browser_profile_key"
+        ]
+        == "qcc_assisted"
     )
 
 
@@ -234,6 +247,7 @@ def test_runner_declares_qcc_identity_arguments():
 
     assert '"--cliente-id"' in source
     assert '"--qcc-session-id"' in source
+    assert '"--browser-profile-key"' in source
 
     assert (
         "QccPresentationReporter"

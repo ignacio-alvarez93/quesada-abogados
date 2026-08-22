@@ -2816,6 +2816,7 @@ def main(
     parser.add_argument("--expediente-id", default="")
     parser.add_argument("--cliente-id", default="")
     parser.add_argument("--qcc-session-id", default="")
+    parser.add_argument("--browser-profile-key", default="")
     parser.add_argument("--numero-expediente", default="")
     parser.add_argument("--tipo", default="")
     parser.add_argument("--provincia-codigo", required=True)
@@ -2891,6 +2892,10 @@ def main(
     connector = MercurioConnector(
         session_dir=session_dir,
         expediente_id=args.expediente_id,
+        profile_key=(
+            args.browser_profile_key
+            or None
+        ),
         headless=False,
     )
 

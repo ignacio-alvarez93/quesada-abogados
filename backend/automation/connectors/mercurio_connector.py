@@ -10,6 +10,9 @@ from backend.automation.browser_contracts import (
 from backend.automation.browser_session import (
     get_session_dir,
 )
+from backend.automation.browser_profiles import (
+    get_browser_profile_dir,
+)
 from backend.automation.seleniumbase_browser_session import (
     SeleniumBaseBrowserSession,
 )
@@ -35,6 +38,7 @@ class MercurioConnector:
         self,
         session_dir=None,
         expediente_id="sin_id",
+        profile_key=None,
         headless=False,
         browser_session_factory=None,
     ):
@@ -46,6 +50,23 @@ class MercurioConnector:
             expediente_id
             or "sin_id"
         )
+
+        self.profile_key = (
+            None
+            if profile_key is None
+            else str(
+                profile_key
+            ).strip()
+        )
+
+        if (
+            profile_key is not None
+            and not self.profile_key
+        ):
+            raise ValueError(
+                "profile_key de Mercurio vacío"
+            )
+
         self.headless = bool(
             headless
         )
@@ -73,11 +94,21 @@ class MercurioConnector:
                 consumer="mercurio",
                 mode=BrowserSessionMode.ASSISTED,
                 headless=self.headless,
+                profile_key=self.profile_key,
             )
+
+            session_kwargs = {
+                "config": config,
+            }
+
+            if self.profile_key is not None:
+                session_kwargs[
+                    "profile_resolver"
+                ] = get_browser_profile_dir
 
             self._browser_session = (
                 self._browser_session_factory(
-                    config=config,
+                    **session_kwargs
                 )
             )
 

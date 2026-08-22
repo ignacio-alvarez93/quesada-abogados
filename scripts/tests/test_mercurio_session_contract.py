@@ -32,8 +32,12 @@ class FakeGovernedSession:
         self,
         *,
         config,
+        profile_resolver=None,
     ):
         self.config = config
+        self.profile_resolver = (
+            profile_resolver
+        )
         self.browser = object()
         self.start_calls = 0
         self.shutdown_calls = []
@@ -171,6 +175,39 @@ class MercurioSessionContractTest(
                     "about:blank",
                 )
             ],
+        )
+
+    def test_optional_profile_is_forwarded_generically(
+        self,
+    ):
+        connector = MercurioConnector(
+            session_dir=self.temp_dir.name,
+            expediente_id="TEST-PROFILE",
+            profile_key=" assisted_test ",
+            headless=False,
+            browser_session_factory=(
+                FakeGovernedSession
+            ),
+        )
+
+        session = (
+            connector._build_browser_session()
+        )
+
+        self.assertEqual(
+            connector.profile_key,
+            "assisted_test",
+        )
+
+        self.assertEqual(
+            session.config.profile_key,
+            "assisted_test",
+        )
+
+        self.assertIs(
+            session.profile_resolver,
+            connector_module
+            .get_browser_profile_dir,
         )
 
     def test_close_delegates_to_governed_close(
