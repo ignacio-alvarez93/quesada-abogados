@@ -2547,6 +2547,264 @@ def wait_for_qcc_document_action(
         return action
 
 
+def _count_confirmed_mercurio_uploads(
+    state,
+    *,
+    filename,
+    code,
+):
+    """
+    Cuenta filas que confirman el documento esperado.
+
+    Contrato:
+    - mismo nombre de archivo;
+    - mismo código documental Mercurio;
+    - hash no vacío.
+
+    No depende del id dinámico de la fila.
+    """
+
+    expected_filename = (
+        Path(
+            str(
+                filename
+                or ""
+            )
+        )
+        .name
+        .casefold()
+    )
+
+    expected_code = str(
+        code
+        or ""
+    ).strip()
+
+    if (
+        not expected_filename
+        or not expected_code
+    ):
+        return 0
+
+    return sum(
+        1
+        for document
+        in getattr(
+            state,
+            "uploaded_documents",
+            (),
+        )
+        if (
+            str(
+                getattr(
+                    document,
+                    "filename",
+                    "",
+                )
+            )
+            .strip()
+            .casefold()
+            == expected_filename
+        )
+        and (
+            str(
+                getattr(
+                    document,
+                    "code",
+                    "",
+                )
+            ).strip()
+            == expected_code
+        )
+        and bool(
+            str(
+                getattr(
+                    document,
+                    "hash_value",
+                    "",
+                )
+            ).strip()
+        )
+    )
+
+
+def get_mercurio_document_upload_baseline(
+    browser,
+    *,
+    filename,
+    code,
+):
+    """
+    Captura cuántas coincidencias válidas existen
+    ANTES de preparar la nueva subida.
+
+    El baseline impide confirmar accidentalmente
+    una fila antigua del mismo archivo.
+    """
+
+    from backend.automation.mercurio_document_dom_reader import (
+        read_mercurio_document_state,
+    )
+
+    state = (
+        read_mercurio_document_state(
+            browser
+        )
+    )
+
+    if not (
+        state.page_detected
+        and state.contract_compatible
+    ):
+        raise RuntimeError(
+            "MERCURIO_DOCUMENT_BASELINE_"
+            "CONTRACT_NOT_READY"
+        )
+
+    return (
+        _count_confirmed_mercurio_uploads(
+            state,
+            filename=filename,
+            code=code,
+        )
+    )
+
+
+def wait_for_mercurio_document_upload(
+    browser,
+    *,
+    filename,
+    code,
+    baseline_count,
+    timeout=180,
+    poll_interval=0.5,
+    state_reader=None,
+):
+    """
+    Espera exclusivamente observando el DOM.
+
+    Confirma la subida cuando Mercurio muestra una
+    nueva fila válida para:
+        filename + code + hash.
+
+    No:
+    - pulsa botones;
+    - modifica campos;
+    - usa teclado;
+    - usa ENTER;
+    - controla el diálogo de archivos.
+    """
+
+    if state_reader is None:
+        from backend.automation.mercurio_document_dom_reader import (
+            read_mercurio_document_state,
+        )
+
+        state_reader = (
+            read_mercurio_document_state
+        )
+
+    baseline_count = max(
+        0,
+        int(
+            baseline_count
+            or 0
+        ),
+    )
+
+    deadline = (
+        time.monotonic()
+        + max(
+            0,
+            float(
+                timeout
+            ),
+        )
+    )
+
+    last_error = None
+
+    while True:
+        try:
+            state = state_reader(
+                browser
+            )
+
+            if (
+                state.page_detected
+                and state.contract_compatible
+            ):
+                current_count = (
+                    _count_confirmed_mercurio_uploads(
+                        state,
+                        filename=filename,
+                        code=code,
+                    )
+                )
+
+                if (
+                    current_count
+                    > baseline_count
+                ):
+                    return {
+                        "ok": True,
+                        "mode":
+                            "document_dom_confirmed",
+                        "filename":
+                            Path(
+                                str(
+                                    filename
+                                )
+                            ).name,
+                        "code":
+                            str(
+                                code
+                            ),
+                        "baseline_count":
+                            baseline_count,
+                        "current_count":
+                            current_count,
+                    }
+
+        except Exception as exc:
+            last_error = repr(
+                exc
+            )
+
+        if (
+            time.monotonic()
+            >= deadline
+        ):
+            return {
+                "ok": False,
+                "mode":
+                    "document_dom_timeout",
+                "filename":
+                    Path(
+                        str(
+                            filename
+                        )
+                    ).name,
+                "code":
+                    str(
+                        code
+                    ),
+                "baseline_count":
+                    baseline_count,
+                "last_error":
+                    last_error,
+            }
+
+        time.sleep(
+            max(
+                0,
+                float(
+                    poll_interval
+                ),
+            )
+        )
+
+
 def upload_documentos_mercurio_asistido(
     browser,
     documentos_dir,
@@ -2674,50 +2932,208 @@ def upload_documentos_mercurio_asistido(
                 ),
             )
 
+        document_progress = min(
+            97,
+            91
+            + int(
+                idx
+                * 6
+                / max(
+                    len(docs),
+                    1,
+                )
+            ),
+        )
+
         qcc_report(
             reporter,
             "resuming",
             session_dir,
             step="DOCUMENT_PREPARING",
-            progress=min(
-                97,
-                91
-                + int(
-                    idx
-                    * 6
-                    / max(
-                        len(docs),
-                        1,
-                    )
-                ),
-            ),
+            progress=document_progress,
             message=(
                 f"Preparando {path.name}"
             ),
         )
 
-        clipboard_ok = copy_text_to_clipboard(str(path), session_dir=session_dir)
-        preparar_documento_mercurio(browser, path, code, session_dir)
-        copy_text_to_clipboard(str(path), session_dir=session_dir)
+        try:
+            upload_baseline = (
+                get_mercurio_document_upload_baseline(
+                    browser,
+                    filename=path.name,
+                    code=code,
+                )
+            )
+
+        except Exception as exc:
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO baseline DOM fallido "
+                    f"path={path} "
+                    f"code={code} "
+                    f"error={repr(exc)}"
+                ),
+            )
+
+            qcc_report(
+                reporter,
+                "error",
+                session_dir,
+                step="DOCUMENT_BASELINE_ERROR",
+                progress=document_progress,
+                message=(
+                    "No se pudo validar el estado "
+                    f"previo de {path.name}"
+                ),
+            )
+
+            return False
+
+        clipboard_ok = copy_text_to_clipboard(
+            str(path),
+            session_dir=session_dir,
+        )
+
+        preparar_documento_mercurio(
+            browser,
+            path,
+            code,
+            session_dir,
+        )
+
+        copy_text_to_clipboard(
+            str(path),
+            session_dir=session_dir,
+        )
 
         print()
         print("=" * 80)
         print("ACCIÓN HUMANA")
-        print("Se ha pulsado 'Añadir documentación' en Mercurio.")
+        print(
+            "Se ha pulsado 'Añadir documentación' "
+            "en Mercurio."
+        )
         print("Ruta copiada al portapapeles:")
         print(str(path))
         print()
-        print("1) Pega la ruta en el explorador con CTRL+V y abre el archivo.")
-        print("2) Pulsa SUBIR / ADJUNTAR DOCUMENTO en Mercurio.")
-        print("3) Comprueba que aparece en la tabla.")
+        print(
+            "1) Pega la ruta en el explorador "
+            "con CTRL+V y abre el archivo."
+        )
+        print(
+            "2) Pulsa SUBIR / ADJUNTAR DOCUMENTO "
+            "en Mercurio."
+        )
+        print(
+            "3) No vuelvas a CMD: el CRM detectará "
+            "automáticamente la fila subida."
+        )
         print("=" * 80)
-        if not clipboard_ok:
-            print("AVISO: no se pudo verificar el copiado al portapapeles.")
-            print("Copia manualmente la ruta mostrada antes de abrir el archivo.")
 
-        input("Pulsa ENTER aquí cuando ESTE documento esté adjuntado en Mercurio...")
-        resultados.append((str(path), "ADJUNTADO_HUMANO"))
-        write_log(session_dir, f"DOCUMENTO adjuntado por humano: {path}")
+        if not clipboard_ok:
+            print(
+                "AVISO: no se pudo verificar "
+                "el copiado al portapapeles."
+            )
+            print(
+                "Copia manualmente la ruta mostrada "
+                "antes de abrir el archivo."
+            )
+
+        qcc_report(
+            reporter,
+            "waiting_user",
+            session_dir,
+            step="DOCUMENT_ATTACHING",
+            progress=document_progress,
+            message=(
+                "Adjunta manualmente "
+                f"{path.name}; "
+                "el CRM confirmará la subida"
+            ),
+        )
+
+        confirmation = (
+            wait_for_mercurio_document_upload(
+                browser,
+                filename=path.name,
+                code=code,
+                baseline_count=(
+                    upload_baseline
+                ),
+                timeout=180,
+                poll_interval=0.5,
+            )
+        )
+
+        if not confirmation.get(
+            "ok"
+        ):
+            write_log(
+                session_dir,
+                (
+                    "DOCUMENTO no confirmado por DOM "
+                    f"path={path} "
+                    f"code={code} "
+                    f"result={confirmation}"
+                ),
+            )
+
+            qcc_report(
+                reporter,
+                "error",
+                session_dir,
+                step="DOCUMENT_UPLOAD_TIMEOUT",
+                progress=document_progress,
+                message=(
+                    "Mercurio no confirmó "
+                    f"la subida de {path.name}"
+                ),
+            )
+
+            return False
+
+        resultados.append(
+            (
+                str(path),
+                "ADJUNTADO_DOM",
+            )
+        )
+
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTO confirmado por DOM: "
+                f"path={path} "
+                f"code={code} "
+                f"result={confirmation}"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "user_action_detected",
+            session_dir,
+            step="DOCUMENT_UPLOADED",
+            progress=document_progress,
+            message=(
+                "Documento confirmado en Mercurio: "
+                f"{path.name}"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "resuming",
+            session_dir,
+            step="DOCUMENTS_RUNNING",
+            progress=document_progress,
+            message=(
+                "Continuando con el siguiente "
+                "documento"
+            ),
+        )
 
     print()
     print("=" * 80)
