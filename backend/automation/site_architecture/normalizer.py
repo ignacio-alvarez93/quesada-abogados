@@ -17,6 +17,10 @@ from .schema import (
     SITE_ARCHITECTURE_SOURCE_DOM_CAPTURE,
 )
 
+from .semantics import (
+    classify_element_semantics,
+)
+
 
 def _require_dom_capture_payload(
     payload,
@@ -69,6 +73,19 @@ def _query_from_metadata(
         return ""
 
     return urlsplit(url).query
+
+
+def _normalize_element(item):
+    record = dict(item)
+
+    record["semantics"] = (
+        classify_element_semantics(
+            record
+        )
+    )
+
+    return record
+
 
 
 def normalize_dom_capture(
@@ -134,7 +151,7 @@ def normalize_dom_capture(
             )
         ),
         elements=tuple(
-            dict(item)
+            _normalize_element(item)
             for item in (
                 payload.get("elements")
                 or []

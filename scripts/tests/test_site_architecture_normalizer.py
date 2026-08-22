@@ -142,3 +142,47 @@ def test_normalize_dom_capture_rejects_unknown_raw_schema():
         normalize_dom_capture(
             payload
         )
+
+
+def test_normalize_dom_capture_adds_element_semantics():
+    payload = _payload()
+
+    payload["elements"] = [
+        {
+            "index": 0,
+            "tag": "input",
+            "type": "file",
+            "role": "",
+        },
+        {
+            "index": 1,
+            "tag": "input",
+            "type": "submit",
+            "role": "",
+        },
+        {
+            "index": 2,
+            "tag": "div",
+            "type": "",
+            "role": "button",
+        },
+    ]
+
+    snapshot = normalize_dom_capture(
+        payload
+    )
+
+    assert (
+        snapshot.elements[0]["semantics"]
+        == ("FILE_INPUT",)
+    )
+
+    assert (
+        snapshot.elements[1]["semantics"]
+        == ("BUTTON", "SUBMIT")
+    )
+
+    assert (
+        snapshot.elements[2]["semantics"]
+        == ("BUTTON",)
+    )

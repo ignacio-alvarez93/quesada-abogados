@@ -28,3 +28,13 @@ from .normalizer import (
 __all__ += (
     "normalize_dom_capture",
 )
+
+from .semantics import (
+    SiteElementSemantic,
+    classify_element_semantics,
+)
+
+__all__ += (
+    "SiteElementSemantic",
+    "classify_element_semantics",
+)
