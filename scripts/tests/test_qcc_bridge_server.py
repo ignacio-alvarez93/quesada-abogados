@@ -1,6 +1,9 @@
 import json
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import (
+    Request,
+    urlopen,
+)
 
 import pytest
 
@@ -27,6 +30,52 @@ def bridge():
         yield server
     finally:
         server.close()
+
+
+def _post_json(
+    url: str,
+    payload: dict,
+) -> tuple[int, dict]:
+    body = json.dumps(
+        payload
+    ).encode(
+        "utf-8"
+    )
+
+    request = Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type":
+                "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        response = urlopen(
+            request,
+            timeout=2,
+        )
+    except HTTPError as exc:
+        body = exc.read().decode(
+            "utf-8"
+        )
+
+        return (
+            exc.code,
+            json.loads(body),
+        )
+
+    with response:
+        body = response.read().decode(
+            "utf-8"
+        )
+
+        return (
+            response.status,
+            json.loads(body),
+        )
 
 
 def _get_json(
@@ -203,3 +252,61 @@ def test_context_endpoint_reflects_live_session(
     )
 
     assert active["progress"] == 68
+
+
+
+def test_session_post_updates_context(
+    bridge,
+):
+    from datetime import (
+        datetime,
+        timezone,
+    )
+
+    session = QccPresentationSession(
+        session_id="qcc-post-001",
+        expedient_id=1842,
+        client_id=321,
+        procedure="TEST_PROCEDURE",
+        provider="MERCURIO",
+        runtime="SELENIUMBASE_ASSISTED",
+        started_at=datetime.now(
+            timezone.utc
+        ),
+        status=(
+            QccPresentationStatus
+            .AUTOMATING
+        ),
+        current_step="STARTING",
+        progress=5,
+        requires_user_action=False,
+    )
+
+    status, payload = _post_json(
+        f"http://{bridge.host}:"
+        f"{bridge.port}/qcc/session",
+        {
+            "protocol_version":
+                QCC_PROTOCOL_VERSION,
+
+            "session":
+                session.to_payload(),
+        },
+    )
+
+    assert status == 200
+    assert payload["ok"] is True
+
+    snapshot = (
+        bridge.context_store
+        .snapshot()
+    )
+
+    assert snapshot["active"] is True
+
+    assert (
+        snapshot["active_session"][
+            "session_id"
+        ]
+        == "qcc-post-001"
+    )

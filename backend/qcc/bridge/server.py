@@ -25,6 +25,7 @@ from typing import Any
 
 from backend.qcc.contracts.protocol import (
     QCC_PROTOCOL_VERSION,
+    QccPresentationSession,
 )
 from backend.qcc.context.store import (
     QccContextStore,
@@ -74,6 +75,57 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
 
         self.wfile.write(body)
 
+    def _read_json(
+        self,
+    ) -> dict[str, Any]:
+        raw_length = self.headers.get(
+            "Content-Length",
+            "0",
+        )
+
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise ValueError(
+                "QCC_REQUEST_LENGTH_INVALID"
+            ) from exc
+
+        if (
+            length <= 0
+            or length > 65536
+        ):
+            raise ValueError(
+                "QCC_REQUEST_LENGTH_INVALID"
+            )
+
+        raw = self.rfile.read(
+            length
+        )
+
+        try:
+            payload = json.loads(
+                raw.decode(
+                    "utf-8"
+                )
+            )
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ValueError(
+                "QCC_REQUEST_JSON_INVALID"
+            ) from exc
+
+        if not isinstance(
+            payload,
+            dict,
+        ):
+            raise ValueError(
+                "QCC_REQUEST_JSON_INVALID"
+            )
+
+        return payload
+
     def do_GET(self) -> None:
         if self.path == "/qcc/health":
             self._send_json(
@@ -109,6 +161,88 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             404,
             {
                 "error": "QCC_ROUTE_NOT_FOUND",
+            },
+        )
+
+    def do_POST(self) -> None:
+        if self.path != "/qcc/session":
+            self._send_json(
+                404,
+                {
+                    "error":
+                        "QCC_ROUTE_NOT_FOUND",
+                },
+            )
+            return
+
+        try:
+            payload = self._read_json()
+
+            if (
+                payload.get(
+                    "protocol_version"
+                )
+                != QCC_PROTOCOL_VERSION
+            ):
+                raise ValueError(
+                    "QCC_PROTOCOL_VERSION_INVALID"
+                )
+
+            raw_session = payload.get(
+                "session"
+            )
+
+            session = (
+                QccPresentationSession
+                .from_payload(
+                    raw_session
+                )
+            )
+
+        except ValueError as exc:
+            self._send_json(
+                400,
+                {
+                    "error":
+                        str(exc),
+                },
+            )
+            return
+
+        context_store = getattr(
+            self.server,
+            "qcc_context_store",
+            None,
+        )
+
+        if context_store is None:
+            self._send_json(
+                503,
+                {
+                    "error":
+                        "QCC_CONTEXT_UNAVAILABLE",
+                },
+            )
+            return
+
+        revision = (
+            context_store
+            .set_active_session(
+                session
+            )
+        )
+
+        self._send_json(
+            200,
+            {
+                "ok":
+                    True,
+
+                "revision":
+                    revision,
+
+                "session_id":
+                    session.session_id,
             },
         )
 

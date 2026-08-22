@@ -150,3 +150,142 @@ class QccPresentationSession:
         }
 
         return payload
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: Mapping[str, Any],
+    ) -> "QccPresentationSession":
+        """Reconstruye una sesión desde transporte QCC."""
+
+        if not isinstance(
+            payload,
+            Mapping,
+        ):
+            raise ValueError(
+                "QCC_SESSION_PAYLOAD_INVALID"
+            )
+
+        try:
+            started_at = datetime.fromisoformat(
+                str(
+                    payload[
+                        "started_at"
+                    ]
+                )
+            )
+
+            status = QccPresentationStatus(
+                str(
+                    payload[
+                        "status"
+                    ]
+                )
+            )
+
+            expedient_id = int(
+                payload[
+                    "expedient_id"
+                ]
+            )
+
+            client_id = int(
+                payload[
+                    "client_id"
+                ]
+            )
+
+            progress = int(
+                payload.get(
+                    "progress",
+                    0,
+                )
+            )
+
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise ValueError(
+                "QCC_SESSION_PAYLOAD_INVALID"
+            ) from exc
+
+        requires_user_action = (
+            payload.get(
+                "requires_user_action",
+                False,
+            )
+        )
+
+        if not isinstance(
+            requires_user_action,
+            bool,
+        ):
+            raise ValueError(
+                "QCC_SESSION_PAYLOAD_INVALID"
+            )
+
+        last_event = payload.get(
+            "last_event"
+        )
+
+        if (
+            last_event is not None
+            and not isinstance(
+                last_event,
+                Mapping,
+            )
+        ):
+            raise ValueError(
+                "QCC_SESSION_PAYLOAD_INVALID"
+            )
+
+        current_step = payload.get(
+            "current_step"
+        )
+
+        return cls(
+            session_id=str(
+                payload.get(
+                    "session_id",
+                    "",
+                )
+            ),
+            expedient_id=expedient_id,
+            client_id=client_id,
+            procedure=str(
+                payload.get(
+                    "procedure",
+                    "",
+                )
+            ),
+            provider=str(
+                payload.get(
+                    "provider",
+                    "",
+                )
+            ),
+            runtime=str(
+                payload.get(
+                    "runtime",
+                    "",
+                )
+            ),
+            started_at=started_at,
+            status=status,
+            current_step=(
+                None
+                if current_step is None
+                else str(current_step)
+            ),
+            progress=progress,
+            requires_user_action=(
+                requires_user_action
+            ),
+            last_event=(
+                dict(last_event)
+                if last_event is not None
+                else None
+            ),
+        )

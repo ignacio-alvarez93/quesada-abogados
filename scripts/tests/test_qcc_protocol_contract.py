@@ -304,3 +304,16 @@ def test_session_is_runtime_agnostic():
         payload["runtime"]
         == "DESKTOP_GUI_ASSISTED"
     )
+
+
+def test_session_payload_round_trip():
+    session = _session()
+
+    restored = (
+        QccPresentationSession
+        .from_payload(
+            session.to_payload()
+        )
+    )
+
+    assert restored == session
