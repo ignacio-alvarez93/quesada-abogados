@@ -14,6 +14,7 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime
+from uuid import uuid4
 
 from backend.services import mercurio_mapper_service
 
@@ -123,6 +124,7 @@ def validate_expediente_for_presentation(expediente):
     return {
         "url_presentacion": url,
         "expediente_id": expediente.get("id"),
+        "cliente_id": expediente.get("cliente_id"),
         "numero_expediente": expediente.get("numero_expediente"),
         "tipo_expediente_id": expediente.get("tipo_expediente_id"),
         "tipo_codigo": tipo.get("codigo"),
@@ -132,6 +134,23 @@ def validate_expediente_for_presentation(expediente):
         "presentacion_folder": str(export["folder"]),
         "datos_mercurio_path": str(export["datos_mercurio_path"]),
     }
+
+
+def _new_qcc_session_id(
+    expediente_id,
+):
+    """Identidad efímera de una ejecución Mercurio/QCC."""
+
+    value = str(
+        expediente_id
+        or "sin_id"
+    ).strip()
+
+    return (
+        "qcc-mercurio-"
+        f"{value}-"
+        f"{uuid4().hex}"
+    )
 
 
 def start_presentation_external(config, auto=True):
@@ -145,6 +164,10 @@ def start_presentation_external(config, auto=True):
         config["url_presentacion"],
         "--expediente-id",
         str(config.get("expediente_id") or ""),
+        "--cliente-id",
+        str(config.get("cliente_id") or ""),
+        "--qcc-session-id",
+        str(config.get("qcc_session_id") or ""),
         "--numero-expediente",
         str(config.get("numero_expediente") or ""),
         "--tipo",
@@ -173,11 +196,28 @@ def start_presentation_external(config, auto=True):
 
 def start_presentation_for_expediente(expediente):
     config = validate_expediente_for_presentation(expediente)
-    process = start_presentation_external(config, auto=True)
+
+    config["qcc_session_id"] = (
+        _new_qcc_session_id(
+            config.get(
+                "expediente_id"
+            )
+        )
+    )
+
+    process = start_presentation_external(
+        config,
+        auto=True,
+    )
 
     return {
         "process": process,
         "pid": process.pid,
+        "qcc_session_id": (
+            config.get(
+                "qcc_session_id"
+            )
+        ),
         "browser": None,
         "manager": None,
         "mode": "external_sb_cdp_auto_json_mercurio",

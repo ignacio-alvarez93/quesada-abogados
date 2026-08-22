@@ -25,6 +25,178 @@ from backend.automation.automation_logger import write_log
 from backend.automation.browser_actions import click_js, field_exists, js, wait_for_js
 from backend.automation.browser_session import get_session_dir
 from backend.automation.connectors.mercurio_connector import MercurioConnector
+from backend.qcc.client.presentation_reporter import (
+    QccPresentationReporter,
+)
+
+
+def build_qcc_reporter(
+    args,
+    session_dir,
+):
+    """Construye QCC sin convertirlo en dependencia del runner.
+
+    Si la identidad no está disponible o cualquier validación
+    QCC falla, Mercurio continúa sin reporter.
+    """
+
+    try:
+        session_id = str(
+            getattr(
+                args,
+                "qcc_session_id",
+                "",
+            )
+            or ""
+        ).strip()
+
+        expediente_id = int(
+            getattr(
+                args,
+                "expediente_id",
+                0,
+            )
+            or 0
+        )
+
+        client_id = int(
+            getattr(
+                args,
+                "cliente_id",
+                0,
+            )
+            or 0
+        )
+
+        if (
+            not session_id
+            or expediente_id <= 0
+            or client_id <= 0
+        ):
+            write_log(
+                session_dir,
+                "QCC reporter deshabilitado: "
+                "identidad incompleta",
+            )
+            return None
+
+        procedure = str(
+            getattr(
+                args,
+                "tipo",
+                "",
+            )
+            or "MERCURIO"
+        ).strip() or "MERCURIO"
+
+        return QccPresentationReporter(
+            session_id=session_id,
+            expedient_id=expediente_id,
+            client_id=client_id,
+            procedure=procedure,
+            provider="MERCURIO",
+            runtime="SELENIUMBASE_ASSISTED",
+        )
+
+    except Exception as exc:
+        write_log(
+            session_dir,
+            "QCC reporter no disponible: "
+            f"{type(exc).__name__}",
+        )
+
+        return None
+
+
+def qcc_report(
+    reporter,
+    method_name,
+    session_dir,
+    **kwargs,
+):
+    """Invocación QCC absolutamente fail-open."""
+
+    if reporter is None:
+        return False
+
+    try:
+        method = getattr(
+            reporter,
+            method_name,
+        )
+
+        return bool(
+            method(
+                **kwargs
+            )
+        )
+
+    except Exception as exc:
+        write_log(
+            session_dir,
+            "QCC publish omitido "
+            f"{method_name}: "
+            f"{type(exc).__name__}",
+        )
+
+        return False
+
+
+def run_auto_with_qcc(
+    browser,
+    provincia_codigo,
+    datos_mercurio,
+    session_dir,
+    reporter=None,
+):
+    """Envelope observacional sobre run_auto().
+
+    No cambia ninguna interacción Mercurio.
+    """
+
+    qcc_report(
+        reporter,
+        "automating",
+        session_dir,
+        step="AUTO_FLOW",
+        progress=5,
+        message=(
+            "Iniciando flujo asistido Mercurio"
+        ),
+    )
+
+    try:
+        result = run_auto(
+            browser,
+            provincia_codigo,
+            datos_mercurio,
+            session_dir,
+        )
+
+    except Exception as exc:
+        qcc_report(
+            reporter,
+            "error",
+            session_dir,
+            step="AUTO_FLOW",
+            message=(
+                "Error durante presentación: "
+                f"{type(exc).__name__}"
+            ),
+        )
+
+        raise
+
+    qcc_report(
+        reporter,
+        "completed",
+        session_dir,
+        message=(
+            "Flujo asistido Mercurio completado"
+        ),
+    )
+
+    return result
 
 
 def normalize(value):
@@ -1721,6 +1893,8 @@ def main(
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
     parser.add_argument("--expediente-id", default="")
+    parser.add_argument("--cliente-id", default="")
+    parser.add_argument("--qcc-session-id", default="")
     parser.add_argument("--numero-expediente", default="")
     parser.add_argument("--tipo", default="")
     parser.add_argument("--provincia-codigo", required=True)
@@ -1736,6 +1910,16 @@ def main(
     mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
     mapper_codigo = mapper_mode.get("mapper_codigo")
     documentos_dir = resolve_para_presentar_dir(args, datos_mercurio, session_dir)
+
+    qcc_reporter = build_qcc_reporter(
+        args,
+        session_dir,
+    )
+
+    if lifecycle is not None:
+        lifecycle[
+            "qcc_reporter"
+        ] = qcc_reporter
 
     url = (args.url or "").strip()
     if not url:
@@ -1762,6 +1946,12 @@ def main(
         f"Formulario objetivo={describe_tipo_formulario_objetivo(tipo_formulario_objetivo)}. "
         f"Mapper interno={describe_mapper_codigo(mapper_codigo)}"
     )
+    qcc_report(
+        qcc_reporter,
+        "started",
+        session_dir,
+    )
+
     connector = MercurioConnector(
         session_dir=session_dir,
         expediente_id=args.expediente_id,
@@ -1778,12 +1968,36 @@ def main(
             "connector"
         ] = connector
 
-    browser = connector.start_browser(
-        url
-    )
+    try:
+        browser = connector.start_browser(
+            url
+        )
+
+    except Exception as exc:
+        qcc_report(
+            qcc_reporter,
+            "error",
+            session_dir,
+            step="BROWSER_START",
+            message=(
+                "Error iniciando navegador: "
+                f"{type(exc).__name__}"
+            ),
+        )
+
+        raise
 
     if args.auto:
-        connector.safe_execute('auto inicial', lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir))
+        connector.safe_execute(
+            "auto inicial",
+            lambda: run_auto_with_qcc(
+                browser,
+                args.provincia_codigo,
+                datos_mercurio,
+                session_dir,
+                reporter=qcc_reporter,
+            ),
+        )
         print("Flujo auto finalizado. Si se ha ejecutado la pausa humana, Chrome queda bajo control manual.")
 
     print()
@@ -1810,7 +2024,16 @@ def main(
                 print(f"ERROR guardando HTML: {exc}")
 
         elif cmd == "auto":
-            connector.safe_execute("auto", lambda: run_auto(browser, args.provincia_codigo, datos_mercurio, session_dir))
+            connector.safe_execute(
+                "auto",
+                lambda: run_auto_with_qcc(
+                    browser,
+                    args.provincia_codigo,
+                    datos_mercurio,
+                    session_dir,
+                    reporter=qcc_reporter,
+                ),
+            )
 
         elif cmd == "fill":
             if not datos_mercurio:
