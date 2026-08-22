@@ -87,10 +87,27 @@ def test_presenter_continue_waits_for_dom(
         )
     )
 
+    ready_js = args[3]
+
     assert (
-        args[3]
-        == runner
+        runner
         .POST_PRESENTER_NOTIFICATION_READY_JS
+        in ready_js
+    )
+
+    assert (
+        "presentacionTelematicaDocumentacion.html"
+        in ready_js
+    )
+
+    assert (
+        "#listaIdsDocOb"
+        in ready_js
+    )
+
+    assert (
+        "#tabla_datos_adj"
+        in ready_js
     )
 
     assert (
@@ -246,4 +263,33 @@ def test_run_auto_threads_reporter_to_final_human_steps():
             "reporter=reporter"
         )
         >= 2
+    )
+
+
+
+def test_presenter_transition_accepts_downstream_document_page():
+    ready_js = (
+        runner
+        ._presenter_transition_ready_js()
+    )
+
+    assert (
+        runner
+        .POST_PRESENTER_NOTIFICATION_READY_JS
+        in ready_js
+    )
+
+    assert (
+        "presentacionTelematicaDocumentacion.html"
+        in ready_js
+    )
+
+    assert (
+        "#docAdjuntarAdjuntos"
+        in ready_js
+    )
+
+    assert (
+        "#continuaNot"
+        in ready_js
     )

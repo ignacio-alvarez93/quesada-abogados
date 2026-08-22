@@ -34,6 +34,43 @@ class MercurioDocumentDomReadError(
     """Error controlado leyendo el DOM documental."""
 
 
+MERCURIO_DOCUMENT_PAGE_READY_EXPRESSION = r"""
+(() => {
+    const url =
+        String(
+            window.location.href
+            || ""
+        );
+
+    if (
+        !url.includes(
+            "presentacionTelematicaDocumentacion.html"
+        )
+    ) {
+        return false;
+    }
+
+    return Boolean(
+        document.querySelector(
+            "#listaIdsDocOb"
+        )
+        && document.querySelector(
+            "#docAdjuntarAdjuntos"
+        )
+        && document.querySelector(
+            "#tabla_datos_adj"
+        )
+        && document.querySelector(
+            "#tbAdjuntos input[type='file']"
+        )
+        && document.querySelector(
+            "#continuaNot"
+        )
+    );
+})()
+""".strip()
+
+
 MERCURIO_DOCUMENT_SNAPSHOT_EXPRESSION = r"""
 (function () {
     function cleanText(value) {

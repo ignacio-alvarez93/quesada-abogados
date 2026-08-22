@@ -202,3 +202,104 @@ def test_interactive_human_command_passes_qcc_reporter():
                 session_dir,
                 reporter=qcc_reporter,
             )''' in source
+
+
+
+def test_final_pause_skips_wait_when_document_page_is_already_ready(
+    tmp_path,
+):
+    from types import SimpleNamespace
+
+    reporter = Mock()
+
+    document_state = SimpleNamespace(
+        page_detected=True,
+        contract_compatible=True,
+        documentation_complete=False,
+    )
+
+    with patch(
+        (
+            "backend.automation."
+            "mercurio_document_dom_reader."
+            "read_mercurio_document_state"
+        ),
+        return_value=document_state,
+    ):
+        with patch.object(
+            runner,
+            "wait_for_human_navigation",
+        ) as wait:
+            result = (
+                runner
+                .pause_humana_final_presentacion(
+                    object(),
+                    str(tmp_path),
+                    reporter=reporter,
+                )
+            )
+
+    wait.assert_not_called()
+
+    assert result == {
+        "ok": True,
+        "mode":
+            "document_dom_already_ready",
+        "label":
+            "Documentación de la solicitud",
+    }
+
+    reporter.waiting_user.assert_called_once_with(
+        step="DOCUMENTS_READY",
+        progress=88,
+        message=(
+            "Pantalla documental preparada; "
+            "documentación pendiente"
+        ),
+    )
+
+
+def test_document_page_fast_path_requires_full_dom_contract(
+    tmp_path,
+):
+    from types import SimpleNamespace
+
+    reporter = Mock()
+
+    invalid_state = SimpleNamespace(
+        page_detected=True,
+        contract_compatible=False,
+        documentation_complete=False,
+    )
+
+    expected = {
+        "ok": True,
+        "mode":
+            "human_dom_detected",
+    }
+
+    with patch(
+        (
+            "backend.automation."
+            "mercurio_document_dom_reader."
+            "read_mercurio_document_state"
+        ),
+        return_value=invalid_state,
+    ):
+        with patch.object(
+            runner,
+            "wait_for_human_navigation",
+            return_value=expected,
+        ) as wait:
+            result = (
+                runner
+                .pause_humana_final_presentacion(
+                    object(),
+                    str(tmp_path),
+                    reporter=reporter,
+                )
+            )
+
+    wait.assert_called_once()
+
+    assert result is expected

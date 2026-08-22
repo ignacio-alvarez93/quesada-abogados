@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from backend.automation.mercurio_document_dom_reader import (
+    MERCURIO_DOCUMENT_PAGE_READY_EXPRESSION,
     MERCURIO_DOCUMENT_SNAPSHOT_EXPRESSION,
     MercurioDocumentDomReadError,
     read_mercurio_document_snapshot,
@@ -382,3 +383,39 @@ def test_reader_has_no_forbidden_architectural_imports():
         for prefix
         in forbidden_prefixes
     ), imported_modules
+
+
+
+def test_document_page_ready_expression_is_structural_and_read_only():
+    expression = (
+        MERCURIO_DOCUMENT_PAGE_READY_EXPRESSION
+    )
+
+    required = (
+        "presentacionTelematicaDocumentacion.html",
+        "#listaIdsDocOb",
+        "#docAdjuntarAdjuntos",
+        "#tabla_datos_adj",
+        "#tbAdjuntos input[type='file']",
+        "#continuaNot",
+    )
+
+    for token in required:
+        assert token in expression
+
+    forbidden = (
+        ".click(",
+        "dispatchEvent(",
+        "setAttribute(",
+        "removeAttribute(",
+        "appendChild(",
+        "removeChild(",
+        ".submit(",
+        ".value =",
+        ".checked =",
+        "window.location =",
+        "location.href =",
+    )
+
+    for token in forbidden:
+        assert token not in expression

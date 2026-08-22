@@ -1719,6 +1719,62 @@ POST_PRESENTER_NOTIFICATION_READY_JS = """
 """.strip()
 
 
+def _presenter_transition_ready_js():
+    """
+    Acepta tanto la pantalla intermedia
+    Notificación/CONCLUIR como el destino documental.
+
+    Esto evita perder una transición si el usuario
+    avanza más rápido que el polling del runner.
+    """
+
+    from backend.automation.mercurio_document_dom_reader import (
+        MERCURIO_DOCUMENT_PAGE_READY_EXPRESSION,
+    )
+
+    return (
+        "("
+        + POST_PRESENTER_NOTIFICATION_READY_JS
+        + ") || ("
+        + MERCURIO_DOCUMENT_PAGE_READY_EXPRESSION
+        + ")"
+    )
+
+
+def _read_mercurio_document_page_state(
+    browser,
+):
+    """
+    Devuelve estado documental únicamente cuando
+    la pantalla documental está realmente reconocida.
+
+    Fallos de lectura se tratan como ausencia de
+    pantalla documental; nunca provocan navegación.
+    """
+
+    from backend.automation.mercurio_document_dom_reader import (
+        read_mercurio_document_state,
+    )
+
+    try:
+        state = (
+            read_mercurio_document_state(
+                browser
+            )
+        )
+
+    except Exception:
+        return None
+
+    if (
+        state.page_detected
+        and state.contract_compatible
+    ):
+        return state
+
+    return None
+
+
 def click_continuar_presentador(
     browser,
     session_dir,
@@ -1770,7 +1826,7 @@ def click_continuar_presentador(
             "Domicilio de notificación / "
             "CONCLUIR"
         ),
-        POST_PRESENTER_NOTIFICATION_READY_JS,
+        _presenter_transition_ready_js(),
         timeout=300,
         interval=0.5,
         fallback_prompt=(
@@ -1884,22 +1940,46 @@ def pause_humana_final_presentacion(
         ),
     )
 
-    result = wait_for_human_navigation(
-        browser,
-        session_dir,
-        "Documentación de la solicitud",
-        DOCUMENT_UPLOAD_READY_JS,
-        timeout=300,
-        interval=0.5,
-        fallback_prompt=(
-            "Pulsa ENTER solo si ya estás "
-            "en la pantalla de documentación "
-            "de Mercurio..."
-        ),
-        qcc_reporter=reporter,
-        qcc_step="FINAL_REVIEW",
-        qcc_progress=82,
+    document_state = (
+        _read_mercurio_document_page_state(
+            browser
+        )
     )
+
+    if document_state is not None:
+        result = {
+            "ok": True,
+            "mode":
+                "document_dom_already_ready",
+            "label":
+                "Documentación de la solicitud",
+        }
+
+        write_log(
+            session_dir,
+            (
+                "Pantalla documental ya presente; "
+                "se omite espera FINAL_REVIEW"
+            ),
+        )
+
+    else:
+        result = wait_for_human_navigation(
+            browser,
+            session_dir,
+            "Documentación de la solicitud",
+            DOCUMENT_UPLOAD_READY_JS,
+            timeout=300,
+            interval=0.5,
+            fallback_prompt=(
+                "Pulsa ENTER solo si ya estás "
+                "en la pantalla de documentación "
+                "de Mercurio..."
+            ),
+            qcc_reporter=reporter,
+            qcc_step="FINAL_REVIEW",
+            qcc_progress=82,
+        )
 
     qcc_report(
         reporter,
