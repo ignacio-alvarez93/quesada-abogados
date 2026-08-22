@@ -24,7 +24,7 @@ def test_qcc_manifest_is_v3_side_panel_extension():
     assert manifest["name"] == (
         "Quesada Chrome Companion"
     )
-    assert manifest["version"] == "0.5.0"
+    assert manifest["version"] == "0.6.0"
 
     assert manifest["permissions"] == [
         "sidePanel"
@@ -379,4 +379,137 @@ def test_qcc_document_action_identity_separates_documents():
     assert (
         "`${documentIndex}:${value}`"
         in script
+    )
+
+
+def test_qcc_sidepanel_exposes_document_decision_controls():
+    html = (
+        QCC_DIR
+        / "sidepanel"
+        / "index.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    for control_id in (
+        "document-action-panel",
+        "document-position",
+        "document-name",
+        "document-type-code",
+        "action-document-prepare",
+        "action-document-skip",
+        "document-force-type",
+        "action-document-force",
+    ):
+        assert (
+            f'id="{control_id}"'
+            in html
+        )
+
+
+def test_qcc_sidepanel_projects_document_metadata():
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        '=== "DOCUMENT_READY"'
+        in script
+    )
+
+    for field in (
+        "document_index",
+        "document_total",
+        "document_name",
+        "document_type_code",
+    ):
+        assert (
+            f"lastEvent?.{field}"
+            in script
+        )
+
+
+def test_qcc_sidepanel_submits_document_actions():
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    for action in (
+        "DOCUMENT_PREPARE",
+        "DOCUMENT_SKIP",
+        "DOCUMENT_FORCE_TYPE",
+    ):
+        assert (
+            f'"{action}"'
+            in script
+        )
+
+    assert (
+        "document_index:"
+        in script
+    )
+
+    assert (
+        "value"
+        in script
+    )
+
+
+def test_qcc_sidepanel_document_ui_has_no_document_paths():
+    html = (
+        QCC_DIR
+        / "sidepanel"
+        / "index.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    script = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    for forbidden in (
+        "document_path",
+        "full_path",
+        "ruta_documento",
+    ):
+        assert forbidden not in html
+        assert forbidden not in script
+
+
+
+def test_qcc_document_type_override_uses_user_language():
+    html = (
+        QCC_DIR
+        / "sidepanel"
+        / "index.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "Cambiar tipo documental"
+        in html
+    )
+
+    assert (
+        "Aplicar cambio"
+        in html
+    )
+
+    assert (
+        "Forzar tipo documental"
+        not in html
     )

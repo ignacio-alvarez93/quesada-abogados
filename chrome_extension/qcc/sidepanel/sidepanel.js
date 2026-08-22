@@ -472,6 +472,31 @@ function renderSession(session) {
       "action-documents-start"
     );
 
+  const documentPanel =
+    element(
+      "document-action-panel"
+    );
+
+  const documentPrepare =
+    element(
+      "action-document-prepare"
+    );
+
+  const documentSkip =
+    element(
+      "action-document-skip"
+    );
+
+  const documentForce =
+    element(
+      "action-document-force"
+    );
+
+  const documentForceInput =
+    element(
+      "document-force-type"
+    );
+
   const canStartDocuments =
     (
       requiresUserAction
@@ -479,19 +504,153 @@ function renderSession(session) {
         === "DOCUMENTS_READY"
     );
 
+  const documentIndex =
+    Number(
+      lastEvent?.document_index
+    );
+
+  const documentTotal =
+    Number(
+      lastEvent?.document_total
+    );
+
+  const documentName =
+    String(
+      lastEvent?.document_name
+      || ""
+    ).trim();
+
+  const documentTypeCode =
+    String(
+      lastEvent?.document_type_code
+      || ""
+    ).trim();
+
+  const canReviewDocument =
+    (
+      requiresUserAction
+      && session.current_step
+        === "DOCUMENT_READY"
+      && Number.isInteger(documentIndex)
+      && documentIndex > 0
+      && Number.isInteger(documentTotal)
+      && documentTotal > 0
+      && Boolean(documentName)
+    );
+
   if (actionControls) {
     actionControls.classList.toggle(
       "qcc-hidden",
-      !canStartDocuments
+      !(
+        canStartDocuments
+        || canReviewDocument
+      )
     );
   }
 
   if (startDocuments) {
+    startDocuments.classList.toggle(
+      "qcc-hidden",
+      !canStartDocuments
+    );
+
     startDocuments.disabled =
       !canStartDocuments;
   }
 
-  if (canStartDocuments) {
+  if (documentPanel) {
+    documentPanel.classList.toggle(
+      "qcc-hidden",
+      !canReviewDocument
+    );
+  }
+
+  if (canReviewDocument) {
+    const documentIdentity =
+      (
+        `${session.session_id}:`
+        + `${documentIndex}`
+      );
+
+    if (
+      documentPanel
+      && documentPanel.dataset
+        .documentIdentity
+        !== documentIdentity
+    ) {
+      documentPanel.dataset
+        .documentIdentity =
+          documentIdentity;
+
+      documentPanel.dataset
+        .documentIndex =
+          String(documentIndex);
+
+      documentPanel.dataset
+        .submitted =
+          "false";
+
+      if (documentForceInput) {
+        documentForceInput.value = "";
+      }
+
+      setText(
+        "action-feedback",
+        ""
+      );
+    }
+
+    const submitted =
+      (
+        documentPanel?.dataset
+          .submitted
+        === "true"
+      );
+
+    setText(
+      "document-position",
+      `${documentIndex} de ${documentTotal}`
+    );
+
+    setText(
+      "document-name",
+      documentName
+    );
+
+    setText(
+      "document-type-code",
+      documentTypeCode || "—"
+    );
+
+    if (documentPrepare) {
+      documentPrepare.disabled =
+        submitted;
+    }
+
+    if (documentSkip) {
+      documentSkip.disabled =
+        submitted;
+    }
+
+    if (documentForce) {
+      documentForce.disabled =
+        submitted;
+    }
+
+    if (documentForceInput) {
+      documentForceInput.disabled =
+        submitted;
+    }
+
+    setText(
+      "user-action-text",
+      (
+        "Revisa el documento actual y "
+        + "elige cómo debe continuar Mercurio."
+      )
+    );
+
+  } else if (canStartDocuments) {
     setText(
       "user-action-text",
       (
@@ -499,6 +658,7 @@ function renderSession(session) {
         + "iniciar la fase documental."
       )
     );
+
   } else {
     setText(
       "user-action-text",
@@ -651,6 +811,180 @@ async function handleDocumentsStart() {
 }
 
 
+function currentDocumentIndex() {
+  const panel =
+    element(
+      "document-action-panel"
+    );
+
+  const value =
+    Number(
+      panel?.dataset
+        .documentIndex
+    );
+
+  if (
+    !Number.isInteger(value)
+    || value <= 0
+  ) {
+    throw new Error(
+      "QCC_DOCUMENT_INDEX_INVALID"
+    );
+  }
+
+  return value;
+}
+
+
+function setDocumentControlsDisabled(
+  disabled
+) {
+  for (const id of [
+    "action-document-prepare",
+    "action-document-skip",
+    "action-document-force",
+    "document-force-type"
+  ]) {
+    const control =
+      element(id);
+
+    if (control) {
+      control.disabled =
+        Boolean(disabled);
+    }
+  }
+}
+
+
+async function submitDocumentAction(
+  action,
+  payload
+) {
+  const panel =
+    element(
+      "document-action-panel"
+    );
+
+  setDocumentControlsDisabled(
+    true
+  );
+
+  setText(
+    "action-feedback",
+    "Enviando decisión..."
+  );
+
+  try {
+    const result =
+      await submitSessionAction(
+        action,
+        payload
+      );
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        "QCC_ACTION_RESPONSE_INVALID"
+      );
+    }
+
+    if (panel) {
+      panel.dataset.submitted =
+        "true";
+    }
+
+    setText(
+      "action-feedback",
+      "Decisión enviada al runtime."
+    );
+
+  } catch (_) {
+    if (panel) {
+      panel.dataset.submitted =
+        "false";
+    }
+
+    setDocumentControlsDisabled(
+      false
+    );
+
+    setText(
+      "action-feedback",
+      (
+        "No se pudo confirmar la decisión. "
+        + "Puedes volver a intentarlo."
+      )
+    );
+  }
+}
+
+
+async function handleDocumentPrepare() {
+  const documentIndex =
+    currentDocumentIndex();
+
+  await submitDocumentAction(
+    "DOCUMENT_PREPARE",
+    {
+      document_index:
+        documentIndex
+    }
+  );
+}
+
+
+async function handleDocumentSkip() {
+  const documentIndex =
+    currentDocumentIndex();
+
+  await submitDocumentAction(
+    "DOCUMENT_SKIP",
+    {
+      document_index:
+        documentIndex
+    }
+  );
+}
+
+
+async function handleDocumentForceType() {
+  const documentIndex =
+    currentDocumentIndex();
+
+  const input =
+    element(
+      "document-force-type"
+    );
+
+  const value =
+    String(
+      input?.value
+      || ""
+    ).trim();
+
+  if (!value) {
+    setText(
+      "action-feedback",
+      "Introduce un código documental."
+    );
+
+    return;
+  }
+
+  await submitDocumentAction(
+    "DOCUMENT_FORCE_TYPE",
+    {
+      document_index:
+        documentIndex,
+      value
+    }
+  );
+}
+
+
+
 function initializeQccShell() {
   const manifest =
     chrome.runtime.getManifest();
@@ -674,6 +1008,42 @@ function initializeQccShell() {
     documentsStartButton.addEventListener(
       "click",
       handleDocumentsStart
+    );
+  }
+
+  const documentPrepareButton =
+    element(
+      "action-document-prepare"
+    );
+
+  const documentSkipButton =
+    element(
+      "action-document-skip"
+    );
+
+  const documentForceButton =
+    element(
+      "action-document-force"
+    );
+
+  if (documentPrepareButton) {
+    documentPrepareButton.addEventListener(
+      "click",
+      handleDocumentPrepare
+    );
+  }
+
+  if (documentSkipButton) {
+    documentSkipButton.addEventListener(
+      "click",
+      handleDocumentSkip
+    );
+  }
+
+  if (documentForceButton) {
+    documentForceButton.addEventListener(
+      "click",
+      handleDocumentForceType
     );
   }
 

@@ -207,6 +207,81 @@
             </button>
 
             <div
+              class="qcc-document-action qcc-hidden"
+              id="document-action-panel"
+            >
+              <div class="qcc-document-position">
+                Documento
+                <span id="document-position">
+                  —
+                </span>
+              </div>
+
+              <div
+                class="qcc-document-name"
+                id="document-name"
+              >
+                —
+              </div>
+
+              <div class="qcc-document-type-row">
+                <span>
+                  Tipo propuesto
+                </span>
+
+                <strong id="document-type-code">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-document-buttons">
+                <button
+                  class="qcc-action-button"
+                  id="action-document-prepare"
+                  type="button"
+                >
+                  Preparar
+                </button>
+
+                <button
+                  class="qcc-action-button qcc-action-button--secondary"
+                  id="action-document-skip"
+                  type="button"
+                >
+                  Saltar
+                </button>
+              </div>
+
+              <div class="qcc-document-force">
+                <label
+                  class="qcc-document-force-label"
+                  for="document-force-type"
+                >
+                  Cambiar tipo documental
+                </label>
+
+                <div class="qcc-document-force-row">
+                  <input
+                    class="qcc-document-force-input"
+                    id="document-force-type"
+                    type="text"
+                    maxlength="32"
+                    autocomplete="off"
+                    placeholder="Código Mercurio"
+                  >
+
+                  <button
+                    class="qcc-action-button qcc-action-button--secondary"
+                    id="action-document-force"
+                    type="button"
+                  >
+                    Aplicar cambio
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div
               class="qcc-action-feedback"
               id="action-feedback"
             ></div>
