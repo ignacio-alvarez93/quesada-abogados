@@ -252,6 +252,24 @@ def normalize_dom_capture(
                 or []
             )
         ),
+        catalogs=tuple(
+            _copy_record(item)
+            for item in (
+                payload.get("catalogs")
+                or []
+            )
+            if isinstance(item, dict)
+        ),
+        catalog_relations=tuple(
+            _copy_record(item)
+            for item in (
+                payload.get(
+                    "catalog_relations"
+                )
+                or []
+            )
+            if isinstance(item, dict)
+        ),
         counts=dict(
             payload.get("counts")
             or {}

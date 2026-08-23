@@ -48,6 +48,62 @@ def _frame_result(
             "visible": True,
             "disabled": False,
         }],
+        "catalog_probe": {
+            "schema_version": 1,
+            "catalog_count": 1,
+            "elements": [{
+                "catalog_type":
+                    "native_select",
+                "selector":
+                    "#province",
+                "element": {
+                    "tag":
+                        "select",
+                    "id":
+                        "province",
+                    "name":
+                        "province",
+                    "classes":
+                        [],
+                    "attributes":
+                        {},
+                },
+                "state": {
+                    "selected_value":
+                        "33",
+                    "selected_label":
+                        "ASTURIAS",
+                    "selected_values":
+                        ["33"],
+                    "selected_index":
+                        1,
+                    "disabled":
+                        False,
+                    "required":
+                        False,
+                    "multiple":
+                        False,
+                },
+                "options_count":
+                    2,
+                "options": [
+                    {
+                        "value": "",
+                        "label": "--",
+                        "selected": False,
+                        "disabled": False,
+                    },
+                    {
+                        "value": "33",
+                        "label": "ASTURIAS",
+                        "selected": True,
+                        "disabled": False,
+                    },
+                ],
+                "dependency_hints":
+                    {},
+            }],
+        },
         "shadow_roots": [],
     }
 
@@ -209,3 +265,53 @@ def test_qcc_capture_rejects_unknown_frame_schema():
         adapt_qcc_extension_capture(
             payload
         )
+
+
+def test_qcc_catalog_probe_reaches_raw_contract():
+    raw = adapt_qcc_extension_capture(
+        _capture()
+    )
+
+    assert len(raw["catalogs"]) == 2
+    assert raw["catalog_relations"] == []
+
+    main = raw["catalogs"][0]
+    child = raw["catalogs"][1]
+
+    assert main["selector"] == "#province"
+    assert main["frame_path"] == "main"
+    assert main["qcc_frame_id"] == 0
+
+    assert (
+        main["state"]["selected_value"]
+        == "33"
+    )
+
+    assert child["frame_path"] == "qcc-frame:7"
+
+
+def test_qcc_catalog_probe_reaches_canonical_snapshot(
+    tmp_path,
+):
+    result = (
+        persist_site_architecture_from_qcc_capture(
+            _capture(),
+            tmp_path,
+        )
+    )
+
+    payload = json.loads(
+        result["snapshot_path"]
+        .read_text(encoding="utf-8")
+    )
+
+    assert len(payload["catalogs"]) == 2
+    assert payload["catalog_relations"] == []
+
+    catalog = payload["catalogs"][0]
+
+    assert catalog["selector"] == "#province"
+    assert (
+        catalog["state"]["selected_label"]
+        == "ASTURIAS"
+    )
