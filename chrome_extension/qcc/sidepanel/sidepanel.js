@@ -1098,6 +1098,359 @@ function initializeQccShell() {
 }
 
 
+const QCC_CATALOG_HARVEST_MAX_VALUES =
+  5;
+
+
+function mainCatalogFromCapture(
+  capture,
+  selector
+) {
+  const mainFrame =
+    (
+      capture?.frames
+      || []
+    ).find(
+      (frame) =>
+        frame?.frame_id === 0
+    );
+
+  const catalogs =
+    (
+      mainFrame
+      ?.result
+      ?.catalog_probe
+      ?.elements
+      || []
+    );
+
+  const matches =
+    catalogs.filter(
+      (catalog) =>
+        catalog?.catalog_type
+          === "native_select"
+        && String(
+          catalog?.selector
+          || ""
+        ) === selector
+    );
+
+  if (matches.length !== 1) {
+    throw new Error(
+      "QCC_CATALOG_HARVEST_SOURCE_NOT_FOUND"
+    );
+  }
+
+  return matches[0];
+}
+
+
+function catalogHarvestValues(
+  catalog,
+  limit = QCC_CATALOG_HARVEST_MAX_VALUES
+) {
+  const currentValue =
+    String(
+      catalog
+      ?.state
+      ?.selected_value
+      || ""
+    );
+
+  const options =
+    (
+      Array.isArray(
+        catalog?.options
+      )
+      ? catalog.options
+      : []
+    );
+
+  const values = [];
+
+  for (const option of options) {
+    const value =
+      String(
+        option?.value
+        || ""
+      );
+
+    if (
+      !value
+      || option?.disabled === true
+      || value === currentValue
+    ) {
+      continue;
+    }
+
+    if (!values.includes(value)) {
+      values.push(value);
+    }
+
+    if (values.length >= limit) {
+      break;
+    }
+  }
+
+  return values;
+}
+
+
+function causalRelationSignature(
+  relation
+) {
+  return (
+    String(
+      relation?.relation
+      || ""
+    )
+    + "::"
+    + String(
+      relation?.source
+      || ""
+    )
+    + "::"
+    + String(
+      relation?.target
+      || ""
+    )
+  );
+}
+
+
+async function handleCatalogHarvest() {
+  const button =
+    element(
+      "tool-catalog-harvest"
+    );
+
+  const selectorInput =
+    element(
+      "catalog-experiment-selector"
+    );
+
+  if (
+    !button
+    || !selectorInput
+  ) {
+    return;
+  }
+
+  const selector =
+    String(
+      selectorInput.value
+      || ""
+    ).trim();
+
+  if (!selector) {
+    setText(
+      "catalog-harvest-feedback",
+      "Indica el selector del catálogo."
+    );
+
+    return;
+  }
+
+  button.disabled =
+    true;
+
+  setText(
+    "catalog-harvest-feedback",
+    "Preparando cartografiado Twin..."
+  );
+
+  try {
+    const permissionGranted =
+      await requestDomInspectionPermission();
+
+    if (!permissionGranted) {
+      throw new Error(
+        "QCC_DOM_HOST_PERMISSION_DENIED"
+      );
+    }
+
+    const initialCapture =
+      await chrome.runtime.sendMessage({
+        type:
+          "QCC_DOM_INSPECT"
+      });
+
+    if (
+      !initialCapture
+      || initialCapture.ok !== true
+    ) {
+      throw new Error(
+        initialCapture?.error
+        || "QCC_CATALOG_HARVEST_CAPTURE_INVALID"
+      );
+    }
+
+    const sourceCatalog =
+      mainCatalogFromCapture(
+        initialCapture,
+        selector
+      );
+
+    if (
+      sourceCatalog
+      ?.state
+      ?.disabled === true
+      || sourceCatalog
+      ?.state
+      ?.multiple === true
+    ) {
+      throw new Error(
+        "QCC_CATALOG_HARVEST_SOURCE_UNSAFE"
+      );
+    }
+
+    const values =
+      catalogHarvestValues(
+        sourceCatalog
+      );
+
+    if (values.length === 0) {
+      throw new Error(
+        "QCC_CATALOG_HARVEST_NO_VALUES"
+      );
+    }
+
+    let completed =
+      0;
+
+    let totalEvidence =
+      0;
+
+    const causalRelations =
+      new Map();
+
+    for (const requestedValue of values) {
+      setText(
+        "catalog-harvest-feedback",
+        (
+          "Cartografiando "
+          + `${completed + 1}/${values.length}`
+          + "..."
+        )
+      );
+
+      const experiment =
+        await chrome.runtime.sendMessage({
+          type:
+            "QCC_CATALOG_EXPERIMENT",
+
+          selector:
+            selector,
+
+          requested_value:
+            requestedValue
+        });
+
+      if (
+        !experiment
+        || experiment.ok !== true
+      ) {
+        throw new Error(
+          experiment?.error
+          || "QCC_CATALOG_HARVEST_EXPERIMENT_FAILED"
+        );
+      }
+
+      const verification =
+        (
+          experiment
+          ?.restoration_verification
+          || {}
+        );
+
+      if (verification.exact !== true) {
+        throw new Error(
+          "QCC_CATALOG_HARVEST_RESTORE_NOT_EXACT"
+        );
+      }
+
+      /*
+       * No continuamos haciendo mutaciones si
+       * el backend no puede analizar el resultado.
+       */
+      const analysis =
+        await submitCatalogExperiment(
+          experiment
+        );
+
+      if (
+        !analysis
+        || analysis.ok !== true
+      ) {
+        throw new Error(
+          "QCC_CATALOG_HARVEST_ANALYSIS_FAILED"
+        );
+      }
+
+      totalEvidence +=
+        Number(
+          analysis.evidence_count
+          || 0
+        );
+
+      for (
+        const relation
+        of (
+          analysis.causal_relations
+          || []
+        )
+      ) {
+        const signature =
+          causalRelationSignature(
+            relation
+          );
+
+        if (signature) {
+          causalRelations.set(
+            signature,
+            relation
+          );
+        }
+      }
+
+      completed += 1;
+    }
+
+    setText(
+      "catalog-harvest-feedback",
+      (
+        `Cartografiado ${completed}/${values.length}`
+        + " · evidencia "
+        + `${totalEvidence}`
+        + " · relaciones únicas "
+        + `${causalRelations.size}`
+        + " · restauración exacta · OK"
+      )
+    );
+
+  } catch (error) {
+    const detail =
+      String(
+        error?.message
+        || error
+        || "QCC_CATALOG_HARVEST_FAILED"
+      );
+
+    setText(
+      "catalog-harvest-feedback",
+      (
+        "Cartografiado detenido · "
+        + detail
+      )
+    );
+
+  } finally {
+    button.disabled =
+      false;
+  }
+}
+
+
 async function handleCatalogExperiment() {
   const button =
     element(
@@ -1648,6 +2001,20 @@ document.addEventListener(
       catalogExperiment.addEventListener(
         "click",
         handleCatalogExperiment
+      );
+    }
+
+
+    const catalogHarvest =
+      element(
+        "tool-catalog-harvest"
+      );
+
+
+    if (catalogHarvest) {
+      catalogHarvest.addEventListener(
+        "click",
+        handleCatalogHarvest
       );
     }
   }

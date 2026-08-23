@@ -234,3 +234,181 @@ def test_catalog_experiment_posts_to_backend_analyzer():
 
     for token in required:
         assert token in source
+
+
+def test_catalog_harvester_has_separate_sidepanel_tool():
+    html = HTML.read_text(
+        encoding="utf-8"
+    )
+
+    panel = PANEL.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'id="tool-catalog-harvest"'
+        in html
+    )
+
+    assert (
+        'id="catalog-harvest-feedback"'
+        in html
+    )
+
+    assert (
+        "handleCatalogHarvest"
+        in panel
+    )
+
+
+def test_catalog_harvester_is_bounded_and_sequential():
+    source = PANEL.read_text(
+        encoding="utf-8"
+    )
+
+    start = source.index(
+        "async function handleCatalogHarvest()"
+    )
+
+    end = source.index(
+        "async function handleCatalogExperiment()",
+        start,
+    )
+
+    block = source[start:end]
+
+    assert (
+        "QCC_CATALOG_HARVEST_MAX_VALUES"
+        in source
+    )
+
+    assert (
+        "const QCC_CATALOG_HARVEST_MAX_VALUES ="
+        in source
+    )
+
+    assert "5;" in source
+
+    assert (
+        "for (const requestedValue of values)"
+        in block
+    )
+
+    assert (
+        'type:\n            "QCC_CATALOG_EXPERIMENT"'
+        in block
+    )
+
+    assert (
+        "requested_value:"
+        in block
+    )
+
+
+def test_catalog_harvester_requires_restore_before_next_value():
+    source = PANEL.read_text(
+        encoding="utf-8"
+    )
+
+    start = source.index(
+        "async function handleCatalogHarvest()"
+    )
+
+    end = source.index(
+        "async function handleCatalogExperiment()",
+        start,
+    )
+
+    block = source[start:end]
+
+    restore_position = block.index(
+        "verification.exact !== true"
+    )
+
+    backend_position = block.index(
+        "submitCatalogExperiment"
+    )
+
+    completed_position = block.index(
+        "completed += 1"
+    )
+
+    assert (
+        restore_position
+        < backend_position
+        < completed_position
+    )
+
+    assert (
+        "QCC_CATALOG_HARVEST_RESTORE_NOT_EXACT"
+        in block
+    )
+
+
+def test_catalog_harvester_filters_unsafe_values():
+    source = PANEL.read_text(
+        encoding="utf-8"
+    )
+
+    start = source.index(
+        "function catalogHarvestValues("
+    )
+
+    end = source.index(
+        "function causalRelationSignature(",
+        start,
+    )
+
+    block = source[start:end]
+
+    required = (
+        "!value",
+        "option?.disabled === true",
+        "value === currentValue",
+        "values.length >= limit",
+    )
+
+    for token in required:
+        assert token in block
+
+
+def test_catalog_harvester_deduplicates_causal_relations():
+    source = PANEL.read_text(
+        encoding="utf-8"
+    )
+
+    start = source.index(
+        "async function handleCatalogHarvest()"
+    )
+
+    end = source.index(
+        "async function handleCatalogExperiment()",
+        start,
+    )
+
+    block = source[start:end]
+
+    assert (
+        "const causalRelations ="
+        in block
+    )
+
+    assert (
+        "new Map()"
+        in block
+    )
+
+    assert (
+        "causalRelationSignature"
+        in block
+    )
+
+    assert (
+        "causalRelations.set"
+        in block
+    )
+
+    assert (
+        "relaciones únicas"
+        in block
+    )
