@@ -602,36 +602,71 @@ def render_ex01_page(
             residencia temporal no lucrativa.
         </h2>
 
-        <nav class="ex01-tabs">
-            <a
-                id="d-li-autorizacionSup"
-                class="r-tabs-anchor"
-                href="#tab-datos_autorizacion"
+        <ul
+            id="merPestanero"
+            class="r-tabs-nav ex01-tabs"
+        >
+            <li
+                class="
+                    r-tabs-tab
+                    r-tabs-state-active
+                "
             >
-                TIPO DE AUTORIZACIÓN
-            </a>
+                <a
+                    id="d-li-autorizacionSup"
+                    class="r-tabs-anchor"
+                    href="#tab-datos_autorizacion"
+                >
+                    TIPO DE AUTORIZACIÓN
+                </a>
+            </li>
 
-            <a
-                href="#tab-datos_personales"
-                class="r-tabs-anchor"
+            <li
+                class="
+                    r-tabs-tab
+                    r-tabs-state-disabled
+                "
             >
-                DATOS DEL EXTRANJERO/A
-            </a>
+                <a
+                    id="d-li-personales"
+                    class="r-tabs-anchor"
+                    href="#tab-datos_personales"
+                >
+                    DATOS DEL EXTRANJERO/A
+                </a>
+            </li>
 
-            <a
-                href="#tab-datos_presentador"
-                class="r-tabs-anchor"
+            <li
+                id="pestPresentador"
+                class="
+                    r-tabs-tab
+                    r-tabs-state-disabled
+                "
             >
-                DATOS DEL PRESENTADOR
-            </a>
+                <a
+                    id="d-li-presentador"
+                    class="r-tabs-anchor"
+                    href="#tab-datos_presentador"
+                >
+                    DATOS DEL PRESENTADOR
+                </a>
+            </li>
 
-            <a
-                href="#tab-datos_notificacion"
-                class="r-tabs-anchor"
+            <li
+                class="
+                    r-tabs-tab
+                    r-tabs-state-disabled
+                "
             >
-                NOTIFICACIÓN
-            </a>
-        </nav>
+                <a
+                    id="d-li-notificacion"
+                    class="r-tabs-anchor"
+                    href="#tab-datos_notificacion"
+                >
+                    DOMICILIO DE NOTIFICACIÓN
+                </a>
+            </li>
+        </ul>
 
         <div
             id="tab-datos_autorizacion"

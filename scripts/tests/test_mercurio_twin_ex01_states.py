@@ -61,3 +61,30 @@ def test_conclude_goes_only_to_local_document_stage():
         "delegaciondelgobierno.gob.es"
         not in JS
     )
+
+
+def test_ex01_tabs_follow_real_progressive_state_machine():
+    from pathlib import Path
+
+    js = (
+        Path(
+            "tools/mercurio_lab/static/"
+            "mercurio_ex01.js"
+        )
+        .read_text(encoding="utf-8")
+    )
+
+    required = (
+        "const TAB_ORDER",
+        "function updateTabStates(panelId)",
+        '"r-tabs-state-active"',
+        '"r-tabs-state-default"',
+        '"r-tabs-state-disabled"',
+        "updateTabStates(panelId);",
+        '"d-li-personales"',
+        '"d-li-presentador"',
+        '"d-li-notificacion"',
+    )
+
+    for token in required:
+        assert token in js

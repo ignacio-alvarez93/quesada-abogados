@@ -9,9 +9,90 @@
         "tab-datos_notificacion",
     ];
 
+    const TAB_ORDER = [
+        {
+            panelId: "tab-datos_autorizacion",
+            anchorId: "d-li-autorizacionSup",
+        },
+        {
+            panelId: "tab-datos_personales",
+            anchorId: "d-li-personales",
+        },
+        {
+            panelId: "tab-datos_presentador",
+            anchorId: "d-li-presentador",
+        },
+        {
+            panelId: "tab-datos_notificacion",
+            anchorId: "d-li-notificacion",
+        },
+    ];
+
+
     function byId(id) {
         return document.getElementById(id);
     }
+
+    function updateTabStates(panelId) {
+        const activeIndex =
+            TAB_ORDER.findIndex(
+                function (entry) {
+                    return (
+                        entry.panelId
+                        === panelId
+                    );
+                }
+            );
+
+        if (activeIndex < 0) {
+            return;
+        }
+
+        TAB_ORDER.forEach(
+            function (entry, index) {
+                const anchor =
+                    byId(entry.anchorId);
+
+                if (!anchor) {
+                    return;
+                }
+
+                const tab =
+                    anchor.closest("li");
+
+                if (!tab) {
+                    return;
+                }
+
+                tab.classList.remove(
+                    "r-tabs-state-active",
+                    "r-tabs-state-default",
+                    "r-tabs-state-disabled"
+                );
+
+                if (index < activeIndex) {
+                    tab.classList.add(
+                        "r-tabs-state-default"
+                    );
+
+                    return;
+                }
+
+                if (index === activeIndex) {
+                    tab.classList.add(
+                        "r-tabs-state-active"
+                    );
+
+                    return;
+                }
+
+                tab.classList.add(
+                    "r-tabs-state-disabled"
+                );
+            }
+        );
+    }
+
 
     function activate(panelId, state) {
         PANELS.forEach(function (id) {
@@ -45,6 +126,8 @@
 
             selected.style.display = "block";
         }
+
+        updateTabStates(panelId);
 
         document.body.dataset.ex01State =
             state;

@@ -134,3 +134,21 @@ def test_ex01_personal_labels_are_independent_real_contract():
         assert fragment in html
 
     assert 'class="ex01-field"' in html
+
+
+def test_ex01_reproduces_real_tab_dom_contract():
+    html = _html()
+
+    required = (
+        'id="merPestanero"',
+        "r-tabs-nav ex01-tabs",
+        'id="d-li-autorizacionSup"',
+        'id="d-li-personales"',
+        'id="pestPresentador"',
+        'id="d-li-presentador"',
+        'id="d-li-notificacion"',
+        "DOMICILIO DE NOTIFICACIÓN",
+    )
+
+    for token in required:
+        assert token in html

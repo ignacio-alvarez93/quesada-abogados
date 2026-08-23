@@ -30,11 +30,11 @@
     padding: 24px 20px;
 }
 
-.r-tabs-state-default {
+.mf-tabs--tab-content.r-tabs-state-default {
     display: none;
 }
 
-.r-tabs-state-active {
+.mf-tabs--tab-content.r-tabs-state-active {
     display: block;
 }
 
@@ -120,7 +120,6 @@ w = 1198.00
 }
 
 #d-li-autorizacionSup {
-    width: 167.14px;
     padding-left: 8px;
     padding-right: 8px;
 }
@@ -767,4 +766,144 @@ en el siguiente micro-gate.
 
     background-size:
         19px;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · EX01-TWIN-5C2
+   Pestañero REAL
+   ========================================================= */
+
+#merPestanero.ex01-tabs {
+    position: relative;
+    left: -1px;
+
+    display: flex;
+    align-items: flex-start;
+
+    width: 1199.0625px;
+    height: 41px;
+
+    margin:
+        21.015625px
+        0
+        0;
+
+    padding: 0;
+
+    gap: 3.34375px;
+
+    list-style: none;
+}
+
+
+#merPestanero > .r-tabs-tab {
+    box-sizing: border-box;
+
+    flex:
+        0
+        0
+        auto;
+
+    padding: 0;
+
+    list-style: none;
+}
+
+
+#merPestanero
+> .r-tabs-tab.r-tabs-state-active {
+    margin-top: 0;
+    height: 41px;
+}
+
+
+#merPestanero
+> .r-tabs-tab.r-tabs-state-default,
+#merPestanero
+> .r-tabs-tab.r-tabs-state-disabled {
+    margin-top: 1px;
+    height: 40px;
+}
+
+
+#merPestanero
+> .r-tabs-tab
+> .r-tabs-anchor {
+    display: block;
+
+    box-sizing: border-box;
+
+    margin:
+        1px
+        1px
+        0;
+
+    padding-left: 8px;
+    padding-right: 8px;
+}
+
+
+#merPestanero
+> .r-tabs-tab.r-tabs-state-active
+> .r-tabs-anchor {
+    height: 40px;
+}
+
+
+#merPestanero
+> .r-tabs-tab.r-tabs-state-default
+> .r-tabs-anchor,
+#merPestanero
+> .r-tabs-tab.r-tabs-state-disabled
+> .r-tabs-anchor {
+    height: 38px;
+}
+
+
+/* TIPO DE AUTORIZACIÓN */
+#merPestanero
+> .r-tabs-tab:nth-child(1) {
+    width: 167.140625px;
+}
+
+#merPestanero
+> .r-tabs-tab:nth-child(1).r-tabs-state-active {
+    width: 169.140625px;
+}
+
+
+/* DATOS DEL EXTRANJERO/A */
+#merPestanero
+> .r-tabs-tab:nth-child(2) {
+    width: 187.8125px;
+}
+
+#merPestanero
+> .r-tabs-tab:nth-child(2).r-tabs-state-active {
+    width: 189.8125px;
+}
+
+
+/* DATOS DEL PRESENTADOR */
+#merPestanero
+> .r-tabs-tab:nth-child(3) {
+    width: 186.265625px;
+}
+
+#merPestanero
+> .r-tabs-tab:nth-child(3).r-tabs-state-active {
+    width: 188.265625px;
+}
+
+
+/* DOMICILIO DE NOTIFICACIÓN */
+#merPestanero
+> .r-tabs-tab:nth-child(4) {
+    width: 198.015625px;
+}
+
+#merPestanero
+> .r-tabs-tab:nth-child(4).r-tabs-state-active {
+    width: 200.015625px;
 }
