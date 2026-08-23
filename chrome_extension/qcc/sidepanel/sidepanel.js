@@ -1077,6 +1077,143 @@ function initializeQccShell() {
 }
 
 
+async function handleCatalogExperiment() {
+  const button =
+    element(
+      "tool-catalog-experiment"
+    );
+
+  const selectorInput =
+    element(
+      "catalog-experiment-selector"
+    );
+
+
+  if (
+    !button
+    || !selectorInput
+  ) {
+    return;
+  }
+
+
+  const selector =
+    String(
+      selectorInput.value
+      || ""
+    ).trim();
+
+
+  if (!selector) {
+    setText(
+      "catalog-experiment-feedback",
+      "Indica el selector del catálogo."
+    );
+
+    return;
+  }
+
+
+  button.disabled =
+    true;
+
+
+  setText(
+    "catalog-experiment-feedback",
+    "Experimento Twin en curso..."
+  );
+
+
+  try {
+    const permissionGranted =
+      await requestDomInspectionPermission();
+
+
+    if (!permissionGranted) {
+      throw new Error(
+        "QCC_DOM_HOST_PERMISSION_DENIED"
+      );
+    }
+
+
+    const result =
+      await chrome.runtime.sendMessage({
+        type:
+          "QCC_CATALOG_EXPERIMENT",
+
+        selector:
+          selector
+      });
+
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        result?.error
+        || "QCC_CATALOG_EXPERIMENT_INVALID"
+      );
+    }
+
+
+    const mutation =
+      result.mutation
+      || {};
+
+    const restoration =
+      result.restoration
+      || {};
+
+    const verification =
+      result.restoration_verification
+      || {};
+
+    const comparedCatalogs =
+      Number(
+        verification.compared_catalogs
+        || 0
+      );
+
+
+    setText(
+      "catalog-experiment-feedback",
+      (
+        `${mutation.original_value || "∅"}`
+        + " → "
+        + `${mutation.test_value || "∅"}`
+        + " → restaurado "
+        + `${restoration.restored_value || "∅"}`
+        + " · estado integral "
+        + `${comparedCatalogs}/${comparedCatalogs}`
+        + " · OK"
+      )
+    );
+
+  } catch (error) {
+    const detail =
+      String(
+        error?.message
+        || error
+        || "QCC_CATALOG_EXPERIMENT_FAILED"
+      );
+
+
+    setText(
+      "catalog-experiment-feedback",
+      (
+        "Experimento rechazado/fallido · "
+        + detail
+      )
+    );
+
+  } finally {
+    button.disabled =
+      false;
+  }
+}
+
+
 document.addEventListener(
   "DOMContentLoaded",
   initializeQccShell
@@ -1426,6 +1563,20 @@ document.addEventListener(
       domInspect.addEventListener(
         "click",
         handleDomInspect
+      );
+    }
+
+
+    const catalogExperiment =
+      element(
+        "tool-catalog-experiment"
+      );
+
+
+    if (catalogExperiment) {
+      catalogExperiment.addEventListener(
+        "click",
+        handleCatalogExperiment
       );
     }
   }

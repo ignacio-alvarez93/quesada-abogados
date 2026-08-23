@@ -1034,6 +1034,1154 @@ async function inspectActiveTabDom() {
 }
 
 
+const QCC_CATALOG_EXPERIMENT_TWIN_ORIGIN =
+  "http://127.0.0.1:8767";
+
+
+function waitForCatalogExperiment(
+  milliseconds
+) {
+  return new Promise(
+    (resolve) => {
+      setTimeout(
+        resolve,
+        milliseconds
+      );
+    }
+  );
+}
+
+
+function setCatalogSelectionInPage(
+  selector,
+  requestedValue
+) {
+  const normalizedSelector =
+    String(
+      selector
+      || ""
+    ).trim();
+
+  if (!normalizedSelector) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_SELECTOR_REQUIRED"
+    );
+  }
+
+
+  const select =
+    document.querySelector(
+      normalizedSelector
+    );
+
+  if (
+    !select
+    || String(
+      select.tagName
+      || ""
+    ).toUpperCase() !== "SELECT"
+  ) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_SELECT_NOT_FOUND"
+    );
+  }
+
+
+  if (select.disabled) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_SELECT_DISABLED"
+    );
+  }
+
+
+  if (select.multiple) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_MULTIPLE_UNSUPPORTED"
+    );
+  }
+
+
+  const originalValue =
+    String(
+      select.value
+      || ""
+    );
+
+  const options =
+    Array.from(
+      select.options
+      || []
+    );
+
+
+  let target = null;
+
+  const explicitValue =
+    String(
+      requestedValue
+      || ""
+    );
+
+
+  if (explicitValue) {
+    target =
+      options.find(
+        (option) => (
+          !option.disabled
+          && String(
+            option.value
+            || ""
+          ) === explicitValue
+          && String(
+            option.value
+            || ""
+          ) !== originalValue
+        )
+      )
+      || null;
+
+    if (!target) {
+      throw new Error(
+        "QCC_CATALOG_EXPERIMENT_VALUE_INVALID"
+      );
+    }
+
+  } else {
+    target =
+      options.find(
+        (option) => {
+          const value =
+            String(
+              option.value
+              || ""
+            );
+
+          return (
+            !option.disabled
+            && value
+            && value !== originalValue
+          );
+        }
+      )
+      || null;
+  }
+
+
+  if (!target) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_NO_ALTERNATIVE"
+    );
+  }
+
+
+  const testValue =
+    String(
+      target.value
+      || ""
+    );
+
+
+  select.value =
+    testValue;
+
+
+  select.dispatchEvent(
+    new Event(
+      "input",
+      {
+        bubbles: true
+      }
+    )
+  );
+
+
+  select.dispatchEvent(
+    new Event(
+      "change",
+      {
+        bubbles: true
+      }
+    )
+  );
+
+
+  return {
+    selector:
+      normalizedSelector,
+
+    original_value:
+      originalValue,
+
+    test_value:
+      testValue,
+
+    test_label:
+      String(
+        target.label
+        || target.textContent
+        || ""
+      ).trim(),
+
+    options_count:
+      options.length,
+
+    current_value:
+      String(
+        select.value
+        || ""
+      )
+  };
+}
+
+
+function restoreCatalogSelectionInPage(
+  selector,
+  originalValue
+) {
+  const normalizedSelector =
+    String(
+      selector
+      || ""
+    ).trim();
+
+  const select =
+    document.querySelector(
+      normalizedSelector
+    );
+
+  if (
+    !select
+    || String(
+      select.tagName
+      || ""
+    ).toUpperCase() !== "SELECT"
+  ) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_RESTORE_SELECT_NOT_FOUND"
+    );
+  }
+
+
+  const value =
+    String(
+      originalValue
+      ?? ""
+    );
+
+
+  const optionExists =
+    Array.from(
+      select.options
+      || []
+    ).some(
+      (option) => (
+        String(
+          option.value
+          || ""
+        ) === value
+      )
+    );
+
+
+  if (!optionExists) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_RESTORE_VALUE_MISSING"
+    );
+  }
+
+
+  select.value =
+    value;
+
+
+  select.dispatchEvent(
+    new Event(
+      "input",
+      {
+        bubbles: true
+      }
+    )
+  );
+
+
+  select.dispatchEvent(
+    new Event(
+      "change",
+      {
+        bubbles: true
+      }
+    )
+  );
+
+
+  return {
+    selector:
+      normalizedSelector,
+
+    expected_value:
+      value,
+
+    restored_value:
+      String(
+        select.value
+        || ""
+      ),
+
+    exact:
+      (
+        String(
+          select.value
+          || ""
+        ) === value
+      )
+  };
+}
+
+
+function catalogRestoreTargetsFromCapture(
+  capture
+) {
+  const mainFrame =
+    (
+      capture?.frames
+      || []
+    ).find(
+      (frame) =>
+        frame?.frame_id === 0
+    );
+
+
+  const catalogs =
+    (
+      mainFrame
+      ?.result
+      ?.catalog_probe
+      ?.elements
+      || []
+    );
+
+
+  return catalogs
+    .filter(
+      (catalog) => (
+        catalog
+        && catalog.catalog_type
+          === "native_select"
+        && String(
+          catalog.selector
+          || ""
+        ).trim()
+      )
+    )
+    .map(
+      (catalog) => ({
+        selector:
+          String(
+            catalog.selector
+            || ""
+          ).trim(),
+
+        multiple:
+          Boolean(
+            catalog.state
+            ?.multiple
+          ),
+
+        selected_value:
+          String(
+            catalog.state
+            ?.selected_value
+            ?? ""
+          ),
+
+        selected_values:
+          Array.isArray(
+            catalog.state
+            ?.selected_values
+          )
+          ? catalog.state
+              .selected_values
+              .map(
+                (value) =>
+                  String(
+                    value
+                    ?? ""
+                  )
+              )
+          : []
+      })
+    );
+}
+
+
+function restoreCatalogSnapshotInPage(
+  targets
+) {
+  const results = [];
+
+
+  for (
+    const target
+    of (
+      Array.isArray(targets)
+      ? targets
+      : []
+    )
+  ) {
+    const selector =
+      String(
+        target?.selector
+        || ""
+      ).trim();
+
+
+    if (!selector) {
+      continue;
+    }
+
+
+    const select =
+      document.querySelector(
+        selector
+      );
+
+
+    if (
+      !select
+      || String(
+        select.tagName
+        || ""
+      ).toUpperCase() !== "SELECT"
+    ) {
+      results.push({
+        selector:
+          selector,
+
+        status:
+          "SELECT_NOT_FOUND"
+      });
+
+      continue;
+    }
+
+
+    const options =
+      Array.from(
+        select.options
+        || []
+      );
+
+
+    let changed = false;
+    let missing = [];
+
+
+    if (
+      Boolean(
+        target.multiple
+      )
+    ) {
+      const desired =
+        new Set(
+          Array.isArray(
+            target.selected_values
+          )
+          ? target.selected_values.map(
+              (value) =>
+                String(
+                  value
+                  ?? ""
+                )
+            )
+          : []
+        );
+
+
+      const available =
+        new Set(
+          options.map(
+            (option) =>
+              String(
+                option.value
+                ?? ""
+              )
+          )
+        );
+
+
+      missing =
+        Array.from(
+          desired
+        ).filter(
+          (value) =>
+            !available.has(
+              value
+            )
+        );
+
+
+      for (
+        const option
+        of options
+      ) {
+        const shouldSelect =
+          desired.has(
+            String(
+              option.value
+              ?? ""
+            )
+          );
+
+
+        if (
+          option.selected
+          !== shouldSelect
+        ) {
+          option.selected =
+            shouldSelect;
+
+          changed =
+            true;
+        }
+      }
+
+    } else {
+      const desiredValue =
+        String(
+          target.selected_value
+          ?? ""
+        );
+
+
+      const exists =
+        options.some(
+          (option) =>
+            String(
+              option.value
+              ?? ""
+            ) === desiredValue
+        );
+
+
+      if (!exists) {
+        missing = [
+          desiredValue
+        ];
+
+      } else if (
+        String(
+          select.value
+          ?? ""
+        ) !== desiredValue
+      ) {
+        select.value =
+          desiredValue;
+
+        changed =
+          true;
+      }
+    }
+
+
+    if (
+      changed
+      && missing.length === 0
+    ) {
+      select.dispatchEvent(
+        new Event(
+          "input",
+          {
+            bubbles: true
+          }
+        )
+      );
+
+
+      select.dispatchEvent(
+        new Event(
+          "change",
+          {
+            bubbles: true
+          }
+        )
+      );
+    }
+
+
+    results.push({
+      selector:
+        selector,
+
+      status:
+        (
+          missing.length
+          ? "VALUE_NOT_AVAILABLE"
+          : (
+              changed
+              ? "RESTORED"
+              : "UNCHANGED"
+            )
+        ),
+
+      missing_values:
+        missing
+    });
+  }
+
+
+  return {
+    attempted:
+      results.length,
+
+    results:
+      results
+  };
+}
+
+
+function compareMainCatalogCaptures(
+  beforeCapture,
+  afterCapture
+) {
+  function catalogMap(
+    capture
+  ) {
+    const mainFrame =
+      (
+        capture?.frames
+        || []
+      ).find(
+        (frame) =>
+          frame?.frame_id === 0
+      );
+
+
+    const catalogs =
+      (
+        mainFrame
+        ?.result
+        ?.catalog_probe
+        ?.elements
+        || []
+      );
+
+
+    const map =
+      new Map();
+
+
+    for (
+      const catalog
+      of catalogs
+    ) {
+      const selector =
+        String(
+          catalog?.selector
+          || ""
+        ).trim();
+
+
+      if (!selector) {
+        continue;
+      }
+
+
+      const state =
+        catalog.state
+        || {};
+
+
+      const selectedValues =
+        Array.isArray(
+          state.selected_values
+        )
+        ? state.selected_values.map(
+            (value) =>
+              String(
+                value
+                ?? ""
+              )
+          )
+        : [];
+
+
+      const options =
+        (
+          catalog.options
+          || []
+        ).map(
+          (option) => [
+            String(
+              option?.value
+              ?? ""
+            ),
+            String(
+              option?.label
+              ?? ""
+            ),
+            Boolean(
+              option?.disabled
+            )
+          ]
+        );
+
+
+      map.set(
+        selector,
+        {
+          selected_value:
+            String(
+              state.selected_value
+              ?? ""
+            ),
+
+          selected_values:
+            selectedValues,
+
+          options:
+            options
+        }
+      );
+    }
+
+
+    return map;
+  }
+
+
+  const before =
+    catalogMap(
+      beforeCapture
+    );
+
+  const after =
+    catalogMap(
+      afterCapture
+    );
+
+
+  const selectors =
+    new Set([
+      ...before.keys(),
+      ...after.keys()
+    ]);
+
+
+  const differences =
+    [];
+
+
+  for (
+    const selector
+    of selectors
+  ) {
+    const expected =
+      before.get(
+        selector
+      );
+
+    const actual =
+      after.get(
+        selector
+      );
+
+
+    if (
+      !expected
+      || !actual
+    ) {
+      differences.push({
+        selector:
+          selector,
+
+        reason:
+          "CATALOG_MISSING"
+      });
+
+      continue;
+    }
+
+
+    const selectionExact =
+      (
+        expected.selected_value
+        === actual.selected_value
+
+        && JSON.stringify(
+          expected.selected_values
+        ) === JSON.stringify(
+          actual.selected_values
+        )
+      );
+
+
+    const optionsExact =
+      (
+        JSON.stringify(
+          expected.options
+        ) === JSON.stringify(
+          actual.options
+        )
+      );
+
+
+    if (
+      !selectionExact
+      || !optionsExact
+    ) {
+      differences.push({
+        selector:
+          selector,
+
+        selection_exact:
+          selectionExact,
+
+        options_exact:
+          optionsExact,
+
+        expected_value:
+          expected.selected_value,
+
+        actual_value:
+          actual.selected_value
+      });
+    }
+  }
+
+
+  return {
+    exact:
+      differences.length === 0,
+
+    compared_catalogs:
+      selectors.size,
+
+    differences:
+      differences
+  };
+}
+
+
+async function runTwinCatalogExperiment(
+  selector,
+  requestedValue = ""
+) {
+  const tabs =
+    await chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true
+    });
+
+
+  const tab =
+    (
+      Array.isArray(tabs)
+      ? tabs[0]
+      : null
+    );
+
+
+  if (
+    !tab
+    || !Number.isInteger(
+      tab.id
+    )
+  ) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_ACTIVE_TAB_NOT_FOUND"
+    );
+  }
+
+
+  let activeUrl = null;
+
+  try {
+    activeUrl =
+      new URL(
+        String(
+          tab.url
+          || ""
+        )
+      );
+  } catch (_) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_URL_INVALID"
+    );
+  }
+
+
+  if (
+    activeUrl.origin
+    !== QCC_CATALOG_EXPERIMENT_TWIN_ORIGIN
+  ) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_TWIN_ONLY"
+    );
+  }
+
+
+  const normalizedSelector =
+    String(
+      selector
+      || ""
+    ).trim();
+
+
+  if (!normalizedSelector) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_SELECTOR_REQUIRED"
+    );
+  }
+
+
+  const before =
+    await inspectActiveTabDom();
+
+
+  let mutation = null;
+  let after = null;
+  let restoration = null;
+  let restored = null;
+  let restorationVerification = null;
+  let restorePasses = [];
+
+
+  try {
+    const mutationResults =
+      await chrome.scripting.executeScript({
+        target: {
+          tabId:
+            tab.id,
+
+          frameIds:
+            [0]
+        },
+
+        world:
+          "MAIN",
+
+        func:
+          setCatalogSelectionInPage,
+
+        args: [
+          normalizedSelector,
+          String(
+            requestedValue
+            || ""
+          )
+        ]
+      });
+
+
+    mutation =
+      (
+        mutationResults
+        && mutationResults[0]
+        ? mutationResults[0].result
+        : null
+      );
+
+
+    if (!mutation) {
+      throw new Error(
+        "QCC_CATALOG_EXPERIMENT_MUTATION_EMPTY"
+      );
+    }
+
+
+    await waitForCatalogExperiment(
+      500
+    );
+
+
+    after =
+      await inspectActiveTabDom();
+
+  } finally {
+    if (
+      mutation
+      && Object.prototype.hasOwnProperty.call(
+        mutation,
+        "original_value"
+      )
+    ) {
+      const restorationResults =
+        await chrome.scripting.executeScript({
+          target: {
+            tabId:
+              tab.id,
+
+            frameIds:
+              [0]
+          },
+
+          world:
+            "MAIN",
+
+          func:
+            restoreCatalogSelectionInPage,
+
+          args: [
+            normalizedSelector,
+            mutation.original_value
+          ]
+        });
+
+
+      restoration =
+        (
+          restorationResults
+          && restorationResults[0]
+          ? restorationResults[0].result
+          : null
+        );
+
+
+      await waitForCatalogExperiment(
+        350
+      );
+
+
+      const restoreTargets =
+        catalogRestoreTargetsFromCapture(
+          before
+        );
+
+
+      restorePasses = [];
+
+
+      for (
+        let pass = 1;
+        pass <= 6;
+        pass += 1
+      ) {
+        const passResults =
+          await chrome.scripting.executeScript({
+            target: {
+              tabId:
+                tab.id,
+
+              frameIds:
+                [0]
+            },
+
+            world:
+              "MAIN",
+
+            func:
+              restoreCatalogSnapshotInPage,
+
+            args: [
+              restoreTargets
+            ]
+          });
+
+
+        restorePasses.push({
+          pass:
+            pass,
+
+          result:
+            (
+              passResults
+              && passResults[0]
+              ? passResults[0].result
+              : null
+            )
+        });
+
+
+        await waitForCatalogExperiment(
+          250
+        );
+
+
+        restored =
+          await inspectActiveTabDom();
+
+
+        restorationVerification =
+          compareMainCatalogCaptures(
+            before,
+            restored
+          );
+
+
+        if (
+          restorationVerification
+          .exact === true
+        ) {
+          break;
+        }
+      }
+    }
+  }
+
+
+  if (
+    !restoration
+    || restoration.exact !== true
+  ) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_RESTORE_FAILED"
+    );
+  }
+
+
+  if (
+    !restorationVerification
+    || restorationVerification.exact !== true
+  ) {
+    throw new Error(
+      "QCC_CATALOG_EXPERIMENT_RESTORE_STATE_MISMATCH"
+    );
+  }
+
+
+  return {
+    ok:
+      true,
+
+    experiment_type:
+      "QCC_CATALOG_EXPERIMENT",
+
+    schema_version:
+      1,
+
+    safety_mode:
+      "TWIN_ONLY",
+
+    origin:
+      activeUrl.origin,
+
+    selector:
+      normalizedSelector,
+
+    mutation:
+      mutation,
+
+    restoration:
+      restoration,
+
+    restoration_verification:
+      restorationVerification,
+
+    restore_passes:
+      restorePasses,
+
+    before:
+      before,
+
+    after:
+      after,
+
+    restored:
+      restored
+  };
+}
+
+
 chrome.runtime.onMessage.addListener(
   (
     message,
@@ -1081,6 +2229,59 @@ chrome.runtime.onMessage.addListener(
 
     // Mantiene vivo el canal mientras
     // termina executeScript().
+    return true;
+  }
+);
+
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    _sender,
+    sendResponse
+  ) => {
+    if (
+      !message
+      || message.type
+        !== "QCC_CATALOG_EXPERIMENT"
+    ) {
+      return false;
+    }
+
+
+    runTwinCatalogExperiment(
+      message.selector,
+      message.requested_value
+    )
+      .then(
+        (result) => {
+          sendResponse(
+            result
+          );
+        }
+      )
+      .catch(
+        (error) => {
+          console.error(
+            "[QCC] Catalog experiment:",
+            error
+          );
+
+          sendResponse({
+            ok:
+              false,
+
+            error:
+              String(
+                error?.message
+                || error
+                || "QCC_CATALOG_EXPERIMENT_FAILED"
+              )
+          });
+        }
+      );
+
+
     return true;
   }
 );
