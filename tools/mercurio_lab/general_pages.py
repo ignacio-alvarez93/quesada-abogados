@@ -503,6 +503,10 @@ def _entry_page() -> bytes:
         </header>
 
         <div class="mercurio-options-dialog__body">
+            <p class="mercurio-options-dialog__prompt">
+                Seleccione la opción que quiere realizar
+            </p>
+
             {operations}
         </div>
 
@@ -555,6 +559,15 @@ def _page(
     data-mercurio-twin="1"
     data-mercurio-state="{state.value}"
 >
+<div class="mercurio-sede-brand">
+    <div class="mercurio-sede-brand__inner">
+        <div>
+            <h1>Sede electrónica</h1>
+            <p>Administraciones Públicas</p>
+        </div>
+    </div>
+</div>
+
 <header class="mercurio-top">
     <div class="mercurio-top__inner">
         <nav

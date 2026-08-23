@@ -463,3 +463,514 @@ body {
     justify-content: flex-end;
     margin-top: 24px;
 }
+
+/* =========================================================
+   MERCURIO TWIN · GEO-1
+   Calibración contra Site Architecture real · 2026-08-23
+   ========================================================= */
+
+/* REAL:
+   viewport client = 1519
+   content x       = 159.97
+   content width   = 1199.06
+*/
+
+.mercurio-top__inner,
+.mercurio-page {
+    width: min(1200px, calc(100% - 32px));
+}
+
+.mercurio-page {
+    padding-left: 0;
+    padding-right: 0;
+}
+
+
+/* ---------------------------------------------------------
+   BOTONES GENERALES
+   REAL CONTINUAR = aprox. 135.23 × 38
+   REAL VOLVER    = aprox. 107.77 × 38
+   --------------------------------------------------------- */
+
+.mercurio-button {
+    min-width: 135px;
+    height: 38px;
+    padding: 0 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mercurio-back {
+    width: 108px;
+    min-width: 108px;
+}
+
+
+/* ---------------------------------------------------------
+   MODO DE ACCESO
+   REAL:
+     grid útil ≈ 994 px
+     botón     ≈ 314 × 38
+     gap       ≈ 26 px
+     filas     = 3 + 3 + 2
+   --------------------------------------------------------- */
+
+.mercurio-access-list {
+    width: min(994px, 100%);
+    margin-left: auto;
+    margin-right: auto;
+    border-top: 0;
+
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    column-gap: 26px;
+    row-gap: 24px;
+    grid-auto-rows: 280px;
+}
+
+.mercurio-access-row {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 0;
+    border-bottom: 0;
+    gap: 18px;
+    grid-column: span 2;
+}
+
+.mercurio-access-row:nth-child(7) {
+    grid-column: 2 / span 2;
+}
+
+.mercurio-access-row:nth-child(8) {
+    grid-column: 4 / span 2;
+}
+
+.mercurio-access-description {
+    flex: 1 1 auto;
+}
+
+.mercurio-access-button {
+    width: 314px;
+    min-width: 314px;
+    min-height: 38px;
+    height: 38px;
+    padding: 0 14px;
+    align-self: center;
+}
+
+
+/* ---------------------------------------------------------
+   ENTRADA IDLE
+   REAL:
+     dos módulos ≈ 594 px
+     gap ≈ 10 px
+     botón principal ≈ 396 × 38
+   --------------------------------------------------------- */
+
+.mercurio-entry-choice-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    border-top: 0;
+}
+
+.mercurio-entry-choice {
+    display: flex;
+    flex-direction: column;
+    min-height: 379px;
+    padding: 8px;
+    border-bottom: 0;
+}
+
+.mercurio-entry-choice__description {
+    flex: 1 1 auto;
+}
+
+.mercurio-entry-choice__button {
+    width: min(396px, 100%);
+    min-width: 0;
+    min-height: 38px;
+    height: 38px;
+    padding: 0 14px;
+    align-self: flex-start;
+}
+
+
+/* ---------------------------------------------------------
+   OPTIONS
+   REAL:
+     dialog  = 479.11 × 445.5
+     header  = 36
+     content = 352.5
+     footer  = 57
+     padding horizontal interno = 14
+     provincia = 200 × 33
+   --------------------------------------------------------- */
+
+.mercurio-options-overlay {
+    align-items: flex-start;
+    padding: 7px 0 0;
+    background: transparent;
+}
+
+.mercurio-options-dialog {
+    width: min(479px, calc(100% - 24px));
+    max-height: none;
+    overflow: visible;
+}
+
+.mercurio-options-dialog__header {
+    min-height: 36px;
+    height: 36px;
+    padding: 4px 14px;
+}
+
+.mercurio-options-dialog__body {
+    min-height: 352px;
+    padding: 14px;
+}
+
+.mercurio-options-dialog__prompt {
+    margin: 14px 0 28px;
+    font-weight: 700;
+}
+
+.mercurio-option {
+    min-height: 37px;
+    margin: 0;
+    padding: 6px 0;
+    border-bottom: 0;
+}
+
+.mercurio-option__label {
+    min-height: 25px;
+    gap: 8px;
+    align-items: center;
+}
+
+.mercurio-option__label input {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+}
+
+.mercurio-option[data-option-value="BI"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 200px;
+    align-items: center;
+    column-gap: 10px;
+}
+
+.mercurio-option__province {
+    margin: 0;
+}
+
+.mercurio-option__province > label {
+    display: none;
+}
+
+.mercurio-option__province #provincia {
+    width: 200px;
+    height: 33px;
+    margin: 0;
+    padding: 6px 8px;
+}
+
+.mercurio-options-dialog__footer {
+    min-height: 57px;
+    height: 57px;
+    padding: 9px 23px;
+    align-items: center;
+}
+
+
+/* ---------------------------------------------------------
+   SELECCIÓN DE MODELO
+   REAL:
+     radio x relativo = +4 px
+     label x relativo = +28.78 px
+     pitch filas      = 30 px
+     lista útil       ≈ 1069 px
+     continuar        = 135 × 38
+   --------------------------------------------------------- */
+
+.mercurio-model-list {
+    width: min(1069px, 100%);
+    border-top: 0;
+}
+
+.mercurio-model-option {
+    height: 30px;
+    padding: 4px 0 2px 4px;
+    gap: 12px;
+    border-bottom: 0;
+    align-items: flex-start;
+}
+
+.mercurio-model-option:hover {
+    background: transparent;
+}
+
+.mercurio-model-option input {
+    width: 13px;
+    height: 13px;
+    margin: 2px 0 0;
+}
+
+.mercurio-model-option label {
+    line-height: 16px;
+}
+
+.mercurio-model-actions {
+    width: 594px;
+    max-width: 100%;
+    justify-content: center;
+    margin-top: 10px;
+}
+
+.mercurio-model-actions .mercurio-button {
+    width: 135px;
+    min-width: 135px;
+}
+
+
+/* ---------------------------------------------------------
+   RESPONSIVE LAB
+   La geometría real anterior gobierna escritorio.
+   --------------------------------------------------------- */
+
+@media (max-width: 900px) {
+    .mercurio-access-list {
+        display: grid;
+        grid-template-columns: 1fr;
+        grid-auto-rows: auto;
+    }
+
+    .mercurio-access-row,
+    .mercurio-access-row:nth-child(7),
+    .mercurio-access-row:nth-child(8) {
+        grid-column: 1;
+        min-height: 180px;
+    }
+
+    .mercurio-access-button {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .mercurio-entry-choice-list {
+        grid-template-columns: 1fr;
+    }
+
+    .mercurio-entry-choice {
+        min-height: 0;
+    }
+}
+
+/* =========================================================
+   MERCURIO TWIN · GEO-1B
+   Ajustes derivados de REAL ↔ TWIN rect diff
+   ========================================================= */
+
+/*
+REAL reserva siempre scrollbar:
+client_width = 1519 con inner_width = 1534.
+Esto elimina el desplazamiento horizontal artificial
+de aproximadamente 7.5 px.
+*/
+html {
+    overflow-y: scroll;
+}
+
+
+/* ---------------------------------------------------------
+   SEDE SHELL
+   REAL ↔ TWIN:
+   VOLVER ENTRY delta vertical = -168 px
+   --------------------------------------------------------- */
+
+.mercurio-sede-brand {
+    height: 168px;
+    background: var(--mercurio-white);
+}
+
+.mercurio-sede-brand__inner {
+    width: min(1200px, calc(100% - 32px));
+    height: 168px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+}
+
+.mercurio-sede-brand h1 {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 400;
+    color: var(--mercurio-text);
+}
+
+.mercurio-sede-brand p {
+    margin: 5px 0 0;
+    font-size: 15px;
+}
+
+
+/* ---------------------------------------------------------
+   INICIO
+   Tras shell quedan aprox. 76 px hasta CONTINUAR real.
+   REAL x botón = 389.59 dentro de módulo de ~594 px.
+   --------------------------------------------------------- */
+
+.mercurio-actions {
+    width: 594px;
+    max-width: 100%;
+    display: flex;
+    justify-content: center;
+    margin-top: 105px;
+}
+
+
+/* ---------------------------------------------------------
+   MODO ACCESO
+   Horizontal ya coincide prácticamente al píxel.
+   REAL x - TWIN x ≈ +3px.
+   Tras shell de 168, queda ≈3px vertical.
+   --------------------------------------------------------- */
+
+.mercurio-access-list {
+    position: relative;
+    left: 3px;
+    margin-top: 37px;
+}
+
+
+/* ---------------------------------------------------------
+   ENTRY IDLE
+   Tras shell:
+     consulta queda aprox. +7px demasiado baja
+     presentación aprox. +10px demasiado baja.
+   REAL segundo botón = 248.56 × 38, no 396 × 38.
+   --------------------------------------------------------- */
+
+.mercurio-entry-choice-list {
+    position: relative;
+    top: -7px;
+}
+
+.mercurio-entry-choice__button {
+    margin-left: 3px;
+}
+
+.mercurio-entry-choice:nth-child(2)
+.mercurio-entry-choice__button {
+    width: 249px;
+    margin-top: -3px;
+}
+
+
+/* ---------------------------------------------------------
+   OPTIONS
+   position: fixed => NO recibe el desplazamiento del shell.
+
+   REAL dialog:
+     x = 643.86
+     w = 479.11
+
+   Con scrollbar, Twin centrado quedaría aprox. x=520.
+   Offset observado ≈ +124 px.
+   --------------------------------------------------------- */
+
+.mercurio-options-dialog {
+    position: relative;
+    left: 124px;
+}
+
+.mercurio-options-dialog__header {
+    padding-left: 4px;
+    padding-right: 6px;
+}
+
+.mercurio-options-dialog__title {
+    font-size: 18px;
+    line-height: 28px;
+}
+
+/*
+Las opciones Twin están ~28px demasiado arriba,
+mientras el footer ya coincide prácticamente.
+El body mantiene su altura y desplaza internamente
+los controles.
+*/
+.mercurio-options-dialog__body {
+    min-height: 352px;
+    padding: 42px 14px 14px;
+}
+
+.mercurio-options-dialog__prompt {
+    margin-top: 0;
+}
+
+
+/* ---------------------------------------------------------
+   MODELS
+   Tras shell global de 168 px todavía faltan:
+     EX00/01/02 ≈ +83 px.
+
+   Además CONTINUAR necesita ~26 px adicionales
+   respecto al final de la lista.
+   --------------------------------------------------------- */
+
+.mercurio-autofirma-notice {
+    margin-bottom: 113px;
+}
+
+.mercurio-model-actions {
+    margin-top: 36px;
+}
+
+/* =========================================================
+   MERCURIO TWIN · GEO-1C
+   Ajuste residual OPTIONS contra captura real
+   ========================================================= */
+
+/*
+REAL vs TWIN GEO-1B:
+radios/options ≈ 14px demasiado arriba.
+El footer ya coincide, por lo que desplazamos
+solamente el contenido interno.
+*/
+.mercurio-options-dialog__body {
+    padding-top: 56px;
+}
+
+
+/*
+REAL:
+bscIniciales x = 661.86
+
+GEO-1B:
+x = 659
+
+Corrección residual ≈ +3px.
+*/
+.mercurio-option {
+    position: relative;
+    left: 3px;
+}
+
+
+/*
+REAL:
+bscIniciales x = 661.86
+provincia    x = 873.41
+
+distancia ≈ 211.55px
+
+La grid anterior dejaba ≈249px.
+*/
+.mercurio-option[data-option-value="BI"] {
+    grid-template-columns: 203px 200px;
+    column-gap: 8px;
+}
