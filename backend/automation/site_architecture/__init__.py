@@ -112,3 +112,15 @@ __all__ += (
     "build_catalog_reference_graph",
     "normalize_catalogs",
 )
+
+from .catalog_dynamics import (
+    CATALOG_DYNAMIC_OPTIONS_CHANGED,
+    CATALOG_DYNAMIC_SOURCE_SELECTION_CHANGED,
+    build_catalog_dynamic_evidence,
+)
+
+__all__ += (
+    "CATALOG_DYNAMIC_OPTIONS_CHANGED",
+    "CATALOG_DYNAMIC_SOURCE_SELECTION_CHANGED",
+    "build_catalog_dynamic_evidence",
+)
