@@ -76,6 +76,415 @@ function captureDomFrame() {
   }
 
 
+  function catalogSelectorOf(
+    element
+  ) {
+    const id =
+      String(
+        element.id
+        || ""
+      );
+
+    if (id) {
+      if (
+        globalThis.CSS
+        && typeof CSS.escape
+          === "function"
+      ) {
+        return (
+          "#"
+          + CSS.escape(id)
+        );
+      }
+
+      return (
+        "#"
+        + id.replace(
+          /[^A-Za-z0-9_-]/g,
+          function (value) {
+            return "\\" + value;
+          }
+        )
+      );
+    }
+
+
+    const name =
+      String(
+        element.name
+        || ""
+      );
+
+    if (name) {
+      const escapedName =
+        name
+          .replace(
+            /\\/g,
+            "\\\\"
+          )
+          .replace(
+            /"/g,
+            '\\"'
+          );
+
+      const selector =
+        'select[name="'
+        + escapedName
+        + '"]';
+
+      try {
+        if (
+          document
+            .querySelectorAll(
+              selector
+            )
+            .length === 1
+        ) {
+          return selector;
+        }
+      } catch (_) {
+        // Continúa con selector estructural.
+      }
+    }
+
+
+    const parts = [];
+    let current = element;
+
+    while (
+      current
+      && current.nodeType === 1
+      && current
+        !== document.documentElement
+    ) {
+      const tag =
+        String(
+          current.tagName
+          || ""
+        ).toLowerCase();
+
+      const parent =
+        current.parentElement;
+
+      if (
+        !tag
+        || !parent
+      ) {
+        break;
+      }
+
+      const siblings =
+        Array.from(
+          parent.children
+          || []
+        ).filter(
+          function (candidate) {
+            return (
+              candidate.tagName
+              === current.tagName
+            );
+          }
+        );
+
+      const position =
+        siblings.indexOf(
+          current
+        ) + 1;
+
+      parts.unshift(
+        tag
+        + ":nth-of-type("
+        + position
+        + ")"
+      );
+
+      current = parent;
+
+      if (
+        current
+        === document.body
+      ) {
+        parts.unshift(
+          "body"
+        );
+
+        break;
+      }
+    }
+
+    return parts.join(
+      " > "
+    );
+  }
+
+
+  function catalogLabelOf(
+    element
+  ) {
+    return Array.from(
+      element.labels
+      || []
+    )
+      .map(
+        function (label) {
+          return cleanText(
+            label.textContent
+            || "",
+            300
+          );
+        }
+      )
+      .filter(Boolean)
+      .join(" | ");
+  }
+
+
+  function catalogDependencyHintsOf(
+    element
+  ) {
+    const attributes =
+      attributesOf(
+        element
+      );
+
+    const hints = {};
+
+    for (
+      const [
+        name,
+        value
+      ]
+      of Object.entries(
+        attributes
+      )
+    ) {
+      const normalizedName =
+        String(
+          name
+          || ""
+        ).toLowerCase();
+
+      const normalizedValue =
+        String(
+          value
+          || ""
+        );
+
+      const semanticHint =
+        (
+          normalizedName
+            .startsWith("data-")
+          || normalizedName
+            === "onchange"
+          || normalizedName
+            === "aria-controls"
+          || normalizedName
+            === "aria-owns"
+          || normalizedName
+            === "list"
+        );
+
+      let referencesElement =
+        false;
+
+      if (normalizedValue) {
+        const referencedElement =
+          document
+            .getElementById(
+              normalizedValue
+            );
+
+        referencesElement =
+          (
+            referencedElement !== null
+            && referencedElement !== element
+          );
+      }
+
+      if (
+        semanticHint
+        || referencesElement
+      ) {
+        hints[name] =
+          normalizedValue;
+      }
+    }
+
+    return hints;
+  }
+
+
+  function captureCatalogProbe() {
+    const catalogs =
+      Array.from(
+        document.querySelectorAll(
+          "select"
+        )
+      ).map(
+        function (select) {
+          const selectedOptions =
+            Array.from(
+              select.selectedOptions
+              || []
+            );
+
+          const firstSelected =
+            selectedOptions[0]
+            || null;
+
+          const options =
+            Array.from(
+              select.options
+              || []
+            ).map(
+              function (option) {
+                return {
+                  value:
+                    String(
+                      option.value
+                      || ""
+                    ),
+
+                  label:
+                    cleanText(
+                      option.label
+                      || option.textContent
+                      || "",
+                      300
+                    ),
+
+                  selected:
+                    Boolean(
+                      option.selected
+                    ),
+
+                  disabled:
+                    Boolean(
+                      option.disabled
+                    )
+                };
+              }
+            );
+
+          return {
+            catalog_type:
+              "native_select",
+
+            selector:
+              catalogSelectorOf(
+                select
+              ),
+
+            element: {
+              tag:
+                "select",
+
+              id:
+                String(
+                  select.id
+                  || ""
+                ),
+
+              name:
+                String(
+                  select.name
+                  || ""
+                ),
+
+              classes:
+                Array.from(
+                  select.classList
+                  || []
+                ),
+
+              label_text:
+                catalogLabelOf(
+                  select
+                ),
+
+              attributes:
+                attributesOf(
+                  select
+                )
+            },
+
+            state: {
+              selected_value:
+                String(
+                  select.value
+                  || ""
+                ),
+
+              selected_label:
+                (
+                  firstSelected
+                  ? cleanText(
+                      firstSelected.label
+                      || firstSelected
+                        .textContent
+                      || "",
+                      300
+                    )
+                  : ""
+                ),
+
+              selected_values:
+                selectedOptions.map(
+                  function (option) {
+                    return String(
+                      option.value
+                      || ""
+                    );
+                  }
+                ),
+
+              selected_index:
+                Number(
+                  select.selectedIndex
+                ),
+
+              disabled:
+                Boolean(
+                  select.disabled
+                ),
+
+              required:
+                Boolean(
+                  select.required
+                ),
+
+              multiple:
+                Boolean(
+                  select.multiple
+                )
+            },
+
+            options_count:
+              options.length,
+
+            options,
+
+            dependency_hints:
+              catalogDependencyHintsOf(
+                select
+              )
+          };
+        }
+      );
+
+    return {
+      schema_version:
+        1,
+
+      catalog_count:
+        catalogs.length,
+
+      elements:
+        catalogs
+    };
+  }
+
+
   function visibilityOf(
     element
   ) {
@@ -495,6 +904,9 @@ function captureDomFrame() {
       open_shadow_roots:
         shadowRoots.length
     },
+
+    catalog_probe:
+      captureCatalogProbe(),
 
     elements:
       inventory,
