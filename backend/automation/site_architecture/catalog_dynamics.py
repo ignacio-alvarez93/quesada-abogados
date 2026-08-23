@@ -298,3 +298,155 @@ def build_catalog_dynamic_evidence(
     return tuple(
         evidence
     )
+
+
+CATALOG_RELATION_INFLUENCES = (
+    "INFLUENCES"
+)
+
+CATALOG_RELATION_DEPENDS_ON = (
+    "DEPENDS_ON"
+)
+
+CATALOG_CAUSAL_EVIDENCE_OBSERVED_MUTATION = (
+    "OBSERVED_CATALOG_MUTATION"
+)
+
+
+def build_catalog_causal_relations(
+    dynamic_evidence,
+):
+    """
+    Promueve cambios dinámicos observados a relaciones
+    causales canónicas.
+
+    Solo CATALOG_OPTIONS_CHANGED demuestra aquí una
+    influencia entre dos catálogos distintos.
+    """
+
+    relations = []
+    seen = set()
+
+    for evidence in (
+        dynamic_evidence
+        or ()
+    ):
+        if not isinstance(
+            evidence,
+            dict,
+        ):
+            continue
+
+        if (
+            evidence.get("kind")
+            != CATALOG_DYNAMIC_OPTIONS_CHANGED
+        ):
+            continue
+
+        source = _text(
+            evidence.get("source")
+        )
+
+        target = _text(
+            evidence.get("target")
+        )
+
+        if (
+            not source
+            or not target
+            or source == target
+        ):
+            continue
+
+        causal_evidence = {
+            "kind":
+                CATALOG_CAUSAL_EVIDENCE_OBSERVED_MUTATION,
+
+            "observation":
+                CATALOG_DYNAMIC_OPTIONS_CHANGED,
+
+            "before_options_count":
+                int(
+                    evidence.get(
+                        "before_options_count"
+                    )
+                    or 0
+                ),
+
+            "after_options_count":
+                int(
+                    evidence.get(
+                        "after_options_count"
+                    )
+                    or 0
+                ),
+        }
+
+        candidates = (
+            {
+                "relation":
+                    CATALOG_RELATION_INFLUENCES,
+
+                "source":
+                    source,
+
+                "target":
+                    target,
+
+                "evidence":
+                    dict(
+                        causal_evidence
+                    ),
+
+                "confidence":
+                    1.0,
+            },
+            {
+                "relation":
+                    CATALOG_RELATION_DEPENDS_ON,
+
+                "source":
+                    target,
+
+                "target":
+                    source,
+
+                "evidence":
+                    dict(
+                        causal_evidence
+                    ),
+
+                "confidence":
+                    1.0,
+            },
+        )
+
+        for relation in candidates:
+            signature = (
+                relation["relation"],
+                relation["source"],
+                relation["target"],
+            )
+
+            if signature in seen:
+                continue
+
+            seen.add(
+                signature
+            )
+
+            relations.append(
+                relation
+            )
+
+    relations.sort(
+        key=lambda relation: (
+            relation["relation"],
+            relation["source"],
+            relation["target"],
+        )
+    )
+
+    return tuple(
+        relations
+    )

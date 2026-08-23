@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .catalog_dynamics import (
+    build_catalog_causal_relations,
     build_catalog_dynamic_evidence,
 )
 from .normalizer import (
@@ -395,6 +396,12 @@ def analyze_qcc_catalog_experiment(
         )
     )
 
+    causal_relations = (
+        build_catalog_causal_relations(
+            evidence
+        )
+    )
+
     return {
         "source_catalog_key":
             source_catalog_key,
@@ -407,6 +414,14 @@ def analyze_qcc_catalog_experiment(
 
         "evidence_count":
             len(evidence),
+
+        "causal_relations":
+            causal_relations,
+
+        "causal_relation_count":
+            len(
+                causal_relations
+            ),
 
         "restoration_exact":
             True,

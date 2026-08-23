@@ -114,8 +114,12 @@ __all__ += (
 )
 
 from .catalog_dynamics import (
+    CATALOG_CAUSAL_EVIDENCE_OBSERVED_MUTATION,
     CATALOG_DYNAMIC_OPTIONS_CHANGED,
     CATALOG_DYNAMIC_SOURCE_SELECTION_CHANGED,
+    CATALOG_RELATION_DEPENDS_ON,
+    CATALOG_RELATION_INFLUENCES,
+    build_catalog_causal_relations,
     build_catalog_dynamic_evidence,
 )
 

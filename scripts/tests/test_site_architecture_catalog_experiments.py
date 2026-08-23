@@ -399,3 +399,71 @@ def test_analyzer_requires_declared_restoration_success():
         analyze_qcc_catalog_experiment(
             experiment
         )
+
+
+def test_analyzer_promotes_observed_changes_to_causal_relations():
+    result = (
+        analyze_qcc_catalog_experiment(
+            _experiment()
+        )
+    )
+
+    relations = (
+        result[
+            "causal_relations"
+        ]
+    )
+
+    assert (
+        result[
+            "causal_relation_count"
+        ]
+        == 4
+    )
+
+    signatures = {
+        (
+            relation["relation"],
+            relation["source"],
+            relation["target"],
+        )
+        for relation
+        in relations
+    }
+
+    assert signatures == {
+        (
+            "INFLUENCES",
+            "main::#province",
+            "main::#municipality",
+        ),
+        (
+            "DEPENDS_ON",
+            "main::#municipality",
+            "main::#province",
+        ),
+        (
+            "INFLUENCES",
+            "main::#province",
+            "main::#locality",
+        ),
+        (
+            "DEPENDS_ON",
+            "main::#locality",
+            "main::#province",
+        ),
+    }
+
+    assert all(
+        relation["evidence"]["kind"]
+        == "OBSERVED_CATALOG_MUTATION"
+        for relation
+        in relations
+    )
+
+    serialized = repr(
+        relations
+    )
+
+    assert "ASTURIAS" not in serialized
+    assert "A CORUÑA" not in serialized
