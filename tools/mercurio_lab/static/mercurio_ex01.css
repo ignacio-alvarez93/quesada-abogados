@@ -907,3 +907,172 @@ en el siguiente micro-gate.
 > .r-tabs-tab:nth-child(4).r-tabs-state-active {
     width: 200.015625px;
 }
+
+
+/* =========================================================
+   MERCURIO TWIN · EX01-TWIN-5D3
+   Header REAL · geometría observable
+   ========================================================= */
+
+/*
+El header antiguo permanece únicamente como ancla de flujo.
+Conserva exactamente la altura previa para no desplazar
+.ex01-main.
+*/
+.ex01-flow-anchor {
+    visibility: hidden;
+}
+
+
+/*
+REAL:
+x=13.00
+y=200.00
+w=258.45
+h=40
+*/
+.ex01-real-sede-title {
+    position: absolute;
+
+    left: -147.96875px;
+    top: -69.296875px;
+
+    box-sizing: border-box;
+
+    width: 258.453125px;
+    height: 40px;
+
+    margin: 0;
+}
+
+
+/*
+REAL:
+x=139.97
+y=238.00
+w=1239.06
+h=88
+*/
+.ex01-real-window-header {
+    position: absolute;
+
+    left: -21px;
+    top: -31.296875px;
+
+    box-sizing: border-box;
+
+    width: 1239.0625px;
+    height: 88px;
+}
+
+
+/*
+Dos filas REAL de 44px.
+
+x interior = 159.97
+*/
+.ex01-real-window-header
+> .mf-app-title--container {
+    position: absolute;
+
+    left: 20px;
+
+    box-sizing: border-box;
+
+    width: 1199.0625px;
+    height: 44px;
+}
+
+
+.ex01-real-identity {
+    top: 0;
+}
+
+
+.ex01-real-app-title {
+    top: 44px;
+}
+
+
+/*
+REAL:
+Solicitud inicial
+x=159.97
+y=282
+w=183.64
+h=36
+*/
+.ex01-real-app-title
+> .mf-window-header--title {
+    box-sizing: border-box;
+
+    width: 183.640625px;
+    height: 36px;
+}
+
+
+/*
+VOLVER, alineado a la derecha del container REAL.
+*/
+.ex01-real-app-title
+> .right {
+    position: absolute;
+
+    right: 0;
+    top: 0;
+
+    box-sizing: border-box;
+
+    width: 113.765625px;
+    height: 44px;
+}
+
+
+/*
+REAL heading:
+x=159.97
+y=331
+w=1199.06
+h visual row=24
+h4=30
+*/
+.ex01-real-request-heading {
+    position: absolute;
+
+    left: -1px;
+    top: 61.703125px;
+
+    box-sizing: border-box;
+
+    width: 1199.0625px;
+    height: 24px;
+}
+
+
+.ex01-real-request-heading
+.mf-layout--module__xl {
+    width: 1199.0625px;
+    height: 24px;
+}
+
+
+.ex01-real-request-heading
+h4.mf-paragraph-header.subgrupo {
+    box-sizing: border-box;
+
+    width: 1199.0625px;
+    height: 30px;
+
+    margin: 0;
+}
+
+
+/*
+El pestañero ya está calibrado a y=365.0625.
+Al sacar el nuevo shell del flujo necesitamos conservar
+exactamente el footprint anterior de h1+h2.
+*/
+.ex01-shell-flow-spacer {
+    width: 1198px;
+    height: 74.75px;
+}

@@ -569,7 +569,10 @@ def render_ex01_page(
     data-ex01-twin="1"
     data-ex01-state="{Ex01TwinState.AUTHORIZATION.value}"
 >
-<header class="ex01-header">
+<header
+    class="ex01-header ex01-flow-anchor"
+    aria-hidden="true"
+>
     <div>
         Sede electrónica · Administraciones Públicas
     </div>
@@ -584,9 +587,57 @@ def render_ex01_page(
 </header>
 
 <main class="ex01-main">
-    <h1>
-        Autorizaciones de Extranjería
+    <h1
+        class="
+            mf-app-title
+            ex01-real-sede-title
+        "
+    >
+        Sede electrónica
     </h1>
+
+    <div
+        class="
+            mf-window-header
+            ex01-real-window-header
+        "
+    >
+        <div
+            class="
+                mf-app-title--container
+                ex01-real-identity
+            "
+        >
+            <span>
+                V. 4.1.4
+            </span>
+
+            <span data-lab-redacted="1">
+                AB. ABOGADO - USUARIO LAB
+            </span>
+        </div>
+
+        <div
+            id="btVolver"
+            class="
+                mf-app-title--container
+                ex01-real-app-title
+            "
+        >
+            <div
+                class="
+                    left
+                    mf-window-header--title
+                "
+            >
+                Solicitud inicial
+            </div>
+
+            <div class="right">
+                VOLVER
+            </div>
+        </div>
+    </div>
 
     <form
         name="autorizacionMercurio"
@@ -596,11 +647,37 @@ def render_ex01_page(
     >
         {_hidden_fields()}
 
-        <h2>
-            SOLICITUD INICIAL:
-            EX01 - Solicitud de autorización de
-            residencia temporal no lucrativa.
-        </h2>
+        <div
+            class="
+                mf-layout--row
+                ex01-real-request-heading
+            "
+        >
+            <div
+                class="
+                    mf-layout--module__xl
+                    mf-layout--column
+                "
+            >
+                <h4
+                    class="
+                        mf-paragraph-header
+                        subgrupo
+                    "
+                >
+                    <span>
+                        SOLICITUD INICIAL:
+                    </span>
+                    EX01 - Solicitud de autorización de
+                    residencia temporal no lucrativa.
+                </h4>
+            </div>
+        </div>
+
+        <div
+            class="ex01-shell-flow-spacer"
+            aria-hidden="true"
+        ></div>
 
         <ul
             id="merPestanero"

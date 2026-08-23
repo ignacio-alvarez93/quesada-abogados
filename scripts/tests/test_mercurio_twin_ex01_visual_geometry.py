@@ -167,3 +167,21 @@ def test_ex01_birth_date_uses_local_calendar_asset():
     assert 'width="19"' in asset.read_text(
         encoding="utf-8"
     )
+
+
+def test_ex01_real_header_geometry_is_frozen():
+    required = (
+        "left: -147.96875px;",
+        "top: -69.296875px;",
+        "width: 258.453125px;",
+        "left: -21px;",
+        "top: -31.296875px;",
+        "width: 1239.0625px;",
+        "height: 88px;",
+        "top: 61.703125px;",
+        "width: 1199.0625px;",
+        "height: 74.75px;",
+    )
+
+    for token in required:
+        assert token in CSS

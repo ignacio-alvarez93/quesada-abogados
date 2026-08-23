@@ -152,3 +152,29 @@ def test_ex01_reproduces_real_tab_dom_contract():
 
     for token in required:
         assert token in html
+
+
+def test_ex01_reproduces_real_header_dom_contract():
+    html = _html()
+
+    required = (
+        "mf-app-title",
+        "Sede electrónica",
+        "mf-window-header",
+        "mf-app-title--container",
+        'id="btVolver"',
+        "mf-window-header--title",
+        "Solicitud inicial",
+        "VOLVER",
+        "mf-layout--row",
+        "mf-layout--module__xl",
+        "mf-layout--column",
+        "mf-paragraph-header",
+        "subgrupo",
+        "SOLICITUD INICIAL:",
+        "ex01-shell-flow-spacer",
+        'data-lab-redacted="1"',
+    )
+
+    for token in required:
+        assert token in html
