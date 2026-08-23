@@ -156,184 +156,225 @@ def _select(
     )
 
 
+def _personal_field(
+    field_id: str,
+    label: str,
+    control: str,
+    *,
+    label_id: str | None = None,
+) -> str:
+    id_attr = (
+        f' id="{escape(label_id)}"'
+        if label_id
+        else ""
+    )
+
+    return (
+        '<div class="ex01-field">'
+        f'<label{id_attr} '
+        f'for="{escape(field_id)}">'
+        f'{escape(label)}'
+        '</label>'
+        f'{control}'
+        '</div>'
+    )
+
+
 def _personal_fields() -> str:
-    return f"""
-<div class="ex01-grid">
-    <label>
-        Pasaporte
-        {_text("extPasaporte")}
-    </label>
-
-    <label>
-        N.I.E.
-        {_text("extNie")}
-    </label>
-
-    <label>
-        1º Apellido
-        {_text("extApellido1")}
-    </label>
-
-    <label>
-        2º Apellido
-        {_text("extApellido2")}
-    </label>
-
-    <label>
-        Nombre
-        {_text("extNombre")}
-    </label>
-
-    <label>
-        Sexo
-        {_select(
+    fields = (
+        _personal_field(
+            "extPasaporte",
+            "Pasaporte",
+            _text("extPasaporte"),
+        ),
+        _personal_field(
+            "extNie",
+            "N.I.E.",
+            _text("extNie"),
+            label_id="extNieSinToolTip",
+        ),
+        _personal_field(
+            "extApellido1",
+            "1º Apellido",
+            _text("extApellido1"),
+        ),
+        _personal_field(
+            "extApellido2",
+            "2º Apellido",
+            _text("extApellido2"),
+        ),
+        _personal_field(
+            "extNombre",
+            "Nombre",
+            _text("extNombre"),
+        ),
+        _personal_field(
             "extSexo",
-            ("HOMBRE", "MUJER", "INDEFINIDO"),
-        )}
-    </label>
-
-    <label>
-        Fecha de nacimiento
-        {_text("extFechaNacimiento")}
-    </label>
-
-    <label>
-        Estado civil
-        {_select(
+            "Sexo",
+            _select(
+                "extSexo",
+                (
+                    "HOMBRE",
+                    "MUJER",
+                    "INDEFINIDO",
+                ),
+            ),
+        ),
+        _personal_field(
+            "extFechaNacimiento",
+            "Fecha de nacimiento",
+            _text("extFechaNacimiento"),
+        ),
+        _personal_field(
             "extEstadoCivil",
-            (
-                "CASADO/A",
-                "DESCONOCIDO",
-                "DIVORCIADO/A",
-                "SEPARADO/A",
-                "SOLTERO/A",
-                "UNIÓN DE HECHO",
-                "VIUDO/A",
+            "Estado civil",
+            _select(
+                "extEstadoCivil",
+                (
+                    "CASADO/A",
+                    "DESCONOCIDO",
+                    "DIVORCIADO/A",
+                    "SEPARADO/A",
+                    "SOLTERO/A",
+                    "UNIÓN DE HECHO",
+                    "VIUDO/A",
+                ),
             ),
-        )}
-    </label>
-
-    <label>
-        Lugar de nacimiento
-        {_text("extLugarNacimiento")}
-    </label>
-
-    <label>
-        País de nacimiento
-        {_select(
+        ),
+        _personal_field(
+            "extLugarNacimiento",
+            "Lugar de nacimiento",
+            _text("extLugarNacimiento"),
+        ),
+        _personal_field(
             "extCodigoPaisNacimiento",
-            ("MARRUECOS", "ESPAÑA"),
-        )}
-    </label>
-
-    <label>
-        Nacionalidad
-        {_select(
+            "País de nacimiento",
+            _select(
+                "extCodigoPaisNacimiento",
+                (
+                    "MARRUECOS",
+                    "ESPAÑA",
+                ),
+            ),
+        ),
+        _personal_field(
             "extCodigoNacionalidad",
-            ("MARRUECOS", "ESPAÑA"),
-        )}
-    </label>
-
-    <label>
-        Padre
-        {_text("extPadre")}
-    </label>
-
-    <label>
-        Madre
-        {_text("extMadre")}
-    </label>
-
-    <label>
-        Tipo de vía
-        {_select(
+            "Nacionalidad",
+            _select(
+                "extCodigoNacionalidad",
+                (
+                    "MARRUECOS",
+                    "ESPAÑA",
+                ),
+            ),
+        ),
+        _personal_field(
+            "extPadre",
+            "Nombre del padre",
+            _text("extPadre"),
+        ),
+        _personal_field(
+            "extMadre",
+            "Nombre de la madre",
+            _text("extMadre"),
+        ),
+        _personal_field(
             "extTipoVia",
-            (
-                "CALLE",
-                "AVENIDA",
-                "PLAZA",
-                "CARRETERA",
+            "Tipo de vía",
+            _select(
+                "extTipoVia",
+                (
+                    "CALLE",
+                    "AVENIDA",
+                    "PLAZA",
+                    "CARRETERA",
+                ),
             ),
-        )}
-    </label>
-
-    <label>
-        Domicilio
-        {_text("extDomicilio")}
-    </label>
-
-    <label>
-        Número
-        {_text("extNumero")}
-    </label>
-
-    <label>
-        Piso
-        {_select(
+        ),
+        _personal_field(
+            "extDomicilio",
+            "Domicilio",
+            _text("extDomicilio"),
+        ),
+        _personal_field(
+            "extNumero",
+            "Número",
+            _text("extNumero"),
+        ),
+        _personal_field(
             "extPiso",
-            tuple(
-                f"{n:02d}"
-                for n in range(1, 21)
+            "Piso",
+            _select(
+                "extPiso",
+                tuple(
+                    f"{n:02d}"
+                    for n in range(1, 21)
+                ),
             ),
-        )}
-    </label>
-
-    <label>
-        Letra
-        {_text("extLetra")}
-    </label>
-
-    <label>
-        Bloque
-        {_text("extBloque")}
-    </label>
-
-    <label>
-        Provincia
-        {_select(
+        ),
+        _personal_field(
+            "extLetra",
+            "Letra",
+            _text("extLetra"),
+        ),
+        _personal_field(
+            "extBloque",
+            "Bloque",
+            _text("extBloque"),
+        ),
+        _personal_field(
             "extCodigoProvincia",
-            ("33",),
-        )}
-    </label>
-
-    <label>
-        Municipio
-        {_select(
+            "Provincia",
+            _select(
+                "extCodigoProvincia",
+                ("33",),
+            ),
+        ),
+        _personal_field(
             "extCodigoMunicipio",
-            ("44",),
-        )}
-    </label>
-
-    <label>
-        Localidad
-        {_select(
+            "Municipio",
+            _select(
+                "extCodigoMunicipio",
+                ("44",),
+            ),
+        ),
+        _personal_field(
             "extCodigoLocalidad",
-            ("190100",),
-        )}
-    </label>
-
-    <label>
-        Código postal
-        {_text("extCodigoPostal")}
-    </label>
-
-    <label>
-        Teléfono
-        {_text("extTelefono")}
-    </label>
-
-    <label>
-        Teléfono móvil
-        {_text("extTelefonoMovil")}
-    </label>
-
-    <label>
-        Email
-        {_text(
+            "Localidad",
+            _select(
+                "extCodigoLocalidad",
+                ("190100",),
+            ),
+        ),
+        _personal_field(
+            "extCodigoPostal",
+            "Código Postal",
+            _text("extCodigoPostal"),
+        ),
+        _personal_field(
+            "extTelefono",
+            "Teléfono",
+            _text("extTelefono"),
+        ),
+        _personal_field(
+            "extTelefonoMovil",
+            "Teléfono móvil",
+            _text("extTelefonoMovil"),
+        ),
+        _personal_field(
             "extEmail",
-            input_type="email",
-        )}
-    </label>
+            "Email",
+            _text(
+                "extEmail",
+                input_type="email",
+            ),
+        ),
+    )
+
+    return (
+        '<div class="ex01-grid">'
+        + "\n".join(fields)
+        + """
 </div>
 
 <input
@@ -350,6 +391,7 @@ def _personal_fields() -> str:
     value="true"
 >
 """
+    )
 
 
 def _presenter_fields() -> str:

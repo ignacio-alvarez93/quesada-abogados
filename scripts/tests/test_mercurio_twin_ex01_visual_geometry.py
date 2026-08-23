@@ -32,7 +32,7 @@ def test_ex01_real_row_pitch_is_frozen():
 
 def test_ex01_birthplace_real_width_is_frozen():
     assert (
-        "label:has(#extLugarNacimiento)"
+        ".ex01-field:has(#extLugarNacimiento)"
         in CSS
     )
     assert "width: 420px;" in CSS
@@ -40,12 +40,12 @@ def test_ex01_birthplace_real_width_is_frozen():
 
 def test_ex01_real_section_gaps_are_frozen():
     assert (
-        "label:has(#extTipoVia)"
+        ".ex01-field:has(#extTipoVia)"
         in CSS
     )
 
     assert (
-        "label:has(#extCodigoProvincia)"
+        ".ex01-field:has(#extCodigoProvincia)"
         in CSS
     )
 

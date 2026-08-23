@@ -100,3 +100,37 @@ def test_ex01_personal_controls_reproduce_observed_mercurio_classes():
 
     for fragment in expected:
         assert fragment in html
+
+
+def test_ex01_personal_labels_are_independent_real_contract():
+    html = _html()
+
+    expected = (
+        '<label for="extPasaporte">Pasaporte</label>',
+        (
+            '<label id="extNieSinToolTip" '
+            'for="extNie">N.I.E.</label>'
+        ),
+        '<label for="extSexo">Sexo</label>',
+        (
+            '<label for="extFechaNacimiento">'
+            'Fecha de nacimiento</label>'
+        ),
+        (
+            '<label for="extPadre">'
+            'Nombre del padre</label>'
+        ),
+        (
+            '<label for="extMadre">'
+            'Nombre de la madre</label>'
+        ),
+        (
+            '<label for="extCodigoPostal">'
+            'Código Postal</label>'
+        ),
+    )
+
+    for fragment in expected:
+        assert fragment in html
+
+    assert 'class="ex01-field"' in html

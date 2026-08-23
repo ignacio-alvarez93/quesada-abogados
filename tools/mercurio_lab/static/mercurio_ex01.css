@@ -203,15 +203,10 @@ Estas alturas forman parte del layout observable.
 }
 
 
-.ex01-grid label {
+#tab-datos_presentador .ex01-grid label,
+#tab-datos_notificacion .ex01-grid label {
     display: grid;
 
-    /*
-    163.89 + 20 = 183.89
-
-    180.97 + 183.89
-    = 364.86
-    */
     grid-template-columns:
         163.89px
         280px;
@@ -222,6 +217,55 @@ Estas alturas forman parte del layout observable.
     align-items: center;
 
     min-height: 33px;
+}
+
+
+/*
+PERSONAL · Mercurio REAL mantiene
+label y control como elementos separados.
+
+Grid original TWIN:
+x celda izquierda = 180.97
+
+REAL:
+label x   = 166.97
+control x = 364.86
+
+Por tanto:
+offset label/wrapper = -14px
+label width          = 180px
+gap                  = 17.89px
+*/
+#tab-datos_personales .ex01-field {
+    position: relative;
+    left: -14px;
+
+    display: grid;
+
+    grid-template-columns:
+        180px
+        280px;
+
+    column-gap: 17.89px;
+
+    align-items: start;
+
+    min-height: 33px;
+}
+
+
+#tab-datos_personales
+.ex01-field > label {
+    box-sizing: border-box;
+
+    display: block;
+
+    width: 180px;
+    height: 16px;
+
+    margin-top: 8px;
+
+    line-height: 16px;
 }
 
 
@@ -244,11 +288,11 @@ Lugar de nacimiento:
 REAL = 420 × 33
 Además ocupa su propia fila lógica.
 */
-.ex01-grid label:has(#extLugarNacimiento) {
+.ex01-grid .ex01-field:has(#extLugarNacimiento) {
     grid-column: 1 / -1;
 
     grid-template-columns:
-        163.89px
+        180px
         420px;
 }
 
@@ -261,8 +305,8 @@ Además ocupa su propia fila lógica.
 Después de padre/madre Mercurio introduce
 un salto de sección antes del domicilio.
 */
-.ex01-grid label:has(#extTipoVia),
-.ex01-grid label:has(#extDomicilio) {
+.ex01-grid .ex01-field:has(#extTipoVia),
+.ex01-grid .ex01-field:has(#extDomicilio) {
     margin-top: 33.97px;
 }
 
@@ -272,8 +316,8 @@ Entre número/piso + letra/bloque y
 provincia/municipio existe otra fila
 estructural en el formulario real.
 */
-.ex01-grid label:has(#extCodigoProvincia),
-.ex01-grid label:has(#extCodigoMunicipio) {
+.ex01-grid .ex01-field:has(#extCodigoProvincia),
+.ex01-grid .ex01-field:has(#extCodigoMunicipio) {
     margin-top: 63.95px;
 }
 
