@@ -10,6 +10,10 @@ const QCC_CONTEXT_URL =
 const QCC_SITE_ARCHITECTURE_CAPTURE_URL =
   `${QCC_BRIDGE_BASE_URL}/qcc/site-architecture/capture`;
 
+const QCC_CATALOG_EXPERIMENT_URL =
+  `${QCC_BRIDGE_BASE_URL}`
+  + "/qcc/site-architecture/catalog-experiment";
+
 const QCC_HEALTH_INTERVAL_MS = 2000;
 const QCC_REQUEST_TIMEOUT_MS = 1200;
 
@@ -144,6 +148,23 @@ async function submitSiteArchitectureCapture(
     {
       protocol_version: 1,
       capture
+    },
+    QCC_SITE_ARCHITECTURE_REQUEST_TIMEOUT_MS
+  );
+}
+
+
+async function submitCatalogExperiment(
+  experiment
+) {
+  return await postJson(
+    QCC_CATALOG_EXPERIMENT_URL,
+    {
+      protocol_version:
+        1,
+
+      experiment:
+        experiment
     },
     QCC_SITE_ARCHITECTURE_REQUEST_TIMEOUT_MS
   );
@@ -1176,6 +1197,46 @@ async function handleCatalogExperiment() {
       );
 
 
+    let backendAnalysis = null;
+
+    try {
+      backendAnalysis =
+        await submitCatalogExperiment(
+          result
+        );
+
+      if (
+        !backendAnalysis
+        || backendAnalysis.ok !== true
+      ) {
+        throw new Error(
+          "QCC_CATALOG_EXPERIMENT_ANALYSIS_INVALID"
+        );
+      }
+
+    } catch (error) {
+      console.warn(
+        "[QCC] Catalog experiment backend:",
+        error
+      );
+    }
+
+
+    const causalRelations =
+      Number(
+        backendAnalysis
+        ?.causal_relation_count
+        || 0
+      );
+
+    const evidenceCount =
+      Number(
+        backendAnalysis
+        ?.evidence_count
+        || 0
+      );
+
+
     setText(
       "catalog-experiment-feedback",
       (
@@ -1186,6 +1247,16 @@ async function handleCatalogExperiment() {
         + `${restoration.restored_value || "∅"}`
         + " · estado integral "
         + `${comparedCatalogs}/${comparedCatalogs}`
+        + (
+            backendAnalysis
+            ? (
+                " · evidencia "
+                + `${evidenceCount}`
+                + " · relaciones causales "
+                + `${causalRelations}`
+              )
+            : " · análisis backend no disponible"
+          )
         + " · OK"
       )
     );

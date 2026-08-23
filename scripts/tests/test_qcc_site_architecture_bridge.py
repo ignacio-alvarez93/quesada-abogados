@@ -308,3 +308,247 @@ def test_site_architecture_channel_rejects_oversize(
     finally:
         bridge.close()
 
+
+
+def _post_catalog_experiment(
+    base,
+    experiment,
+):
+    body = json.dumps({
+        "protocol_version":
+            QCC_PROTOCOL_VERSION,
+
+        "experiment":
+            experiment,
+    }).encode("utf-8")
+
+    request = Request(
+        (
+            base
+            + "/qcc/site-architecture/"
+            + "catalog-experiment"
+        ),
+        data=body,
+        headers={
+            "Content-Type":
+                "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        response = urlopen(
+            request,
+            timeout=2,
+        )
+
+    except HTTPError as exc:
+        return (
+            exc.code,
+            json.loads(
+                exc.read().decode(
+                    "utf-8"
+                )
+            ),
+        )
+
+    with response:
+        return (
+            response.status,
+            json.loads(
+                response.read().decode(
+                    "utf-8"
+                )
+            ),
+        )
+
+
+def test_bridge_analyzes_catalog_experiment_without_raw_echo(
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_analyze(
+        experiment,
+    ):
+        captured["experiment"] = (
+            experiment
+        )
+
+        return {
+            "source_catalog_key":
+                "main::#province",
+
+            "evidence":
+                ({
+                    "sensitive":
+                        "SHOULD_NOT_BE_RETURNED",
+                },),
+
+            "evidence_count":
+                3,
+
+            "causal_relations":
+                ({
+                    "relation":
+                        "INFLUENCES",
+
+                    "source":
+                        "main::#province",
+
+                    "target":
+                        "main::#municipality",
+
+                    "evidence": {
+                        "kind":
+                            "OBSERVED_CATALOG_MUTATION",
+                    },
+
+                    "confidence":
+                        1.0,
+                },),
+
+            "causal_relation_count":
+                1,
+
+            "restoration_exact":
+                True,
+
+            "compared_catalogs":
+                16,
+        }
+
+    monkeypatch.setattr(
+        qcc_bridge_server,
+        "analyze_qcc_catalog_experiment",
+        fake_analyze,
+    )
+
+    bridge = QccBridgeServer(
+        port=0,
+    )
+
+    bridge.start()
+
+    try:
+        base = (
+            f"http://{bridge.host}:"
+            f"{bridge.port}"
+        )
+
+        raw_experiment = {
+            "experiment_type":
+                "QCC_CATALOG_EXPERIMENT",
+
+            "secret_live_value":
+                "RAW_NOT_FOR_RESPONSE",
+        }
+
+        status, payload = (
+            _post_catalog_experiment(
+                base,
+                raw_experiment,
+            )
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+
+        assert (
+            captured["experiment"]
+            == raw_experiment
+        )
+
+        assert (
+            payload[
+                "source_catalog_key"
+            ]
+            == "main::#province"
+        )
+
+        assert (
+            payload[
+                "evidence_count"
+            ]
+            == 3
+        )
+
+        assert (
+            payload[
+                "causal_relation_count"
+            ]
+            == 1
+        )
+
+        assert (
+            payload[
+                "restoration_exact"
+            ]
+            is True
+        )
+
+        serialized = json.dumps(
+            payload
+        )
+
+        assert (
+            "RAW_NOT_FOR_RESPONSE"
+            not in serialized
+        )
+
+        assert (
+            "SHOULD_NOT_BE_RETURNED"
+            not in serialized
+        )
+
+    finally:
+        bridge.close()
+
+
+def test_catalog_experiment_bridge_rejects_analyzer_error(
+    monkeypatch,
+):
+    def fake_analyze(
+        _experiment,
+    ):
+        raise ValueError(
+            "QCC_CATALOG_EXPERIMENT_ORIGIN_INVALID"
+        )
+
+    monkeypatch.setattr(
+        qcc_bridge_server,
+        "analyze_qcc_catalog_experiment",
+        fake_analyze,
+    )
+
+    bridge = QccBridgeServer(
+        port=0,
+    )
+
+    bridge.start()
+
+    try:
+        base = (
+            f"http://{bridge.host}:"
+            f"{bridge.port}"
+        )
+
+        status, payload = (
+            _post_catalog_experiment(
+                base,
+                {
+                    "experiment_type":
+                        "QCC_CATALOG_EXPERIMENT",
+                },
+            )
+        )
+
+        assert status == 400
+
+        assert (
+            payload["error"]
+            == "QCC_CATALOG_EXPERIMENT_ORIGIN_INVALID"
+        )
+
+    finally:
+        bridge.close()

@@ -214,3 +214,23 @@ def test_catalog_experiment_surfaces_integral_restore():
         "estado integral"
         in source
     )
+
+
+def test_catalog_experiment_posts_to_backend_analyzer():
+    source = PANEL.read_text(
+        encoding="utf-8"
+    )
+
+    required = (
+        "QCC_CATALOG_EXPERIMENT_URL",
+        "/qcc/site-architecture/catalog-experiment",
+        "submitCatalogExperiment",
+        "protocol_version:",
+        "experiment:",
+        "causal_relation_count",
+        "evidence_count",
+        "relaciones causales",
+    )
+
+    for token in required:
+        assert token in source
