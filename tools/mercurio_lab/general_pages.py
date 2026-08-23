@@ -208,21 +208,6 @@ def _modo_acceso_page() -> bytes:
 def _entry_page() -> bytes:
     contract = _entry_options_contract()
 
-    operations = "\n".join(
-        (
-            '<div class="mercurio-option">'
-            f'<input id="{escape(item["id"])}" '
-            'name="opcion" '
-            'type="radio" '
-            f'value="{escape(item["value"])}">'
-            f'<label for="{escape(item["id"])}">'
-            f'{escape(item["label"])}'
-            '</label>'
-            '</div>'
-        )
-        for item in contract["operations"]
-    )
-
     province_options = "\n".join(
         (
             f'<option value="{escape(item["value"])}">'
@@ -230,6 +215,57 @@ def _entry_page() -> bytes:
             '</option>'
         )
         for item in contract["provinces"]
+    )
+
+
+    operation_rows = []
+
+    for item in contract["operations"]:
+        province_control = ""
+
+        if item["value"] == "BI":
+            province_control = f"""
+<div class="mercurio-option__province">
+    <label for="provincia">
+        Provincia
+    </label>
+
+    <select
+        id="provincia"
+        name="provincia"
+    >
+        <option value="">
+            Seleccione provincia...
+        </option>
+        {province_options}
+    </select>
+</div>
+"""
+
+        operation_rows.append(
+            f"""
+<div
+    class="mercurio-option"
+    data-option-value="{escape(item["value"])}"
+>
+    <p class="mercurio-option__label">
+        <input
+            id="{escape(item["id"])}"
+            name="opcion"
+            type="radio"
+            value="{escape(item["value"])}"
+        >
+        <label for="{escape(item["id"])}">
+            {escape(item["label"])}
+        </label>
+    </p>
+    {province_control}
+</div>
+"""
+        )
+
+    operations = "\n".join(
+        operation_rows
     )
 
     return _page(
@@ -373,30 +409,47 @@ def _entry_page() -> bytes:
 
 <section
     id="twinEntryOptions"
+    class="mercurio-options-overlay"
+    aria-label="Opciones"
     hidden
 >
-{operations}
+    <div
+        class="mercurio-options-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="twinOptionsTitle"
+    >
+        <header class="mercurio-options-dialog__header">
+            <span
+                id="twinOptionsTitle"
+                class="mercurio-options-dialog__title"
+            >
+                Opciones
+            </span>
 
-<label for="provincia">
-    Provincia
-</label>
+            <button
+                class="mercurio-options-dialog__close"
+                type="button"
+                onclick="cerrarOpcion()"
+            >
+                Cerrar
+            </button>
+        </header>
 
-<select
-    id="provincia"
-    name="provincia"
->
-    <option value="">
-        Seleccione provincia...
-    </option>
-{province_options}
-</select>
+        <div class="mercurio-options-dialog__body">
+            {operations}
+        </div>
 
-<button
-    type="button"
-    onclick="irOpcion()"
->
-    {escape(contract["continue_control"]["text"])}
-</button>
+        <footer class="mercurio-options-dialog__footer">
+            <button
+                class="mercurio-button"
+                type="button"
+                onclick="irOpcion()"
+            >
+                {escape(contract["continue_control"]["text"])}
+            </button>
+        </footer>
+    </div>
 </section>
 
 <p

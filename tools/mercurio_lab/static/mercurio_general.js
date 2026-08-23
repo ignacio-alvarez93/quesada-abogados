@@ -42,6 +42,20 @@
         );
     };
 
+    window.cerrarOpcion = function () {
+        const options =
+            byId("twinEntryOptions");
+
+        if (options) {
+            options.hidden = true;
+        }
+
+        setState(
+            "MERCURIO_ENTRY_IDLE"
+        );
+    };
+
+
     window.irOpcion = function irOpcion() {
         var selected = document.querySelector(
             'input[name="opcion"]:checked'
