@@ -8616,19 +8616,21 @@ def communications_view(
 
                     print(
                         "[WA-FLET] thread overview refreshed",
-                        {
-                            "thread_id":
-                                int(thread_id),
-                            "display_name":
-                                fresh_item.external_display_name,
-                        },
+                        ascii(
+                            {
+                                "thread_id":
+                                    int(thread_id),
+                                "display_name":
+                                    fresh_item.external_display_name,
+                            }
+                        ),
                         flush=True,
                     )
 
             except Exception as exc:
                 print(
                     "[WA-FLET] thread overview refresh failed",
-                    repr(exc),
+                    ascii(exc),
                     flush=True,
                 )
 
