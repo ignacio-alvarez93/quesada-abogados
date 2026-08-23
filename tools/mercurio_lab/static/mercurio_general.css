@@ -974,3 +974,884 @@ La grid anterior dejaba ≈249px.
     grid-template-columns: 203px 200px;
     column-gap: 8px;
 }
+
+
+/* =========================================================
+   MERCURIO TWIN · PRE-SCREENS-2A
+   Sede Administraciones Públicas · shell previo
+   ========================================================= */
+
+.sede-twin {
+    margin: 0;
+    background: #f5f5f5;
+    color: #292929;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+}
+
+.sede-header {
+    background: #f5f5f5;
+}
+
+.sede-brandline {
+    height: 100px;
+    background: #f5f5f5;
+}
+
+.sede-brandline__inner {
+    width: min(1250px, calc(100% - 32px));
+    height: 100%;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 28px;
+}
+
+.sede-government-mark {
+    width: 270px;
+    min-height: 46px;
+    padding: 8px 12px;
+    border-left: 12px solid #d33300;
+    background: #f6d83b;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.sede-government-name {
+    font-size: 18px;
+}
+
+.sede-nav {
+    min-height: 42px;
+    background: #cf3500;
+    color: #ffffff;
+}
+
+.sede-nav__inner {
+    width: min(1250px, calc(100% - 32px));
+    min-height: 42px;
+    margin: 0 auto;
+    display: flex;
+    align-items: stretch;
+}
+
+.sede-nav__brand {
+    display: flex;
+    align-items: center;
+    padding: 0 20px 0 10px;
+    color: #ffffff;
+    text-decoration: none;
+    font-size: 27px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.sede-nav__links {
+    display: flex;
+    align-items: stretch;
+}
+
+.sede-nav__links a {
+    display: flex;
+    align-items: center;
+    padding: 0 18px;
+    color: #ffffff;
+    text-decoration: none;
+    font-size: 14px;
+}
+
+.sede-nav__links a:hover {
+    background: rgba(255, 255, 255, 0.10);
+}
+
+.sede-page {
+    width: min(1250px, calc(100% - 32px));
+    margin: 24px auto 70px;
+}
+
+.sede-breadcrumb {
+    display: inline-block;
+    min-width: 118px;
+    margin-bottom: 6px;
+    padding: 7px 14px;
+    border: 1px solid #d8d8d8;
+    background: #ffffff;
+    font-size: 12px;
+}
+
+.sede-layout {
+    display: grid;
+    grid-template-columns:
+        minmax(0, 921px)
+        305px;
+    gap: 22px;
+    align-items: start;
+}
+
+.sede-main {
+    min-width: 0;
+    background: #ffffff;
+}
+
+.sede-main a,
+.sede-utils a {
+    color: #d33a08;
+}
+
+.sede-utils {
+    border: 1px solid #d6d6d6;
+    background: #ffffff;
+}
+
+.sede-utils__title {
+    min-height: 64px;
+    margin: 0;
+    padding: 18px 20px;
+    border-bottom: 1px solid #cccccc;
+    font-size: 21px;
+}
+
+.sede-utils > a {
+    display: block;
+    min-height: 42px;
+    padding: 11px 20px;
+    border-bottom: 1px solid #d6d6d6;
+    text-decoration: none;
+    line-height: 1.2;
+}
+
+
+/* ---------------------------------------------------------
+   HOME · PROCEDIMIENTOS
+   --------------------------------------------------------- */
+
+.sede-home-procedures > h1 {
+    height: 52px;
+    margin: 0;
+    padding: 8px 22px;
+    border-bottom: 3px solid #eeeeee;
+    font-size: 22px;
+}
+
+.sede-procedure-grid {
+    padding: 0 10px 16px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sede-procedure-card {
+    min-height: 68px;
+    padding: 18px 14px;
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 10px;
+    border-bottom: 1px solid #cfcfcf;
+}
+
+.sede-procedure-card:nth-child(4n + 3),
+.sede-procedure-card:nth-child(4n + 4) {
+    background: #eeeeee;
+}
+
+.sede-procedure-card__icon {
+    color: #d33a08;
+    font-size: 22px;
+    text-align: center;
+}
+
+.sede-procedure-card__title {
+    display: inline-block;
+    margin-bottom: 6px;
+    text-decoration: none;
+    font-size: 16px;
+}
+
+.sede-procedure-card__description {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+
+/* ---------------------------------------------------------
+   EXTRANJERÍA
+   REAL:
+     main x ≈ 139.97
+     main w ≈ 921.16
+     utilities w ≈ 305.31
+   --------------------------------------------------------- */
+
+.sede-category-header {
+    padding: 22px 28px;
+    border: 1px solid #d6d6d6;
+}
+
+.sede-category-header h1 {
+    margin: 0 0 6px;
+    color: #d33a08;
+    font-size: 25px;
+    font-weight: 400;
+}
+
+.sede-category-header p {
+    margin: 0;
+    color: #777777;
+    font-style: italic;
+}
+
+.sede-category-list {
+    padding: 16px 10px 0;
+}
+
+.sede-category-list__header {
+    min-height: 63px;
+    padding: 16px 20px;
+    border-bottom: 1px solid #dddddd;
+    color: #d33a08;
+}
+
+.sede-category-list__header strong,
+.sede-category-list__header span {
+    display: block;
+}
+
+.sede-category-list__items {
+    padding: 0 10px;
+}
+
+.sede-category-item {
+    position: relative;
+    min-height: 70px;
+    padding: 25px 20px;
+}
+
+.sede-category-item:nth-child(even) {
+    background: #eeeeee;
+}
+
+.sede-category-item__title {
+    display: inline-block;
+    max-width: calc(100% - 28px);
+    text-decoration: none;
+    font-size: 15px;
+    line-height: 1.35;
+}
+
+.sede-category-item__plus {
+    margin-left: 8px;
+    color: #a32b00;
+    font-weight: 700;
+}
+
+
+/* ---------------------------------------------------------
+   MERCURIO · DIRECTORIO PREVIO
+   --------------------------------------------------------- */
+
+.sede-mercurio-information {
+    min-height: 2500px;
+    padding: 28px 30px 54px;
+    border: 1px solid #d6d6d6;
+    line-height: 1.35;
+}
+
+.sede-mercurio-information h1 {
+    margin: 0 0 22px;
+    color: #d33a08;
+    font-size: 24px;
+    font-weight: 400;
+}
+
+.sede-mercurio-information p {
+    margin: 0 0 18px;
+}
+
+.sede-mercurio-requirements {
+    margin-top: 1540px;
+}
+
+.sede-mercurio-requirements ul {
+    padding-left: 20px;
+}
+
+.sede-mercurio-requirements a {
+    text-decoration: underline;
+}
+
+.sede-mercurio-rgpd {
+    margin-top: 74px;
+    padding: 5px;
+    border: 3px double #777777;
+    background: #fff3e8;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.sede-mercurio-rgpd p {
+    margin: 14px 0 0;
+}
+
+.sede-mercurio-access {
+    display: inline-flex;
+    min-height: 38px;
+    margin-top: 52px;
+    padding: 0 22px;
+    align-items: center;
+    justify-content: center;
+    background: #cf3500;
+    color: #ffffff !important;
+    text-decoration: none;
+    font-size: 13px;
+}
+
+
+/* ---------------------------------------------------------
+   RESPONSIVE PRE-SCREENS
+   --------------------------------------------------------- */
+
+@media (max-width: 900px) {
+    .sede-brandline {
+        display: none;
+    }
+
+    .sede-nav__brand {
+        font-size: 20px;
+    }
+
+    .sede-nav__links {
+        flex-wrap: wrap;
+    }
+
+    .sede-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .sede-procedure-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .sede-mercurio-requirements {
+        margin-top: 120px;
+    }
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · PRE-SCREENS-2B
+   Reconstrucción estructural basada en Site Architecture
+   ========================================================= */
+
+/*
+REAL:
+mainWindow
+x = 128.97
+w = 1261.06
+y = 197
+*/
+.sede-page {
+    width: min(1261px, calc(100% - 32px));
+    margin: 55px auto 70px;
+    display: flow-root;
+}
+
+
+/*
+REAL layouts interiores:
+main    ≈ 943.16 px
+sidebar ≈ 307.31 px
+gap     ≈ 10.6 px
+*/
+.sede-layout {
+    grid-template-columns:
+        minmax(0, 943px)
+        307px;
+    gap: 11px;
+}
+
+.sede-main {
+    width: 943px;
+}
+
+.sede-utils {
+    width: 307px;
+}
+
+
+/* ---------------------------------------------------------
+   Breadcrumb real:
+   mainWindow y=197
+   topnav     y=217
+   layout     y=257
+   --------------------------------------------------------- */
+
+.sede-breadcrumb {
+    display: flex;
+    width: 100%;
+    height: 40px;
+    margin: 20px 0 0;
+    padding: 6px 16px;
+    align-items: center;
+    background: #ffffff;
+}
+
+
+/* =========================================================
+   HOME
+   ========================================================= */
+
+.sede-layout--home {
+    display: block;
+}
+
+.sede-layout--home .sede-main {
+    width: 100%;
+}
+
+.sede-home-shell {
+    width: 100%;
+}
+
+
+/*
+REAL:
+top row y=217
+columns:
+466.27 / 466.27 / 307.31
+gap ≈ 10.59
+height ≈ 597.55
+*/
+.sede-home-top {
+    height: 598px;
+    margin-top: 20px;
+    display: grid;
+    grid-template-columns:
+        466px 466px 307px;
+    gap: 11px;
+}
+
+.sede-home-carousel {
+    height: 598px;
+    padding: 19px;
+    background: #ffffff;
+    overflow: hidden;
+}
+
+.sede-home-carousel__visual {
+    width: 428px;
+    height: 385px;
+    background:
+        linear-gradient(
+            135deg,
+            #dddddd,
+            #f3f3f3
+        );
+}
+
+.sede-home-carousel__caption {
+    width: 428px;
+    min-height: 91px;
+    padding: 10px;
+}
+
+.sede-home-carousel__caption h2 {
+    margin: 0 0 6px;
+    font-size: 21px;
+    font-weight: 400;
+}
+
+.sede-home-carousel__caption p {
+    margin: 0;
+    line-height: 1.4;
+}
+
+.sede-home-carousel__pager {
+    height: 18px;
+    margin-top: 8px;
+    text-align: center;
+    letter-spacing: 4px;
+    font-size: 11px;
+}
+
+
+.sede-home-highlights {
+    height: 598px;
+    border: 1px solid #d6d6d6;
+    background: #ffffff;
+}
+
+.sede-home-highlights > h2 {
+    height: 64px;
+    margin: 0;
+    padding: 18px 20px;
+    border-bottom: 1px solid #d6d6d6;
+    font-size: 21px;
+}
+
+.sede-home-highlights__body {
+    height: 532px;
+    background:
+        linear-gradient(
+            #ffffff,
+            #fafafa
+        );
+}
+
+
+.sede-home-side {
+    display: grid;
+    grid-template-rows: 293px 293px;
+    gap: 11px;
+}
+
+.sede-home-side-card {
+    height: 293px;
+    padding: 100px 10px 20px;
+    border: 1px solid #d6d6d6;
+    background: #ffffff;
+    text-align: center;
+}
+
+.sede-home-side-card h2 {
+    margin: 0 0 8px;
+    font-size: 21px;
+}
+
+.sede-home-side-card h2 a {
+    color: #d33a08;
+    text-decoration: none;
+}
+
+.sede-home-side-card p {
+    width: 285px;
+    max-width: 100%;
+    margin: 0 auto;
+    line-height: 1.4;
+}
+
+
+/*
+REAL:
+Procedimientos/Utilidades
+y = 825.14
+columns 943.14 / 307.31
+*/
+.sede-home-bottom {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 943px 307px;
+    gap: 11px;
+    align-items: start;
+}
+
+.sede-home-procedures {
+    border: 1px solid #d6d6d6;
+    background: #ffffff;
+}
+
+.sede-home-procedures > h2 {
+    height: 64px;
+    margin: 0;
+    padding: 18px 20px;
+    border-bottom: 1px solid #d6d6d6;
+    font-size: 21px;
+}
+
+
+/* =========================================================
+   EXTRANJERÍA
+   ========================================================= */
+
+/*
+REAL:
+layout y = 257
+title  x = 159.97
+       y = 278
+content y = 358
+*/
+.sede-category-header {
+    height: 81px;
+    padding: 21px 31px 0;
+    border: 0;
+    background: #ffffff;
+}
+
+.sede-category-header h1 {
+    height: 36px;
+    margin: 0;
+    line-height: 36px;
+}
+
+.sede-category-header p {
+    margin: 0;
+    line-height: 24px;
+}
+
+
+.sede-category-list {
+    width: 921px;
+    margin: 20px 11px 0;
+    padding: 16px 0 0;
+}
+
+.sede-category-list__header {
+    width: 901px;
+    height: 63px;
+    min-height: 63px;
+    margin: 0 10px;
+    padding: 15px 20px 8px;
+}
+
+.sede-category-list__header strong {
+    line-height: 17px;
+}
+
+.sede-category-list__header span {
+    margin-top: 3px;
+    width: auto;
+    line-height: 16px;
+}
+
+
+.sede-category-list__items {
+    width: 861px;
+    margin: 25px 30px 0;
+    padding: 0;
+    display: grid;
+    row-gap: 41px;
+}
+
+.sede-category-item {
+    width: 861px;
+    height: 42px;
+    min-height: 42px;
+    padding: 8px 10px;
+}
+
+.sede-category-item--mercurio {
+    height: 85px;
+    min-height: 85px;
+}
+
+.sede-category-item__title {
+    max-width: 841px;
+    line-height: 17px;
+}
+
+
+/* =========================================================
+   MERCURIO2
+   ========================================================= */
+
+/*
+REAL:
+window header
+x=139.97 y=278 w=921.16 h=60
+
+custom content
+x=139.97 y=358 w=921.16
+*/
+.sede-window-header {
+    width: 921px;
+    height: 60px;
+    margin: 21px 11px 0;
+    padding: 0 20px;
+    background: #ffffff;
+}
+
+.sede-window-header h1 {
+    height: 36px;
+    margin: 0;
+    color: #d33a08;
+    font-size: 25px;
+    font-weight: 400;
+    line-height: 36px;
+}
+
+.sede-window-header p {
+    height: 24px;
+    margin: 0;
+    line-height: 24px;
+}
+
+
+.sede-mercurio-information {
+    width: 921px;
+    min-height: 0;
+    margin: 20px 11px 0;
+    padding: 0 20px 54px;
+    border: 0;
+    background: #ffffff;
+    line-height: 1.2857;
+}
+
+.sede-mercurio-information > p {
+    width: 881px;
+    margin: 0 0 18.5px;
+}
+
+.sede-mercurio-information strong {
+    font-weight: 700;
+}
+
+.sede-mercurio-information a {
+    color: #c83200;
+}
+
+
+.sede-mercurio-instructions > p {
+    width: 881px;
+    margin: 0 0 18px;
+}
+
+.sede-mercurio-list {
+    width: 845px;
+    margin: 0 0 18px 18px;
+    padding-left: 18px;
+    line-height: 18px;
+}
+
+.sede-mercurio-list li {
+    margin: 0;
+    line-height: 18px;
+}
+
+.sede-mercurio-list ul {
+    margin: 0;
+    padding-left: 18px;
+}
+
+
+/*
+El antiguo margin-top:1540px queda neutralizado.
+La posición se generará por contenido real.
+*/
+.sede-mercurio-requirements {
+    margin-top: 80px;
+}
+
+.sede-mercurio-requirements > p {
+    width: 881px;
+    margin: 0 0 18px;
+}
+
+
+/*
+REAL:
+fieldset
+x=159.97
+y=2404.19
+w=881.16
+h=174
+*/
+.sede-mercurio-rgpd {
+    width: 881px;
+    height: 174px;
+    min-height: 174px;
+    margin: 90px 0 0;
+    padding: 5px;
+    border: 3px double #777777;
+    background: #fff3e8;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+
+/*
+REAL:
+input#submit
+x=162.97
+y=2629.19
+w=469.64
+h=38
+*/
+.sede-mercurio-access-form {
+    margin: 51px 0 0 3px;
+}
+
+.sede-mercurio-access {
+    width: 470px;
+    height: 38px;
+    min-height: 38px;
+    margin: 0;
+    padding: 0 20px;
+    border: 1px solid #a82800;
+    background: #cf3500;
+    color: #ffffff;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+
+/* Sede real mantiene la navegación visible al hacer scroll. */
+.sede-nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · PRE-SCREENS-2C2
+   Calibración vertical final Mercurio2
+   Derivada de captura REAL ↔ TWIN
+   ========================================================= */
+
+/*
+REAL requisitos y = 2115.67
+TWIN 2C1       y = 2025.70
+delta            = +89.97
+
+Base anterior:
+margin-top = 80px
+*/
+.sede-mercurio-requirements {
+    margin-top: 170px;
+}
+
+
+/*
+REAL:
+RGPD y = 2404.19
+REQUISITOS y = 2115.67
+distancia = 288.52
+
+TWIN 2C1:
+RGPD y = 2295.69
+REQUISITOS y = 2025.70
+distancia = 269.99
+
+delta entre secciones = +18.53
+
+Base anterior:
+margin-top = 90px
+*/
+.sede-mercurio-rgpd {
+    margin-top: 108.5px;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · PRE-SCREENS-2C3
+   Calibración final HOME · Procedimientos
+   ========================================================= */
+
+/*
+REAL:
+Procedimientos
+x = 128.97
+y = 825.14
+w = 943.14
+h = 890.19
+
+TWIN 2B:
+x = 129
+y = 825
+w = 943
+h = 824.12
+
+La posición y anchura ya son subpíxel.
+Se fija únicamente la altura observada real.
+*/
+.sede-home-procedures {
+    height: 890px;
+}
