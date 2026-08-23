@@ -1,0 +1,84 @@
+.ex01-header,
+.ex01-main {
+    width: 1198px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.ex01-header {
+    padding-top: 20px;
+}
+
+.ex01-main {
+    margin-top: 24px;
+}
+
+.ex01-tabs {
+    display: flex;
+    gap: 2px;
+    margin-top: 22px;
+}
+
+.ex01-tabs a {
+    padding: 11px 16px;
+    text-decoration: none;
+}
+
+.mf-tabs--tab-content {
+    box-sizing: border-box;
+    width: 1198px;
+    padding: 24px 20px;
+}
+
+.r-tabs-state-default {
+    display: none;
+}
+
+.r-tabs-state-active {
+    display: block;
+}
+
+.ex01-option {
+    display: block;
+    margin: 16px 0;
+}
+
+.ex01-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 38px;
+    row-gap: 18px;
+}
+
+.ex01-grid label {
+    display: grid;
+    gap: 6px;
+}
+
+.ex01-grid input,
+.ex01-grid select {
+    box-sizing: border-box;
+    min-height: 33px;
+}
+
+.ex01-wide {
+    grid-column: 1 / -1;
+}
+
+.ex01-check {
+    display: block;
+    margin: 28px 0;
+}
+
+.mf-layout--row.tc {
+    text-align: center;
+    margin-top: 34px;
+}
+
+.simbutton {
+    display: inline-block;
+    min-width: 125px;
+    padding: 10px 5px;
+    text-decoration: none;
+    text-align: center;
+}

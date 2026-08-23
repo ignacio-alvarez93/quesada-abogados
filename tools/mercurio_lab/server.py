@@ -13,6 +13,9 @@ from urllib.parse import urlsplit
 from tools.mercurio_lab.general_pages import (
     render_general_page,
 )
+from tools.mercurio_lab.ex01.pages import (
+    render_ex01_page,
+)
 from tools.mercurio_lab.upload_backend import (
     parse_multipart_upload,
     render_upload_table,
@@ -79,6 +82,20 @@ ROUTES = {
         (
             STATIC_ROOT
             / "mercurio_general.css"
+        ),
+
+    "/mercurio/resources/lab/"
+    "mercurio_ex01.js":
+        (
+            STATIC_ROOT
+            / "mercurio_ex01.js"
+        ),
+
+    "/mercurio/resources/lab/"
+    "mercurio_ex01.css":
+        (
+            STATIC_ROOT
+            / "mercurio_ex01.css"
         ),
 }
 
@@ -204,6 +221,20 @@ class MercurioLabHandler(
                 ),
             )
 
+            return
+
+        ex01_page = render_ex01_page(
+            path
+        )
+
+        if ex01_page is not None:
+            self._send_bytes(
+                status=200,
+                content_type=(
+                    "text/html; charset=utf-8"
+                ),
+                body=ex01_page,
+            )
             return
 
         general_page = render_general_page(

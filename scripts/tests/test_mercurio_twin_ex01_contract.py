@@ -1,0 +1,86 @@
+from tools.mercurio_lab.ex01.pages import (
+    render_ex01_page,
+)
+from tools.mercurio_lab.ex01.routes import (
+    EX01_NEW_REQUEST_PATH,
+)
+
+
+def _html():
+    return render_ex01_page(
+        EX01_NEW_REQUEST_PATH
+    ).decode("utf-8")
+
+
+def test_ex01_route_exists():
+    assert (
+        EX01_NEW_REQUEST_PATH
+        == "/mercurio/nuevaSolicitud-EX01.html"
+    )
+
+
+def test_ex01_reproduces_real_form_contract():
+    html = _html()
+
+    assert 'name="autorizacionMercurio"' in html
+
+    assert (
+        'action="/mercurio/salvarSolicitud.html"'
+        in html
+    )
+
+    assert 'id="tipoFormulario"' in html
+    assert 'value="EX01"' in html
+    assert 'id="provincia"' in html
+    assert 'value="33"' in html
+
+
+def test_ex01_reproduces_observed_authorization_options():
+    html = _html()
+
+    expected = {
+        "EX-01-1-01": "128",
+        "EX-01-1-02": "129",
+        "EX-01-2-01": "130",
+        "EX-01-2-02": "131",
+    }
+
+    for element_id, value in expected.items():
+        assert f'id="{element_id}"' in html
+        assert f'value="{value}"' in html
+
+    assert html.count('name="datosForAut"') == 4
+
+
+def test_ex01_reproduces_real_tabs():
+    html = _html()
+
+    for element_id in (
+        "tab-datos_autorizacion",
+        "tab-datos_personales",
+        "tab-datos_familiar",
+        "tab-datos_presentador",
+        "tab-datos_notificacion",
+    ):
+        assert f'id="{element_id}"' in html
+
+
+def test_ex01_reproduces_automation_anchor_fields():
+    html = _html()
+
+    for element_id in (
+        "extPasaporte",
+        "extNie",
+        "extNombre",
+        "preNombrePresentador",
+        "notNombreNotificacion",
+        "btnConcluirSup",
+    ):
+        assert f'id="{element_id}"' in html
+
+
+def test_ex01_does_not_embed_real_identity():
+    html = _html()
+
+    assert "USUARIO LAB" in html
+    assert 'data-lab-redacted="1"' in html

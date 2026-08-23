@@ -71,6 +71,13 @@
         document.body.dataset.requestType =
             String(requestType || "");
 
+        if (selected.value === "EX01") {
+            window.location.assign(
+                "/mercurio/nuevaSolicitud-EX01.html"
+            );
+            return;
+        }
+
         showNotice(
             "Modelo "
             + selected.value
